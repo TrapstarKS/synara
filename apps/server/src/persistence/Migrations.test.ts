@@ -307,6 +307,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [103, "ClaudeTokenAccounting"],
         [104, "RecoverCodexThreadProfiles"],
         [105, "AsyncUserInput"],
+        [106, "Mind"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -364,6 +365,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 103, name: "ClaudeTokenAccounting" },
           { migration_id: 104, name: "RecoverCodexThreadProfiles" },
           { migration_id: 105, name: "AsyncUserInput" },
+          { migration_id: 106, name: "Mind" },
         ],
       );
       const preserved = yield* sql<{ readonly count: number }>`
@@ -462,6 +464,7 @@ agentGatewayRetentionLegacyLayer(
           [103, "ClaudeTokenAccounting"],
           [104, "RecoverCodexThreadProfiles"],
           [105, "AsyncUserInput"],
+          [106, "Mind"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -562,6 +565,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [103, "ClaudeTokenAccounting"],
         [104, "RecoverCodexThreadProfiles"],
         [105, "AsyncUserInput"],
+        [106, "Mind"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -603,6 +607,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [103, "ClaudeTokenAccounting"],
           [104, "RecoverCodexThreadProfiles"],
           [105, "AsyncUserInput"],
+          [106, "Mind"],
         ],
       );
 
@@ -698,6 +703,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [103, "ClaudeTokenAccounting"],
         [104, "RecoverCodexThreadProfiles"],
         [105, "AsyncUserInput"],
+        [106, "Mind"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -735,6 +741,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [103, "ClaudeTokenAccounting"],
           [104, "RecoverCodexThreadProfiles"],
           [105, "AsyncUserInput"],
+          [106, "Mind"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -890,6 +897,38 @@ managedAttachmentsIdempotencyLayer("managed attachment migration idempotency", (
       yield* runMigrations();
       const executed = yield* runMigrations();
       assert.lengthOf(executed, 0);
+    }),
+  );
+});
+
+const mindMigrationLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+
+mindMigrationLayer("Mind migration", (it) => {
+  it.effect("appends after 97 and 98 and preserves text-free journal evidence after delete", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 98 });
+      const executed = yield* runMigrations();
+      assert.deepStrictEqual(executed, [
+        [99, "InvalidateProjectionThreadsCursor"],
+        [101, "Mind"],
+        [102, "MindRuntimeIntegrity"],
+      ]);
+      yield* sql`INSERT INTO mind_memories (id, project_id, text, type, text_hash, peak_weight, created_at, last_accessed_at) VALUES ('m1', 'p1', 'delete me', 'semantic', 'hash', 0.6, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO mind_journal (project_id, memory_id, op, actor, created_at) VALUES ('p1', 'm1', 'forget', 'user:ui', '2026-09-01T00:00:00.000Z')`;
+      yield* sql`DELETE FROM mind_memories WHERE id = 'm1'`;
+      const journal = yield* sql<{
+        readonly memory_id: string;
+        readonly op: string;
+      }>`SELECT memory_id, op FROM mind_journal`;
+      assert.deepStrictEqual(journal, [{ memory_id: "m1", op: "forget" }]);
+      const columns = yield* sql<{
+        readonly name: string;
+      }>`SELECT name FROM pragma_table_info('mind_journal')`;
+      assert.notInclude(
+        columns.map(({ name }) => name),
+        "text",
+      );
     }),
   );
 });

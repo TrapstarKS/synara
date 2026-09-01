@@ -121,6 +121,7 @@ import Migration0102 from "./Migrations/102_ProjectionThreadMessagesTurnBoundary
 import AsyncUserInputMigration from "./Migrations/105_AsyncUserInput.ts";
 import ClaudeTokenAccountingMigration from "./Migrations/103_ClaudeTokenAccounting.ts";
 import Migration0104 from "./Migrations/104_RecoverCodexThreadProfiles.ts";
+import MindMigration from "./Migrations/101_Mind.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -242,6 +243,7 @@ export const migrationEntries = [
   [103, "ClaudeTokenAccounting", ClaudeTokenAccountingMigration],
   [104, "RecoverCodexThreadProfiles", Migration0104],
   [105, "AsyncUserInput", AsyncUserInputMigration],
+  [106, "Mind", MindMigration],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
