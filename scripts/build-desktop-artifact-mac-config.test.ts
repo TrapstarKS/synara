@@ -69,6 +69,20 @@ describe("createDesktopPlatformBuildConfig", () => {
     assert.deepStrictEqual(config.dmg, { sign: false, writeUpdateInfo: false });
   });
 
+  it("keeps a persistent ad-hoc macOS build signed without enabling notarization", () => {
+    const config = createDesktopPlatformBuildConfig({
+      platform: "mac",
+      target: "dmg",
+      signed: true,
+      macSigningMode: "adhoc",
+    });
+    const mac = config.mac as Record<string, unknown>;
+
+    assert.equal(mac.hardenedRuntime, true);
+    assert.equal(mac.notarize, false);
+    assert.deepStrictEqual(config.dmg, { sign: true, writeUpdateInfo: false });
+  });
+
   it("leaves non-macOS platform configs unchanged", () => {
     const linux = createDesktopPlatformBuildConfig({
       platform: "linux",

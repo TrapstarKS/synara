@@ -3645,7 +3645,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("does not infer a provider parent for active-parent or inactive-session notifications", () => {
+  it("keeps the active provider as parent for another provider thread after settlement", () => {
     const { manager, context, emitEvent } = createCollabNotificationHarness();
 
     handleServerNotificationForTest(manager, context, {
@@ -3673,7 +3673,7 @@ describe("collab child conversation routing", () => {
     expect(activeParentEvent.providerThreadId).toBe("provider_parent");
     expect(activeParentEvent).not.toHaveProperty("providerParentThreadId");
     expect(inactiveSessionEvent.providerThreadId).toBe("another_provider_thread");
-    expect(inactiveSessionEvent).not.toHaveProperty("providerParentThreadId");
+    expect(inactiveSessionEvent.providerParentThreadId).toBe("provider_parent");
   });
 
   it("prefers a mapped provider parent over the active-provider fallback", () => {
@@ -3921,7 +3921,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("suppresses child lifecycle notifications without mutating the parent session state", () => {
+  it("forwards child lifecycle notifications without mutating the parent session state", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
 
     (
@@ -3967,11 +3967,57 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenCalledTimes(2);
+    expect(emitEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_child_1",
+        parentTurnId: "turn_parent",
+        providerThreadId: "child_provider_1",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    expect(emitEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: "turn/completed",
+        turnId: "turn_child_1",
+        parentTurnId: "turn_parent",
+        providerThreadId: "child_provider_1",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
   });
 
-  it("suppresses child lifecycle notifications that arrive before receiver mapping", () => {
+  it.each([
+    {
+      method: "thread/started",
+      params: { thread: { id: "child_provider_unmapped", name: "Espera 60s" } },
+    },
+    {
+      method: "thread/name/updated",
+      params: { threadId: "child_provider_unmapped", threadName: "Espera 60s" },
+    },
+  ])("forwards child display metadata $method without changing the parent", (notification) => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, notification);
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: notification.method,
+        providerThreadId: "child_provider_unmapped",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+
+  it("forwards child lifecycle notifications that arrive before receiver mapping", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
     context.session.status = "running";
     context.session.activeTurnId = "turn_parent";
@@ -3988,9 +4034,44 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_child_unmapped",
+        providerThreadId: "child_provider_unmapped",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
     expect(context.session.activeTurnId).toBe("turn_parent");
+  });
+
+  it("keeps routing a late child terminal event after the parent turn settles", () => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+    context.session.status = "ready";
+    delete (context.session as Partial<typeof context.session>).activeTurnId;
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "turn/completed",
+      params: {
+        threadId: "child_provider_late",
+        turn: { id: "turn_child_late", status: "completed" },
+      },
+    });
+
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/completed",
+        turnId: "turn_child_late",
+        providerThreadId: "child_provider_late",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    expect(updateSession).not.toHaveBeenCalled();
   });
 
   it("keeps handling lifecycle notifications from the active provider thread", () => {
@@ -4020,7 +4101,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("suppresses child lifecycle notifications when only the provider parent is known", () => {
+  it("forwards child lifecycle notifications when only the provider parent is known", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
     context.collabReceiverParents.set("child_provider_1", "provider_parent");
 
@@ -4036,7 +4117,14 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_child_1",
+        providerThreadId: "child_provider_1",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
   });
 
