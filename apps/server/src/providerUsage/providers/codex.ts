@@ -83,6 +83,7 @@ function authFilePaths(ctx: ProviderUsageContext): string[] {
   if (ctx.env.CODEX_HOME) {
     push(nodePath.join(ctx.env.CODEX_HOME, "auth.json"));
   }
+  if (ctx.codexManagedProfile) return paths;
   const configHome = ctx.env.XDG_CONFIG_HOME?.trim();
   if (configHome) {
     push(nodePath.join(configHome, "codex", "auth.json"));
@@ -143,6 +144,10 @@ async function resolveCodexAuth(ctx: ProviderUsageContext): Promise<CodexAuth | 
     if (parsed === "api-key-only") {
       sawApiKeyOnly = true;
     }
+  }
+
+  if (ctx.codexManagedProfile) {
+    return sawApiKeyOnly ? { kind: "api-key" } : null;
   }
 
   const keychain = await readKeychainPassword({

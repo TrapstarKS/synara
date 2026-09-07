@@ -3,11 +3,17 @@
 // Layer: Chat presentation component
 // Depends on: agentActivity.logic and ChatMarkdown
 
+import { ThreadId } from "@synara/contracts";
 import { pluralize } from "@synara/shared/text";
 import { type CSSProperties, type ReactNode } from "react";
 import { BotIcon, ChevronLeftIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
-import type { WorkLogEntry } from "../../session-logic";
+import {
+  formatSubagentModelLabel,
+  humanizeSubagentStatus,
+  resolveSubagentPresentation,
+} from "../../lib/subagentPresentation";
+import type { WorkLogEntry, WorkLogSubagent } from "../../session-logic";
 import { formatShortTimestamp } from "../../timestampFormat";
 import type { TimestampFormat } from "../../appSettings";
 import ChatMarkdown from "../ChatMarkdown";
@@ -34,6 +40,7 @@ interface AgentActivityDetailViewProps {
   markdownCwd: string | undefined;
   onBack: () => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  onOpenThread?: (threadId: ThreadId) => void;
   timestampFormat: TimestampFormat;
 }
 
@@ -44,6 +51,7 @@ export function AgentActivityDetailView({
   markdownCwd,
   onBack,
   onImageExpand,
+  onOpenThread,
   timestampFormat,
 }: AgentActivityDetailViewProps) {
   const chatTypographyStyle = getChatTranscriptTextStyle(chatFontSizePx);
@@ -54,6 +62,7 @@ export function AgentActivityDetailView({
   };
   const prompt = findPrompt(detail.entries);
   const result = findResult(detail.entries);
+  const subagents = collectSubagents(detail.entries);
 
   return (
     <div
@@ -125,6 +134,21 @@ export function AgentActivityDetailView({
           </AgentActivitySection>
         ) : null}
 
+        {subagents.length > 0 ? (
+          <AgentActivitySection title="Agents">
+            <div className="space-y-2">
+              {subagents.map((subagent) => (
+                <SubagentDetailRow
+                  key={subagent.threadId}
+                  subagent={subagent}
+                  textStyle={chatTypographyStyle}
+                  {...(onOpenThread ? { onOpenThread } : {})}
+                />
+              ))}
+            </div>
+          </AgentActivitySection>
+        ) : null}
+
         <AgentActivitySection title="Activity">
           <div className="divide-y divide-border/45">
             {detail.entries.map((entry) => (
@@ -141,6 +165,70 @@ export function AgentActivityDetailView({
           </div>
         </AgentActivitySection>
       </div>
+    </div>
+  );
+}
+
+function SubagentDetailRow(props: {
+  subagent: WorkLogSubagent;
+  textStyle: CSSProperties;
+  onOpenThread?: (threadId: ThreadId) => void;
+}) {
+  const presentation = resolveSubagentPresentation({
+    nickname: props.subagent.nickname,
+    role: props.subagent.role,
+    title: props.subagent.title,
+    fallbackId: props.subagent.threadId,
+  });
+  const modelLabel = formatSubagentModelLabel(props.subagent.model);
+  const statusLabel =
+    props.subagent.statusLabel ??
+    humanizeSubagentStatus(props.subagent.rawStatus, props.subagent.isActive);
+  const canOpenThread = Boolean(props.onOpenThread);
+
+  return (
+    <div className="flex items-start gap-2.5 rounded-md border border-border/40 bg-background/45 px-3 py-2">
+      <span
+        className={cn(
+          "mt-2 size-1.5 shrink-0 rounded-full",
+          props.subagent.isActive ? "bg-sky-300/95" : "bg-muted-foreground/24",
+        )}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium text-foreground/86" style={props.textStyle}>
+          <span style={{ color: presentation.accentColor }}>
+            {presentation.nickname ?? presentation.primaryLabel}
+          </span>
+          {presentation.role ? (
+            <span className="ml-1 text-muted-foreground/50">({presentation.role})</span>
+          ) : null}
+        </div>
+        <div className="truncate text-muted-foreground/52" style={props.textStyle}>
+          {[modelLabel, statusLabel].filter(Boolean).join(" - ")}
+        </div>
+        {props.subagent.latestUpdate ? (
+          <div className="mt-1 text-muted-foreground/52" style={props.textStyle}>
+            {props.subagent.latestUpdate}
+          </div>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        className={cn(
+          "shrink-0 rounded-full border border-border/45 px-2.5 py-1 text-[9px] font-medium text-muted-foreground/62 transition-colors",
+          canOpenThread
+            ? "hover:border-foreground/15 hover:text-foreground/84"
+            : "cursor-default opacity-50",
+        )}
+        disabled={!canOpenThread}
+        onClick={() =>
+          props.onOpenThread?.(
+            ThreadId.makeUnsafe(props.subagent.resolvedThreadId ?? props.subagent.threadId),
+          )
+        }
+      >
+        Open
+      </button>
     </div>
   );
 }
@@ -193,12 +281,23 @@ function AgentActivityEventRow(props: {
 
 function findPrompt(entries: ReadonlyArray<WorkLogEntry>): string | null {
   for (const entry of entries) {
-    const prompt = entry.subagentAction?.prompt;
+    const prompt =
+      entry.subagentAction?.prompt ?? entry.subagents?.find((agent) => agent.prompt)?.prompt;
     if (prompt) {
       return prompt;
     }
   }
   return null;
+}
+
+function collectSubagents(entries: ReadonlyArray<WorkLogEntry>): WorkLogSubagent[] {
+  const byThreadId = new Map<string, WorkLogSubagent>();
+  for (const entry of entries) {
+    for (const subagent of entry.subagents ?? []) {
+      byThreadId.set(subagent.threadId, { ...byThreadId.get(subagent.threadId), ...subagent });
+    }
+  }
+  return [...byThreadId.values()];
 }
 
 function findResult(entries: ReadonlyArray<WorkLogEntry>): string | null {

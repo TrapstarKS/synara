@@ -4,6 +4,7 @@
 // Depends on: project action controls, git actions, and panel toggle callbacks
 
 import {
+  type CodexProfileId,
   type EditorId,
   type ProjectId,
   type ProjectScript,
@@ -77,6 +78,7 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeThreadEntryPoint: ThreadPrimarySurface;
   activeProvider: ProviderKind;
+  activeCodexProfileId?: CodexProfileId;
   activeProjectName: string | undefined;
   threadBreadcrumbs: ReadonlyArray<{
     threadId: ThreadId;
@@ -506,6 +508,7 @@ export function ChatHeader({
   activeThreadTitle,
   activeThreadEntryPoint,
   activeProvider,
+  activeCodexProfileId,
   activeProjectName,
   threadBreadcrumbs,
   className,
@@ -795,7 +798,10 @@ export function ChatHeader({
       </div>
       <div className="flex shrink-0 items-center gap-2 [-webkit-app-region:no-drag]">
         {!minimalChrome && !hideHandoffControls && !environment ? (
-          <ProviderUsageMenuControl provider={activeProvider} />
+          <ProviderUsageMenuControl
+            provider={activeProvider}
+            codexProfileId={activeCodexProfileId}
+          />
         ) : null}
         {!minimalChrome && !hideHandoffControls ? (
           <Menu modal={false}>

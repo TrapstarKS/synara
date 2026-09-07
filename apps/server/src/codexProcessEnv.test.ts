@@ -1,8 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
+
+import { CodexProfileId } from "@synara/contracts";
 
 import {
   buildCodexProcessEnv,
@@ -13,6 +15,30 @@ import {
 import { isProviderCredentialKey } from "./providerChildEnvironment.ts";
 
 describe("linkOrCopyCodexOverlayEntry", () => {
+  it("hard-links auth.json when symlinks are unavailable", async () => {
+    const link = vi.fn(async () => undefined);
+    const copyFile = vi.fn(async () => undefined);
+
+    await linkOrCopyCodexOverlayEntry(
+      {
+        entryName: "auth.json",
+        sourcePath: "C:\\Users\\test\\.codex\\auth.json",
+        targetPath: "C:\\Users\\test\\.synara\\codex-home-overlay\\auth.json",
+        type: "file",
+      },
+      {
+        symlink: vi.fn(async () => {
+          throw new Error("symlinks unavailable");
+        }),
+        link,
+        copyFile,
+      },
+    );
+
+    expect(link).toHaveBeenCalledOnce();
+    expect(copyFile).not.toHaveBeenCalled();
+  });
+
   it("copies auth.json when symlink creation is unavailable", async () => {
     const symlink = vi.fn(async () => {
       throw new Error("symlinks unavailable");
@@ -26,7 +52,13 @@ describe("linkOrCopyCodexOverlayEntry", () => {
         targetPath: "C:\\Users\\test\\.synara\\codex-home-overlay\\auth.json",
         type: "file",
       },
-      { symlink, copyFile },
+      {
+        symlink,
+        link: vi.fn(async () => {
+          throw new Error("hard links unavailable");
+        }),
+        copyFile,
+      },
     );
 
     expect(symlink).toHaveBeenCalledWith(
@@ -91,6 +123,41 @@ describe("disableCodexConfigSections", () => {
 });
 
 describe("buildCodexProcessEnv", () => {
+  it("isolates managed profile overlays and keeps them private", async () => {
+    const sourceHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-profile-source-"));
+    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-profile-runtime-"));
+    const first = CodexProfileId.makeUnsafe("be54e3c8-c56b-4113-8257-a9090d97b936");
+    const second = CodexProfileId.makeUnsafe("7cc2e449-3a05-4a0e-9556-c8cc959e180e");
+    writeFileSync(path.join(sourceHome, "config.toml"), 'cli_auth_credentials_store = "file"\n');
+
+    try {
+      const firstEnv = await buildCodexProcessEnv({
+        env: { SYNARA_HOME: runtimeHome, OPENAI_API_KEY: "must-not-leak" },
+        homePath: sourceHome,
+        profileId: first,
+        platform: "win32",
+      });
+      const secondEnv = await buildCodexProcessEnv({
+        env: { SYNARA_HOME: runtimeHome },
+        homePath: sourceHome,
+        profileId: second,
+        platform: "win32",
+      });
+
+      expect(firstEnv.CODEX_HOME).toBe(path.join(runtimeHome, "codex-home-overlays", first));
+      expect(secondEnv.CODEX_HOME).toBe(path.join(runtimeHome, "codex-home-overlays", second));
+      expect(firstEnv.OPENAI_API_KEY).toBeUndefined();
+      expect(firstEnv.CODEX_HOME).not.toBe(secondEnv.CODEX_HOME);
+      if (process.platform !== "win32") {
+        expect(statSync(firstEnv.CODEX_HOME!).mode & 0o777).toBe(0o700);
+        expect(statSync(path.join(firstEnv.CODEX_HOME!, "config.toml")).mode & 0o777).toBe(0o600);
+      }
+    } finally {
+      rmSync(sourceHome, { recursive: true, force: true });
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
+  });
+
   it("registers the active custom provider env key for diagnostic redaction", async () => {
     const codexHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-provider-key-"));
     writeFileSync(

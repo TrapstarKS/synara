@@ -2,7 +2,11 @@
 // Purpose: Verifies how the shared provider-usage summary hook arbitrates live,
 // local, OpenUsage, and thread-derived fallback usage signals.
 
-import type { ServerProviderUsageSnapshot } from "@synara/contracts";
+import {
+  CodexProfileId,
+  type ProviderKind,
+  type ServerProviderUsageSnapshot,
+} from "@synara/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -57,6 +61,8 @@ function readProviderUsageSummary(input: {
   threadRateLimits?: ReadonlyArray<ProviderRateLimit> | undefined;
   providerSnapshot?: ServerProviderUsageSnapshot | undefined;
   fetchOpenUsageData?: boolean;
+  provider?: ProviderKind;
+  codexProfileId?: CodexProfileId;
 }) {
   // Capture into a ref-style holder: the hook only runs inside the closure, so a
   // plain `let` would narrow to `never` after the guard (TS can't see <Probe/> run).
@@ -66,10 +72,11 @@ function readProviderUsageSummary(input: {
 
   function Probe() {
     captured.current = useProviderUsageSummary({
-      provider: "claudeAgent",
+      provider: input.provider ?? "claudeAgent",
       threads: [],
       threadRateLimits: input.threadRateLimits,
       providerSnapshot: input.providerSnapshot,
+      ...(input.codexProfileId ? { codexProfileId: input.codexProfileId } : {}),
       fetchOpenUsageData: input.fetchOpenUsageData,
     });
     return <span />;
@@ -188,6 +195,39 @@ describe("useProviderUsageSummary", () => {
 
     expect(summary.rateLimits).toHaveLength(1);
     expect(summary.usageNotice).toContain("rate-limiting");
+  });
+
+  it("selects the exact managed Codex account instead of the legacy account", () => {
+    const queryClient = createQueryClient();
+    const profileId = CodexProfileId.makeUnsafe("71948873-4388-4024-aa9c-1ba69d903198");
+    queryClient.setQueryData(serverQueryKeys.allProviderUsage(), [
+      snapshot({
+        provider: "codex",
+        limits: [{ window: "5h", usedPercent: 10 }],
+      }),
+      snapshot({
+        provider: "codex",
+        profileId,
+        profileName: "Work",
+        limits: [{ window: "5h", usedPercent: 80 }],
+      }),
+    ]);
+
+    const summary = readProviderUsageSummary({
+      queryClient,
+      provider: "codex",
+      codexProfileId: profileId,
+      threadRateLimits: [
+        {
+          provider: "codex",
+          updatedAt: "2026-06-09T12:00:00.000Z",
+          limits: [{ window: "5h", usedPercent: 25 }],
+        },
+      ],
+    });
+
+    expect(summary.rateLimits).toHaveLength(1);
+    expect(summary.rateLimits[0]?.limits?.[0]?.usedPercent).toBe(80);
   });
 
   it("has no notice when the live snapshot is non-ok", () => {

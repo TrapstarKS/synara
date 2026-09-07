@@ -188,14 +188,46 @@ function normalizeSettings(
   patch: ServerSettingsPatch,
 ): Effect.Effect<ServerSettings, ServerSettingsError> {
   return Schema.decodeUnknownEffect(ServerSettings)(applyServerSettingsPatch(current, patch)).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ServerSettingsError({
-          settingsPath,
-          detail: `failed to normalize server settings: ${SchemaIssue.makeFormatterDefault()(cause.issue)}`,
-          cause,
-        }),
-    ),
+    Effect.flatMap((settings) => {
+      const profiles = settings.providers.codex.profiles;
+      const ids = new Set(profiles.map((profile) => profile.id));
+      const names = new Set(profiles.map((profile) => profile.name.toLowerCase()));
+      if (ids.size !== profiles.length || names.size !== profiles.length) {
+        return Effect.fail(
+          new ServerSettingsError({
+            settingsPath,
+            detail: "Codex account IDs and names must be unique.",
+          }),
+        );
+      }
+      const defaultProfileId = settings.providers.codex.defaultProfileId;
+      if (defaultProfileId && !ids.has(defaultProfileId)) {
+        return Effect.fail(
+          new ServerSettingsError({
+            settingsPath,
+            detail: "The default Codex account does not exist.",
+          }),
+        );
+      }
+      const selection = settings.textGenerationModelSelection;
+      if (selection.provider === "codex" && selection.profileId && !ids.has(selection.profileId)) {
+        return Effect.fail(
+          new ServerSettingsError({
+            settingsPath,
+            detail: "The Codex account selected for text generation does not exist.",
+          }),
+        );
+      }
+      return Effect.succeed(settings);
+    }),
+    Effect.mapError((cause) => {
+      if (cause instanceof ServerSettingsError) return cause;
+      return new ServerSettingsError({
+        settingsPath,
+        detail: `failed to normalize server settings: ${SchemaIssue.makeFormatterDefault()(cause.issue)}`,
+        cause,
+      });
+    }),
   );
 }
 

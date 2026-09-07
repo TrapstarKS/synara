@@ -11,11 +11,23 @@ export function deriveTurnStartModelSelection(input: {
   readonly canAdoptRequestedProvider: boolean;
 }): ModelSelection {
   const requestedModelSelection = input.requestedModelSelection;
-  return requestedModelSelection !== undefined &&
-    (requestedModelSelection.provider === input.currentModelSelection.provider ||
-      input.canAdoptRequestedProvider)
-    ? requestedModelSelection
-    : input.currentModelSelection;
+  if (
+    requestedModelSelection === undefined ||
+    (requestedModelSelection.provider !== input.currentModelSelection.provider &&
+      !input.canAdoptRequestedProvider)
+  ) {
+    return input.currentModelSelection;
+  }
+  if (
+    !input.canAdoptRequestedProvider &&
+    requestedModelSelection.provider === "codex" &&
+    input.currentModelSelection.provider === "codex" &&
+    input.currentModelSelection.profileId &&
+    !requestedModelSelection.profileId
+  ) {
+    return { ...requestedModelSelection, profileId: input.currentModelSelection.profileId };
+  }
+  return requestedModelSelection;
 }
 
 export function deriveTurnStartSession(input: {

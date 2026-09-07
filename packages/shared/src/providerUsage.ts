@@ -54,11 +54,14 @@ export function providerUsageNeedsAuthDetail(provider: string | null | undefined
 export function selectVisibleProviderUsageSnapshots(
   snapshots: ReadonlyArray<ServerProviderUsageSnapshot>,
 ): ReadonlyArray<ServerProviderUsageSnapshot> {
-  const byProvider = new Map(snapshots.map((snapshot) => [snapshot.provider, snapshot]));
-  const ordered = PROVIDER_USAGE_PROVIDERS.flatMap((provider) => {
-    const snapshot = byProvider.get(provider);
-    return snapshot ? [snapshot] : [];
-  });
+  const ordered = PROVIDER_USAGE_PROVIDERS.flatMap((provider) =>
+    snapshots.filter((snapshot) => snapshot.provider === provider),
+  );
   const connected = ordered.filter((snapshot) => (snapshot.status ?? "ok") !== "needs-auth");
-  return connected.length > 0 ? connected : ordered;
+  return connected.length > 0
+    ? ordered.filter(
+        (snapshot) =>
+          snapshot.profileId !== undefined || (snapshot.status ?? "ok") !== "needs-auth",
+      )
+    : ordered;
 }

@@ -100,7 +100,7 @@ describe("deriveComposerSubagentStripItems", () => {
     );
   });
 
-  it("merges snapshots of one subagent, keeping identity while the latest status wins", () => {
+  it("hides a subagent as soon as its latest snapshot is terminal", () => {
     const items = subagentRows(
       deriveComposerSubagentStripItems({
         workEntries: [
@@ -136,16 +136,7 @@ describe("deriveComposerSubagentStripItems", () => {
       }),
     );
 
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({
-      threadId: "subagent:parent:sub-1",
-      primaryLabel: "Ada",
-      role: "builder",
-      statusLabel: "Completed",
-      statusKind: "completed",
-      isActive: false,
-    });
-    expect(items[0]?.modelLabel).toBeDefined();
+    expect(items).toEqual([]);
   });
 
   it("keeps the latest prior set visible only while a subagent still works", () => {
@@ -166,7 +157,7 @@ describe("deriveComposerSubagentStripItems", () => {
         liveTurnId: null,
       }),
     );
-    expect(stillRunning.map((item) => item.primaryLabel)).toEqual(["Ada", "Blue"]);
+    expect(stillRunning.map((item) => item.primaryLabel)).toEqual(["Ada"]);
 
     expect(
       deriveComposerSubagentStripItems({
@@ -206,9 +197,9 @@ describe("deriveComposerSubagentStripItems", () => {
       }),
     );
 
-    expect(items[0]?.modelLabel).toBe("Sonnet · high");
+    expect(items[0]?.modelLabel).toBe("Sonnet · High");
     // No model hint: the effort still reads on its own.
-    expect(items[1]?.modelLabel).toBe("low");
+    expect(items[1]?.modelLabel).toBe("Low");
   });
 
   it("marks rows background from spawn hints and confirmed backgrounded tool use ids", () => {
@@ -401,7 +392,7 @@ describe("deriveComposerSubagentStripItems", () => {
       viewedThreadId: ThreadId.makeUnsafe("sub-2"),
       parentRow,
     });
-    expect(stillRunning.map((row) => row.kind)).toEqual(["parent", "subagent", "subagent"]);
+    expect(stillRunning.map((row) => row.kind)).toEqual(["parent", "subagent"]);
 
     // Everything finished and the parent turn settled: the strip retires whole,
     // parent row included.
@@ -479,11 +470,7 @@ describe("deriveComposerSubagentStripItems", () => {
           ],
         }),
       );
-      expect(items[0]).toMatchObject({
-        statusLabel: "Completed",
-        statusKind: "completed",
-        isActive: false,
-      });
+      expect(items).toEqual([]);
     });
 
     it("falls back to the settled collab item status when no per-agent status exists", () => {
@@ -498,11 +485,7 @@ describe("deriveComposerSubagentStripItems", () => {
           ],
         }),
       );
-      expect(items[0]).toMatchObject({
-        statusLabel: "Failed",
-        statusKind: "failed",
-        isActive: false,
-      });
+      expect(items).toEqual([]);
     });
 
     it("keeps Idle for a child thread idling mid-lifecycle without a terminal signal", () => {
@@ -521,7 +504,7 @@ describe("deriveComposerSubagentStripItems", () => {
           ],
         }),
       );
-      expect(items[0]).toMatchObject({ statusLabel: "Idle", statusKind: "idle" });
+      expect(items).toEqual([]);
     });
   });
 
@@ -635,7 +618,7 @@ describe("worker-tier role suppression", () => {
       role: null,
       fullLabel: "Ada",
     });
-    expect(items[0]?.modelLabel).toContain("low");
+    expect(items[0]?.modelLabel).toContain("Low");
     expect(items[1]).toMatchObject({
       primaryLabel: "Blue",
       role: "reviewer",

@@ -32,6 +32,7 @@ import { AuthError, ServerAuth } from "./auth/Services/ServerAuth";
 import { SessionCredentialService } from "./auth/Services/SessionCredentialService";
 import { deriveAuthClientMetadata } from "./auth/utils";
 import { ServerConfig, type ServerConfigShape } from "./config";
+import { resolveManagedCodexProfileHome } from "./codexProfiles";
 import { resolveCachedEditorIcon } from "./editorAppIcons";
 import { LOCAL_IMAGE_ROUTE_PATH, resolveAllowedLocalPreviewFile } from "./localImageFiles.ts";
 import { resolveScratchWorkspacesRoot } from "./scratchWorkspaces.ts";
@@ -807,10 +808,16 @@ export const localImageEffectRouteLayer = HttpRouter.add(
       yield* requireAuthenticatedRequest;
     }
 
+    const serverSettings = yield* ServerSettingsService;
+    const settings = yield* serverSettings.getSettings;
     const previewFile = yield* Effect.promise(() =>
       resolveAllowedLocalPreviewFile({
         requestedPath: url.searchParams.get("path"),
         cwd: url.searchParams.get("cwd"),
+        codexProfileHomes: settings.providers.codex.profiles.map((profile) => ({
+          homePath: resolveManagedCodexProfileHome(config.secretsDir, profile.id),
+          profileId: profile.id,
+        })),
         scratchWorkspacesRoot: resolveScratchWorkspacesRoot(),
         allowAbsoluteLocalPreviewFile: true,
         previewGrant: url.searchParams.get("grant"),
