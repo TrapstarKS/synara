@@ -674,7 +674,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         WHERE migration_id = 74
       `;
 
-      const executed = yield* runMigrations({ toMigrationInclusive: 99 });
+      const executed = yield* runMigrations();
       assert.deepStrictEqual(executed, [
         [74, "ExternalMcpIntegrations"],
         [75, "ExternalMcpActiveCapacity"],
