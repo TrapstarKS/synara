@@ -100,6 +100,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     parentThreadId: thread.parentThreadId ?? null,
     creationSource: thread.creationSource ?? null,
     sourceThreadId: thread.sourceThreadId ?? null,
+    sourceTurnId: thread.sourceTurnId ?? null,
     subagentAgentId: thread.subagentAgentId ?? null,
     subagentNickname: thread.subagentNickname ?? null,
     subagentRole: thread.subagentRole ?? null,

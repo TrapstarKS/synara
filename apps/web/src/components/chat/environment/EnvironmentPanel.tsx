@@ -9,6 +9,7 @@
 // Layer: Environment panel container
 
 import type {
+  CodexProfileId,
   AutomationDefinition,
   EditorId,
   MessageId,
@@ -38,7 +39,7 @@ import { toastManager } from "~/components/ui/toast";
 import { isElectron } from "~/env";
 import { basenameOfPath } from "~/file-icons";
 import type { RepoDiffTotals } from "~/hooks/useRepoDiffTotals";
-import { ArrowUpRightIcon, ChangesIcon, GitHubIcon, SettingsIcon } from "~/lib/icons";
+import { ArrowUpRightIcon, ChangesIcon, GitHubIcon, SettingsIcon, UsersIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import { waitForSidechatCreator } from "~/lib/sidechatCreatorRegistry";
@@ -104,6 +105,7 @@ export interface EnvironmentPanelProps {
   activeThreadId: ThreadId | null;
   /** Active provider for the usage row (same chip the header shows). */
   activeProvider: ProviderKind;
+  activeCodexProfileId?: CodexProfileId;
   /**
    * Whether the active thread is a Studio chat. Studio chats show the Output section:
    * the Outbox files THIS chat produced, so its output stays attached to the chat.
@@ -225,6 +227,7 @@ export function EnvironmentPanel({
   availableEditors,
   activeThreadId,
   activeProvider,
+  activeCodexProfileId,
   isStudioChat,
   studioFolderPath: studioFolderPathProp,
   showGitActions,
@@ -380,6 +383,17 @@ export function EnvironmentPanel({
 
       <EnvironmentLocalServersSection enabled={open} />
 
+      {activeThreadId ? (
+        <EnvironmentRow
+          icon={<UsersIcon className={ENVIRONMENT_ROW_ICON_CLASS_NAME} aria-hidden />}
+          label="Subagents"
+          onClick={() => {
+            openRightDockPane(activeThreadId, { kind: "subagents" });
+            onClose();
+          }}
+        />
+      ) : null}
+
       {sidechats && activeThreadId ? (
         <EnvironmentSidechatsSection
           sidechats={sidechats}
@@ -422,7 +436,12 @@ export function EnvironmentPanel({
         actually shows, so toggling any section via the header gear menu never leaves a doubled or
         dangling rule. Visibility is gated on the per-section AppSettings flags.
       */}
-      {settings.showEnvironmentUsage ? <EnvironmentUsageSection provider={activeProvider} /> : null}
+      {settings.showEnvironmentUsage ? (
+        <EnvironmentUsageSection
+          provider={activeProvider}
+          {...(activeCodexProfileId ? { codexProfileId: activeCodexProfileId } : {})}
+        />
+      ) : null}
 
       {settings.showEnvironmentRepository && githubRepository && onOpenGithubRepository ? (
         <EnvironmentLabeledSection label="Repository">

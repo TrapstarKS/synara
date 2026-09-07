@@ -236,6 +236,7 @@ export function ChatTranscriptPane({
             markdownCwd={markdownCwd}
             onBack={onCloseAgentActivityDetail}
             onImageExpand={onExpandTimelineImage}
+            onOpenThread={onOpenThread}
             timestampFormat={timestampFormat}
           />
         ) : (

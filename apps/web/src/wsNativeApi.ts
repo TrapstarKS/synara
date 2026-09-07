@@ -647,6 +647,14 @@ export function createWsNativeApi(): NativeApi {
       getEnvironment: () => transport.request(WS_METHODS.serverGetEnvironment),
       getSettings: () => transport.request(WS_METHODS.serverGetSettings),
       updateSettings: (input) => transport.request(WS_METHODS.serverUpdateSettings, input),
+      listCodexAccountStates: () => transport.request(WS_METHODS.serverListCodexAccountStates),
+      startCodexAccountLogin: (input) =>
+        transport.request(WS_METHODS.serverStartCodexAccountLogin, input, { timeoutMs: null }),
+      cancelCodexAccountLogin: (input) =>
+        transport.request(WS_METHODS.serverCancelCodexAccountLogin, input),
+      logoutCodexAccount: (input) => transport.request(WS_METHODS.serverLogoutCodexAccount, input),
+      setCodexAccountBridge: (input) =>
+        transport.request(WS_METHODS.serverSetCodexAccountBridge, input, { timeoutMs: null }),
       getAuthSession: () => requestAuthJson<AuthSessionState>("/api/auth/session"),
       bootstrapAuth: (input: AuthBootstrapInput) =>
         requestAuthJson<AuthBootstrapResult>("/api/auth/bootstrap", {

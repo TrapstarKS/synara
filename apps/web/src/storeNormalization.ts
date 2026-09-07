@@ -1272,7 +1272,9 @@ export function withOrchestrationEventSequence(
   activity: OrchestrationThreadActivity,
   sequence: number,
 ): OrchestrationThreadActivity {
-  return { ...activity, sequence };
+  // Runtime-journal order is also used by snapshots and assistant text segments.
+  // Mixing it with the enclosing orchestration sequence reshuffles hydrated work.
+  return { ...activity, sequence: activity.sequence ?? sequence };
 }
 
 /**
@@ -1727,6 +1729,7 @@ export function normalizeThreadFromReadModel(
     parentThreadId: incoming.parentThreadId ?? null,
     creationSource: incoming.creationSource ?? null,
     sourceThreadId: incoming.sourceThreadId ?? null,
+    sourceTurnId: incoming.sourceTurnId ?? null,
     subagentAgentId: incoming.subagentAgentId ?? null,
     subagentNickname: incoming.subagentNickname ?? null,
     subagentRole: incoming.subagentRole ?? null,
@@ -1845,6 +1848,7 @@ export function normalizeThreadShellSnapshot(
     parentThreadId: incoming.parentThreadId ?? null,
     creationSource: incoming.creationSource ?? null,
     sourceThreadId: incoming.sourceThreadId ?? null,
+    sourceTurnId: incoming.sourceTurnId ?? null,
     subagentAgentId: incoming.subagentAgentId ?? null,
     subagentNickname: incoming.subagentNickname ?? null,
     subagentRole: incoming.subagentRole ?? null,

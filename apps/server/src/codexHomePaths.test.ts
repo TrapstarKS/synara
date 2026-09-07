@@ -8,6 +8,7 @@ import {
   resolveCodexHomeAllowlistCandidates,
   resolveSynaraCodexHomeOverlayPath,
 } from "./codexHomePaths.ts";
+import { CodexProfileId } from "@synara/contracts";
 
 describe("Codex home paths", () => {
   it("resolves the source home using explicit, environment, then default precedence", () => {
@@ -30,6 +31,18 @@ describe("Codex home paths", () => {
     assert.equal(
       resolveSynaraCodexHomeOverlayPath({}, "/users/me/.codex"),
       path.join("/users/me", ".synara", "runtime", "codex-home-overlay"),
+    );
+  });
+
+  it("isolates managed profile overlays by profile id", () => {
+    const profileId = CodexProfileId.makeUnsafe("0a5e2de9-c0f9-40e6-acf6-580ac0072fc0");
+    assert.equal(
+      resolveSynaraCodexHomeOverlayPath(
+        { SYNARA_HOME: "/synara/runtime" },
+        "/private/profile",
+        profileId,
+      ),
+      path.join("/synara/runtime", "codex-home-overlays", profileId),
     );
   });
 

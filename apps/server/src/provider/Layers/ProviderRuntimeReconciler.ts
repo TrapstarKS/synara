@@ -1,3 +1,4 @@
+import { resolveSubagentProviderThreadId } from "../../orchestration/providerSessionThread.ts";
 /**
  * ProviderRuntimeReconcilerLive - Repairs live runtime/projection divergence.
  *
@@ -237,8 +238,37 @@ const make = (options?: ProviderRuntimeReconcilerLiveOptions) =>
       )).flatMap(Option.toArray);
       const threadById = new Map(threads.map((thread) => [thread.id, thread]));
       const bindingByThreadId = new Map(bindings.map((binding) => [binding.threadId, binding]));
+      // Native children share the parent's runtime and have no separate binding.
+      // An observed live child turn outranks the stale projection timeout.
+      const liveChildIds = new Set(
+        yield* Effect.forEach(
+          threads,
+          (thread) => {
+            const providerThreadId = resolveSubagentProviderThreadId(
+              thread.id,
+              thread.parentThreadId,
+            );
+            if (
+              !thread.parentThreadId ||
+              !providerThreadId ||
+              !thread.latestTurn ||
+              !providerService.hasLiveRuntimeTasks
+            ) {
+              return Effect.succeed(undefined);
+            }
+            return providerService
+              .hasLiveRuntimeTasks({
+                threadId: thread.parentThreadId,
+                providerThreadId,
+                turnId: thread.latestTurn.turnId,
+              })
+              .pipe(Effect.map((live) => (live ? thread.id : undefined)));
+          },
+          { concurrency: 8 },
+        ),
+      );
       const plans = planProviderRuntimeReconciliation({
-        threads,
+        threads: threads.filter((thread) => !liveChildIds.has(thread.id)),
         bindings,
         liveSessions,
         pumpHealth,

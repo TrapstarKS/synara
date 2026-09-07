@@ -17,7 +17,7 @@ import {
 } from "@synara/shared/model";
 import { normalizeCursorModelVariantBaseId } from "../../cursorModelVariants";
 
-function runtimeEffortLabel(value: string): string {
+export function runtimeEffortLabel(value: string): string {
   switch (value) {
     case "none":
       return "None";

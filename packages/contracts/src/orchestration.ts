@@ -15,6 +15,7 @@ import { ProjectKind } from "./project";
 import {
   ApprovalRequestId,
   CheckpointRef,
+  CodexProfileId,
   CommandId,
   EventId,
   IsoDateTime,
@@ -112,6 +113,7 @@ export type ProviderSandboxMode = typeof ProviderSandboxMode.Type;
 export const CodexModelSelection = Schema.Struct({
   provider: Schema.Literal("codex"),
   model: TrimmedNonEmptyString,
+  profileId: Schema.optional(CodexProfileId),
   options: Schema.optional(CodexModelOptions),
 });
 export type CodexModelSelection = typeof CodexModelSelection.Type;
@@ -189,6 +191,7 @@ export type ModelSelection = typeof ModelSelection.Type;
 export const CodexProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
+  profileId: Schema.optional(CodexProfileId),
 });
 
 export const ClaudeProviderStartOptions = Schema.Struct({

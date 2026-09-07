@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "vitest";
 
+import { CodexProfileId } from "@synara/contracts";
 import { resolveAllowedLocalPreviewFile } from "./localImageFiles.ts";
 
 const tempDirs: string[] = [];
@@ -91,6 +92,42 @@ describe("resolveAllowedLocalPreviewFile", () => {
         requestedPath: imagePath,
         cwd: null,
         codexHomePath: sourceHome,
+      });
+
+      assert.equal(result?.path, realpathSync(imagePath));
+    } finally {
+      if (previousSynaraHome === undefined) {
+        delete process.env.SYNARA_HOME;
+      } else {
+        process.env.SYNARA_HOME = previousSynaraHome;
+      }
+      rmSync(fakeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("allows generated images from a configured Codex profile overlay", async () => {
+    const fakeRoot = path.join(process.cwd(), `.test-codex-profile-${process.pid}-${Date.now()}`);
+    const synaraHome = path.join(fakeRoot, "synara");
+    const profileId = CodexProfileId.makeUnsafe("81520e8d-68ee-40ae-9df5-24b19b19a87b");
+    const profileHome = path.join(fakeRoot, "secrets", "codex-profiles", profileId);
+    const imageDir = path.join(
+      synaraHome,
+      "codex-home-overlays",
+      profileId,
+      "generated_images",
+      "thread-profile",
+    );
+    const imagePath = path.join(imageDir, "call.png");
+    mkdirSync(imageDir, { recursive: true });
+    writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const previousSynaraHome = process.env.SYNARA_HOME;
+    process.env.SYNARA_HOME = synaraHome;
+    try {
+      const result = await resolveAllowedLocalPreviewFile({
+        requestedPath: imagePath,
+        cwd: null,
+        codexProfileHomes: [{ homePath: profileHome, profileId }],
       });
 
       assert.equal(result?.path, realpathSync(imagePath));

@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import {
+  CodexProfileId,
   IsoDateTime,
   NonNegativeInt,
   PositiveInt,
@@ -145,6 +146,8 @@ export type ProviderUsageStatus = typeof ProviderUsageStatus.Type;
 
 export const ServerProviderUsageSnapshot = Schema.Struct({
   provider: ProviderKind,
+  profileId: Schema.optional(CodexProfileId),
+  profileName: Schema.optional(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
   limits: Schema.Array(ServerProviderUsageLimit),
   usageLines: Schema.Array(ServerProviderUsageLine),
@@ -173,11 +176,51 @@ export type ServerGetProviderUsageSnapshotResult = typeof ServerGetProviderUsage
 export const ServerListProviderUsageInput = Schema.Struct({
   forceRefresh: Schema.optional(Schema.Boolean),
   provider: Schema.optional(ProviderKind),
+  profileId: Schema.optional(CodexProfileId),
 });
 export type ServerListProviderUsageInput = typeof ServerListProviderUsageInput.Type;
 
 export const ServerListProviderUsageResult = Schema.Array(ServerProviderUsageSnapshot);
 export type ServerListProviderUsageResult = typeof ServerListProviderUsageResult.Type;
+
+export const CodexAccountLoginTarget = Schema.Literals(["codex", "claude-code"]);
+export type CodexAccountLoginTarget = typeof CodexAccountLoginTarget.Type;
+
+export const ServerCodexAccountInput = Schema.Struct({ profileId: CodexProfileId });
+export type ServerCodexAccountInput = typeof ServerCodexAccountInput.Type;
+
+export const ServerCodexAccountLoginInput = Schema.Struct({
+  profileId: CodexProfileId,
+  target: CodexAccountLoginTarget,
+});
+export type ServerCodexAccountLoginInput = typeof ServerCodexAccountLoginInput.Type;
+
+export const ServerCodexAccountBridgeInput = Schema.Struct({
+  profileId: CodexProfileId,
+  action: Schema.Literals(["start", "stop"]),
+});
+export type ServerCodexAccountBridgeInput = typeof ServerCodexAccountBridgeInput.Type;
+
+const CodexAccountAuthStatus = Schema.Literals(["signed-in", "signed-out", "signing-in", "error"]);
+
+export const ServerCodexAccountState = Schema.Struct({
+  profileId: CodexProfileId,
+  codexAuth: CodexAccountAuthStatus,
+  claudeCodeAuth: CodexAccountAuthStatus,
+  proxyInstalled: Schema.Boolean,
+  bridgeStatus: Schema.Literals(["stopped", "starting", "running", "error"]),
+  launchCommand: Schema.optional(TrimmedNonEmptyString),
+  loginTarget: Schema.optional(CodexAccountLoginTarget),
+  verificationUrl: Schema.optional(TrimmedNonEmptyString),
+  userCode: Schema.optional(TrimmedNonEmptyString),
+  detail: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerCodexAccountState = typeof ServerCodexAccountState.Type;
+
+export const ServerListCodexAccountStatesResult = Schema.Array(ServerCodexAccountState).check(
+  Schema.isMaxLength(20),
+);
+export type ServerListCodexAccountStatesResult = typeof ServerListCodexAccountStatesResult.Type;
 
 export const ServerLocalServerAddress = Schema.Struct({
   host: TrimmedNonEmptyString,

@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 
 import type { AppState } from "../store";
 import type { ChatMessage, Thread, ThreadShell } from "../types";
-import { createThreadLineageSelector } from "./ChatView.selectors";
+import {
+  createRelevantWorkLogThreadsSelector,
+  createThreadLineageSelector,
+} from "./ChatView.selectors";
 
 const rootThreadId = ThreadId.makeUnsafe("thread-root");
 const childThreadId = ThreadId.makeUnsafe("thread-child");
@@ -127,6 +130,26 @@ describe("createThreadLineageSelector", () => {
       }),
     );
 
+    expect(after).toBe(before);
+  });
+});
+
+describe("createRelevantWorkLogThreadsSelector", () => {
+  it("selects persisted direct children and keeps the common activity path stable", () => {
+    const selectRelevant = createRelevantWorkLogThreadsSelector({
+      workEntries: [],
+      parentThreadId: rootThreadId,
+      enabled: true,
+    });
+    const before = selectRelevant(makeState());
+    const after = selectRelevant(
+      makeState({
+        messageIdsByThreadId: { [unrelatedThreadId]: [messageId] },
+        messageByThreadId: { [unrelatedThreadId]: { [messageId]: message } },
+      }),
+    );
+
+    expect(before.map((thread) => thread.id)).toEqual([rootThreadId, childThreadId]);
     expect(after).toBe(before);
   });
 });

@@ -187,7 +187,7 @@ function ActivityThreadRow({
             className={cn(
               "flex min-w-0 items-center gap-1.5 overflow-hidden pr-5 transition-[padding] duration-150 ease-out",
               // Yield the title row to the hover action cluster (pin + archive + done).
-              "group-hover/activity-row:pr-[4.25rem] group-focus-within/activity-row:pr-[4.25rem]",
+              "max-md:pr-[7rem] md:group-hover/activity-row:pr-[4.25rem] md:group-focus-within/activity-row:pr-[4.25rem]",
             )}
           >
             <ProviderIcon
@@ -229,7 +229,7 @@ function ActivityThreadRow({
           <span
             data-slot="activity-completion-status"
             className={cn(
-              "pointer-events-none absolute top-1 right-1 inline-flex size-5 items-center justify-center",
+              "pointer-events-none absolute top-1 right-1 inline-flex size-5 items-center justify-center max-md:top-auto max-md:bottom-1",
               sidebarHoverRevealHideClassName("activity-row"),
             )}
           >
@@ -237,7 +237,7 @@ function ActivityThreadRow({
           </span>
         ) : null}
         <span
-          className="absolute top-1 right-1 inline-flex items-center gap-1 opacity-0 transition-opacity group-hover/activity-row:opacity-100 group-focus-within/activity-row:opacity-100"
+          className="absolute top-1 right-1 inline-flex items-center gap-1 opacity-0 transition-opacity max-md:opacity-100 group-hover/activity-row:opacity-100 group-focus-within/activity-row:opacity-100"
           // Double-clicking an action button toggles it twice; it must not also open
           // the row's rename dialog. Pointer-up is the touch/pen double-tap signal,
           // so keep action taps out of that detector too.
