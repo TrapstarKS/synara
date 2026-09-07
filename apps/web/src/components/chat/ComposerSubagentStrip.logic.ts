@@ -1,7 +1,7 @@
 // FILE: ComposerSubagentStrip.logic.ts
 // Purpose: Derives the subagent rows shown in the composer strip from enriched work
-// log entries, mirroring the active-task-list scoping (live turn wins; a prior set
-// stays visible only while some subagent is still working).
+// log entries. The compact composer surface contains only running or queued work;
+// settled history remains available in the Subagents panel.
 // Layer: Chat composer logic
 // Exports: deriveComposerSubagentStripItems and the strip row types
 
@@ -15,6 +15,7 @@ import {
   resolveSubagentPresentation,
   type SubagentStatusKind,
 } from "../../lib/subagentPresentation";
+import { runtimeEffortLabel } from "./runtimeModelCapabilities";
 
 export interface ComposerSubagentStripItem {
   kind: "subagent";
@@ -93,6 +94,7 @@ function toStripItem(
     subagent.isActive,
   );
   const modelLabel = formatSubagentModelLabel(subagent.model);
+  const effortLabel = subagent.effort ? runtimeEffortLabel(subagent.effort) : undefined;
   const threadId = ThreadId.makeUnsafe(subagent.resolvedThreadId ?? subagent.threadId);
 
   return {
@@ -104,9 +106,7 @@ function toStripItem(
     fullLabel: presentation.fullLabel,
     role: presentation.role,
     modelLabel:
-      modelLabel && subagent.effort
-        ? `${modelLabel} · ${subagent.effort}`
-        : (modelLabel ?? subagent.effort),
+      modelLabel && effortLabel ? `${modelLabel} · ${effortLabel}` : (modelLabel ?? effortLabel),
     statusLabel,
     statusKind,
     isActive: statusKind === "running",
@@ -198,28 +198,18 @@ export function deriveComposerSubagentStripItems(input: {
     ? entriesWithSubagents.filter((entry) => entry.turnId === input.liveTurnId)
     : [];
   if (liveTurnEntries.length > 0) {
-    const liveTurnProviderThreadIds = new Set(
-      collectStripItems(liveTurnEntries, backgroundedThreadIds, viewedThreadId).map(
-        (item) => item.providerThreadId,
-      ),
-    );
     const visibleItems = collectStripItems(
       entriesWithSubagents,
       backgroundedThreadIds,
       viewedThreadId,
-    ).filter(
-      (item) =>
-        liveTurnProviderThreadIds.has(item.providerThreadId) ||
-        item.statusKind === "running" ||
-        item.statusKind === "queued",
-    );
+    ).filter((item) => item.statusKind === "running" || item.statusKind === "queued");
     return withParentRow(visibleItems, input.parentRow);
   }
 
-  // No subagents spawned by the live turn: keep the latest known set visible only
-  // while some subagent is still running or queued, then let the strip retire.
-  const items = collectStripItems(entriesWithSubagents, backgroundedThreadIds, viewedThreadId);
-  return items.some((item) => item.statusKind === "running" || item.statusKind === "queued")
-    ? withParentRow(items, input.parentRow)
-    : [];
+  const activeItems = collectStripItems(
+    entriesWithSubagents,
+    backgroundedThreadIds,
+    viewedThreadId,
+  ).filter((item) => item.statusKind === "running" || item.statusKind === "queued");
+  return withParentRow(activeItems, input.parentRow);
 }

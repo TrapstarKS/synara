@@ -144,7 +144,10 @@ import {
 } from "../providerIntentClassification.ts";
 import { deriveTurnStartSession } from "../turnStartSession.ts";
 import { TurnCheckpointCoordinator } from "../Services/TurnCheckpointCoordinator.ts";
-import { resolveProviderSessionThread as resolveProviderSessionThreadFromProjection } from "../providerSessionThread.ts";
+import {
+  resolveProviderSessionThread as resolveProviderSessionThreadFromProjection,
+  resolveSubagentProviderThreadId,
+} from "../providerSessionThread.ts";
 import { isExpiredSidechat } from "../sidechatLifecycle.ts";
 
 type ProviderQueueDrainEvent = Extract<
@@ -1313,19 +1316,6 @@ const make = Effect.gen(function* () {
         turnCheckpointCoordinator.withThreadLease(providerThread?.id ?? threadId, effect),
       ),
     );
-
-  const resolveSubagentProviderThreadId = (
-    threadId: ThreadId,
-    parentThreadId: ThreadId | null | undefined,
-  ): string | undefined => {
-    if (!parentThreadId) {
-      return undefined;
-    }
-
-    const prefix = `subagent:${parentThreadId}:`;
-    const rawThreadId = threadId as string;
-    return rawThreadId.startsWith(prefix) ? rawThreadId.slice(prefix.length) : undefined;
-  };
 
   const enqueueQueuedTurnStart = (event: QueuedTurnSourceEvent) =>
     queuedTurnPromotions.enqueue({

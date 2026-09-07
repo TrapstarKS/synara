@@ -1,0 +1,67 @@
+name: Sync upstream into personal fork
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: synara-fork-upstream-sync
+  cancel-in-progress: false
+
+env:
+  FORK_BRANCH: codex/mobile-remote
+  UPSTREAM_REPOSITORY: Emanuele-web04/synara
+
+jobs:
+  sync:
+    name: Sync newest stable upstream release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the personal fork branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.FORK_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Resolve the newest stable upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          release_json="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases?per_page=100" --paginate)"
+          tag="$(jq -r '[.[] | select(.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))] | sort_by(.published_at) | last | .tag_name // empty' <<<"$release_json")"
+          if [[ -z "$tag" ]]; then
+            echo "No stable upstream release found."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          upstream_ref="refs/remotes/upstream/${tag}"
+          git fetch --no-tags upstream "refs/tags/${tag}:${upstream_ref}"
+          upstream_sha="$(git rev-list -n 1 "${upstream_ref}^{commit}")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge and push the exact upstream release
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit --no-ff "${{ steps.upstream.outputs.sha }}"
+          git push origin "HEAD:${FORK_BRANCH}"

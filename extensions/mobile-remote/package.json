@@ -1,0 +1,17 @@
+{
+  "name": "synara-mobile-remote",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test lib/*.test.mjs"
+  },
+  "dependencies": {
+    "web-push": "3.6.7",
+    "ws": "8.21.0"
+  },
+  "engines": {
+    "node": ">=24.13.1"
+  }
+}

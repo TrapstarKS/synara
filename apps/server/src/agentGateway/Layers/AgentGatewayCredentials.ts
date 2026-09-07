@@ -18,6 +18,7 @@ import {
   type AgentGatewayCredentialsShape,
 } from "../Services/AgentGatewayCredentials.ts";
 import { AgentGatewaySessionRegistry } from "../Services/AgentGatewaySessionRegistry.ts";
+import { makeNativeMcpCalls } from "../nativeMcpCalls.ts";
 import { makeAgentGatewayInFlightRequestRegistry } from "../inFlightRequestRegistry.ts";
 import { ensureAgentGatewayStdioProxyScript } from "../stdioProxyScript.ts";
 import { AgentGatewaySessionRegistryLive } from "./AgentGatewaySessionRegistry.ts";
@@ -99,6 +100,7 @@ export const makeAgentGatewayCredentials = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const sessionRegistry = yield* AgentGatewaySessionRegistry;
   const inFlightRequests = makeAgentGatewayInFlightRequestRegistry();
+  const nativeMcpCalls = makeNativeMcpCalls();
 
   const endpoint = makeAgentGatewayEndpoint(config.host, config.port);
   const stdioProxyScriptPath = yield* ensureAgentGatewayStdioProxyScript(config.stateDir);
@@ -116,6 +118,7 @@ export const makeAgentGatewayCredentials = Effect.gen(function* () {
 
   const revokeSessionToken = (token: string): void => {
     const session = sessionRegistry.verify(token);
+    nativeMcpCalls.revoke(token);
     sessionRegistry.revoke(token);
     stdioBootstraps.revokeSession(token);
     if (session) inFlightRequests.revokeSession(session.sessionKey);
@@ -139,6 +142,7 @@ export const makeAgentGatewayCredentials = Effect.gen(function* () {
   ) => {
     const session = sessionRegistry.verify(token);
     if (!session) return Promise.resolve();
+    nativeMcpCalls.cancelTurn(token, turnId);
     return inFlightRequests.cancelTurn(session.sessionKey, turnId).settled;
   };
 
@@ -148,10 +152,12 @@ export const makeAgentGatewayCredentials = Effect.gen(function* () {
     // Retire synchronously before exposing the asynchronous drain barrier.
     // Requests racing the terminal event can no longer bind this bearer to B.
     sessionRegistry.retireWriteAuthority(token, turnId);
+    nativeMcpCalls.cancelTurn(token, turnId);
     return inFlightRequests.cancelTurn(session.sessionKey, turnId).settled;
   };
 
   return {
+    nativeMcpCalls,
     get mcpEndpointUrl() {
       return endpoint.url;
     },
