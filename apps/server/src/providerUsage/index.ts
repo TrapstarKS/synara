@@ -15,6 +15,8 @@ import { Effect } from "effect";
 import { PROVIDER_USAGE_PROVIDERS } from "@synara/shared/providerUsage";
 
 import { ServerConfig } from "../config";
+import { resolveManagedCodexProfileHome } from "../codexProfiles";
+import { resolveActiveCodexHomeWritePath } from "../codexHomePaths";
 import { buildProviderChildEnvironment, type ProviderChildKind } from "../providerChildEnvironment";
 import { ServerSettingsService } from "../serverSettings";
 import { loadLocalProviderUsageLines } from "../providerUsageSnapshot";
@@ -77,7 +79,7 @@ function buildProviderContext(
 // concurrent requests for the same provider coalesce into a single fetch, and `forceRefresh`
 // (the settings panel's explicit refresh button) bypasses the TTL but still joins an in-flight
 // fetch. Degraded snapshots (errors, re-served last-good data) expire faster so recovery is
-// picked up quickly. Keyed by ProviderKind, so the cache is inherently bounded.
+// picked up quickly. Keys include the managed Codex account and remain bounded by settings.
 const SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1000;
 const SNAPSHOT_CACHE_DEGRADED_TTL_MS = 60 * 1000;
 
@@ -92,9 +94,9 @@ interface InFlightSnapshot {
   promise: Promise<ServerProviderUsageSnapshot | null>;
 }
 
-const snapshotCache = new Map<ProviderKind, CachedSnapshot>();
-const inFlightFetches = new Map<ProviderKind, InFlightSnapshot>();
-const snapshotCacheGenerations = new Map<ProviderKind, number>();
+const snapshotCache = new Map<string, CachedSnapshot>();
+const inFlightFetches = new Map<string, InFlightSnapshot>();
+const snapshotCacheGenerations = new Map<string, number>();
 
 const snapshotCacheTtlMs = (snapshot: ServerProviderUsageSnapshot): number =>
   snapshot.stale === true
@@ -125,11 +127,15 @@ export function __resetProviderUsageCacheForTests(): void {
   snapshotCacheGenerations.clear();
 }
 
-function invalidateProviderUsageSnapshots(providers: ReadonlyArray<ProviderKind>): void {
+export function invalidateProviderUsageSnapshots(providers: ReadonlyArray<ProviderKind>): void {
   for (const provider of providers) {
-    snapshotCache.delete(provider);
-    inFlightFetches.delete(provider);
-    snapshotCacheGenerations.set(provider, (snapshotCacheGenerations.get(provider) ?? 0) + 1);
+    for (const key of new Set([...snapshotCache.keys(), ...inFlightFetches.keys()])) {
+      if (key === provider || key.startsWith(`${provider}:`)) {
+        snapshotCache.delete(key);
+        inFlightFetches.delete(key);
+        snapshotCacheGenerations.set(key, (snapshotCacheGenerations.get(key) ?? 0) + 1);
+      }
+    }
   }
 }
 
@@ -138,16 +144,17 @@ async function getProviderUsageSnapshot(
   ctx: ProviderUsageContext,
   forceRefresh: boolean,
 ): Promise<ServerProviderUsageSnapshot | null> {
-  const cacheGeneration = snapshotCacheGenerations.get(provider) ?? 0;
+  const scopeKey = ctx.scopeKey ?? provider;
+  const cacheGeneration = snapshotCacheGenerations.get(scopeKey) ?? 0;
   const providerContext = buildProviderContext(provider, ctx);
   const credentialKey = await resolveCredentialKey(provider, providerContext);
-  const pending = inFlightFetches.get(provider);
+  const pending = inFlightFetches.get(scopeKey);
   if (credentialKey !== null && pending?.credentialKey === credentialKey) {
     return pending.promise;
   }
 
   if (!forceRefresh && credentialKey !== null) {
-    const cached = snapshotCache.get(provider);
+    const cached = snapshotCache.get(scopeKey);
     if (
       cached &&
       cached.credentialKey === credentialKey &&
@@ -159,15 +166,15 @@ async function getProviderUsageSnapshot(
 
   const fetchPromise = (async () => {
     const snapshot = await fetchProviderUsage(provider, providerContext);
-    const enriched = snapshot ? await enrichWithLocalUsage(snapshot, ctx) : null;
+    const enriched = snapshot ? await enrichWithLocalUsage(snapshot, providerContext) : null;
     const refreshedCredentialKey = await resolveCredentialKey(provider, providerContext);
     if (
       enriched &&
       credentialKey !== null &&
       refreshedCredentialKey === credentialKey &&
-      (snapshotCacheGenerations.get(provider) ?? 0) === cacheGeneration
+      (snapshotCacheGenerations.get(scopeKey) ?? 0) === cacheGeneration
     ) {
-      const current = snapshotCache.get(provider);
+      const current = snapshotCache.get(scopeKey);
       const hasFreshHealthySnapshot =
         current?.credentialKey === credentialKey &&
         snapshotCacheTtlMs(current.snapshot) === SNAPSHOT_CACHE_TTL_MS &&
@@ -176,7 +183,7 @@ async function getProviderUsageSnapshot(
       if (fetchedFailedSnapshot && hasFreshHealthySnapshot && current) {
         return current.snapshot;
       }
-      snapshotCache.set(provider, {
+      snapshotCache.set(scopeKey, {
         snapshot: enriched,
         fetchedAtMs: ctx.nowMs,
         credentialKey,
@@ -185,13 +192,13 @@ async function getProviderUsageSnapshot(
     return enriched;
   })();
   if (credentialKey !== null) {
-    inFlightFetches.set(provider, { credentialKey, promise: fetchPromise });
+    inFlightFetches.set(scopeKey, { credentialKey, promise: fetchPromise });
   }
   try {
     return await fetchPromise;
   } finally {
-    if (inFlightFetches.get(provider)?.promise === fetchPromise) {
-      inFlightFetches.delete(provider);
+    if (inFlightFetches.get(scopeKey)?.promise === fetchPromise) {
+      inFlightFetches.delete(scopeKey);
     }
   }
 }
@@ -206,6 +213,7 @@ async function enrichWithLocalUsage(
   const localLines = await loadLocalProviderUsageLines({
     provider: snapshot.provider,
     homeDir: ctx.homeDir,
+    ...(ctx.localUsageHomePath ? { homePath: ctx.localUsageHomePath } : {}),
   });
   if (localLines.length === 0) {
     return snapshot;
@@ -258,13 +266,63 @@ export const listProviderUsage = Effect.fn(function* (input: ServerListProviderU
     return [];
   }
 
+  if (input.profileId && input.provider !== undefined && input.provider !== "codex") return [];
+
+  const baseContext = {
+    ...buildContext(),
+    homeDir: serverConfig.homeDir,
+    claudeBinaryPath: settings.providers.claudeAgent.binaryPath,
+  };
+  const profiles =
+    !settings.providers.codex.enabled ||
+    (input.provider !== undefined && input.provider !== "codex")
+      ? []
+      : input.profileId
+        ? settings.providers.codex.profiles.filter((profile) => profile.id === input.profileId)
+        : settings.providers.codex.profiles;
+  if (input.profileId && profiles.length === 0) return [];
+  const profileSnapshots = (yield* Effect.forEach(
+    profiles,
+    (profile) =>
+      Effect.tryPromise({
+        try: async () => {
+          const sourceHome = resolveManagedCodexProfileHome(serverConfig.secretsDir, profile.id);
+          const localUsageHomePath = resolveActiveCodexHomeWritePath({
+            env: process.env,
+            homePath: sourceHome,
+            profileId: profile.id,
+          });
+          const snapshot = await getProviderUsageSnapshot(
+            "codex",
+            {
+              ...baseContext,
+              env: { ...process.env, CODEX_HOME: sourceHome },
+              scopeKey: `codex:${profile.id}`,
+              codexManagedProfile: true,
+              localUsageHomePath,
+            },
+            input.forceRefresh === true,
+          );
+          return snapshot
+            ? {
+                ...snapshot,
+                profileId: profile.id,
+                profileName: profile.name,
+              }
+            : null;
+        },
+        catch: () => null,
+      }),
+    { concurrency: 4 },
+  )).filter((snapshot) => snapshot !== null);
+
+  if (input.profileId) return profileSnapshots;
+
   return yield* Effect.tryPromise({
     try: () =>
       collectProviderUsageSnapshots(
         {
-          ...buildContext(),
-          homeDir: serverConfig.homeDir,
-          claudeBinaryPath: settings.providers.claudeAgent.binaryPath,
+          ...baseContext,
         },
         {
           forceRefresh: input.forceRefresh === true,
@@ -273,5 +331,5 @@ export const listProviderUsage = Effect.fn(function* (input: ServerListProviderU
         },
       ),
     catch: () => [] as unknown as ServerListProviderUsageResult,
-  });
+  }).pipe(Effect.map((snapshots) => [...snapshots, ...profileSnapshots]));
 });

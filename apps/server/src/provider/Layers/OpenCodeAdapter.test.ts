@@ -59,6 +59,7 @@ function createMockOpenCodeRuntime(options?: {
   readonly eventSubscriptions?: ReadonlyArray<AsyncIterable<unknown>>;
   readonly prompt?: (input: Record<string, unknown>) => Promise<unknown>;
   readonly promptAsync?: (input: Record<string, unknown>) => Promise<unknown>;
+  readonly status?: () => Promise<unknown>;
   readonly commandList?: () => Promise<{
     data?: ReadonlyArray<{ name: string; description?: string }>;
   }>;
@@ -139,6 +140,8 @@ function createMockOpenCodeRuntime(options?: {
         }
         return { data: null };
       },
+      status: async () =>
+        options?.status ? options.status() : { data: { "opencode-session-1": { type: "busy" } } },
       abort: async (input: { sessionID: string }) => {
         abortCalls.push(input);
         return { data: null };
@@ -3817,6 +3820,69 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
     expect(runtime.permissionReplyCalls).toEqual([{ requestID: "permission-1", reply: "once" }]);
   });
 
+  it("recovers a missed Full Access permission from the active-turn watchdog", async () => {
+    let pendingPermissions: ReadonlyArray<PermissionRequest> = [];
+    const runtime = createMockOpenCodeRuntime({
+      // A brand-new thread has no safe completion baseline, but missed
+      // interactions must still be reconciled during its first turn.
+      messages: async () => ({ data: [] }),
+      permissionList: async () => ({ data: pendingPermissions }),
+      status: async () => ({ data: { "opencode-session-1": { type: "busy" } } }),
+    });
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-missed-full-access-permission");
+        yield* adapter.startSession({ provider: "opencode", threadId, runtimeMode: "full-access" });
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "run the command",
+          attachments: [],
+          modelSelection: { provider: "opencode", model: "openai/gpt-5.4" },
+        });
+        pendingPermissions = [
+          {
+            id: "permission-missed-sse",
+            sessionID: "opencode-session-1",
+            permission: "bash",
+            patterns: ["bun run build"],
+            metadata: {},
+            always: [],
+          },
+        ];
+
+        yield* Effect.promise(() =>
+          vi.waitFor(
+            () =>
+              expect(runtime.permissionReplyCalls).toContainEqual({
+                requestID: "permission-missed-sse",
+                reply: "once",
+              }),
+            { timeout: 1_000 },
+          ),
+        );
+        yield* adapter.interruptTurn(threadId, turn.turnId);
+      }).pipe(
+        Effect.provide(
+          makeOpenCodeAdapterLive({
+            runtime: runtime.runtime,
+            snapshotWatchdogPollMs: 5,
+          }).pipe(
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-test-" }),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+
+    expect(runtime.permissionReplyCalls).toEqual([
+      { requestID: "permission-missed-sse", reply: "once" },
+    ]);
+  });
+
   it("suppresses a permission.replied echo that arrives after turn teardown", async () => {
     const eventQueue = createSubscribedEventQueue();
     const runtime = createMockOpenCodeRuntime();
@@ -5253,6 +5319,120 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
       "turn.completed",
     ]);
     expect(messageFetchCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("requests one continuation when OpenCode completes with no visible response", async () => {
+    const eventQueue = createSubscribedEventQueue();
+    const runtime = createMockOpenCodeRuntime({ messages: async () => ({ data: [] }) });
+    const client = runtime.runtime.createOpenCodeSdkClient({
+      baseUrl: "http://127.0.0.1:4099",
+      directory: process.cwd(),
+    }) as unknown as {
+      event: { subscribe: () => Promise<{ stream: AsyncIterable<unknown> }> };
+    };
+    client.event.subscribe = async () => ({ stream: eventQueue.stream });
+
+    const events = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 6)).pipe(
+          Effect.forkChild,
+        );
+        const threadId = asThreadId("thread-empty-final-retry");
+
+        yield* adapter.startSession({ provider: "opencode", threadId, runtimeMode: "full-access" });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "inspect the project",
+          attachments: [],
+          modelSelection: { provider: "opencode", model: "openai/gpt-5.4" },
+        });
+        eventQueue.push({
+          type: "message.updated",
+          properties: {
+            sessionID: "opencode-session-1",
+            info: {
+              id: "msg-empty-final",
+              role: "assistant",
+              finish: "stop",
+              time: { completed: 2 },
+            },
+          },
+        });
+        eventQueue.push({
+          type: "session.idle",
+          properties: { sessionID: "opencode-session-1" },
+        });
+
+        yield* Effect.promise(() =>
+          vi.waitFor(() => expect(runtime.promptCalls).toHaveLength(2), { timeout: 1_000 }),
+        );
+        eventQueue.push({
+          type: "message.updated",
+          properties: {
+            sessionID: "opencode-session-1",
+            info: {
+              id: "msg-retried-final",
+              role: "assistant",
+              finish: "stop",
+              time: { completed: 4 },
+            },
+          },
+        });
+        eventQueue.push({
+          type: "message.part.updated",
+          properties: {
+            sessionID: "opencode-session-1",
+            part: {
+              id: "part-retried-final",
+              messageID: "msg-retried-final",
+              type: "text",
+              text: "The inspection completed successfully.",
+              time: { start: 3, end: 4 },
+            },
+          },
+        });
+        eventQueue.push({
+          type: "session.idle",
+          properties: { sessionID: "opencode-session-1" },
+        });
+
+        const collected = Array.from(yield* Fiber.join(eventsFiber));
+        eventQueue.close();
+        return collected;
+      }).pipe(
+        Effect.provide(
+          makeOpenCodeAdapterLive({
+            runtime: runtime.runtime,
+            prematureIdleCompletionGraceMs: 10,
+          }).pipe(
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-test-" }),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+
+    expect(runtime.promptCalls[1]).toMatchObject({
+      sessionID: "opencode-session-1",
+      model: { providerID: "openai", modelID: "gpt-5.4" },
+      parts: [
+        {
+          type: "text",
+          text: expect.stringContaining("without a visible final response"),
+        },
+      ],
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "session.started",
+      "thread.started",
+      "turn.started",
+      "content.delta",
+      "item.completed",
+      "turn.completed",
+    ]);
   });
 
   it("recovers delayed parts when final metadata arrives before idle", async () => {

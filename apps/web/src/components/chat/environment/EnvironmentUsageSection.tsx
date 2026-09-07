@@ -1,7 +1,7 @@
 // FILE: EnvironmentUsageSection.tsx
 // Purpose: "Usage" section of the Environment panel — compact menu for the active provider.
 
-import type { ProviderKind } from "@synara/contracts";
+import type { CodexProfileId, ProviderKind } from "@synara/contracts";
 import { providerUsageDisplayName } from "@synara/shared/providerUsage";
 import { useQuery } from "@tanstack/react-query";
 
@@ -25,14 +25,24 @@ import {
   EnvironmentRowChevron,
 } from "./EnvironmentRow";
 
-export function EnvironmentUsageSection({ provider }: { provider: ProviderKind }) {
+export function EnvironmentUsageSection({
+  provider,
+  codexProfileId,
+}: {
+  provider: ProviderKind;
+  codexProfileId?: CodexProfileId;
+}) {
   const usageQuery = useQuery(serverAllProviderUsageQueryOptions());
   const settingsQuery = useQuery(serverSettingsQueryOptions());
   // The batch snapshot is an enrichment, not a gate: when the provider's live fetch fails or is
   // missing from the batch, the menu model still blends local archives and thread rate limits, so
   // the row must render regardless. Only an explicitly disabled provider hides the section.
-  const snapshot = (usageQuery.data ?? []).find((entry) => entry.provider === provider);
-  const model = useProviderUsageMenuModel(provider, { providerSnapshot: snapshot });
+  const snapshot = (usageQuery.data ?? []).find(
+    (entry) =>
+      entry.provider === provider &&
+      (provider !== "codex" || (entry.profileId ?? null) === (codexProfileId ?? null)),
+  );
+  const model = useProviderUsageMenuModel(provider, { providerSnapshot: snapshot, codexProfileId });
 
   if (settingsQuery.data?.providers[provider].enabled === false) {
     return null;

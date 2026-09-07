@@ -190,6 +190,7 @@ interface OpenCodeSessionContext {
   activeTurnSawFinalAssistant: boolean;
   activeTurnFinalAssistantMessageId: string | undefined;
   activeTurnToolCallIdleWatchdogStarted: boolean;
+  activeTurnEmptyResponseRetryAttempted: boolean;
   activeInteractionMode: ProviderInteractionMode | undefined;
   appliedPermissionInteractionMode: "default" | "plan";
   activeAgent: string | undefined;
@@ -250,6 +251,7 @@ export interface OpenCodeAdapterLiveOptions {
   readonly permissionReplyAckDelaysMs?: ReadonlyArray<number>;
   readonly runtimeEventBufferCapacity?: number;
   readonly prematureIdleCompletionGraceMs?: number;
+  readonly snapshotWatchdogPollMs?: number;
   readonly beforeSessionInstall?: Effect.Effect<void>;
   readonly resolveServerPassword?: (
     provider: OpenCodeCompatibleProvider,
@@ -745,6 +747,7 @@ const clearActiveTurnState = Effect.fn("clearOpenCodeActiveTurnState")(function*
   context.activeTurnSawFinalAssistant = false;
   context.activeTurnFinalAssistantMessageId = undefined;
   context.activeTurnToolCallIdleWatchdogStarted = false;
+  context.activeTurnEmptyResponseRetryAttempted = false;
   context.activeInteractionMode = undefined;
   context.activeAgent = undefined;
   context.activeVariant = undefined;
@@ -1292,6 +1295,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
           (delayMs) => Number.isFinite(delayMs) && delayMs > 0,
         ) ?? OPENCODE_PERMISSION_REPLY_ACK_DELAYS_MS;
       const prematureIdleCompletionGraceMs = options?.prematureIdleCompletionGraceMs ?? 10_000;
+      const snapshotWatchdogPollMs = options?.snapshotWatchdogPollMs ?? 500;
       const nativeEventLogger =
         options?.nativeEventLogger ??
         (options?.nativeEventLogPath !== undefined
@@ -1775,6 +1779,33 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                     event: raw,
                   },
                   totalCostUsd: context.latestTurnCostUsd,
+                });
+                return;
+              }
+
+              // OpenCode can finish a tool-using assistant message with output tokens but
+              // persist no visible text part. Ask the same native session for the missing
+              // final answer once; the original tools have already completed, and keeping
+              // this inside the active Synara turn avoids an unexplained terminal failure.
+              if (!context.activeTurnEmptyResponseRetryAttempted) {
+                context.activeTurnEmptyResponseRetryAttempted = true;
+                context.activeTurnSawFinalAssistant = false;
+                context.activeTurnFinalAssistantMessageId = undefined;
+                context.activeTurnToolCallIdleWatchdogStarted = false;
+                const retryText = withProviderPlanModePrompt({
+                  text: "The previous assistant step completed without a visible final response. Continue from the completed tool results and provide the final answer now. Do not repeat completed tool calls.",
+                  interactionMode: context.activeInteractionMode,
+                }).trim();
+                const retryModel = parseOpenCodeModelSlug(context.session.model);
+                yield* submitOpenCodePromptAsync(context, {
+                  turnId,
+                  promptInput: {
+                    sessionID: context.openCodeSessionId,
+                    ...(retryModel ? { model: retryModel } : {}),
+                    ...(context.activeAgent ? { agent: context.activeAgent } : {}),
+                    ...(context.activeVariant ? { variant: context.activeVariant } : {}),
+                    parts: [{ type: "text", text: retryText }],
+                  },
                 });
                 return;
               }
@@ -3180,12 +3211,27 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         context: OpenCodeSessionContext,
         turnId: TurnId,
         baselineMessageIds: ReadonlySet<string>,
+        canRecoverCompletion: boolean,
       ) {
         yield* Effect.gen(function* () {
           let idlePollsWithFinalMessage = 0;
+          let interactionReconciliationPolls = 0;
 
           while (!(yield* Ref.get(context.stopped)) && context.activeTurnId === turnId) {
-            yield* Effect.sleep(500);
+            yield* Effect.sleep(snapshotWatchdogPollMs);
+
+            interactionReconciliationPolls += 1;
+            if (interactionReconciliationPolls >= 4) {
+              interactionReconciliationPolls = 0;
+              // SSE delivery is best-effort. Poll the small pending-interaction lists
+              // while a turn is active so a dropped permission or question event can
+              // neither hang Full Access nor leave Approval Required silent.
+              yield* reconcilePendingOpenCodeInteractions(context);
+            }
+
+            if (!canRecoverCompletion) {
+              continue;
+            }
 
             const statusExit = yield* Effect.exit(
               runOpenCodeSdk("session.status", () =>
@@ -3609,6 +3655,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                   activeTurnSawFinalAssistant: false,
                   activeTurnFinalAssistantMessageId: undefined,
                   activeTurnToolCallIdleWatchdogStarted: false,
+                  activeTurnEmptyResponseRetryAttempted: false,
                   activeInteractionMode: undefined,
                   appliedPermissionInteractionMode: resumedSessionId ? "plan" : "default",
                   activeAgent: undefined,
@@ -3738,6 +3785,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         context.activeTurnSawFinalAssistant = false;
         context.activeTurnFinalAssistantMessageId = undefined;
         context.activeTurnToolCallIdleWatchdogStarted = false;
+        context.activeTurnEmptyResponseRetryAttempted = false;
         context.activeInteractionMode = interactionMode;
         // Always pin Synara's interaction mode to OpenCode's primary agent.
         // Otherwise a user config with default agent=plan (or a stale options.agent=plan
@@ -3792,9 +3840,12 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         });
         // The completion backstop covers dropped/delayed idle events. Keep the
         // poll cheap (status-first) so large turns are not penalized.
-        if (snapshotWatchdogBaseline.canStartWatchdog) {
-          yield* startTurnSnapshotWatchdog(context, turnId, snapshotWatchdogBaseline.messageIds);
-        }
+        yield* startTurnSnapshotWatchdog(
+          context,
+          turnId,
+          snapshotWatchdogBaseline.messageIds,
+          snapshotWatchdogBaseline.canStartWatchdog,
+        );
 
         return {
           threadId: input.threadId,

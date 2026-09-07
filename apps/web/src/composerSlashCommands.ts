@@ -105,6 +105,7 @@ function shouldKeepBuiltInSlashCommandDespiteNativeCollision(
     // lineage (native session forking per provider), which a provider-native
     // "fork" text command cannot do.
     command === "fork" ||
+    command === "btw" ||
     command === "goal" ||
     command === "rename" ||
     (providerUsesAppOwnedReviewSlashCommand(provider) && command === "review")
@@ -125,6 +126,7 @@ export function shouldHideProviderNativeCommandFromComposerMenu(
     (normalizedCommand === "export" && appCommandIsAvailable) ||
     (normalizedCommand === "feedback" && appCommandIsAvailable) ||
     (normalizedCommand === "fork" && appCommandIsAvailable) ||
+    (normalizedCommand === "btw" && appCommandIsAvailable) ||
     (normalizedCommand === "goal" && appCommandIsAvailable) ||
     (normalizedCommand === "rename" && appCommandIsAvailable) ||
     (providerUsesAppOwnedReviewSlashCommand(provider) && normalizedCommand === "review")
@@ -212,6 +214,12 @@ const COMPOSER_SLASH_COMMAND_DEFINITIONS: Record<
     command: "side",
     label: "/side",
     description: "Open a guarded Side from this thread, optionally on another provider",
+    source: "app",
+  },
+  btw: {
+    command: "btw",
+    label: "/btw",
+    description: "Ask a side question without interrupting the current work",
     source: "app",
   },
   status: {
@@ -472,6 +480,7 @@ export function getAvailableComposerSlashCommands(input: {
           ...(input.canOfferReviewCommand ? (["review"] as const) : []),
           ...(input.canOfferForkCommand ? (["fork"] as const) : []),
           ...(input.canOfferSideCommand ? (["side"] as const) : []),
+          ...(input.canOfferSideCommand ? (["btw"] as const) : []),
           "status",
           "subagents",
           ...(input.canOfferExportCommand ? (["export"] as const) : []),
@@ -489,6 +498,7 @@ export function getAvailableComposerSlashCommands(input: {
           // happens in the app rather than being forwarded to Claude's native /export.
           ...(input.canOfferForkCommand ? (["fork"] as const) : []),
           ...(input.canOfferSideCommand ? (["side"] as const) : []),
+          ...(input.canOfferSideCommand ? (["btw"] as const) : []),
           ...(input.canOfferExportCommand ? (["export"] as const) : []),
           "goal",
           "rename",

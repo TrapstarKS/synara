@@ -8,6 +8,7 @@ import path from "node:path";
 
 import {
   CODEX_GENERATED_IMAGE_ARTIFACT_KIND,
+  type CodexProfileId,
   type CodexGeneratedImageArtifact,
   type ProviderRuntimeEvent,
   type ThreadId,
@@ -25,7 +26,6 @@ const CODEX_GENERATED_IMAGE_ITEM_TYPES = new Set([
   "imagegeneration",
   "imagegenerationcall",
   "imagegenerationend",
-  "imageview",
 ]);
 
 const IMAGE_PATH_KEYS = ["saved_path", "savedPath", "path", "file_path"] as const;
@@ -72,13 +72,19 @@ export const isSupportedLocalImagePath = isSupportedLocalImagePathShared;
  * writes images under for the current process env. Synara uses its isolated
  * Codex overlay, not the user's source `~/.codex` directory.
  */
-export function resolveCodexHomePath(homePath?: string): string {
-  return resolveActiveCodexHomeWritePath(homePath?.trim() ? { homePath } : {});
+export function resolveCodexHomePath(homePath?: string, profileId?: CodexProfileId): string {
+  return resolveActiveCodexHomeWritePath({
+    ...(homePath?.trim() ? { homePath } : {}),
+    ...(profileId ? { profileId } : {}),
+  });
 }
 
 /** The single generated-images directory we predict against (overlay-aware). */
-export function resolveCodexGeneratedImagesRoot(homePath?: string): string {
-  return path.join(resolveCodexHomePath(homePath), "generated_images");
+export function resolveCodexGeneratedImagesRoot(
+  homePath?: string,
+  profileId?: CodexProfileId,
+): string {
+  return path.join(resolveCodexHomePath(homePath, profileId), "generated_images");
 }
 
 /**
@@ -87,8 +93,14 @@ export function resolveCodexGeneratedImagesRoot(homePath?: string): string {
  * overlay `<SYNARA_HOME>/codex-home-overlay/generated_images` so we serve
  * images regardless of which home Codex wrote them under.
  */
-export function resolveCodexGeneratedImagesRoots(homePath?: string): readonly string[] {
-  const homes = resolveCodexHomeAllowlistCandidates(homePath?.trim() ? { homePath } : {});
+export function resolveCodexGeneratedImagesRoots(
+  homePath?: string,
+  profileId?: CodexProfileId,
+): readonly string[] {
+  const homes = resolveCodexHomeAllowlistCandidates({
+    ...(homePath?.trim() ? { homePath } : {}),
+    ...(profileId ? { profileId } : {}),
+  });
   return homes.map((home) => path.join(home, "generated_images"));
 }
 

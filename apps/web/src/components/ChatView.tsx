@@ -25,6 +25,7 @@ import {
   type PinnedMessage,
   PROVIDER_DISPLAY_NAMES,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type ResolvedKeybindingsConfig,
   type ServerProviderStatus,
   ThreadId,
@@ -40,6 +41,7 @@ import {
   ProviderInteractionMode,
   RuntimeMode,
 } from "@synara/contracts";
+import type { CodexProfileId } from "@synara/contracts";
 import { automationRequiresTargetThread } from "@synara/shared/automationMode";
 import { respondingInteractionReclaimAt } from "@synara/shared/pendingInteractions";
 import { providerSupportsNativeTurnSteering } from "@synara/shared/providerMetadata";
@@ -164,6 +166,7 @@ import {
   readFileAsDataUrl,
 } from "../lib/composerSend";
 import { composerImageBlobKey, persistComposerImageBlob } from "../lib/composerImageBlobStore";
+import { resolveDroppedFileAbsolutePath } from "../lib/composerDropPaths";
 import { reconcileDeletedThreadFromClient } from "../lib/deletedThreadClientReconciliation";
 import {
   armQueuedComposerSteerGate,
@@ -270,12 +273,12 @@ import {
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
-  omitRoutedSubagentWorkEntries,
   buildSourceProposedPlanReference,
   hasActionableProposedPlan,
   hasLiveTurnTailWork,
   isLatestTurnSettled,
   type ActiveTaskListState,
+  type WorkLogEntry,
 } from "../session-logic";
 import {
   buildPendingUserInputAnswers,
@@ -512,6 +515,7 @@ import {
   resolveProviderModelLabel,
 } from "./chat/ProviderModelPicker";
 import { ComposerModelEffortPicker } from "./chat/ComposerModelEffortPicker";
+import { CodexProfilePicker } from "./chat/CodexProfilePicker";
 import { resolveTraitsTriggerSummary, TraitsPicker } from "./chat/TraitsPicker";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
 import {
@@ -620,6 +624,7 @@ import {
   PullRequestDialogState,
   type QueuedSteerGate,
   resolveQueuedSteerGateTransition,
+  resolveCodexProfileId,
   resolveQueuedComposerAutoDispatchHold,
   shouldRenderProviderHealthBanner,
   resolveRuntimeModeAfterApprovalDecision,
@@ -662,6 +667,7 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_NATIVE_COMMANDS: ProviderNativeCommandDescriptor[] = [];
 const EMPTY_PROVIDER_SKILLS: ProviderSkillDescriptor[] = [];
+const EMPTY_WORK_LOG_ENTRIES: ReadonlyArray<WorkLogEntry> = [];
 const LOCAL_PROJECT_DRAFT_CONTEXT = {
   envMode: "local",
   worktreePath: null,
@@ -1139,7 +1145,7 @@ interface LateComposerSendHandlers {
   readonly advanceActivePendingUserInput: (
     answerOverrides?: Record<string, PendingUserInputDraftAnswer>,
   ) => boolean;
-  readonly handleStandaloneSlashCommand: (trimmedPrompt: string) => Promise<boolean>;
+  readonly handleStandaloneSlashCommand: (trimmedPrompt: string) => Promise<boolean | string>;
 }
 
 interface ChatViewProps {
@@ -2446,6 +2452,14 @@ export default function ChatView({
   );
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
+  const draftCodexModelSelection = composerDraft.modelSelectionByProvider.codex;
+  const resolvedCodexProfileId = resolveCodexProfileId({
+    hasThreadStarted,
+    threadModelSelection: activeThread?.modelSelection ?? null,
+    draftModelSelection: draftCodexModelSelection ?? null,
+    defaultProfileId: serverSettingsQuery.data?.providers.codex.defaultProfileId ?? undefined,
+  });
+  const selectedCodexProfileId = selectedProvider === "codex" ? resolvedCodexProfileId : undefined;
   const selectedModelSelection = useMemo<ModelSelection>(() => {
     if (selectedProvider === "pi" && draftModelSelectionForSelectedProvider?.provider === "pi") {
       return buildModelSelection(
@@ -2454,18 +2468,22 @@ export default function ChatView({
         selectedModelOptionsForDispatch ?? draftModelSelectionForSelectedProvider.options,
       );
     }
-    return buildModelSelection(
+    const selection = buildModelSelection(
       selectedProvider,
       selectedModel,
       selectedModelOptionsForDispatch,
       selectedProvider === "claudeAgent" ? selectedRuntimeModel?.supportsAutoMode : undefined,
     );
+    return selection.provider === "codex" && selectedCodexProfileId
+      ? { ...selection, profileId: selectedCodexProfileId }
+      : selection;
   }, [
     draftModelSelectionForSelectedProvider,
     selectedModel,
     selectedModelOptionsForDispatch,
     selectedProvider,
     selectedRuntimeModel,
+    selectedCodexProfileId,
   ]);
   const providerOptionsForDispatch = useMemo(() => getProviderStartOptions(settings), [settings]);
   const selectedModelForPicker =
@@ -2562,40 +2580,46 @@ export default function ChatView({
     () => rawWorkLogEntries.some((entry) => (entry.subagents?.length ?? 0) > 0),
     [rawWorkLogEntries],
   );
+  const selectorWorkLogEntries = hasWorkLogSubagents ? rawWorkLogEntries : EMPTY_WORK_LOG_ENTRIES;
   const relevantWorkLogThreads = useStore(
     useMemo(
       () =>
         createRelevantWorkLogThreadsSelector({
-          workEntries: rawWorkLogEntries,
+          workEntries: selectorWorkLogEntries,
           parentThreadId: activeThread?.id ?? null,
-          enabled: hasWorkLogSubagents,
+          enabled: activeThread?.id !== undefined,
         }),
-      [activeThread?.id, hasWorkLogSubagents, rawWorkLogEntries],
+      [activeThread?.id, selectorWorkLogEntries],
     ),
+  );
+  const hasPersistedWorkLogSubagents = useMemo(
+    () =>
+      relevantWorkLogThreads.some((thread) => thread.parentThreadId === (activeThread?.id ?? null)),
+    [activeThread?.id, relevantWorkLogThreads],
   );
   const enrichedWorkLogEntries = useMemo(
     () =>
-      hasWorkLogSubagents
+      hasWorkLogSubagents || hasPersistedWorkLogSubagents
         ? enrichSubagentWorkEntries(
             rawWorkLogEntries,
             relevantWorkLogThreads,
             activeThread?.id ?? null,
           )
         : rawWorkLogEntries,
-    [activeThread?.id, hasWorkLogSubagents, rawWorkLogEntries, relevantWorkLogThreads],
+    [
+      activeThread?.id,
+      hasPersistedWorkLogSubagents,
+      hasWorkLogSubagents,
+      rawWorkLogEntries,
+      relevantWorkLogThreads,
+    ],
   );
-  // Subagents are presented by the composer strip (and their own threads); the
-  // transcript drops the routed fan-out rows entirely. The enriched list above is
-  // still what feeds the strip-adjacent derivations that need receiver metadata.
-  const workLogEntries = useMemo(
-    () => omitRoutedSubagentWorkEntries(enrichedWorkLogEntries),
-    [enrichedWorkLogEntries],
-  );
+  const workLogEntries = enrichedWorkLogEntries;
   // The strip's liveness (running/settled) reads the child thread's own session and
   // tail activities, so retain a detail subscription while a subagent runs; settled
   // subagents stay on whatever the store already holds.
   const liveSubagentThreadIdsKey = useMemo(() => {
-    if (!hasWorkLogSubagents) {
+    if (!hasWorkLogSubagents && !hasPersistedWorkLogSubagents) {
       return "";
     }
     const threadIds = new Set<string>();
@@ -2607,7 +2631,7 @@ export default function ChatView({
       }
     }
     return [...threadIds].toSorted().join("\n");
-  }, [enrichedWorkLogEntries, hasWorkLogSubagents]);
+  }, [enrichedWorkLogEntries, hasPersistedWorkLogSubagents, hasWorkLogSubagents]);
   useEffect(() => {
     if (!liveSubagentThreadIdsKey) {
       return;
@@ -2706,20 +2730,28 @@ export default function ChatView({
     () => stripRawWorkLogEntries.some((entry) => (entry.subagents?.length ?? 0) > 0),
     [stripRawWorkLogEntries],
   );
+  const stripSelectorWorkLogEntries = hasStripWorkLogSubagents
+    ? stripRawWorkLogEntries
+    : EMPTY_WORK_LOG_ENTRIES;
   const stripRelevantWorkLogThreads = useStore(
     useMemo(
       () =>
         createRelevantWorkLogThreadsSelector({
-          workEntries: stripRawWorkLogEntries,
+          workEntries: stripSelectorWorkLogEntries,
           parentThreadId: stripSourceThreadId,
-          enabled: hasStripWorkLogSubagents,
+          enabled: stripSourceThreadId !== null,
         }),
-      [stripSourceThreadId, hasStripWorkLogSubagents, stripRawWorkLogEntries],
+      [stripSelectorWorkLogEntries, stripSourceThreadId],
     ),
+  );
+  const hasPersistedStripWorkLogSubagents = useMemo(
+    () =>
+      stripRelevantWorkLogThreads.some((thread) => thread.parentThreadId === stripSourceThreadId),
+    [stripRelevantWorkLogThreads, stripSourceThreadId],
   );
   const stripWorkLogEntries = useMemo(
     () =>
-      hasStripWorkLogSubagents
+      hasStripWorkLogSubagents || hasPersistedStripWorkLogSubagents
         ? enrichSubagentWorkEntries(
             stripRawWorkLogEntries,
             stripRelevantWorkLogThreads,
@@ -2728,6 +2760,7 @@ export default function ChatView({
         : stripRawWorkLogEntries,
     [
       stripSourceThreadId,
+      hasPersistedStripWorkLogSubagents,
       hasStripWorkLogSubagents,
       stripRawWorkLogEntries,
       stripRelevantWorkLogThreads,
@@ -3438,14 +3471,26 @@ export default function ChatView({
     [optimisticUserMessages],
   );
   // The user message a local send anchored at the top of the transcript viewport.
-  // Set at the send sites and kept after the turn settles — collapsing the tail
-  // spacer when a turn ends would visibly yank the settled transcript. The next
-  // send replaces it, and thread switches reset it via the per-thread timeline
-  // remount plus the threadId guard at the render site.
+  // Reserve room while that send is live, then release it when its turn settles
+  // so a short final answer cannot leave a viewport of empty scrollable space.
   const [tailAnchor, setTailAnchor] = useState<{
     threadId: ThreadId;
     messageId: MessageId;
+    completedAtBeforeSend: string | null;
   } | null>(null);
+  useLayoutEffect(() => {
+    // Compare completion snapshots because user messages can have no turnId,
+    // and stop/error can settle without an assistant message. The completion
+    // already present before this send must not release its new reserve.
+    if (
+      tailAnchor?.threadId === threadId &&
+      latestTurnSettled &&
+      activeLatestTurn?.completedAt &&
+      activeLatestTurn.completedAt !== tailAnchor.completedAtBeforeSend
+    ) {
+      setTailAnchor(null);
+    }
+  }, [activeLatestTurn?.completedAt, latestTurnSettled, tailAnchor, threadId]);
   // True from send until the tail-anchor hook finishes sliding the sent message
   // to the viewport top. The auto-follow effect stays quiet while set so the
   // anchored slide has exactly one scroll owner (see useTailAnchorScroll).
@@ -6574,6 +6619,10 @@ export default function ChatView({
         undefined,
         provider === "claudeAgent" ? runtimeModel?.supportsAutoMode : undefined,
       );
+      const nextSelectionWithProfile: ModelSelection =
+        nextModelSelection.provider === "codex" && resolvedCodexProfileId
+          ? { ...nextModelSelection, profileId: resolvedCodexProfileId }
+          : nextModelSelection;
       const providerStatus = findProviderStatus(providerStatuses, provider);
       const nextRuntimeMode =
         runtimeMode === "auto" &&
@@ -6587,7 +6636,7 @@ export default function ChatView({
         nextRuntimeMode,
         persistRuntimeMode: persistRuntimeModeChange,
         commit: () => {
-          setComposerDraftModelSelectionAndSticky(activeThread.id, nextModelSelection);
+          setComposerDraftModelSelectionAndSticky(activeThread.id, nextSelectionWithProfile);
           if (provider === "cursor") {
             setComposerDraftProviderModelOptions(activeThread.id, provider, undefined, {
               persistSticky: true,
@@ -6612,6 +6661,7 @@ export default function ChatView({
       runtimeMode,
       runtimeModelsByProvider,
       scheduleComposerFocus,
+      resolvedCodexProfileId,
       setComposerDraftModelSelectionAndSticky,
       setComposerDraftProviderModelOptions,
     ],
@@ -7011,8 +7061,20 @@ export default function ChatView({
         return;
       }
 
+      const attachmentFiles: File[] = [];
+      for (const file of files) {
+        if (file.size > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
+          const absolutePath = resolveDroppedFileAbsolutePath(file);
+          if (absolutePath) {
+            appendComposerPromptText(activeThreadId, formatComposerMentionToken(absolutePath));
+            continue;
+          }
+        }
+        attachmentFiles.push(file);
+      }
+
       const { files: nextFiles, error } = buildComposerFileAttachmentsFromFiles({
-        files,
+        files: attachmentFiles,
         existingAttachmentCount: effectiveComposerAttachmentCount(
           useComposerDraftStore.getState().draftsByThreadId[activeThreadId],
         ),
@@ -7723,6 +7785,7 @@ export default function ChatView({
       pastedTexts: composerPastedTextsForSend,
     });
     let trimmedPromptForSend = trimmed;
+    let goalSlashCommandForSend: string | null = null;
     const restoredQueuedPlanDraftSource =
       queuedChatTurn === null &&
       restoredQueuedSourceProposedPlanRef.current?.threadId === activeThread.id &&
@@ -7799,7 +7862,11 @@ export default function ChatView({
     if (hasPromptOnlySendableContent) {
       const handledSlashCommand =
         await lateSendHandlers.handleStandaloneSlashCommand(trimmedPromptForSend);
-      if (handledSlashCommand) {
+      if (typeof handledSlashCommand === "string") {
+        promptForSend = handledSlashCommand;
+        trimmedPromptForSend = handledSlashCommand.trim();
+        goalSlashCommandForSend = handledSlashCommand;
+      } else if (handledSlashCommand) {
         // A slash command (e.g. /clear) consumes the composer, so abandon any in-progress
         // automation setup rather than leaving a stale banner/request behind.
         pendingAutomationConversationRef.current = null;
@@ -8477,7 +8544,11 @@ export default function ChatView({
     // pauses until the in-flight flag clears.
     armTranscriptAutoFollow(threadIdForSend, true);
     tailAnchorScrollInFlightRef.current = true;
-    setTailAnchor({ threadId: threadIdForSend, messageId: messageIdForSend });
+    setTailAnchor({
+      threadId: threadIdForSend,
+      messageId: messageIdForSend,
+      completedAtBeforeSend: activeLatestTurn?.completedAt ?? null,
+    });
 
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
@@ -8654,7 +8725,7 @@ export default function ChatView({
         }
       }
 
-      const threadCreateModelSelection: ModelSelection = buildModelSelection(
+      const baseThreadCreateModelSelection = buildModelSelection(
         selectedModelSelectionForSend.provider,
         selectedModelSelectionForSend.model ||
           selectedModelForSend ||
@@ -8666,6 +8737,15 @@ export default function ChatView({
           ? selectedModelSelectionForSend.supportsAutoMode
           : undefined,
       );
+      const threadCreateModelSelection: ModelSelection =
+        baseThreadCreateModelSelection.provider === "codex" &&
+        selectedModelSelectionForSend.provider === "codex" &&
+        selectedModelSelectionForSend.profileId
+          ? {
+              ...baseThreadCreateModelSelection,
+              profileId: selectedModelSelectionForSend.profileId,
+            }
+          : baseThreadCreateModelSelection;
 
       if (isLocalDraftThread) {
         const inheritedProjectInstructions =
@@ -8710,7 +8790,7 @@ export default function ChatView({
         }
         // Same for a goal staged on the draft via /goal: persist it now so the
         // decider stamps goalStartedAt when the thread actually starts working.
-        const draftGoalForSend = activeThread.goal?.trim() ?? "";
+        const draftGoalForSend = goalSlashCommandForSend ?? activeThread.goal?.trim() ?? "";
         if (draftGoalForSend.length > 0) {
           try {
             await dispatchThreadGoal(threadIdForSend, draftGoalForSend, {
@@ -9362,7 +9442,11 @@ export default function ChatView({
     ]);
     armTranscriptAutoFollow(threadIdForSend, true);
     tailAnchorScrollInFlightRef.current = true;
-    setTailAnchor({ threadId: threadIdForSend, messageId: messageIdForSend });
+    setTailAnchor({
+      threadId: threadIdForSend,
+      messageId: messageIdForSend,
+      completedAtBeforeSend: activeLatestTurn?.completedAt ?? null,
+    });
 
     // Nested function so the `try` body holds no value blocks — see the comment on
     // `deleteEmptyTerminalThread` above for why React Compiler requires this shape.
@@ -10104,6 +10188,23 @@ export default function ChatView({
       shortcutLabel={modelPickerShortcutLabel}
     />
   );
+  const codexProfilePicker =
+    selectedProvider === "codex" ? (
+      <CodexProfilePicker
+        profiles={serverSettingsQuery.data?.providers.codex.profiles ?? []}
+        profileId={selectedCodexProfileId}
+        disabled={hasThreadStarted}
+        onChange={(profileId: CodexProfileId | undefined) => {
+          if (!activeThread || selectedModelSelection.provider !== "codex") return;
+          const { profileId: _previousProfileId, ...selection } = selectedModelSelection;
+          setComposerDraftModelSelectionAndSticky(
+            activeThread.id,
+            profileId ? { ...selection, profileId } : selection,
+          );
+          scheduleComposerFocus();
+        }}
+      />
+    ) : null;
   const toggleFastMode = useCallback(() => {
     if (!composerTraitSelection.caps.supportsFastMode) {
       scheduleComposerFocus();
@@ -11605,6 +11706,12 @@ export default function ChatView({
     automationData.definitions,
     activeThread.id,
   ).map((definition) => ({ definition }));
+  const activeCodexProfileId =
+    !hasThreadStarted && selectedProvider === "codex"
+      ? selectedCodexProfileId
+      : activeThread.modelSelection.provider === "codex"
+        ? activeThread.modelSelection.profileId
+        : undefined;
 
   // Shared inputs for both Environment panel surfaces (the header Popover when the dock is
   // open, and the docked right column when it is closed) so the two never drift.
@@ -11618,6 +11725,7 @@ export default function ChatView({
     availableEditors,
     activeThreadId: activeThread.id,
     activeProvider: activeThread.session?.provider ?? activeThread.modelSelection.provider,
+    ...(activeCodexProfileId ? { activeCodexProfileId } : {}),
     isStudioChat: isStudioContainer,
     studioFolderPath: isStudioContainer ? resolvedThreadWorkingDirectory : null,
     showGitActions,
@@ -12114,7 +12222,12 @@ export default function ChatView({
                             : {})}
                         />
                       ) : null}
-                      {!isVoiceRecording && !isVoiceTranscribing ? composerPickerControls : null}
+                      {!isVoiceRecording && !isVoiceTranscribing ? (
+                        <>
+                          {codexProfilePicker}
+                          {composerPickerControls}
+                        </>
+                      ) : null}
                       {showVoiceNotesControl && (isVoiceRecording || isVoiceTranscribing) ? (
                         <ComposerVoiceRecorderBar
                           disabled={
@@ -12349,6 +12462,7 @@ export default function ChatView({
           activeThreadTitle={activeThreadDisplayTitle}
           activeThreadEntryPoint={terminalState.entryPoint}
           activeProvider={activeThread.session?.provider ?? activeThread.modelSelection.provider}
+          {...(activeCodexProfileId ? { activeCodexProfileId } : {})}
           activeProjectName={isEditorRail ? undefined : activeProjectDisplayName}
           threadBreadcrumbs={threadBreadcrumbs}
           {...(isEditorRail

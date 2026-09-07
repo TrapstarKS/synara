@@ -30,6 +30,7 @@ describe("composerSlashCommands", () => {
     expect(isBuiltInComposerSlashCommand("feedback")).toBe(true);
     expect(isBuiltInComposerSlashCommand("debug")).toBe(true);
     expect(isBuiltInComposerSlashCommand("goal")).toBe(true);
+    expect(isBuiltInComposerSlashCommand("btw")).toBe(true);
     expect(isBuiltInComposerSlashCommand("rename")).toBe(true);
     expect(isBuiltInComposerSlashCommand("unknown")).toBe(false);
   });
@@ -64,6 +65,10 @@ describe("composerSlashCommands", () => {
     expect(parseComposerSlashInvocation("/side is this safe?")).toEqual({
       command: "side",
       args: "is this safe?",
+    });
+    expect(parseComposerSlashInvocation("/btw what changed?")).toEqual({
+      command: "btw",
+      args: "what changed?",
     });
     expect(parseComposerSlashInvocation("/automation every 6h check the page")).toEqual({
       command: "automation",
@@ -391,6 +396,7 @@ describe("composerSlashCommands", () => {
     expect(commands).toEqual([
       "fork",
       "side",
+      "btw",
       "export",
       "goal",
       "rename",
@@ -521,6 +527,7 @@ describe("composerSlashCommands", () => {
       "review",
       "fork",
       "side",
+      "btw",
       "status",
       "subagents",
       "export",

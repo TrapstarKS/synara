@@ -68,8 +68,9 @@ function ProviderUsageCard({
   const status = snapshot.status ?? "ok";
   const usageSummary = useProviderUsageSummary({
     provider,
-    threadRateLimits,
-    codexHomePath,
+    threadRateLimits: snapshot.profileId ? [] : threadRateLimits,
+    codexHomePath: snapshot.profileId ? null : codexHomePath,
+    codexProfileId: snapshot.profileId ?? null,
     providerSnapshot: snapshot,
   });
   const meterRows = deriveProviderUsageDisplayRows(usageSummary.rateLimits);
@@ -87,7 +88,9 @@ function ProviderUsageCard({
               <ProviderIcon provider={provider} className="size-4" />
             </span>
             <span className="truncate text-sm font-semibold text-foreground">
-              {providerUsageDisplayName(provider)}
+              {snapshot.profileName
+                ? `${providerUsageDisplayName(provider)} · ${snapshot.profileName}`
+                : providerUsageDisplayName(provider)}
             </span>
           </div>
           {status === "ok" && snapshot.planName ? (
@@ -139,11 +142,16 @@ function mergeProviderUsageRefresh(
   if (!previous) {
     return next;
   }
-  const previousByProvider = new Map(previous.map((snapshot) => [snapshot.provider, snapshot]));
-  const nextByProvider = new Map(next.map((snapshot) => [snapshot.provider, snapshot]));
-  return PROVIDER_USAGE_PROVIDERS.map(
-    (provider) => nextByProvider.get(provider) ?? previousByProvider.get(provider),
-  ).filter((snapshot): snapshot is ServerProviderUsageSnapshot => snapshot !== undefined);
+  const key = (snapshot: ServerProviderUsageSnapshot) =>
+    `${snapshot.provider}:${snapshot.profileId ?? "legacy"}`;
+  const merged = new Map(previous.map((snapshot) => [key(snapshot), snapshot]));
+  for (const snapshot of next) merged.set(key(snapshot), snapshot);
+  return [...merged.values()].toSorted(
+    (left, right) =>
+      PROVIDER_USAGE_PROVIDERS.indexOf(left.provider) -
+        PROVIDER_USAGE_PROVIDERS.indexOf(right.provider) ||
+      (left.profileName ?? "").localeCompare(right.profileName ?? ""),
+  );
 }
 
 export function ProviderUsageSettingsPanel() {
@@ -196,7 +204,7 @@ export function ProviderUsageSettingsPanel() {
         <div className="flex flex-col gap-3">
           {cards.map((snapshot) => (
             <ProviderUsageCard
-              key={snapshot.provider}
+              key={`${snapshot.provider}:${snapshot.profileId ?? "legacy"}`}
               snapshot={snapshot}
               threadRateLimits={threadRateLimits}
               codexHomePath={codexHomePath}

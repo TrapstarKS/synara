@@ -3,6 +3,7 @@ import {
   CommandId,
   EventId,
   MessageId,
+  type ModelSelection,
   type OrchestrationCheckpointFile,
   type OrchestrationEvent,
   type OrchestrationProjectShell,
@@ -558,7 +559,16 @@ interface SubagentIdentity {
   readonly nickname?: string;
   readonly role?: string;
   readonly model?: string;
+  readonly reasoningEffort?: string;
   readonly modelIsRequestedHint?: boolean;
+}
+
+function sameSubagentModelSelection(left: ModelSelection, right: ModelSelection): boolean {
+  const leftEffort = left.provider === "codex" ? left.options?.reasoningEffort : undefined;
+  const rightEffort = right.provider === "codex" ? right.options?.reasoningEffort : undefined;
+  return (
+    left.provider === right.provider && left.model === right.model && leftEffort === rightEffort
+  );
 }
 
 function extractCollabPayload(event: ProviderRuntimeEvent): Record<string, unknown> | undefined {
@@ -570,17 +580,30 @@ function extractSubagentIdentity(
   event: ProviderRuntimeEvent,
   providerThreadId: string,
 ): SubagentIdentity | undefined {
+  const payload = runtimePayloadRecord(event);
+  const authoritativeModel = normalizeNonEmptyString(asString(payload?.model));
+  const authoritativeReasoningEffort =
+    normalizeNonEmptyString(asString(payload?.reasoningEffort)) ??
+    normalizeNonEmptyString(asString(payload?.effort));
   const collabPayload = extractCollabPayload(event);
   const item = asObject(collabPayload?.item) ?? collabPayload;
-  if (!item) {
+  const collabIdentity = item
+    ? (resolveSubagentIdentityFromDirectory(
+        buildSubagentIdentityDirectory(extractSubagentIdentityHints(item)),
+        {
+          providerThreadId,
+        },
+      ) as SubagentIdentity | undefined)
+    : undefined;
+  if (!collabIdentity && !authoritativeModel && !authoritativeReasoningEffort) {
     return undefined;
   }
-  return resolveSubagentIdentityFromDirectory(
-    buildSubagentIdentityDirectory(extractSubagentIdentityHints(item)),
-    {
-      providerThreadId,
-    },
-  ) as SubagentIdentity | undefined;
+  return {
+    providerThreadId,
+    ...collabIdentity,
+    ...(authoritativeModel ? { model: authoritativeModel, modelIsRequestedHint: false } : {}),
+    ...(authoritativeReasoningEffort ? { reasoningEffort: authoritativeReasoningEffort } : {}),
+  };
 }
 
 function subagentThreadTitle(identity: {
@@ -1915,14 +1938,18 @@ const make = Effect.gen(function* () {
         providerThreadId: string,
         identity?: Pick<
           SubagentIdentity,
-          "agentId" | "nickname" | "role" | "model" | "modelIsRequestedHint"
+          "agentId" | "nickname" | "role" | "model" | "reasoningEffort" | "modelIsRequestedHint"
         >,
       ) =>
         Effect.gen(function* () {
           const childThreadId = ThreadId.makeUnsafe(
             `subagent:${parentThread.id}:${providerThreadId}`,
           );
-          const sourceTurnId = toTurnId(event.turnId) ?? null;
+          const sourceTurnId =
+            toTurnId(event.parentTurnId) ??
+            (event.providerRefs?.providerParentThreadId !== undefined
+              ? (parentThread.session?.activeTurnId ?? null)
+              : (toTurnId(event.turnId) ?? null));
           // A single provider event can describe the child both as a collab receiver and
           // as the event's provider thread, so re-read after any earlier dispatch in this handler.
           // Mirror the parent load: only this event's heavy-detail handlers read the
@@ -1936,15 +1963,34 @@ const make = Effect.gen(function* () {
           // Reuse the parent's full selection when the models match so capability
           // flags (e.g. supportsAutoMode) survive; a diverging subagent model gets
           // a bare selection because the parent's flags don't describe it.
-          const resolvedModelSelection =
-            identity?.model && identity.modelIsRequestedHint !== true
-              ? identity.model === parentThread.modelSelection.model
-                ? parentThread.modelSelection
-                : {
-                    provider: parentThread.modelSelection.provider,
-                    model: identity.model,
-                  }
-              : undefined;
+          const resolvedModelSelection = ((): ModelSelection | undefined => {
+            if (!identity?.model || identity.modelIsRequestedHint === true) {
+              return undefined;
+            }
+            const parentReasoningEffort =
+              parentThread.modelSelection.provider === "codex"
+                ? parentThread.modelSelection.options?.reasoningEffort
+                : undefined;
+            if (
+              identity.model === parentThread.modelSelection.model &&
+              identity.reasoningEffort === parentReasoningEffort
+            ) {
+              return parentThread.modelSelection;
+            }
+            if (parentThread.modelSelection.provider === "codex") {
+              return {
+                provider: "codex",
+                model: identity.model,
+                ...(identity.reasoningEffort
+                  ? { options: { reasoningEffort: identity.reasoningEffort } }
+                  : {}),
+              };
+            }
+            return {
+              provider: parentThread.modelSelection.provider,
+              model: identity.model,
+            } as ModelSelection;
+          })();
 
           if (Option.isNone(existingThread)) {
             // The read above hides soft-deleted threads, but `thread.create` is
@@ -2020,7 +2066,8 @@ const make = Effect.gen(function* () {
               identity?.agentId !== undefined ||
               identity?.nickname !== undefined ||
               identity?.role !== undefined ||
-              (identity?.model !== undefined && identity.modelIsRequestedHint !== true)
+              (identity?.model !== undefined && identity.modelIsRequestedHint !== true) ||
+              identity?.reasoningEffort !== undefined
             ) {
               yield* orchestrationEngine.dispatch({
                 type: "thread.meta.update",
@@ -2038,7 +2085,10 @@ const make = Effect.gen(function* () {
                   : {}),
                 parentThreadId: parentThread.id,
                 ...(resolvedModelSelection !== undefined &&
-                existingThreadShell.modelSelection.model !== resolvedModelSelection.model
+                !sameSubagentModelSelection(
+                  existingThreadShell.modelSelection,
+                  resolvedModelSelection,
+                )
                   ? { modelSelection: resolvedModelSelection }
                   : {}),
                 ...(identity?.agentId !== undefined ? { subagentAgentId: identity.agentId } : {}),
@@ -2718,7 +2768,10 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "thread.metadata.updated" && event.payload.name) {
+      if (
+        (event.type === "thread.metadata.updated" || event.type === "thread.started") &&
+        event.payload.name
+      ) {
         yield* orchestrationEngine.dispatch({
           type: "thread.meta.update",
           commandId: providerCommandId(event, "thread-meta-update", thread.id),

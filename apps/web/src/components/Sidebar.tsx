@@ -146,6 +146,7 @@ import { useThreadPullRequests } from "../hooks/useThreadPullRequests";
 import {
   providerComposerCapabilitiesQueryOptions,
   supportsThreadImport,
+  providerModelsQueryOptions,
 } from "../lib/providerDiscoveryReactQuery";
 import {
   resolveCurrentProjectTargetId,
@@ -297,6 +298,7 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarTrigger,
+  useSidebar,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import {
@@ -354,6 +356,7 @@ import {
   DISCLOSURE_INNER_CLASS,
 } from "~/lib/disclosureMotion";
 import { createClientPointMenuAnchor } from "~/lib/clientPointMenuAnchor";
+import { resolveRuntimeModelDescriptor } from "./chat/runtimeModelCapabilities";
 import { resolveThreadModelSummary } from "~/lib/threadModelSummary";
 import {
   canCreateThreadHandoff,
@@ -1349,6 +1352,7 @@ export function SidebarSurfacePicker({
 }
 
 export default function Sidebar() {
+  const { isMobile, setOpenMobile } = useSidebar();
   const githubProvisioningAvailable = useSyncExternalStore(
     subscribeGitHubProvisioningCapability,
     readGitHubProvisioningCapability,
@@ -1562,6 +1566,9 @@ export default function Sidebar() {
   });
   const serverCwd = serverCwdQuery.data ?? null;
   const providerStatuses = useProviderStatusesForLocalConfig();
+  const codexModelsQuery = useQuery(
+    providerModelsQueryOptions({ provider: "codex", enabled: false }),
+  );
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
   // Declared next to `keybindings` (rather than further down) because the project-row render
   // helpers above read these labels. A const declared after the closure that captures it
@@ -3317,7 +3324,7 @@ export default function Sidebar() {
       threadListExtraPagesByProjectCwd,
     ],
   );
-  const { activateThreadFromSidebarIntent } = useThreadActivationController({
+  const { activateThreadFromSidebarIntent: activateThread } = useThreadActivationController({
     activeSplitView,
     clearSelection,
     navigate,
@@ -3340,6 +3347,13 @@ export default function Sidebar() {
     splitViewsById,
     terminalStateByThreadId,
   });
+  const activateThreadFromSidebarIntent = useCallback(
+    (threadId: ThreadId) => {
+      activateThread(threadId);
+      if (isMobile) setOpenMobile(false);
+    },
+    [activateThread, isMobile, setOpenMobile],
+  );
 
   const handleCloseProjectContextMenu = useCallback(() => setProjectContextMenuState(null), []);
   const {
@@ -4425,7 +4439,7 @@ export default function Sidebar() {
       <div className="group/project-header relative my-1">
         <div
           className={cn(
-            "flex h-7 w-full min-w-0 items-center px-2 py-0.5 pr-[4.75rem]",
+            "flex h-7 w-full min-w-0 items-center px-2 py-0.5 pr-[4.75rem] max-md:h-11 max-md:pr-[7.25rem]",
             SIDEBAR_SECTION_LABEL_CLASS_NAME,
           )}
         >
@@ -4489,7 +4503,15 @@ export default function Sidebar() {
           sourceProjectName={hoverMetadata.sourceProjectName}
           branch={hoverMetadata.branch}
           worktreeName={hoverMetadata.worktreeName}
-          model={resolveThreadModelSummary(thread.modelSelection)}
+          model={resolveThreadModelSummary(
+            thread.modelSelection,
+            resolveRuntimeModelDescriptor({
+              provider: thread.modelSelection.provider,
+              model: thread.modelSelection.model,
+              runtimeModels:
+                thread.modelSelection.provider === "codex" ? codexModelsQuery.data?.models : null,
+            }),
+          )}
           status={hoverStatus}
         />
       </TooltipPopup>
@@ -4749,7 +4771,7 @@ export default function Sidebar() {
                   }),
                   leadingPr ? "pl-8" : topLevel && !isSubagentThread ? "pl-2" : null,
                   isSubagentThread
-                    ? "pr-7.5"
+                    ? "pr-7.5 max-md:pr-[6.5rem]"
                     : resolveThreadRowTrailingReserveClass({
                         metaChipCount: showCompactMeta ? rightMetaChips.length : 0,
                         hasTrailingGlyph: Boolean(threadStatus) || Boolean(threadJumpLabel),
@@ -4898,7 +4920,7 @@ export default function Sidebar() {
     // in place instead of sliding left. Focus is read from the group because the
     // name container itself is not focusable — the row's button is.
     const projectToolbarReserveClassName =
-      "group-hover/project-header:pr-[4.75rem] group-has-[:focus-visible]/project-header:pr-[4.75rem]";
+      "max-md:pr-[7.25rem] md:group-hover/project-header:pr-[4.75rem] md:group-has-[:focus-visible]/project-header:pr-[4.75rem]";
 
     return (
       <div className="group/collapsible">
@@ -4987,6 +5009,7 @@ export default function Sidebar() {
                   title={collapsedProjectStatus?.label}
                   className={cn(
                     "ml-auto flex min-w-[1.625rem] shrink-0 items-center justify-end gap-2 self-center",
+                    "max-md:hidden",
                     sidebarHoverRevealHideClassName("project-header"),
                   )}
                 >
@@ -6478,21 +6501,20 @@ export default function Sidebar() {
                     />
                     <TooltipPopup side="top">{desktopUpdateTooltip}</TooltipPopup>
                   </Tooltip>
-                ) : (
-                  <SidebarHelpMenu
-                    onOpenShortcuts={() =>
-                      void navigate({ to: "/settings", search: { section: "shortcuts" } })
-                    }
-                    onOpenFeedback={openFeedbackDialog}
-                    onCustomizeSidebar={
-                      isOnStudio || isOnSettings
-                        ? null
-                        : () => {
-                            setIsCustomizingNav(true);
-                          }
-                    }
-                  />
-                )}
+                ) : null}
+                <SidebarHelpMenu
+                  onOpenShortcuts={() =>
+                    void navigate({ to: "/settings", search: { section: "shortcuts" } })
+                  }
+                  onOpenFeedback={openFeedbackDialog}
+                  onCustomizeSidebar={
+                    isOnStudio || isOnSettings
+                      ? null
+                      : () => {
+                          setIsCustomizingNav(true);
+                        }
+                  }
+                />
               </div>
             </div>
           </SidebarMenuItem>

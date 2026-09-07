@@ -4,7 +4,10 @@
 // Exports: useThreadErrorToast, buildThreadErrorToastOptions, threadErrorToastId
 
 import type { ThreadId } from "@synara/contracts";
-import { isProviderDeliveryBlockDetail } from "@synara/shared/providerDeliveryBlock";
+import {
+  isProviderDeliveryBlockDetail,
+  PROVIDER_DELIVERY_BLOCK_SUMMARY,
+} from "@synara/shared/providerDeliveryBlock";
 import { useEffect, useRef, type RefObject } from "react";
 
 import { toastManager } from "../ui/toast";
@@ -28,7 +31,13 @@ export function buildThreadErrorToastOptions(input: {
   return {
     id: threadErrorToastId(input.threadId),
     type: "error",
-    title: input.error,
+    title: canUnblock ? PROVIDER_DELIVERY_BLOCK_SUMMARY : input.error,
+    ...(canUnblock
+      ? {
+          description:
+            "The provider stopped before Synara could confirm the request. Unblock the thread, then resend if needed.",
+        }
+      : {}),
     timeout: 0,
     priority: "high",
     onClose: input.onClose,

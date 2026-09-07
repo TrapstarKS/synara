@@ -115,6 +115,7 @@ import {
 import { QueuedTurnPromotionRepository } from "../../persistence/Services/QueuedTurnPromotions.ts";
 import { ManagedAttachmentRepository } from "../../persistence/Services/ManagedAttachments.ts";
 import { ServerConfig } from "../../config.ts";
+import { resolveCodexProfileOptions } from "../../codexProfiles.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { providerStartOptionsFromServerSettings } from "@synara/shared/serverSettings";
 import { clearWorkspaceIndexCache } from "../../workspaceEntries.ts";
@@ -144,7 +145,10 @@ import {
 } from "../providerIntentClassification.ts";
 import { deriveTurnStartSession } from "../turnStartSession.ts";
 import { TurnCheckpointCoordinator } from "../Services/TurnCheckpointCoordinator.ts";
-import { resolveProviderSessionThread as resolveProviderSessionThreadFromProjection } from "../providerSessionThread.ts";
+import {
+  resolveProviderSessionThread as resolveProviderSessionThreadFromProjection,
+  resolveSubagentProviderThreadId,
+} from "../providerSessionThread.ts";
 import { isExpiredSidechat } from "../sidechatLifecycle.ts";
 
 type ProviderQueueDrainEvent = Extract<
@@ -1135,9 +1139,19 @@ const make = Effect.gen(function* () {
 
   const resolveConfiguredTextGenerationInput = Effect.fnUntraced(function* () {
     const settings = yield* serverSettings.getSettings;
+    const providerOptions = yield* Effect.try({
+      try: () =>
+        resolveCodexProfileOptions({
+          settings,
+          secretsDir: serverConfig.secretsDir,
+          modelSelection: settings.textGenerationModelSelection,
+          providerOptions: providerStartOptionsFromServerSettings(settings),
+        }),
+      catch: (error) => error as Error,
+    });
     return resolveTextGenerationInputForSelection(
       settings.textGenerationModelSelection,
-      providerStartOptionsFromServerSettings(settings),
+      providerOptions,
     );
   });
 
@@ -1148,11 +1162,23 @@ const make = Effect.gen(function* () {
     readonly useConfiguredFallback?: boolean;
   }) {
     const thread = yield* resolveThread(input.threadId);
+    const settings = yield* serverSettings.getSettings;
     const modelSelection =
       input.modelSelection ??
       thread?.modelSelection ??
       threadSessionModelSelections.get(input.threadId);
-    const providerOptions = input.providerOptions ?? threadProviderOptions.get(input.threadId);
+    const configuredProviderOptions =
+      input.providerOptions ?? threadProviderOptions.get(input.threadId);
+    const providerOptions = yield* Effect.try({
+      try: () =>
+        resolveCodexProfileOptions({
+          settings,
+          secretsDir: serverConfig.secretsDir,
+          modelSelection,
+          ...(configuredProviderOptions ? { providerOptions: configuredProviderOptions } : {}),
+        }),
+      catch: (error) => error as Error,
+    });
     const threadTextGenerationInput = resolveTextGenerationInputForSelection(
       modelSelection,
       providerOptions,
@@ -1164,7 +1190,6 @@ const make = Effect.gen(function* () {
 
     // Non-generating chat providers still get AI titles via the configured git-writing model.
     // Skip the configured fallback when its provider is currently unavailable.
-    const settings = yield* serverSettings.getSettings;
     const statuses = yield* providerHealth.getStatuses;
     const fallbackStatus = statuses.find(
       (status) => status.provider === settings.textGenerationModelSelection.provider,
@@ -1313,19 +1338,6 @@ const make = Effect.gen(function* () {
         turnCheckpointCoordinator.withThreadLease(providerThread?.id ?? threadId, effect),
       ),
     );
-
-  const resolveSubagentProviderThreadId = (
-    threadId: ThreadId,
-    parentThreadId: ThreadId | null | undefined,
-  ): string | undefined => {
-    if (!parentThreadId) {
-      return undefined;
-    }
-
-    const prefix = `subagent:${parentThreadId}:`;
-    const rawThreadId = threadId as string;
-    return rawThreadId.startsWith(prefix) ? rawThreadId.slice(prefix.length) : undefined;
-  };
 
   const enqueueQueuedTurnStart = (event: QueuedTurnSourceEvent) =>
     queuedTurnPromotions.enqueue({
@@ -1592,19 +1604,22 @@ const make = Effect.gen(function* () {
       ? thread.session.providerName
       : undefined;
     const requestedModelSelection = options?.modelSelection;
+    const requestChangesCodexProfile =
+      requestedModelSelection?.provider === "codex" &&
+      thread.modelSelection.provider === "codex" &&
+      requestedModelSelection.profileId !== thread.modelSelection.profileId;
     const resolveActiveSession = (threadId: ThreadId) =>
       providerService
         .listSessions()
         .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === threadId)));
-    // The runtime-session lookup costs a provider round-trip. It can only change
-    // the binding decision when a session row exists but no turn has run yet
-    // (an optimistic placeholder) AND the turn contests the row's provider.
-    // Every other case resolves identically without it, so skip the lookup.
+    // The runtime-session lookup costs a provider round-trip. It only changes a
+    // binding decision while the projected row still looks like an optimistic
+    // placeholder and the request contests its provider or Codex account.
     const activeSession =
       currentProvider !== undefined &&
       thread.latestTurn === null &&
       requestedModelSelection !== undefined &&
-      requestedModelSelection.provider !== currentProvider
+      (requestedModelSelection.provider !== currentProvider || requestChangesCodexProfile)
         ? yield* resolveActiveSession(threadId)
         : undefined;
     // A session row alone can be an optimistic placeholder written before the
@@ -1639,7 +1654,28 @@ const make = Effect.gen(function* () {
         issue: `${providerDisabledSettingsMessage(preferredProvider)} Re-enable it to continue this thread.`,
       });
     }
-    const resolvedProviderOptions = providerStartOptionsFromServerSettings(settings);
+    if ((activeSession !== undefined || thread.latestTurn !== null) && requestChangesCodexProfile) {
+      return yield* new ProviderAdapterValidationError({
+        provider: "codex",
+        operation: "thread.turn.start",
+        issue: "A Codex account cannot be changed after the thread has started.",
+      });
+    }
+    const resolvedProviderOptions = yield* Effect.try({
+      try: () =>
+        resolveCodexProfileOptions({
+          settings,
+          secretsDir: serverConfig.secretsDir,
+          modelSelection: desiredModelSelection,
+          providerOptions: providerStartOptionsFromServerSettings(settings),
+        }),
+      catch: (error) =>
+        new ProviderAdapterValidationError({
+          provider: "codex",
+          operation: "thread.turn.start",
+          issue: error instanceof Error ? error.message : String(error),
+        }),
+    });
     const effectiveCwd = yield* resolveProjectedThreadWorkspaceCwd(thread);
     const workspaceState = resolveThreadWorkspaceState({
       envMode: thread.envMode,
@@ -4816,6 +4852,49 @@ const make = Effect.gen(function* () {
         !(yield* isThreadQuarantined(event.payload.threadId))
       ) {
         return false;
+      }
+
+      // A fresh user turn is an explicit decision to move past an older turn
+      // start whose provider acceptance could not be proven. Abandon that one
+      // delivery without replaying it, then let the new message proceed. Keep
+      // quarantines for ambiguous mutations such as rollback and task control.
+      if (event.type === "thread.turn-start-requested") {
+        const blocker = yield* deliveryRepository.firstBlockingDeliveryForThread({
+          consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+          threadId: event.payload.threadId,
+        });
+        if (
+          Option.isSome(blocker) &&
+          blocker.value.eventSequence < event.sequence &&
+          (blocker.value.state === "dead" || blocker.value.state === "uncertain")
+        ) {
+          const sourceEvent = yield* readOrchestrationEventAtSequence(blocker.value.eventSequence);
+          if (
+            sourceEvent?.type === "thread.turn-start-requested" ||
+            sourceEvent?.type === "thread.message-edit-resend-requested"
+          ) {
+            const reconciled = yield* deliveryRepository.reconcile({
+              reconciliationId: crypto.randomUUID(),
+              consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+              eventSequence: blocker.value.eventSequence,
+              threadId: blocker.value.threadId,
+              expectedState: blocker.value.state,
+              outcome: "abandon",
+              reconciledBy: "system:new-user-turn",
+              note: "A newer user turn superseded the unresolved turn start; the older request was not replayed.",
+              reconciledAt: new Date().toISOString(),
+            });
+            if (Option.isSome(reconciled)) {
+              quarantinedThreads.delete(event.payload.threadId);
+              yield* Effect.logInfo("new user turn cleared an unresolved prior turn start", {
+                abandonedEventSequence: blocker.value.eventSequence,
+                eventSequence: event.sequence,
+                threadId: event.payload.threadId,
+              });
+              return false;
+            }
+          }
+        }
       }
       yield* Effect.logWarning("provider command skipped for quarantined thread", {
         eventType: event.type,

@@ -92,6 +92,8 @@ import { FloatingBrowserPanel } from "./FloatingBrowserPanel";
 import { shouldRenderFloatingBrowserPanel } from "./floatingBrowserPanel.logic";
 import { PanelStateMessage } from "./PanelStateMessage";
 import { RightDock } from "./RightDock";
+import { SubagentsPanel } from "./SubagentsPanel";
+import { ThreadImagesPanel } from "./ImagesPanel";
 import {
   buildRightDockPaneLabelOverrides,
   getRightDockPaneMeta,
@@ -937,6 +939,18 @@ export function SingleChatSurface(props: {
             />
           </Suspense>
         );
+      case "subagents":
+        return (
+          <SubagentsPanel
+            threadId={props.threadId}
+            threads={threadSummaries}
+            onOpen={(threadId) => {
+              void navigate({ to: "/$threadId", params: { threadId } });
+            }}
+          />
+        );
+      case "images":
+        return <ThreadImagesPanel threadId={props.threadId} cwd={workspaceRoot} />;
       case "sidechat":
         if (!pane.threadId) {
           return <RightDockPanePlaceholder kind="sidechat" />;

@@ -3,6 +3,7 @@
 // Exports: Model state helpers used by persistence, actions, and the public facade.
 
 import {
+  CodexProfileId,
   GROK_REASONING_EFFORT_OPTIONS,
   ProviderKind,
   type ClaudeCodeEffort,
@@ -484,7 +485,7 @@ export function normalizeModelSelection(
           reasoningEffort: modelOptions?.antigravity?.reasoningEffort ?? antigravityLegacyEffort,
         }
       : options;
-  return makeModelSelection(
+  const normalized = makeModelSelection(
     provider,
     model,
     normalizedOptions,
@@ -492,6 +493,9 @@ export function normalizeModelSelection(
       ? candidate.supportsAutoMode
       : undefined,
   );
+  return normalized.provider === "codex" && Schema.is(CodexProfileId)(candidate?.profileId)
+    ? { ...normalized, profileId: candidate.profileId }
+    : normalized;
 }
 
 export function reconcileProviderScopedModelSelection(
@@ -504,7 +508,7 @@ export function reconcileProviderScopedModelSelection(
   if (current.model === requested.model) {
     const currentSupportsAutoMode =
       current.provider === "claudeAgent" ? current.supportsAutoMode : undefined;
-    return makeModelSelection(
+    const reconciled = makeModelSelection(
       requested.provider,
       requested.model,
       current.options,
@@ -512,6 +516,9 @@ export function reconcileProviderScopedModelSelection(
         ? (requested.supportsAutoMode ?? currentSupportsAutoMode)
         : undefined,
     );
+    return reconciled.provider === "codex" && requested.provider === "codex" && requested.profileId
+      ? { ...reconciled, profileId: requested.profileId }
+      : reconciled;
   }
   if (
     current.provider !== "codex" &&
@@ -543,12 +550,15 @@ export function reconcileProviderScopedModelSelection(
       preservedOptions = Object.keys(remainingOptions).length > 0 ? remainingOptions : undefined;
     }
   }
-  return makeModelSelection(
+  const reconciled = makeModelSelection(
     requested.provider,
     requested.model,
     preservedOptions,
     requested.provider === "claudeAgent" ? requested.supportsAutoMode : undefined,
   );
+  return reconciled.provider === "codex" && requested.provider === "codex" && requested.profileId
+    ? { ...reconciled, profileId: requested.profileId }
+    : reconciled;
 }
 
 export function stripNonStickyModelOptions(selection: ModelSelection): ModelSelection {
@@ -595,12 +605,17 @@ export function legacySyncModelSelectionOptions(
     modelSelection.provider === "grok"
       ? normalizeGrokModelOptions(modelSelection.model, modelOptions?.grok)
       : modelOptions?.[modelSelection.provider];
-  return makeModelSelection(
+  const normalized = makeModelSelection(
     modelSelection.provider,
     modelSelection.model,
     normalizedOptions,
     modelSelection.provider === "claudeAgent" ? modelSelection.supportsAutoMode : undefined,
   );
+  return normalized.provider === "codex" &&
+    modelSelection.provider === "codex" &&
+    modelSelection.profileId
+    ? { ...normalized, profileId: modelSelection.profileId }
+    : normalized;
 }
 
 export function legacyMergeModelSelectionIntoProviderModelOptions(

@@ -18,6 +18,7 @@ export function SidebarRowHoverActions({
       data-testid={`thread-hover-actions-${threadId}`}
       className={cn(
         "pointer-events-none absolute inset-y-0 right-0 my-auto inline-flex items-center",
+        "max-md:pointer-events-auto max-md:static max-md:my-0 max-md:opacity-100",
         "opacity-0 transition-opacity group-hover/thread-row:pointer-events-auto group-hover/thread-row:opacity-100 group-focus-within/thread-row:pointer-events-auto group-focus-within/thread-row:opacity-100",
       )}
     >

@@ -6864,6 +6864,59 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.runtimeMode).toBe("approval-required");
   });
 
+  it("persists native child display names and renames without renaming the parent", async () => {
+    const harness = await createHarness();
+    const childId = asThreadId("subagent:thread-1:child-named");
+    const parentBefore = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (t) => t.id === "thread-1",
+    );
+    const base = {
+      provider: "codex" as const,
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      providerRefs: { providerThreadId: "child-named", providerParentThreadId: "provider-parent" },
+    };
+    harness.emit({
+      ...base,
+      eventId: asEventId("child-name-start"),
+      type: "thread.started",
+      payload: { providerThreadId: "child-named", name: "Espera 60s" },
+    });
+    await harness.drain();
+    await waitForThread(harness.engine, (t) => t.title === "Espera 60s", 2000, childId);
+    harness.emit({
+      ...base,
+      eventId: asEventId("child-name-update"),
+      type: "thread.metadata.updated",
+      payload: {
+        name: "Teste concluído",
+        model: "gpt-5.6-luna",
+        reasoningEffort: "max",
+      },
+    });
+    await harness.drain();
+    const updatedChild = await waitForThread(
+      harness.engine,
+      (t) =>
+        t.title === "Teste concluído" &&
+        t.modelSelection.model === "gpt-5.6-luna" &&
+        t.modelSelection.provider === "codex" &&
+        t.modelSelection.options?.reasoningEffort === "max",
+      2000,
+      childId,
+    );
+    expect(updatedChild.modelSelection).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      options: { reasoningEffort: "max" },
+    });
+    const parentAfter = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (t) => t.id === "thread-1",
+    );
+    expect(parentAfter?.title).toBe(parentBefore?.title);
+    expect(parentAfter?.session).toEqual(parentBefore?.session);
+  });
+
   it("creates and routes subagent runtime events into child threads", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -7293,12 +7346,24 @@ describe("ProviderRuntimeIngestion", () => {
   it("routes fallback-annotated child events without polluting the parent projection", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
+    const parentTurnId = asTurnId("turn-parent-unmapped");
     const childThreadId = asThreadId("subagent:thread-1:child-provider-unmapped");
     const childTurnId = asTurnId("turn-child-unmapped");
     const providerRefs = {
       providerThreadId: "child-provider-unmapped",
       providerParentThreadId: "parent-provider-1",
     } as const;
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-parent-before-unmapped-child"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: parentTurnId,
+      payload: {},
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === parentTurnId);
 
     const before = await Effect.runPromise(harness.engine.getReadModel());
     const parentBefore = before.threads.find((thread) => thread.id === asThreadId("thread-1"));
@@ -7521,6 +7586,7 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(childThread.projectId).toBe(asProjectId("project-1"));
     expect(childThread.parentThreadId).toBe(asThreadId("thread-1"));
+    expect(childThread.sourceTurnId).toBe(parentTurnId);
 
     const after = await Effect.runPromise(harness.engine.getReadModel());
     const parentAfter = after.threads.find((thread) => thread.id === asThreadId("thread-1"));

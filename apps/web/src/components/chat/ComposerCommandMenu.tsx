@@ -73,6 +73,8 @@ function commandMenuTitle(
       return "Fork";
     case "side":
       return "Sidechat";
+    case "btw":
+      return "Ask on the side";
     case "status":
       return "Status";
     case "subagents":

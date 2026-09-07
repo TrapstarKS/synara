@@ -1,9 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { dirname } from "node:path";
 import {
+  CodexProfileId,
   DEFAULT_DROID_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
+  type ServerSettingsPatch,
 } from "@synara/contracts";
 import { Effect, FileSystem, Layer } from "effect";
 import { describe, expect, it } from "vitest";
@@ -271,6 +273,54 @@ describe("ServerSettingsService", () => {
       expectedProvider === "droid"
         ? DEFAULT_DROID_GIT_TEXT_GENERATION_MODEL
         : DEFAULT_MODEL_BY_PROVIDER[expectedProvider],
+    );
+  });
+
+  it("persists isolated Codex account metadata", async () => {
+    const profileId = CodexProfileId.makeUnsafe("53b0de8c-bd84-4dba-84a6-42b2f508fe63");
+    const settings = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        return yield* service.updateSettings({
+          providers: {
+            codex: {
+              profiles: [{ id: profileId, name: "Work" }],
+              defaultProfileId: profileId,
+            },
+          },
+        });
+      }).pipe(Effect.provide(ServerSettingsService.layerTest())),
+    );
+
+    expect(settings.providers.codex.profiles).toHaveLength(1);
+    expect(settings.providers.codex.defaultProfileId).toBe(profileId);
+  });
+
+  it("rejects duplicate Codex account names and dangling defaults", async () => {
+    const first = CodexProfileId.makeUnsafe("4830cc8d-6814-49ab-9760-f54df713398c");
+    const second = CodexProfileId.makeUnsafe("210341b7-e718-4d76-874f-33ce9f997abc");
+    const runUpdate = (patch: ServerSettingsPatch) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsService;
+          return yield* service.updateSettings(patch);
+        }).pipe(Effect.provide(ServerSettingsService.layerTest())),
+      );
+
+    await expect(
+      runUpdate({
+        providers: {
+          codex: {
+            profiles: [
+              { id: first, name: "Work" },
+              { id: second, name: "work" },
+            ],
+          },
+        },
+      }),
+    ).rejects.toThrow(/unique/);
+    await expect(runUpdate({ providers: { codex: { defaultProfileId: first } } })).rejects.toThrow(
+      /does not exist/,
     );
   });
 });

@@ -6,8 +6,10 @@
 
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import type { CodexProfileId } from "@synara/contracts";
 
 import { readActiveCodexProviderEnvKey } from "@synara/shared/codexConfig";
+import { ensureManagedCodexHome } from "./codexProfiles.ts";
 import {
   readEnvironmentFromLoginShell,
   resolveLoginShell,
@@ -39,6 +41,7 @@ const CONFLICTING_LOCAL_BROWSER_PLUGIN_SECTION_PATTERN =
 
 interface CodexOverlayEntryLinker {
   readonly symlink: typeof fs.symlink;
+  readonly link?: typeof fs.link;
   readonly copyFile: typeof fs.copyFile;
 }
 
@@ -160,6 +163,7 @@ export async function linkOrCopyCodexOverlayEntry(
   },
   linker: CodexOverlayEntryLinker = {
     symlink: fs.symlink,
+    link: fs.link,
     copyFile: fs.copyFile,
   },
 ): Promise<void> {
@@ -167,6 +171,14 @@ export async function linkOrCopyCodexOverlayEntry(
     await linker.symlink(input.sourcePath, input.targetPath, input.type);
   } catch (error: unknown) {
     if (input.type === "file" && CODEX_OVERLAY_SHARED_STATE_FILES.has(input.entryName)) {
+      if (linker.link) {
+        try {
+          await linker.link(input.sourcePath, input.targetPath);
+          return;
+        } catch {
+          // Cross-device files cannot be hard-linked; retain the existing copy fallback.
+        }
+      }
       await linker.copyFile(input.sourcePath, input.targetPath);
       return;
     }
@@ -607,15 +619,24 @@ async function serializeCodexOverlayPreparation<A>(
 async function prepareSynaraCodexHomeOverlayUnlocked(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly homePath?: string;
+  readonly profileId?: CodexProfileId;
   readonly appendConfigToml?: string;
 }): Promise<string | undefined> {
   const sourceHomePath = resolveBaseCodexHomePath(input.env, input.homePath);
-  const overlayHomePath = resolveSynaraCodexHomeOverlayPath(input.env, sourceHomePath);
+  const overlayHomePath = resolveSynaraCodexHomeOverlayPath(
+    input.env,
+    sourceHomePath,
+    input.profileId,
+  );
   if (path.resolve(sourceHomePath) === path.resolve(overlayHomePath)) {
     return undefined;
   }
 
-  await fs.mkdir(overlayHomePath, { recursive: true });
+  await fs.mkdir(overlayHomePath, { recursive: true, mode: 0o700 });
+  if (input.profileId) {
+    await fs.chmod(path.dirname(overlayHomePath), 0o700);
+    await fs.chmod(overlayHomePath, 0o700);
+  }
 
   try {
     // Auth must get a best-effort link/copy before optional entries whose
@@ -674,7 +695,11 @@ async function prepareSynaraCodexHomeOverlayUnlocked(input: {
       overlayConfig = mergeShellEnvPolicyExclude(overlayConfig, tokenEnvVar);
     }
   }
-  await fs.writeFile(overlayConfigPath, overlayConfig, "utf8");
+  await fs.writeFile(overlayConfigPath, overlayConfig, {
+    encoding: "utf8",
+    ...(input.profileId ? { mode: 0o600 } : {}),
+  });
+  if (input.profileId) await fs.chmod(overlayConfigPath, 0o600);
   await writeSynaraConfigSuppressions(suppressionMarkerPath, suppressedSections);
 
   return overlayHomePath;
@@ -683,10 +708,15 @@ async function prepareSynaraCodexHomeOverlayUnlocked(input: {
 async function prepareSynaraCodexHomeOverlay(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly homePath?: string;
+  readonly profileId?: CodexProfileId;
   readonly appendConfigToml?: string;
 }): Promise<string | undefined> {
   const sourceHomePath = resolveBaseCodexHomePath(input.env, input.homePath);
-  const overlayHomePath = resolveSynaraCodexHomeOverlayPath(input.env, sourceHomePath);
+  const overlayHomePath = resolveSynaraCodexHomeOverlayPath(
+    input.env,
+    sourceHomePath,
+    input.profileId,
+  );
   if (path.resolve(sourceHomePath) === path.resolve(overlayHomePath)) {
     return undefined;
   }
@@ -699,15 +729,21 @@ export async function buildCodexProcessEnv(
   input: {
     readonly env?: NodeJS.ProcessEnv;
     readonly homePath?: string;
+    readonly profileId?: CodexProfileId;
     readonly platform?: NodeJS.Platform;
     readonly readEnvironment?: ShellEnvironmentReader;
     readonly appendConfigToml?: string;
   } = {},
 ): Promise<NodeJS.ProcessEnv> {
   const baseEnv = { ...(input.env ?? process.env) };
+  if (input.profileId && input.homePath) {
+    await ensureManagedCodexHome(input.homePath);
+    delete baseEnv.OPENAI_API_KEY;
+  }
   const overlayHomePath = await prepareSynaraCodexHomeOverlay({
     env: baseEnv,
     ...(input.homePath ? { homePath: input.homePath } : {}),
+    ...(input.profileId ? { profileId: input.profileId } : {}),
     ...(input.appendConfigToml ? { appendConfigToml: input.appendConfigToml } : {}),
   });
   const configuredEnv =

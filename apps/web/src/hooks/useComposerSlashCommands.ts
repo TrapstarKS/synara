@@ -331,7 +331,7 @@ export function useComposerSlashCommands(input: {
   );
 
   const runGoalSlashCommand = useCallback(
-    async (args: string) => {
+    async (args: string): Promise<string | null> => {
       const action = parseGoalSlashCommandArgs(args);
       if (action.action === "show") {
         const currentGoal = activeThread?.goal?.trim();
@@ -340,7 +340,7 @@ export function useComposerSlashCommands(input: {
             ? { type: "info", title: "Thread goal", description: currentGoal }
             : { type: "info", title: "No thread goal is set" },
         );
-        return;
+        return null;
       }
       if (action.action === "too-long") {
         toastManager.add({
@@ -348,11 +348,11 @@ export function useComposerSlashCommands(input: {
           title: "Thread goal is too long",
           description: `Keep the goal within ${THREAD_GOAL_MAX_CHARS.toLocaleString()} characters.`,
         });
-        return;
+        return null;
       }
       if (action.action === "clear") {
         await clearThreadGoal();
-        return;
+        return null;
       }
       if (action.action === "pause" || action.action === "resume") {
         const paused = action.action === "pause";
@@ -362,19 +362,31 @@ export function useComposerSlashCommands(input: {
             title: `Thread goal ${paused ? "paused" : "resumed"}`,
           });
         }
-        return;
+        return null;
       }
       if (action.action === "edit") {
         const currentGoal = activeThread?.goal?.trim() ?? "";
         editorActions.setComposerPromptValue(`/goal ${currentGoal}`);
         editorActions.scheduleComposerFocus();
-        return;
+        return null;
       }
       if (await persistThreadGoal(action.goal)) {
         toastManager.add({ type: "success", title: "Thread goal updated" });
+        // Persisted threads start through thread.goal.continue. Draft threads have
+        // no server aggregate yet, so return the goal as their first user turn;
+        // ChatView promotes the draft and persists the goal before dispatching it.
+        return isServerThread ? null : action.goal;
       }
+      return null;
     },
-    [activeThread?.goal, clearThreadGoal, editorActions, persistThreadGoal, setThreadGoalPaused],
+    [
+      activeThread?.goal,
+      clearThreadGoal,
+      editorActions,
+      isServerThread,
+      persistThreadGoal,
+      setThreadGoalPaused,
+    ],
   );
 
   const runRenameSlashCommand = useCallback(
@@ -868,7 +880,7 @@ export function useComposerSlashCommands(input: {
   ]);
 
   const handleStandaloneSlashCommand = useCallback(
-    async (trimmed: string): Promise<boolean> => {
+    async (trimmed: string): Promise<boolean | string> => {
       const fastSlashAction = parseFastSlashCommandAction(trimmed);
       if (selectedProvider === "claudeAgent" && fastSlashAction !== null) {
         if (await checkClaudeFastSlashCommandAvailability()) {
@@ -909,8 +921,11 @@ export function useComposerSlashCommands(input: {
         return true;
       }
       if (slashInvocation.command === "goal") {
+        const kickoffPrompt = await runGoalSlashCommand(slashInvocation.args);
+        if (kickoffPrompt !== null) {
+          return kickoffPrompt;
+        }
         editorActions.clearComposerSlashDraft();
-        await runGoalSlashCommand(slashInvocation.args);
         return true;
       }
       if (slashInvocation.command === "rename") {
@@ -1011,12 +1026,12 @@ export function useComposerSlashCommands(input: {
         }
         return true;
       }
-      if (slashInvocation.command === "side") {
+      if (slashInvocation.command === "side" || slashInvocation.command === "btw") {
         if (!canOfferSideCommand) {
           toastManager.add({
             type: "warning",
             title: "Side is unavailable",
-            description: "Remove composer attachments or context before using /side.",
+            description: `Remove composer attachments or context before using /${slashInvocation.command}.`,
           });
           return true;
         }
@@ -1090,6 +1105,7 @@ export function useComposerSlashCommands(input: {
       if (
         item.command === "model" ||
         item.command === "goal" ||
+        item.command === "btw" ||
         item.command === "rename" ||
         item.command === "automation"
       ) {

@@ -1,4 +1,4 @@
-import { ThreadId, type ModelSelection } from "@synara/contracts";
+import { CodexProfileId, ThreadId, type ModelSelection } from "@synara/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   deriveEffectiveComposerModelState,
@@ -24,6 +24,24 @@ describe("resolvePreferredComposerModelSelection", () => {
         options: { autoCompactWindow: "200k" },
       }),
     ).toEqual(modelSelection("claudeAgent", "claude-fable-5-1[1m]", { autoCompactWindow: "200k" }));
+  });
+
+  it("preserves the selected Codex account during normalization", () => {
+    const profileId = CodexProfileId.makeUnsafe("8fd3e58d-f8ee-4cd4-a20a-7a30709c128c");
+
+    expect(
+      normalizeModelSelection({
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        profileId,
+        options: { reasoningEffort: "high" },
+      }),
+    ).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      profileId,
+      options: { reasoningEffort: "high" },
+    });
   });
 
   it("prefers the active draft provider selection over thread and project defaults", () => {

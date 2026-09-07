@@ -253,6 +253,8 @@ export function RightDock(props: RightDockProps) {
       defaultOpen={false}
       open={props.state.open}
       onOpenChange={props.onOpenChange}
+      mobileOpen={props.state.open}
+      onMobileOpenChange={props.onOpenChange}
       className="w-auto min-h-0 flex-none bg-transparent"
       style={{ "--sidebar-width": props.defaultWidth } as CSSProperties}
     >

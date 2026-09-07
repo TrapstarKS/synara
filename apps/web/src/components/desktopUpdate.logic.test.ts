@@ -36,8 +36,8 @@ const baseState: DesktopUpdateState = {
 };
 
 describe("desktop update button state", () => {
-  it("hides the button when idle (no update available)", () => {
-    expect(shouldShowDesktopUpdateButton(baseState)).toBe(false);
+  it("keeps a manual check button available when idle", () => {
+    expect(shouldShowDesktopUpdateButton(baseState)).toBe(true);
     expect(resolveDesktopUpdateButtonAction(baseState)).toBe("check");
     expect(getDesktopUpdateButtonTooltip(baseState)).toBe("Check for updates");
   });
@@ -128,7 +128,7 @@ describe("desktop update button state", () => {
     ).toBe("download");
   });
 
-  it("hides the button for non-actionable check errors", () => {
+  it("keeps the retry button available after check errors", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       status: "error",
@@ -136,7 +136,7 @@ describe("desktop update button state", () => {
       errorContext: "check",
       canRetry: true,
     };
-    expect(shouldShowDesktopUpdateButton(state)).toBe(false);
+    expect(shouldShowDesktopUpdateButton(state)).toBe(true);
     expect(resolveDesktopUpdateButtonAction(state)).toBe("check");
     expect(getDesktopUpdateButtonTooltip(state)).toContain("Click to check again");
   });
@@ -203,13 +203,13 @@ describe("desktop update button state", () => {
     ).toBeNull();
   });
 
-  it("keeps update checks hidden while a check is in flight", () => {
+  it("keeps the update check visible and disabled while it is in flight", () => {
     const state: DesktopUpdateState = {
       ...baseState,
       status: "checking",
     };
 
-    expect(shouldShowDesktopUpdateButton(state)).toBe(false);
+    expect(shouldShowDesktopUpdateButton(state)).toBe(true);
     expect(resolveDesktopUpdateButtonAction(state)).toBe("check");
     expect(isDesktopUpdateButtonDisabled(state)).toBe(true);
     expect(getDesktopUpdateButtonTooltip(state)).toContain("Checking for updates");

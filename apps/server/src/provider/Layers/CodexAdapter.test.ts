@@ -462,6 +462,92 @@ const lifecycleLayer = it.layer(
 );
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("recovers a child display name from read-only thread metadata", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const pending = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-recovered-child-name"),
+        kind: "notification",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "thread/name/updated",
+        threadId: asThreadId("thread-1"),
+        providerThreadId: "child-provider",
+        providerParentThreadId: "provider-parent",
+        payload: {
+          thread: {
+            id: "child-provider",
+            model: "gpt-5.6-luna",
+            reasoningEffort: "max",
+            source: { subAgent: { thread_spawn: { agent_path: "/root/rarity_path" } } },
+          },
+        },
+      } satisfies ProviderEvent);
+      const event = yield* Fiber.join(pending);
+      assert.equal(event._tag, "Some");
+      if (event._tag !== "Some" || event.value.type !== "thread.metadata.updated")
+        return assert.fail("Missing metadata update");
+      assert.equal(event.value.payload.name, "Rarity path");
+      assert.equal(event.value.payload.model, "gpt-5.6-luna");
+      assert.equal(event.value.payload.reasoningEffort, "max");
+      assert.equal(event.value.providerRefs?.providerThreadId, "child-provider");
+    }),
+  );
+  for (const [label, thread, expected] of [
+    [
+      "explicit name",
+      {
+        name: "Custom task",
+        source: { subAgent: { thread_spawn: { agent_path: "/root/espera_60s" } } },
+      },
+      "Custom task",
+    ],
+    [
+      "native task path",
+      {
+        source: {
+          subAgent: { thread_spawn: { agent_path: "/root/espera_60s", agent_nickname: "Tesla" } },
+        },
+      },
+      "Espera 60s",
+    ],
+    ["nickname fallback", { agentNickname: "Tesla" }, "Tesla"],
+    ["missing name", {}, undefined],
+  ] as const) {
+    it.effect(`preserves child display name from ${label}`, () =>
+      Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        const pending = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+        lifecycleManager.emit("event", {
+          id: asEventId(`evt-name-${label}`),
+          kind: "notification",
+          provider: "codex",
+          createdAt: new Date().toISOString(),
+          method: "thread/started",
+          threadId: asThreadId("thread-1"),
+          providerThreadId: "child-provider",
+          providerParentThreadId: "provider-parent",
+          payload: {
+            thread: {
+              id: "child-provider",
+              model: "gpt-6-astra",
+              reasoningEffort: "low",
+              ...thread,
+            },
+          },
+        } satisfies ProviderEvent);
+        const event = yield* Fiber.join(pending);
+        assert.equal(event._tag, "Some");
+        if (event._tag !== "Some" || event.value.type !== "thread.started")
+          return assert.fail("Missing thread start");
+        assert.equal(event.value.payload.name, expected);
+        assert.equal(event.value.payload.model, "gpt-6-astra");
+        assert.equal(event.value.payload.reasoningEffort, "low");
+        assert.equal(event.value.providerRefs?.providerThreadId, "child-provider");
+      }),
+    );
+  }
   it.effect("maps session/started to a canonical session.started runtime event", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -782,6 +868,44 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       };
       assert.equal(rawPayload.item?.result, undefined);
       assert.equal(rawPayload.item?.result_elided_for_relay, true);
+    }),
+  );
+
+  it.effect("keeps image-view items separate from generated image artifacts", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-image-view-complete"),
+        kind: "notification",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("view-1"),
+        payload: {
+          item: {
+            id: "view-1",
+            type: "ImageView",
+            path: "/tmp/reference.png",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") return;
+      assert.equal(firstEvent.value.type, "item.completed");
+      if (firstEvent.value.type !== "item.completed") return;
+      assert.equal(firstEvent.value.payload.itemType, "image_view");
+      assert.equal(firstEvent.value.payload.title, "Image view");
+      assert.notEqual(
+        (firstEvent.value.payload.data as { kind?: unknown } | undefined)?.kind,
+        "codex.generated_image",
+      );
     }),
   );
 
