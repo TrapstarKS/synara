@@ -7293,12 +7293,24 @@ describe("ProviderRuntimeIngestion", () => {
   it("routes fallback-annotated child events without polluting the parent projection", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
+    const parentTurnId = asTurnId("turn-parent-unmapped");
     const childThreadId = asThreadId("subagent:thread-1:child-provider-unmapped");
     const childTurnId = asTurnId("turn-child-unmapped");
     const providerRefs = {
       providerThreadId: "child-provider-unmapped",
       providerParentThreadId: "parent-provider-1",
     } as const;
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-parent-before-unmapped-child"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: parentTurnId,
+      payload: {},
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === parentTurnId);
 
     const before = await Effect.runPromise(harness.engine.getReadModel());
     const parentBefore = before.threads.find((thread) => thread.id === asThreadId("thread-1"));
@@ -7521,6 +7533,7 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(childThread.projectId).toBe(asProjectId("project-1"));
     expect(childThread.parentThreadId).toBe(asThreadId("thread-1"));
+    expect(childThread.sourceTurnId).toBe(parentTurnId);
 
     const after = await Effect.runPromise(harness.engine.getReadModel());
     const parentAfter = after.threads.find((thread) => thread.id === asThreadId("thread-1"));

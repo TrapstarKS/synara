@@ -3860,13 +3860,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }),
     );
     // A child can emit events before its collab tool-call payload populates the
-    // receiver maps. During a live parent turn, another provider thread belongs
-    // to that active conversation. Preserve the mapped parent when one exists;
-    // otherwise provide the active provider thread required for child routing.
+    // receiver maps, or after the parent turn has already settled and cleared
+    // them. This manager owns one active provider conversation, so a different
+    // provider thread is its child even across that terminal ordering race.
     const isUnmappedChildConversation =
       mappedProviderParentThreadId === undefined &&
-      context.session.status === "running" &&
-      context.session.activeTurnId !== undefined &&
       providerThreadId !== undefined &&
       activeProviderThreadId !== undefined &&
       providerThreadId !== activeProviderThreadId;
@@ -3944,10 +3942,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       method === "thread/closed" ||
       method === "thread/compacted" ||
       method === "thread/name/updated" ||
-      method === "thread/tokenUsage/updated" ||
-      method === "turn/started" ||
-      method === "turn/completed" ||
-      method === "turn/aborted"
+      method === "thread/tokenUsage/updated"
     );
   }
 
