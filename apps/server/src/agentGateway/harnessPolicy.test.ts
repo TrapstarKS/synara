@@ -160,7 +160,6 @@ describe("Synara harness policy", () => {
     assert.notInclude(policy, "device_describe_ui");
   });
 
-
   it("withholds the memory contract from sessions with no gateway control", () => {
     const policy = renderSynaraHarnessPolicy({ gatewayControlAvailable: false });
 
