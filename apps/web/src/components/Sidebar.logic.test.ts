@@ -1399,7 +1399,7 @@ describe("resolveProjectStatusIndicator", () => {
 });
 
 describe("buildProjectThreadTree", () => {
-  it("keeps inactive child threads out of the sidebar", () => {
+  it("always shows child threads without requiring a selection", () => {
     const rows = buildProjectThreadTree({
       threads: [
         makeThread({
@@ -1418,6 +1418,10 @@ describe("buildProjectThreadTree", () => {
       expect.objectContaining({
         thread: expect.objectContaining({ id: ThreadId.makeUnsafe("thread-parent") }),
         depth: 0,
+      }),
+      expect.objectContaining({
+        thread: expect.objectContaining({ id: ThreadId.makeUnsafe("thread-child") }),
+        depth: 1,
       }),
     ]);
   });

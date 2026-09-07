@@ -270,12 +270,12 @@ import {
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
-  omitRoutedSubagentWorkEntries,
   buildSourceProposedPlanReference,
   hasActionableProposedPlan,
   hasLiveTurnTailWork,
   isLatestTurnSettled,
   type ActiveTaskListState,
+  type WorkLogEntry,
 } from "../session-logic";
 import {
   buildPendingUserInputAnswers,
@@ -662,6 +662,7 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_NATIVE_COMMANDS: ProviderNativeCommandDescriptor[] = [];
 const EMPTY_PROVIDER_SKILLS: ProviderSkillDescriptor[] = [];
+const EMPTY_WORK_LOG_ENTRIES: ReadonlyArray<WorkLogEntry> = [];
 const LOCAL_PROJECT_DRAFT_CONTEXT = {
   envMode: "local",
   worktreePath: null,
@@ -2562,40 +2563,46 @@ export default function ChatView({
     () => rawWorkLogEntries.some((entry) => (entry.subagents?.length ?? 0) > 0),
     [rawWorkLogEntries],
   );
+  const selectorWorkLogEntries = hasWorkLogSubagents ? rawWorkLogEntries : EMPTY_WORK_LOG_ENTRIES;
   const relevantWorkLogThreads = useStore(
     useMemo(
       () =>
         createRelevantWorkLogThreadsSelector({
-          workEntries: rawWorkLogEntries,
+          workEntries: selectorWorkLogEntries,
           parentThreadId: activeThread?.id ?? null,
-          enabled: hasWorkLogSubagents,
+          enabled: activeThread?.id !== undefined,
         }),
-      [activeThread?.id, hasWorkLogSubagents, rawWorkLogEntries],
+      [activeThread?.id, selectorWorkLogEntries],
     ),
+  );
+  const hasPersistedWorkLogSubagents = useMemo(
+    () =>
+      relevantWorkLogThreads.some((thread) => thread.parentThreadId === (activeThread?.id ?? null)),
+    [activeThread?.id, relevantWorkLogThreads],
   );
   const enrichedWorkLogEntries = useMemo(
     () =>
-      hasWorkLogSubagents
+      hasWorkLogSubagents || hasPersistedWorkLogSubagents
         ? enrichSubagentWorkEntries(
             rawWorkLogEntries,
             relevantWorkLogThreads,
             activeThread?.id ?? null,
           )
         : rawWorkLogEntries,
-    [activeThread?.id, hasWorkLogSubagents, rawWorkLogEntries, relevantWorkLogThreads],
+    [
+      activeThread?.id,
+      hasPersistedWorkLogSubagents,
+      hasWorkLogSubagents,
+      rawWorkLogEntries,
+      relevantWorkLogThreads,
+    ],
   );
-  // Subagents are presented by the composer strip (and their own threads); the
-  // transcript drops the routed fan-out rows entirely. The enriched list above is
-  // still what feeds the strip-adjacent derivations that need receiver metadata.
-  const workLogEntries = useMemo(
-    () => omitRoutedSubagentWorkEntries(enrichedWorkLogEntries),
-    [enrichedWorkLogEntries],
-  );
+  const workLogEntries = enrichedWorkLogEntries;
   // The strip's liveness (running/settled) reads the child thread's own session and
   // tail activities, so retain a detail subscription while a subagent runs; settled
   // subagents stay on whatever the store already holds.
   const liveSubagentThreadIdsKey = useMemo(() => {
-    if (!hasWorkLogSubagents) {
+    if (!hasWorkLogSubagents && !hasPersistedWorkLogSubagents) {
       return "";
     }
     const threadIds = new Set<string>();
@@ -2607,7 +2614,7 @@ export default function ChatView({
       }
     }
     return [...threadIds].toSorted().join("\n");
-  }, [enrichedWorkLogEntries, hasWorkLogSubagents]);
+  }, [enrichedWorkLogEntries, hasPersistedWorkLogSubagents, hasWorkLogSubagents]);
   useEffect(() => {
     if (!liveSubagentThreadIdsKey) {
       return;
@@ -2706,20 +2713,28 @@ export default function ChatView({
     () => stripRawWorkLogEntries.some((entry) => (entry.subagents?.length ?? 0) > 0),
     [stripRawWorkLogEntries],
   );
+  const stripSelectorWorkLogEntries = hasStripWorkLogSubagents
+    ? stripRawWorkLogEntries
+    : EMPTY_WORK_LOG_ENTRIES;
   const stripRelevantWorkLogThreads = useStore(
     useMemo(
       () =>
         createRelevantWorkLogThreadsSelector({
-          workEntries: stripRawWorkLogEntries,
+          workEntries: stripSelectorWorkLogEntries,
           parentThreadId: stripSourceThreadId,
-          enabled: hasStripWorkLogSubagents,
+          enabled: stripSourceThreadId !== null,
         }),
-      [stripSourceThreadId, hasStripWorkLogSubagents, stripRawWorkLogEntries],
+      [stripSelectorWorkLogEntries, stripSourceThreadId],
     ),
+  );
+  const hasPersistedStripWorkLogSubagents = useMemo(
+    () =>
+      stripRelevantWorkLogThreads.some((thread) => thread.parentThreadId === stripSourceThreadId),
+    [stripRelevantWorkLogThreads, stripSourceThreadId],
   );
   const stripWorkLogEntries = useMemo(
     () =>
-      hasStripWorkLogSubagents
+      hasStripWorkLogSubagents || hasPersistedStripWorkLogSubagents
         ? enrichSubagentWorkEntries(
             stripRawWorkLogEntries,
             stripRelevantWorkLogThreads,
@@ -2728,6 +2743,7 @@ export default function ChatView({
         : stripRawWorkLogEntries,
     [
       stripSourceThreadId,
+      hasPersistedStripWorkLogSubagents,
       hasStripWorkLogSubagents,
       stripRawWorkLogEntries,
       stripRelevantWorkLogThreads,
