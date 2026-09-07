@@ -18,6 +18,7 @@ import {
   InfoIcon,
   SidechatIcon,
   TerminalIcon,
+  UsersIcon,
 } from "~/lib/icons";
 import { type RightDockPane, type RightDockPaneKind } from "~/rightDockStore.logic";
 import { CHAT_SURFACE_CHIP_ICON_CLASS_NAME, SurfaceChipIcon } from "./chatHeaderControls";
@@ -44,6 +45,7 @@ export const RIGHT_DOCK_PANE_META: Record<RightDockPaneKind, RightDockPaneMeta> 
   file: { label: "File", Icon: FileIcon },
   terminal: { label: "Terminal", Icon: TerminalIcon },
   sidechat: { label: "Side chats", Icon: SidechatIcon },
+  subagents: { label: "Subagents", Icon: UsersIcon },
   git: { label: "Git", Icon: GitCommitIcon },
   pullRequest: { label: "Pull request", Icon: GitPullRequestIcon },
 };
@@ -72,6 +74,7 @@ const RIGHT_DOCK_LAUNCHER_ORDER: readonly RightDockPaneKind[] = [
   "browser",
   "explorer",
   "sidechat",
+  "subagents",
   "device",
   "git",
 ];

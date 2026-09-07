@@ -949,6 +949,10 @@ function setRecentCacheEntry<K, V>(
 
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
+  private readonly childMetadataReads = new WeakMap<
+    CodexSessionContext,
+    Map<string, "reading" | "known">
+  >();
   private readonly previouslyBoundThreadIds = new Set<ThreadId>();
   private readonly discoverySessions = new Map<string, CodexSessionContext>();
   private readonly discoverySessionStartups = new Map<string, Promise<CodexSessionContext>>();
@@ -3053,6 +3057,45 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     );
   }
 
+  private recoverChildMetadata(
+    context: CodexSessionContext,
+    providerThreadId: string,
+    method: string,
+  ): void {
+    const reads = this.childMetadataReads.get(context) ?? new Map<string, "reading" | "known">();
+    this.childMetadataReads.set(context, reads);
+    // Child starts can omit metadata, and reconnects can first expose a tool
+    // event. Read once for either path; explicit name updates supersede the read.
+    if (method === "thread/name/updated") {
+      reads.set(providerThreadId, "known");
+      return;
+    }
+    if (reads.has(providerThreadId)) return;
+    reads.set(providerThreadId, "reading");
+    void this.sendRequest(context, "thread/read", {
+      threadId: providerThreadId,
+      includeTurns: false,
+    })
+      .then((response) => {
+        if (context.stopping || reads.get(providerThreadId) !== "reading") return;
+        const thread = this.readObject(this.readObject(response)?.thread);
+        if (thread?.id !== providerThreadId) {
+          reads.delete(providerThreadId);
+          return;
+        }
+        // Metadata-only delivery must not restart or settle the child's turn.
+        this.handleServerNotification(context, {
+          method: "thread/name/updated",
+          params: { threadId: providerThreadId, thread },
+        });
+      })
+      .catch(() => {
+        // The child may not be persisted yet. A later notification can retry,
+        // with at most one metadata request in flight for each child.
+        if (reads.get(providerThreadId) === "reading") reads.delete(providerThreadId);
+      });
+  }
+
   private handleServerNotification(
     context: CodexSessionContext,
     notification: JsonRpcNotification,
@@ -3071,6 +3114,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.shouldSuppressChildConversationNotification(notification.method)
     ) {
       return;
+    }
+    if (isChildConversation && providerThreadId) {
+      this.recoverChildMetadata(context, providerThreadId, notification.method);
     }
     const textDelta =
       notification.method === "item/agentMessage/delta"
@@ -3860,13 +3906,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }),
     );
     // A child can emit events before its collab tool-call payload populates the
-    // receiver maps. During a live parent turn, another provider thread belongs
-    // to that active conversation. Preserve the mapped parent when one exists;
-    // otherwise provide the active provider thread required for child routing.
+    // receiver maps, or after the parent turn has already settled and cleared
+    // them. This manager owns one active provider conversation, so a different
+    // provider thread is its child even across that terminal ordering race.
     const isUnmappedChildConversation =
       mappedProviderParentThreadId === undefined &&
-      context.session.status === "running" &&
-      context.session.activeTurnId !== undefined &&
       providerThreadId !== undefined &&
       activeProviderThreadId !== undefined &&
       providerThreadId !== activeProviderThreadId;
@@ -3937,17 +3981,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     // card advance ("1 out of 5" → "2 out of 5" ...) and render streaming plan text;
     // suppressing them freezes the plan UI at its initial all-pending snapshot.
     return (
-      method === "thread/started" ||
       method === "thread/status/changed" ||
       method === "thread/archived" ||
       method === "thread/unarchived" ||
       method === "thread/closed" ||
       method === "thread/compacted" ||
-      method === "thread/name/updated" ||
-      method === "thread/tokenUsage/updated" ||
-      method === "turn/started" ||
-      method === "turn/completed" ||
-      method === "turn/aborted"
+      method === "thread/tokenUsage/updated"
     );
   }
 

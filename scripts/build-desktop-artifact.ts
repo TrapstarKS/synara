@@ -19,6 +19,7 @@ import {
   createDesktopPlatformBuildConfig,
   MAC_APPSNAP_HELPER_STAGE_PATH,
   MAC_DEVICE_HELPER_RESOURCE_PATH,
+  type MacSigningMode,
   validateDesktopNativeBuildHost,
 } from "./lib/desktop-platform-build-config.ts";
 import { SYNARA_PRODUCTION_BUNDLE_ID } from "@synara/shared/desktopIdentity";
@@ -111,6 +112,7 @@ interface BuildCliInput {
   readonly skipBuild: Option.Option<boolean>;
   readonly keepStage: Option.Option<boolean>;
   readonly signed: Option.Option<boolean>;
+  readonly macSigningMode: Option.Option<MacSigningMode>;
   readonly verbose: Option.Option<boolean>;
   readonly mockUpdates: Option.Option<boolean>;
   readonly mockUpdateServerPort: Option.Option<string>;
@@ -210,6 +212,7 @@ interface ResolvedBuildOptions {
   readonly skipBuild: boolean;
   readonly keepStage: boolean;
   readonly signed: boolean;
+  readonly macSigningMode: MacSigningMode;
   readonly verbose: boolean;
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: string | undefined;
@@ -262,6 +265,10 @@ const BuildEnvConfig = Config.all({
   skipBuild: Config.string("SYNARA_DESKTOP_SKIP_BUILD").pipe(Config.option),
   keepStage: Config.string("SYNARA_DESKTOP_KEEP_STAGE").pipe(Config.option),
   signed: Config.string("SYNARA_DESKTOP_SIGNED").pipe(Config.option),
+  macSigningMode: Config.schema(
+    Schema.Literals(["developer-id", "adhoc"]),
+    "SYNARA_MAC_SIGNING_MODE",
+  ).pipe(Config.option),
   verbose: Config.string("SYNARA_DESKTOP_VERBOSE").pipe(Config.option),
   mockUpdates: Config.string("SYNARA_DESKTOP_MOCK_UPDATES").pipe(Config.option),
   mockUpdateServerPort: Config.string("SYNARA_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
@@ -326,6 +333,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const skipBuild = resolveBooleanFlag(input.skipBuild, envSkipBuild);
   const keepStage = resolveBooleanFlag(input.keepStage, envKeepStage);
   const signed = resolveBooleanFlag(input.signed, envSigned);
+  const macSigningMode = mergeOptions(input.macSigningMode, env.macSigningMode, "developer-id");
   const verbose = resolveBooleanFlag(input.verbose, envVerbose);
   const mockUpdates = resolveBooleanFlag(input.mockUpdates, envMockUpdates);
   const mockUpdateServerPort = mergeOptions(
@@ -346,6 +354,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     skipBuild,
     keepStage,
     signed,
+    macSigningMode,
     verbose,
     mockUpdates,
     mockUpdateServerPort,
@@ -721,6 +730,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   target: string,
   productName: string,
   signed: boolean,
+  macSigningMode: MacSigningMode,
   mockUpdates: boolean,
   mockUpdateServerPort: string | undefined,
 ) {
@@ -763,6 +773,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     platform,
     target,
     signed,
+    ...(platform === "mac" ? { macSigningMode } : {}),
     ...(windowsAzureSignOptions ? { windowsAzureSignOptions } : {}),
   } as const;
 
@@ -1047,6 +1058,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     options.target,
     desktopPackageJson.productName ?? "Synara",
     options.signed,
+    options.macSigningMode,
     options.mockUpdates,
     options.mockUpdateServerPort,
   );
@@ -1135,7 +1147,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     yield* assertPackagedMacDeviceHelper(stageDistDir, desktopPackageJson.productName ?? "Synara");
   }
 
-  if (options.platform === "mac" && options.target === "dmg" && options.signed) {
+  if (
+    options.platform === "mac" &&
+    options.target === "dmg" &&
+    options.signed &&
+    options.macSigningMode === "developer-id"
+  ) {
     yield* Effect.log("[desktop-artifact] Notarizing and validating signed macOS DMG...");
     const finalizedDmg = yield* Effect.try({
       try: () =>
@@ -1154,6 +1171,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     });
     yield* Effect.log(
       `[desktop-artifact] Signed and notarized macOS DMG (${finalizedDmg.dmgFileName}).`,
+    );
+  } else if (options.platform === "mac" && options.target === "dmg" && options.signed) {
+    yield* Effect.log(
+      "[desktop-artifact] Persistent ad-hoc macOS signing enabled; skipping notarization.",
     );
   }
 
@@ -1255,7 +1276,13 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   ),
   signed: Flag.boolean("signed").pipe(
     Flag.withDescription(
-      "Enable signing/notarization discovery; Windows uses Azure Trusted Signing (env: SYNARA_DESKTOP_SIGNED).",
+      "Enable signing discovery; macOS supports Developer ID or persistent ad-hoc mode, Windows uses Azure Trusted Signing (env: SYNARA_DESKTOP_SIGNED).",
+    ),
+    Flag.optional,
+  ),
+  macSigningMode: Flag.choice("mac-signing-mode", ["developer-id", "adhoc"] as const).pipe(
+    Flag.withDescription(
+      "macOS signing profile (env: SYNARA_MAC_SIGNING_MODE). Defaults to developer-id.",
     ),
     Flag.optional,
   ),

@@ -358,6 +358,12 @@ function createPendingApprovalHarness(runtimeMode: RuntimeMode = "approval-requi
 
 function createCollabNotificationHarness() {
   const manager = new CodexAppServerManager();
+  const recoverChildMetadata = vi
+    .spyOn(
+      manager as unknown as { recoverChildMetadata: (...args: unknown[]) => void },
+      "recoverChildMetadata",
+    )
+    .mockImplementation(() => {});
   const context = {
     session: {
       provider: "codex",
@@ -412,7 +418,15 @@ function createCollabNotificationHarness() {
     )
     .mockResolvedValue(undefined);
 
-  return { manager, context, emitEvent, updateSession, requireSession, writeMessage };
+  return {
+    manager,
+    context,
+    emitEvent,
+    updateSession,
+    requireSession,
+    writeMessage,
+    recoverChildMetadata,
+  };
 }
 
 function handleServerNotificationForTest(
@@ -3645,7 +3659,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("does not infer a provider parent for active-parent or inactive-session notifications", () => {
+  it("keeps the active provider as parent for another provider thread after settlement", () => {
     const { manager, context, emitEvent } = createCollabNotificationHarness();
 
     handleServerNotificationForTest(manager, context, {
@@ -3673,7 +3687,7 @@ describe("collab child conversation routing", () => {
     expect(activeParentEvent.providerThreadId).toBe("provider_parent");
     expect(activeParentEvent).not.toHaveProperty("providerParentThreadId");
     expect(inactiveSessionEvent.providerThreadId).toBe("another_provider_thread");
-    expect(inactiveSessionEvent).not.toHaveProperty("providerParentThreadId");
+    expect(inactiveSessionEvent.providerParentThreadId).toBe("provider_parent");
   });
 
   it("prefers a mapped provider parent over the active-provider fallback", () => {
@@ -3921,7 +3935,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("suppresses child lifecycle notifications without mutating the parent session state", () => {
+  it("forwards child lifecycle notifications without mutating the parent session state", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
 
     (
@@ -3967,11 +3981,127 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenCalledTimes(2);
+    expect(emitEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_child_1",
+        parentTurnId: "turn_parent",
+        providerThreadId: "child_provider_1",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    expect(emitEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: "turn/completed",
+        turnId: "turn_child_1",
+        parentTurnId: "turn_parent",
+        providerThreadId: "child_provider_1",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
   });
 
-  it("suppresses child lifecycle notifications that arrive before receiver mapping", () => {
+  it.each([
+    {
+      method: "thread/started",
+      params: { thread: { id: "child_provider_unmapped", name: "Espera 60s" } },
+    },
+    {
+      method: "thread/name/updated",
+      params: { threadId: "child_provider_unmapped", threadName: "Espera 60s" },
+    },
+  ])("forwards child display metadata $method without changing the parent", (notification) => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, notification);
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: notification.method,
+        providerThreadId: "child_provider_unmapped",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["turn/started", "thread/started"])(
+    "recovers missing child metadata from %s once without changing turn lifecycle",
+    async (method) => {
+      const { manager, context, emitEvent, updateSession, recoverChildMetadata } =
+        createCollabNotificationHarness();
+      recoverChildMetadata.mockRestore();
+      const thread = {
+        id: "child_provider_unmapped",
+        source: { subAgent: { thread_spawn: { agent_path: "/root/rarity_path" } } },
+      };
+      const sendRequest = vi
+        .spyOn(
+          manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+          "sendRequest",
+        )
+        .mockResolvedValue({ thread });
+      const notification = {
+        method,
+        params:
+          method === "thread/started"
+            ? { thread: { id: thread.id } }
+            : { threadId: thread.id, turn: { id: "child-turn" } },
+      };
+      handleServerNotificationForTest(manager, context, notification);
+      handleServerNotificationForTest(manager, context, notification);
+      await vi.waitFor(() =>
+        expect(emitEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            method: "thread/name/updated",
+            providerThreadId: thread.id,
+            providerParentThreadId: "provider_parent",
+            payload: { threadId: thread.id, thread },
+          }),
+        ),
+      );
+      expect(sendRequest).toHaveBeenCalledExactlyOnceWith(context, "thread/read", {
+        threadId: thread.id,
+        includeTurns: false,
+      });
+      expect(updateSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not overwrite newer child metadata with a delayed read", async () => {
+    const { manager, context, emitEvent, recoverChildMetadata } = createCollabNotificationHarness();
+    recoverChildMetadata.mockRestore();
+    const pending = Promise.withResolvers<unknown>();
+    vi.spyOn(
+      manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+      "sendRequest",
+    ).mockReturnValue(pending.promise);
+    const threadId = "child_provider_unmapped";
+    handleServerNotificationForTest(manager, context, {
+      method: "turn/started",
+      params: { threadId, turn: { id: "child-turn" } },
+    });
+    handleServerNotificationForTest(manager, context, {
+      method: "thread/name/updated",
+      params: { threadId, threadName: "New name" },
+    });
+    pending.resolve({ thread: { id: threadId, name: "Old name" } });
+    await pending.promise;
+    await Promise.resolve();
+    const metadata = emitEvent.mock.calls.filter(
+      ([event]) => (event as { method: string }).method === "thread/name/updated",
+    );
+    expect(metadata).toHaveLength(1);
+    expect(metadata[0]?.[0]).toMatchObject({ payload: { threadName: "New name" } });
+  });
+
+  it("forwards child lifecycle notifications that arrive before receiver mapping", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
     context.session.status = "running";
     context.session.activeTurnId = "turn_parent";
@@ -3988,9 +4118,44 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_child_unmapped",
+        providerThreadId: "child_provider_unmapped",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
     expect(context.session.activeTurnId).toBe("turn_parent");
+  });
+
+  it("keeps routing a late child terminal event after the parent turn settles", () => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+    context.session.status = "ready";
+    delete (context.session as Partial<typeof context.session>).activeTurnId;
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "turn/completed",
+      params: {
+        threadId: "child_provider_late",
+        turn: { id: "turn_child_late", status: "completed" },
+      },
+    });
+
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/completed",
+        turnId: "turn_child_late",
+        providerThreadId: "child_provider_late",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    expect(updateSession).not.toHaveBeenCalled();
   });
 
   it("keeps handling lifecycle notifications from the active provider thread", () => {
@@ -4020,7 +4185,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("suppresses child lifecycle notifications when only the provider parent is known", () => {
+  it("forwards child lifecycle notifications when only the provider parent is known", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
     context.collabReceiverParents.set("child_provider_1", "provider_parent");
 
@@ -4036,7 +4201,14 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_child_1",
+        providerThreadId: "child_provider_1",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
   });
 

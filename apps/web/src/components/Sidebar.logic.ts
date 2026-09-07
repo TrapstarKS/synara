@@ -853,32 +853,15 @@ export interface SidebarThreadTreeRow<
   rootThreadId: T["id"];
 }
 
-function collectActiveThreadAncestorIds<
-  T extends Pick<SidebarThreadSummary, "id" | "parentThreadId">,
->(threadById: Map<T["id"], T>, forceVisibleThreadId: T["id"] | undefined): Set<T["id"]> {
-  const ancestorIds = new Set<T["id"]>();
-  let currentThreadId = forceVisibleThreadId;
-
-  while (currentThreadId) {
-    const parentThreadId = threadById.get(currentThreadId)?.parentThreadId ?? undefined;
-    if (!parentThreadId) {
-      break;
-    }
-    ancestorIds.add(parentThreadId);
-    currentThreadId = parentThreadId;
-  }
-
-  return ancestorIds;
-}
-
 // Build the project-local parent/child thread tree while preserving sort order from the input list.
 export function buildProjectThreadTree<
-  T extends Pick<SidebarThreadSummary, "id" | "parentThreadId">,
+  T extends Pick<SidebarThreadSummary, "id" | "parentThreadId"> &
+    Parameters<typeof isThreadActivelyWorking>[0],
 >(input: {
   threads: readonly T[];
   forceVisibleThreadId?: T["id"] | undefined;
 }): SidebarThreadTreeRow<T>[] {
-  const { forceVisibleThreadId, threads } = input;
+  const { threads } = input;
   const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
   const childrenByParentId = new Map<T["id"], T[]>();
   const roots: T[] = [];
@@ -900,26 +883,18 @@ export function buildProjectThreadTree<
     childrenByParentId.set(parentThreadId, siblings);
   }
 
-  const activeThreadAncestorIds = collectActiveThreadAncestorIds(threadById, forceVisibleThreadId);
   const orderedRows: SidebarThreadTreeRow<T>[] = [];
 
   const visit = (thread: T, depth: number, rootThreadId: T["id"]) => {
     const childThreads = childrenByParentId.get(thread.id) ?? [];
-    const revealsActiveDescendant =
-      childThreads.length > 0 && activeThreadAncestorIds.has(thread.id);
 
-    orderedRows.push({
-      thread,
-      depth,
-      rootThreadId,
-    });
-
-    if (!revealsActiveDescendant) {
-      return;
+    const visible = depth === 0 || isThreadActivelyWorking(thread);
+    if (visible) {
+      orderedRows.push({ thread, depth, rootThreadId });
     }
 
     for (const child of childThreads) {
-      visit(child, depth + 1, rootThreadId);
+      visit(child, depth + (visible ? 1 : 0), rootThreadId);
     }
   };
 
@@ -1427,7 +1402,8 @@ export function deriveSidebarProjectData(input: {
           ? null
           : (projectThreads.find((thread) => thread.id === input.activeSidebarThreadId) ?? null);
       const visibleEntries =
-        activeThread === null
+        activeThread === null ||
+        (activeThread.parentThreadId && !isThreadActivelyWorking(activeThread))
           ? []
           : [
               {
