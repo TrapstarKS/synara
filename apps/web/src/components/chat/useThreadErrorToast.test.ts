@@ -40,7 +40,13 @@ describe("buildThreadErrorToastOptions", () => {
   });
 
   it("offers the unblock action for a provider-delivery quarantine", () => {
-    expect(build(blockedError).actionProps).toMatchObject({ children: "Unblock thread" });
+    const options = build(blockedError);
+    expect(options.title).toBe("Thread is blocked by an earlier provider failure");
+    expect(options.description).toBe(
+      "The provider stopped before Synara could confirm the request. Unblock the thread, then resend if needed.",
+    );
+    expect(options.data).toMatchObject({ copyText: blockedError });
+    expect(options.actionProps).toMatchObject({ children: "Unblock thread" });
   });
 
   it("disables the action while unblocking", () => {

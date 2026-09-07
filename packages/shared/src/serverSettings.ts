@@ -34,12 +34,22 @@ export function applyServerSettingsPatch(
   const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
     ? selectionPatch.options
     : (selectionPatch.options ?? current.textGenerationModelSelection.options);
+  const profileId =
+    provider === "codex"
+      ? selectionPatch.profileId === null
+        ? undefined
+        : (selectionPatch.profileId ??
+          (current.textGenerationModelSelection.provider === "codex"
+            ? current.textGenerationModelSelection.profileId
+            : undefined))
+      : undefined;
 
   return {
     ...next,
     textGenerationModelSelection: {
       provider,
       model,
+      ...(profileId ? { profileId } : {}),
       ...(options !== undefined ? { options } : {}),
     } as ModelSelection,
   };

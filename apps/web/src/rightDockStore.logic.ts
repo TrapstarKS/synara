@@ -17,6 +17,7 @@ export const RIGHT_DOCK_PANE_KINDS = [
   "file",
   "terminal",
   "sidechat",
+  "subagents",
   "git",
   "pullRequest",
 ] as const;

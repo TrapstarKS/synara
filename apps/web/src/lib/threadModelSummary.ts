@@ -6,13 +6,16 @@
 // Why: Reuses the composer's trait resolution so a thread's model reads exactly
 //      the same wherever it is displayed.
 
-import type { ModelSelection, ProviderKind } from "@synara/contracts";
+import type { ModelSelection, ProviderKind, ProviderModelDescriptor } from "@synara/contracts";
+
+import { getModelSelectionStringOptionValue, trimOrNull } from "@synara/shared/model";
 
 import {
   getComposerTraitSelection,
   resolveComposerTraitStatusLabel,
   showsComposerFastModeBadge,
 } from "~/components/chat/composerTraits";
+import { runtimeEffortLabel } from "~/components/chat/runtimeModelCapabilities";
 import { formatProviderModelOptionName, type ProviderOptions } from "~/providerModelOptions";
 
 export interface ThreadModelSummary {
@@ -26,6 +29,7 @@ export interface ThreadModelSummary {
 
 export function resolveThreadModelSummary(
   modelSelection: ModelSelection | null | undefined,
+  runtimeModel?: ProviderModelDescriptor,
 ): ThreadModelSummary | null {
   if (!modelSelection) {
     return null;
@@ -45,11 +49,18 @@ export function resolveThreadModelSummary(
     modelSelection.model,
     "",
     modelSelection.options as ProviderOptions | undefined,
+    runtimeModel,
   );
+  const storedCodexEffort =
+    provider === "codex"
+      ? trimOrNull(getModelSelectionStringOptionValue(modelSelection, "reasoningEffort"))
+      : null;
   return {
     provider,
     modelLabel,
-    statusLabel: resolveComposerTraitStatusLabel(traits),
+    statusLabel:
+      resolveComposerTraitStatusLabel(traits) ??
+      (storedCodexEffort ? runtimeEffortLabel(storedCodexEffort) : null),
     fastMode: showsComposerFastModeBadge(traits),
   };
 }

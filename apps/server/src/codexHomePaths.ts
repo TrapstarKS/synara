@@ -9,12 +9,14 @@
 
 import { homedir } from "node:os";
 import path from "node:path";
+import type { CodexProfileId } from "@synara/contracts";
 
 export const SYNARA_CODEX_HOME_OVERLAY_DIR = "codex-home-overlay";
 
 export interface CodexHomePathsInput {
   readonly env?: NodeJS.ProcessEnv;
   readonly homePath?: string;
+  readonly profileId?: CodexProfileId;
 }
 
 export function resolveBaseCodexHomePath(
@@ -27,10 +29,13 @@ export function resolveBaseCodexHomePath(
 export function resolveSynaraCodexHomeOverlayPath(
   env: NodeJS.ProcessEnv,
   sourceHomePath: string,
+  profileId?: CodexProfileId,
 ): string {
   const runtimeHome = env.SYNARA_HOME?.trim();
   const overlayRoot = runtimeHome || path.join(path.dirname(sourceHomePath), ".synara", "runtime");
-  return path.join(overlayRoot, SYNARA_CODEX_HOME_OVERLAY_DIR);
+  return profileId
+    ? path.join(overlayRoot, "codex-home-overlays", profileId)
+    : path.join(overlayRoot, SYNARA_CODEX_HOME_OVERLAY_DIR);
 }
 
 /**
@@ -41,7 +46,7 @@ export function resolveSynaraCodexHomeOverlayPath(
 export function resolveActiveCodexHomeWritePath(input: CodexHomePathsInput = {}): string {
   const env = input.env ?? process.env;
   const source = resolveBaseCodexHomePath(env, input.homePath);
-  const overlay = resolveSynaraCodexHomeOverlayPath(env, source);
+  const overlay = resolveSynaraCodexHomeOverlayPath(env, source, input.profileId);
   return path.resolve(source) === path.resolve(overlay) ? source : overlay;
 }
 
@@ -58,7 +63,7 @@ export function resolveCodexHomeAllowlistCandidates(
 ): readonly string[] {
   const env = input.env ?? process.env;
   const source = resolveBaseCodexHomePath(env, input.homePath);
-  const overlay = resolveSynaraCodexHomeOverlayPath(env, source);
+  const overlay = resolveSynaraCodexHomeOverlayPath(env, source, input.profileId);
   const sourceResolved = path.resolve(source);
   const overlayResolved = path.resolve(overlay);
   return sourceResolved === overlayResolved ? [source] : [source, overlay];

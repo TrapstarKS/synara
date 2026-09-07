@@ -36,7 +36,7 @@ export function ThreadPinToggleButton({
       size="icon-xs"
       variant="ghost"
       className={cn(
-        "sidebar-icon-button pointer-events-auto size-5 rounded-sm border-transparent bg-transparent shadow-none transition-all hover:text-foreground/82 sm:size-5",
+        "sidebar-icon-button pointer-events-auto size-5 rounded-sm border-transparent bg-transparent shadow-none transition-all pointer-coarse:after:hidden hover:text-foreground/82 max-md:size-8 md:size-5",
         toneClassName ?? "text-muted-foreground/34",
         presentation === "overlay"
           ? cn(

@@ -5,7 +5,7 @@
 
 /** Compact sidebar row height shared by projects, threads, chats, and settings nav. */
 export const SIDEBAR_ROW_HEIGHT_CLASS_NAME =
-  "min-h-[var(--app-density-row-height,1.75rem)] h-[var(--app-density-row-height,1.75rem)]";
+  "min-h-[var(--app-density-row-height,1.75rem)] h-[var(--app-density-row-height,1.75rem)] max-md:h-11 max-md:min-h-11";
 
 export const SIDEBAR_ROW_RADIUS_CLASS_NAME = "rounded-md";
 

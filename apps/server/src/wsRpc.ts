@@ -17,6 +17,7 @@ import {
   WsFeatureRpcGroup,
   WsRpcError,
   PullRequestsUnavailableError,
+  type CodexProfileId,
   type DeviceEvent,
   type GitActionProgressEvent,
   type GitHubProjectProvisionProgressEvent,
@@ -50,6 +51,8 @@ import { SessionCredentialService } from "./auth/Services/SessionCredentialServi
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { resolveThreadWorkspaceCwd } from "./checkpointing/Utils";
 import { ServerConfig, type ServerConfigShape } from "./config";
+import { CodexAccountManager } from "./codexAccountManager";
+import { resolveCodexProfileOptions } from "./codexProfiles";
 import { realpathNearestExisting } from "./realpathNearestExisting";
 import { workspaceRootsEqual } from "@synara/shared/threadWorkspace";
 import {
@@ -104,7 +107,7 @@ import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegi
 import { getEnabledProviderAdapter } from "./provider/enabledProviderAdapter";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { ProviderService } from "./provider/Services/ProviderService";
-import { listProviderUsage } from "./providerUsage";
+import { invalidateProviderUsageSnapshots, listProviderUsage } from "./providerUsage";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { ProfileStatsQuery } from "./profileStats";
 import { redactSensitiveProcessArgs } from "./processArgumentRedaction";
@@ -367,6 +370,18 @@ const makeWsRpcHandlersLayer = () =>
       const runtimeStartup = yield* ServerRuntimeStartup;
       const serverEnvironment = yield* ServerEnvironment;
       const serverSettings = yield* ServerSettingsService;
+      const codexAccountManager = new CodexAccountManager(config.secretsDir, () =>
+        invalidateProviderUsageSnapshots(["codex"]),
+      );
+      yield* Effect.addFinalizer(() => Effect.promise(() => codexAccountManager.close()));
+      const getSettingsForCodexProfile = (profileId: CodexProfileId) =>
+        serverSettings.getSettings.pipe(
+          Effect.flatMap((settings) =>
+            settings.providers.codex.profiles.some((profile) => profile.id === profileId)
+              ? Effect.succeed(settings)
+              : Effect.fail(new Error("Codex account was not found.")),
+          ),
+        );
       const terminalManager = yield* TerminalManager;
       const textGeneration = yield* TextGeneration;
       const workspaceEntries = yield* WorkspaceEntries;
@@ -1687,7 +1702,29 @@ const makeWsRpcHandlersLayer = () =>
         [WS_METHODS.serverGetSettings]: () =>
           rpcEffect(serverSettings.getSettingsView, "Failed to load server settings"),
         [WS_METHODS.serverUpdateSettings]: (input) =>
-          rpcEffect(serverSettings.updateSettingsView(input), "Failed to update server settings"),
+          rpcEffect(
+            Effect.gen(function* () {
+              const previous = yield* serverSettings.getSettings;
+              const next = yield* serverSettings.updateSettingsView(input);
+              const nextProfileIds = new Set(
+                next.providers.codex.profiles.map((profile) => profile.id),
+              );
+              const removedProfileIds = previous.providers.codex.profiles
+                .map((profile) => profile.id)
+                .filter((profileId) => !nextProfileIds.has(profileId));
+              if (removedProfileIds.length > 0) {
+                yield* Effect.promise(() =>
+                  Promise.all(
+                    removedProfileIds.map((profileId) =>
+                      codexAccountManager.closeProfile(profileId),
+                    ),
+                  ),
+                );
+              }
+              return next;
+            }),
+            "Failed to update server settings",
+          ),
         [WS_METHODS.serverRefreshProviders]: () =>
           rpcEffect(
             providerHealth.refresh.pipe(Effect.map((providers) => ({ providers }))),
@@ -1740,6 +1777,102 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(getProviderUsageSnapshot(input), "Failed to load provider usage"),
         [WS_METHODS.serverListProviderUsage]: (input) =>
           rpcEffect(listProviderUsage(input), "Failed to load provider usage"),
+        [WS_METHODS.serverListCodexAccountStates]: () =>
+          rpcEffect(
+            requireOwner.pipe(
+              Effect.andThen(serverSettings.getSettings),
+              Effect.flatMap((settings) =>
+                Effect.forEach(
+                  settings.providers.codex.profiles,
+                  (profile) =>
+                    Effect.promise(() =>
+                      codexAccountManager.getState({
+                        profileId: profile.id,
+                        proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
+                      }),
+                    ),
+                  { concurrency: 4 },
+                ),
+              ),
+            ),
+            "Failed to load Codex account state",
+          ),
+        [WS_METHODS.serverStartCodexAccountLogin]: (input) =>
+          rpcEffect(
+            requireOwner.pipe(
+              Effect.andThen(getSettingsForCodexProfile(input.profileId)),
+              Effect.flatMap((settings) =>
+                Effect.tryPromise({
+                  try: () =>
+                    codexAccountManager.startLogin({
+                      ...input,
+                      codexBinaryPath: settings.providers.codex.binaryPath,
+                      proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
+                    }),
+                  catch: (error) => error as Error,
+                }),
+              ),
+            ),
+            "Failed to start Codex account login",
+          ),
+        [WS_METHODS.serverCancelCodexAccountLogin]: (input) =>
+          rpcEffect(
+            requireOwner.pipe(
+              Effect.andThen(getSettingsForCodexProfile(input.profileId)),
+              Effect.flatMap((settings) =>
+                Effect.promise(async () => {
+                  await codexAccountManager.cancelLogin(input.profileId);
+                  return codexAccountManager.getState({
+                    profileId: input.profileId,
+                    proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
+                  });
+                }),
+              ),
+            ),
+            "Failed to cancel Codex account login",
+          ),
+        [WS_METHODS.serverLogoutCodexAccount]: (input) =>
+          rpcEffect(
+            requireOwner.pipe(
+              Effect.andThen(getSettingsForCodexProfile(input.profileId)),
+              Effect.flatMap((settings) =>
+                Effect.promise(async () => {
+                  await codexAccountManager.logout(input.profileId, input.target);
+                  return codexAccountManager.getState({
+                    profileId: input.profileId,
+                    proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
+                  });
+                }),
+              ),
+            ),
+            "Failed to sign out of Codex account",
+          ),
+        [WS_METHODS.serverSetCodexAccountBridge]: (input) =>
+          rpcEffect(
+            requireOwner.pipe(
+              Effect.andThen(getSettingsForCodexProfile(input.profileId)),
+              Effect.flatMap((settings) =>
+                Effect.tryPromise({
+                  try: async () => {
+                    if (input.action === "start") {
+                      await codexAccountManager.startBridge({
+                        profileId: input.profileId,
+                        proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
+                      });
+                    } else {
+                      await codexAccountManager.stopBridge(input.profileId);
+                    }
+                    return codexAccountManager.getState({
+                      profileId: input.profileId,
+                      proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
+                    });
+                  },
+                  catch: (error) => error as Error,
+                }),
+              ),
+            ),
+            "Failed to update Claude Code bridge",
+          ),
         [WS_METHODS.serverGetDiagnostics]: () =>
           rpcEffect(
             Effect.gen(function* () {
@@ -1815,15 +1948,25 @@ const makeWsRpcHandlersLayer = () =>
               const settings = yield* serverSettings.getSettings;
               const modelSelection =
                 input.textGenerationModelSelection ?? settings.textGenerationModelSelection;
+              const providerOptions = resolveCodexProfileOptions({
+                settings,
+                secretsDir: config.secretsDir,
+                modelSelection,
+                ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+              });
+              const codexHomePath =
+                modelSelection.provider === "codex" && modelSelection.profileId
+                  ? providerOptions.codex?.homePath
+                  : input.codexHomePath;
               return yield* textGeneration.generateThreadRecap({
                 cwd: input.cwd,
                 newMaterial: input.newMaterial,
                 ...(input.previousRecap ? { previousRecap: input.previousRecap } : {}),
                 ...(input.currentState ? { currentState: input.currentState } : {}),
-                ...(input.codexHomePath ? { codexHomePath: input.codexHomePath } : {}),
+                ...(codexHomePath ? { codexHomePath } : {}),
                 model: input.textGenerationModel ?? modelSelection.model,
                 modelSelection,
-                ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+                providerOptions,
               });
             }),
             "Failed to generate thread recap",
@@ -1834,15 +1977,25 @@ const makeWsRpcHandlersLayer = () =>
               const settings = yield* serverSettings.getSettings;
               const modelSelection =
                 input.textGenerationModelSelection ?? settings.textGenerationModelSelection;
+              const providerOptions = resolveCodexProfileOptions({
+                settings,
+                secretsDir: config.secretsDir,
+                modelSelection,
+                ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+              });
+              const codexHomePath =
+                modelSelection.provider === "codex" && modelSelection.profileId
+                  ? providerOptions.codex?.homePath
+                  : input.codexHomePath;
               return yield* textGeneration.generateAutomationIntent({
                 cwd: input.cwd,
                 message: input.message,
                 ...(input.defaultMode ? { defaultMode: input.defaultMode } : {}),
                 nowIso: input.nowIso,
-                ...(input.codexHomePath ? { codexHomePath: input.codexHomePath } : {}),
+                ...(codexHomePath ? { codexHomePath } : {}),
                 model: input.textGenerationModel ?? modelSelection.model,
                 modelSelection,
-                ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+                providerOptions,
               });
             }),
             "Failed to generate automation intent",

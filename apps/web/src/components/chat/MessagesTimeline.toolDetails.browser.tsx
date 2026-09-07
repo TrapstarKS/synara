@@ -226,6 +226,62 @@ describe("MessagesTimeline tool details", () => {
     }
   });
 
+  it("reveals the generated image preview inside expanded activity details", async () => {
+    const onImageExpand = vi.fn();
+    const host = createTimelineHost();
+    const screen = await render(
+      <TimelineWorkEntryRow
+        workEntry={{
+          id: "generated-image-activity",
+          createdAt: "2026-03-17T19:12:28.000Z",
+          label: "Generated image",
+          tone: "tool",
+          itemType: "image_generation",
+          detail: "/tmp/synara/generated/pose_HAYMAKER_orig.png",
+          liveActivity: {
+            state: "completed",
+            label: "Generated image",
+            lastActivityAt: "2026-03-17T19:12:29.000Z",
+          },
+        }}
+        chatMetaFontSizePx={12}
+        textFontSizePx={13}
+        density="compact"
+        onImageExpand={onImageExpand}
+        markdownCwd={undefined}
+        timestampFormat="locale"
+      />,
+      { container: host },
+    );
+
+    try {
+      const trigger = document.querySelector<HTMLButtonElement>(
+        '[data-tool-detail-trigger="true"]',
+      );
+      expect(trigger).not.toBeNull();
+      trigger?.click();
+
+      await expect
+        .poll(() => document.querySelector<HTMLImageElement>('img[alt="Generated image"]'))
+        .not.toBeNull();
+      const image = document.querySelector<HTMLImageElement>('img[alt="Generated image"]');
+      expect(image?.src).toContain("pose_HAYMAKER_orig.png");
+      document.querySelector<HTMLButtonElement>('[aria-label="Expand generated image"]')?.click();
+      expect(onImageExpand).toHaveBeenCalledWith({
+        images: [
+          expect.objectContaining({
+            name: "pose_HAYMAKER_orig.png",
+          }),
+        ],
+        index: 0,
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+      await settleLayout();
+    }
+  });
+
   it("states settled tool calls as a sentence without a lifecycle tail", async () => {
     const host = createTimelineHost();
     const screen = await render(

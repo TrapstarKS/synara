@@ -32,7 +32,10 @@ export interface ReleaseArtifactProvenanceInput {
   readonly publication: boolean;
   readonly signed: boolean;
   readonly allowUnsignedWindowsPublication?: boolean;
+  readonly macSigningScheme?: "apple-developer-id" | "mac-ad-hoc";
   readonly expectedMacTeamId?: string;
+  readonly expectedMacCertificateSha1?: string;
+  readonly expectedMacAuthority?: string;
   readonly expectedWindowsPublisher?: string;
   readonly expectedWindowsSubjectDn?: string;
   readonly artifactFileNames?: ReadonlyArray<string>;
@@ -59,7 +62,8 @@ interface WindowsSignatureEvidence {
 }
 
 interface MacSignatureEvidence {
-  readonly teamId: string;
+  readonly teamId: string | null;
+  readonly certificateSha1: string;
   readonly authorities: ReadonlyArray<string>;
   readonly appBundle: string;
   readonly diskImage: string;
@@ -68,7 +72,7 @@ interface MacSignatureEvidence {
 type SigningEvidence =
   | {
       readonly status: "verified";
-      readonly scheme: "apple-developer-id";
+      readonly scheme: "apple-developer-id" | "mac-ad-hoc";
       readonly identity: MacSignatureEvidence;
       readonly checks: ReadonlyArray<string>;
     }
@@ -185,17 +189,25 @@ export async function collectReleaseArtifactDigests(
 }
 
 function parseMacIdentity(output: string): {
-  readonly teamId: string;
+  readonly teamId: string | null;
   readonly authorities: ReadonlyArray<string>;
 } {
-  const teamId = /^TeamIdentifier=(.+)$/m.exec(output)?.[1]?.trim();
+  const teamId = /^TeamIdentifier=(.+)$/m.exec(output)?.[1]?.trim() || null;
   const authorities = [...output.matchAll(/^Authority=(.+)$/gm)]
     .map((match) => match[1]?.trim())
     .filter((value): value is string => Boolean(value));
-  if (!teamId || authorities.length === 0) {
+  if (authorities.length === 0) {
     throw new Error("codesign returned incomplete signing identity output.");
   }
   return { teamId, authorities };
+}
+
+function parseMacCertificateSha1(output: string): string {
+  const certificateSha1 = /certificate leaf = H"([0-9a-f]{40})"/i.exec(output)?.[1];
+  if (!certificateSha1) {
+    throw new Error("codesign returned no leaf certificate fingerprint.");
+  }
+  return certificateSha1.toLowerCase();
 }
 
 function verifyMacSignatures(
@@ -205,9 +217,15 @@ function verifyMacSignatures(
   if (process.platform !== "darwin") {
     throw new Error("macOS artifact verification must run on macOS.");
   }
+  const signingScheme = input.macSigningScheme ?? "apple-developer-id";
   const expectedTeamId = input.expectedMacTeamId?.trim();
-  if (!expectedTeamId) {
+  const expectedCertificateSha1 = input.expectedMacCertificateSha1?.trim().toLowerCase();
+  const expectedAuthority = input.expectedMacAuthority?.trim();
+  if (signingScheme === "apple-developer-id" && !expectedTeamId) {
     throw new Error("Signed macOS provenance requires an expected Apple team ID.");
+  }
+  if (signingScheme === "mac-ad-hoc" && !expectedCertificateSha1) {
+    throw new Error("Ad-hoc macOS provenance requires an expected certificate fingerprint.");
   }
 
   const zip = requireSingleArtifact(artifacts, ".zip");
@@ -230,52 +248,80 @@ function verifyMacSignatures(
     const appIdentity = parseMacIdentity(
       `${appIdentityOutput.stdout}\n${appIdentityOutput.stderr}`,
     );
-    if (appIdentity.teamId !== expectedTeamId) {
+    const appRequirementOutput = runCommand("codesign", ["-d", "-r-", appBundlePath]);
+    const appCertificateSha1 = parseMacCertificateSha1(
+      `${appRequirementOutput.stdout}\n${appRequirementOutput.stderr}`,
+    );
+    if (signingScheme === "apple-developer-id" && appIdentity.teamId !== expectedTeamId) {
       throw new Error(
         `macOS app team ID ${appIdentity.teamId} does not match expected ${expectedTeamId}.`,
       );
     }
-    runCommand("spctl", ["--assess", "--type", "execute", "--verbose=4", appBundlePath]);
-    runCommand("xcrun", ["stapler", "validate", appBundlePath]);
+    if (signingScheme === "mac-ad-hoc") {
+      if (appCertificateSha1 !== expectedCertificateSha1) {
+        throw new Error(
+          `macOS app certificate ${appCertificateSha1} does not match expected ${expectedCertificateSha1}.`,
+        );
+      }
+      if (expectedAuthority && !appIdentity.authorities.includes(expectedAuthority)) {
+        throw new Error(
+          `macOS app signing authority does not include expected ${expectedAuthority}.`,
+        );
+      }
+    } else {
+      runCommand("spctl", ["--assess", "--type", "execute", "--verbose=4", appBundlePath]);
+      runCommand("xcrun", ["stapler", "validate", appBundlePath]);
+    }
 
     const diskImagePath = join(input.assetsDirectory, diskImage.fileName);
-    runCommand("codesign", ["--verify", "--strict", "--verbose=4", diskImagePath]);
-    const diskImageIdentityOutput = runCommand("codesign", ["-d", "--verbose=4", diskImagePath]);
-    const diskImageIdentity = parseMacIdentity(
-      `${diskImageIdentityOutput.stdout}\n${diskImageIdentityOutput.stderr}`,
-    );
-    if (diskImageIdentity.teamId !== expectedTeamId) {
-      throw new Error(
-        `macOS disk image team ID ${diskImageIdentity.teamId} does not match expected ${expectedTeamId}.`,
+    if (signingScheme === "mac-ad-hoc") {
+      // TrapRAM-style releases sign the app and updater ZIP with a persistent
+      // private certificate. The DMG remains a transport container and is not
+      // expected to pass Gatekeeper or notarization checks.
+    } else {
+      runCommand("codesign", ["--verify", "--strict", "--verbose=4", diskImagePath]);
+      const diskImageIdentityOutput = runCommand("codesign", ["-d", "--verbose=4", diskImagePath]);
+      const diskImageIdentity = parseMacIdentity(
+        `${diskImageIdentityOutput.stdout}\n${diskImageIdentityOutput.stderr}`,
       );
+      if (diskImageIdentity.teamId !== expectedTeamId) {
+        throw new Error(
+          `macOS disk image team ID ${diskImageIdentity.teamId} does not match expected ${expectedTeamId}.`,
+        );
+      }
+      runCommand("spctl", [
+        "--assess",
+        "--type",
+        "open",
+        "--context",
+        "context:primary-signature",
+        "--verbose=4",
+        diskImagePath,
+      ]);
+      runCommand("xcrun", ["stapler", "validate", diskImagePath]);
     }
-    runCommand("spctl", [
-      "--assess",
-      "--type",
-      "open",
-      "--context",
-      "context:primary-signature",
-      "--verbose=4",
-      diskImagePath,
-    ]);
-    runCommand("xcrun", ["stapler", "validate", diskImagePath]);
 
     return {
       status: "verified",
-      scheme: "apple-developer-id",
+      scheme: signingScheme,
       identity: {
         teamId: appIdentity.teamId,
+        certificateSha1: appCertificateSha1,
         authorities: appIdentity.authorities,
         appBundle: appBundleName,
         diskImage: diskImage.fileName,
       },
       checks: [
         "codesign --verify app",
-        "spctl --assess app",
-        "stapler validate app",
-        "codesign --verify dmg",
-        "spctl --assess dmg",
-        "stapler validate dmg",
+        ...(signingScheme === "mac-ad-hoc"
+          ? ["persistent leaf certificate fingerprint", "DMG payload present"]
+          : [
+              "spctl --assess app",
+              "stapler validate app",
+              "codesign --verify dmg",
+              "spctl --assess dmg",
+              "stapler validate dmg",
+            ]),
       ],
     };
   } finally {
@@ -444,6 +490,19 @@ function validateInput(input: ReleaseArtifactProvenanceInput): void {
   }
   if (input.publication && input.sourceTag === null) {
     throw new Error("Published artifact provenance requires an exact source tag.");
+  }
+  if (
+    input.macSigningScheme &&
+    input.macSigningScheme !== "apple-developer-id" &&
+    input.macSigningScheme !== "mac-ad-hoc"
+  ) {
+    throw new Error(`Unsupported macOS signing scheme: ${input.macSigningScheme}.`);
+  }
+  if (
+    input.expectedMacCertificateSha1 &&
+    !/^[0-9a-f]{40}$/i.test(input.expectedMacCertificateSha1)
+  ) {
+    throw new Error("Expected macOS certificate fingerprint must be a SHA-1 value.");
   }
 }
 

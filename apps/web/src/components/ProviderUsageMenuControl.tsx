@@ -3,6 +3,7 @@
 
 import {
   PROVIDER_DISPLAY_NAMES,
+  type CodexProfileId,
   type ProviderKind,
   type ServerGetProviderUsageSnapshotResult,
 } from "@synara/contracts";
@@ -85,6 +86,7 @@ export function useProviderUsageMenuModel(
   provider: ProviderKind,
   input: {
     providerSnapshot?: ServerGetProviderUsageSnapshotResult | undefined;
+    codexProfileId?: CodexProfileId | null | undefined;
   } = {},
 ): ProviderUsageMenuModel {
   const { settings } = useAppSettings();
@@ -93,6 +95,7 @@ export function useProviderUsageMenuModel(
     provider,
     threads,
     codexHomePath: settings.codexHomePath || null,
+    ...(input.codexProfileId !== undefined ? { codexProfileId: input.codexProfileId } : {}),
     providerSnapshot: input.providerSnapshot,
     fetchOpenUsageData: false,
   });
@@ -138,8 +141,14 @@ export function ProviderUsageMenuPopup({
   );
 }
 
-export function ProviderUsageMenuControl({ provider }: { provider: ProviderKind }) {
-  const model = useProviderUsageMenuModel(provider);
+export function ProviderUsageMenuControl({
+  provider,
+  codexProfileId,
+}: {
+  provider: ProviderKind;
+  codexProfileId?: CodexProfileId | undefined;
+}) {
+  const model = useProviderUsageMenuModel(provider, { codexProfileId });
 
   if (!model.primaryRow) {
     return null;

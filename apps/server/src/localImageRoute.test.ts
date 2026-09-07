@@ -22,6 +22,7 @@ import { attachmentsEffectRouteLayer, localImageEffectRouteLayer } from "./http"
 import { createLocalPreviewGrant } from "./localImageFiles";
 import { ManagedAttachmentRepositoryLive } from "./persistence/Layers/ManagedAttachments";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite";
+import { ServerSettingsService } from "./serverSettings";
 
 const tempDirs: string[] = [];
 
@@ -133,15 +134,19 @@ async function withEffectServer(
             },
             { port: 0, host: "127.0.0.1" },
           );
-          const httpApp = yield* routeLayer === localImageEffectRouteLayer
-            ? HttpRouter.toHttpEffect(localImageEffectRouteLayer)
-            : HttpRouter.toHttpEffect(attachmentsEffectRouteLayer);
-          yield* httpServer.serve(httpApp);
+          if (routeLayer === localImageEffectRouteLayer) {
+            const httpApp = yield* HttpRouter.toHttpEffect(localImageEffectRouteLayer);
+            yield* httpServer.serve(httpApp);
+          } else {
+            const httpApp = yield* HttpRouter.toHttpEffect(attachmentsEffectRouteLayer);
+            yield* httpServer.serve(httpApp);
+          }
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
               Layer.succeed(ServerConfig, config),
               Layer.succeed(ServerAuth, makeFakeServerAuth()),
+              ServerSettingsService.layerTest(),
               ManagedAttachmentRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
               NodeHttpServer.layerHttpServices,
             ),

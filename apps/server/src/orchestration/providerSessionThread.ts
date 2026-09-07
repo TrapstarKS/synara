@@ -34,3 +34,16 @@ export function resolveProviderSessionThread(
     );
   });
 }
+
+export const resolveSubagentProviderThreadId = (
+  threadId: ThreadId,
+  parentThreadId: ThreadId | null | undefined,
+): string | undefined => {
+  if (!parentThreadId) {
+    return undefined;
+  }
+
+  const prefix = `subagent:${parentThreadId}:`;
+  const rawThreadId = threadId as string;
+  return rawThreadId.startsWith(prefix) ? rawThreadId.slice(prefix.length) : undefined;
+};

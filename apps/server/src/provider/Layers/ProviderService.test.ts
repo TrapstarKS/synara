@@ -4763,6 +4763,69 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
     }),
   );
 
+  it.effect(
+    "keeps native child turns alive after parent completion and accepts the parent wakeup",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const directory = yield* ProviderSessionDirectory;
+        const threadId = asThreadId("thread-native-child-lifetime");
+        idleCleanup.codex.stopSession.mockClear();
+        yield* provider.startSession(threadId, {
+          provider: "codex",
+          threadId,
+          runtimeMode: "full-access",
+        });
+        yield* idleCleanup.codex.waitForRuntimeSubscribers();
+        const refs = { providerThreadId: "native-child", providerParentThreadId: "native-parent" };
+        idleCleanup.codex.emit({
+          type: "turn.started",
+          eventId: asEventId("native-child-start"),
+          provider: "codex",
+          createdAt: "2026-09-08T00:00:00.000Z",
+          threadId,
+          turnId: asTurnId("child-turn"),
+          providerRefs: refs,
+          payload: { state: "running" },
+        });
+        idleCleanup.codex.emit({
+          type: "turn.completed",
+          eventId: asEventId("native-parent-complete"),
+          provider: "codex",
+          createdAt: "2026-09-08T00:00:01.000Z",
+          threadId,
+          payload: { state: "completed" },
+        });
+        yield* sleep(150);
+        assert.equal(idleCleanup.codex.stopSession.mock.calls.length, 0);
+        assert.equal(yield* provider.hasLiveRuntimeTasks!({ threadId }), true);
+        idleCleanup.codex.emit({
+          type: "turn.completed",
+          eventId: asEventId("native-child-complete"),
+          provider: "codex",
+          createdAt: "2026-09-08T00:00:02.000Z",
+          threadId,
+          turnId: asTurnId("child-turn"),
+          providerRefs: refs,
+          payload: { state: "completed" },
+        });
+        idleCleanup.codex.emit({
+          type: "turn.started",
+          eventId: asEventId("native-parent-wakeup"),
+          provider: "codex",
+          createdAt: "2026-09-08T00:00:03.000Z",
+          threadId,
+          turnId: asTurnId("parent-wakeup"),
+          payload: { state: "running" },
+        });
+        yield* sleep(150);
+        assert.equal(idleCleanup.codex.stopSession.mock.calls.length, 0);
+        assert.equal(yield* provider.hasLiveRuntimeTasks!({ threadId }), false);
+        const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        assert.equal(asRuntimePayloadRecord(binding?.runtimePayload).activeTurnId, "parent-wakeup");
+      }),
+  );
+
   it.effect("keeps the runtime alive until background tasks settle", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
