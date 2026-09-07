@@ -18,6 +18,8 @@ export const WINDOWS_INSTALLER_GUID = "368107a8-afe6-5db5-ab3b-d4f331684868";
 const MAC_DMG_ICON_PATH = "icon.icns";
 export const NODE_PTY_ASAR_UNPACK_GLOBS = ["node_modules/node-pty/**"] as const;
 
+export type MacSigningMode = "developer-id" | "adhoc";
+
 export interface DesktopPlatformBuildConfig {
   readonly asarUnpack?: ReadonlyArray<string>;
   readonly dmg?: Record<string, unknown>;
@@ -33,6 +35,7 @@ export interface CreateDesktopPlatformBuildConfigInput {
   readonly platform: "linux" | "mac" | "win";
   readonly target: string;
   readonly signed?: boolean;
+  readonly macSigningMode?: MacSigningMode;
   readonly windowsAzureSignOptions?: Record<string, string>;
 }
 
@@ -70,12 +73,16 @@ export function createDesktopPlatformBuildConfig(
   const nativePackaging = { asarUnpack: [...NODE_PTY_ASAR_UNPACK_GLOBS] };
 
   if (input.platform === "mac") {
+    const macSigningMode = input.macSigningMode ?? "developer-id";
+    const macSigned = input.signed === true;
     const mac = {
       target: input.target === "dmg" ? [input.target, "zip"] : [input.target],
       icon: MAC_DMG_ICON_PATH,
       category: "public.app-category.developer-tools",
-      hardenedRuntime: input.signed === true,
-      notarize: input.signed === true,
+      hardenedRuntime: macSigned,
+      // The persistent TrapRAM-style certificate is intentionally ad hoc. It
+      // signs the app and updater payload but cannot be notarized by Apple.
+      notarize: macSigned && macSigningMode !== "adhoc",
       entitlements: MAC_ENTITLEMENTS_PATH,
       entitlementsInherit: MAC_INHERITED_ENTITLEMENTS_PATH,
       binaries: [MAC_APPSNAP_HELPER_BUNDLE_PATH],
@@ -90,7 +97,7 @@ export function createDesktopPlatformBuildConfig(
     return {
       ...nativePackaging,
       dmg: {
-        sign: input.signed === true,
+        sign: macSigned,
         // The signed release flow notarizes and staples the DMG after electron-builder exits.
         // Do not emit a blockmap/update entry whose hashes would describe the pre-stapled image;
         // macOS auto-updates use the separately finalized ZIP artifact.

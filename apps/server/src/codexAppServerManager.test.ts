@@ -358,6 +358,12 @@ function createPendingApprovalHarness(runtimeMode: RuntimeMode = "approval-requi
 
 function createCollabNotificationHarness() {
   const manager = new CodexAppServerManager();
+  const recoverChildMetadata = vi
+    .spyOn(
+      manager as unknown as { recoverChildMetadata: (...args: unknown[]) => void },
+      "recoverChildMetadata",
+    )
+    .mockImplementation(() => {});
   const context = {
     session: {
       provider: "codex",
@@ -412,7 +418,15 @@ function createCollabNotificationHarness() {
     )
     .mockResolvedValue(undefined);
 
-  return { manager, context, emitEvent, updateSession, requireSession, writeMessage };
+  return {
+    manager,
+    context,
+    emitEvent,
+    updateSession,
+    requireSession,
+    writeMessage,
+    recoverChildMetadata,
+  };
 }
 
 function handleServerNotificationForTest(
@@ -836,7 +850,7 @@ describe("codex CLI version gate", () => {
           homePath,
           minimumVersion: MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION,
         }),
-      ).rejects.toThrow(`Auto mode requires v${MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION} or newer`);
+      ).rejects.toThrow(`This session requires v${MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION} or newer`);
     } finally {
       reset();
       vi.unstubAllEnvs();
@@ -1765,8 +1779,37 @@ describe("startSession", () => {
   });
 });
 
+it("requires a Codex version with exact MCP call metadata before starting a gateway runtime", async () => {
+  const manager = new CodexAppServerManager(undefined, {
+    agentGatewayMcp: {
+      endpointUrl: () => "http://localhost/mcp",
+      acquireSessionLease: () => {
+        throw new Error("must not acquire before the version gate");
+      },
+    },
+  });
+  const gate = vi
+    .spyOn(
+      manager as unknown as {
+        assertSupportedCodexCliVersion: (input: { minimumVersion?: string }) => Promise<void>;
+      },
+      "assertSupportedCodexCliVersion",
+    )
+    .mockImplementation(async (input) => {
+      expect(input.minimumVersion).toBe("0.153.0");
+      throw new Error("native MCP metadata version gate");
+    });
+  await expect(
+    manager.startSession({
+      threadId: asThreadId("native-gateway-version"),
+      runtimeMode: "full-access",
+    }),
+  ).rejects.toThrow("native MCP metadata version gate");
+  expect(gate).toHaveBeenCalledOnce();
+});
+
 describe("sendTurn", () => {
-  it("clears stale collaboration receiver routing before a new turn", async () => {
+  it("preserves child routing across a new parent turn", async () => {
     const { manager, context } = createSendTurnHarness();
     context.collabReceiverTurns.set("reused-child", "old-turn");
     context.collabReceiverParents.set("reused-child", "old-parent");
@@ -1776,8 +1819,8 @@ describe("sendTurn", () => {
       input: "Start the next turn",
     });
 
-    expect(context.collabReceiverTurns.size).toBe(0);
-    expect(context.collabReceiverParents.size).toBe(0);
+    expect(context.collabReceiverTurns.get("reused-child")).toBe("old-turn");
+    expect(context.collabReceiverParents.get("reused-child")).toBe("old-parent");
   });
 
   it("sends text and image user input items to turn/start", async () => {
@@ -3528,6 +3571,42 @@ describe("respondToUserInput", () => {
 });
 
 describe("collab child conversation routing", () => {
+  it("keeps parent and sibling identities intact when a child sends them messages", () => {
+    const { manager, context, emitEvent } = createCollabNotificationHarness();
+    context.collabReceiverParents.set("sender", "provider_parent");
+    context.collabReceiverParents.set("sibling", "provider_parent");
+    for (const receiver of ["provider_parent", "sibling"]) {
+      handleServerNotificationForTest(manager, context, {
+        method: "item/started",
+        params: {
+          threadId: "sender",
+          turnId: "sender-turn",
+          item: {
+            type: "collabAgentToolCall",
+            id: `send-${receiver}`,
+            tool: "sendMessage",
+            receiverThreadIds: [receiver],
+          },
+        },
+      });
+    }
+    expect(context.collabReceiverParents.has("provider_parent")).toBe(false);
+    expect(context.collabReceiverParents.get("sibling")).toBe("provider_parent");
+    handleServerNotificationForTest(manager, context, {
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "provider_parent",
+        turnId: "parent-turn",
+        itemId: "parent-reply",
+        delta: "received child result",
+      },
+    });
+    expect(emitEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ providerThreadId: "provider_parent" }),
+    );
+    expect(emitEvent.mock.calls.at(-1)?.[0]).not.toHaveProperty("providerParentThreadId");
+  });
+
   it("tracks the current collabToolCall receiver shape", () => {
     const { manager, context } = createCollabNotificationHarness();
 
@@ -3645,7 +3724,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("does not infer a provider parent for active-parent or inactive-session notifications", () => {
+  it("keeps the active provider as parent for another provider thread after settlement", () => {
     const { manager, context, emitEvent } = createCollabNotificationHarness();
 
     handleServerNotificationForTest(manager, context, {
@@ -3673,7 +3752,7 @@ describe("collab child conversation routing", () => {
     expect(activeParentEvent.providerThreadId).toBe("provider_parent");
     expect(activeParentEvent).not.toHaveProperty("providerParentThreadId");
     expect(inactiveSessionEvent.providerThreadId).toBe("another_provider_thread");
-    expect(inactiveSessionEvent).not.toHaveProperty("providerParentThreadId");
+    expect(inactiveSessionEvent.providerParentThreadId).toBe("provider_parent");
   });
 
   it("prefers a mapped provider parent over the active-provider fallback", () => {
@@ -3921,7 +4000,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("suppresses child lifecycle notifications without mutating the parent session state", () => {
+  it("forwards child lifecycle notifications without mutating the parent session state", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
 
     (
@@ -3967,11 +4046,127 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenCalledTimes(2);
+    expect(emitEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_child_1",
+        parentTurnId: "turn_parent",
+        providerThreadId: "child_provider_1",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    expect(emitEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: "turn/completed",
+        turnId: "turn_child_1",
+        parentTurnId: "turn_parent",
+        providerThreadId: "child_provider_1",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
   });
 
-  it("suppresses child lifecycle notifications that arrive before receiver mapping", () => {
+  it.each([
+    {
+      method: "thread/started",
+      params: { thread: { id: "child_provider_unmapped", name: "Espera 60s" } },
+    },
+    {
+      method: "thread/name/updated",
+      params: { threadId: "child_provider_unmapped", threadName: "Espera 60s" },
+    },
+  ])("forwards child display metadata $method without changing the parent", (notification) => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, notification);
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: notification.method,
+        providerThreadId: "child_provider_unmapped",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["turn/started", "thread/started"])(
+    "recovers missing child metadata from %s once without changing turn lifecycle",
+    async (method) => {
+      const { manager, context, emitEvent, updateSession, recoverChildMetadata } =
+        createCollabNotificationHarness();
+      recoverChildMetadata.mockRestore();
+      const thread = {
+        id: "child_provider_unmapped",
+        source: { subAgent: { thread_spawn: { agent_path: "/root/rarity_path" } } },
+      };
+      const sendRequest = vi
+        .spyOn(
+          manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+          "sendRequest",
+        )
+        .mockResolvedValue({ thread });
+      const notification = {
+        method,
+        params:
+          method === "thread/started"
+            ? { thread: { id: thread.id } }
+            : { threadId: thread.id, turn: { id: "child-turn" } },
+      };
+      handleServerNotificationForTest(manager, context, notification);
+      handleServerNotificationForTest(manager, context, notification);
+      await vi.waitFor(() =>
+        expect(emitEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            method: "thread/name/updated",
+            providerThreadId: thread.id,
+            providerParentThreadId: "provider_parent",
+            payload: { threadId: thread.id, thread },
+          }),
+        ),
+      );
+      expect(sendRequest).toHaveBeenCalledExactlyOnceWith(context, "thread/read", {
+        threadId: thread.id,
+        includeTurns: false,
+      });
+      expect(updateSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not overwrite newer child metadata with a delayed read", async () => {
+    const { manager, context, emitEvent, recoverChildMetadata } = createCollabNotificationHarness();
+    recoverChildMetadata.mockRestore();
+    const pending = Promise.withResolvers<unknown>();
+    vi.spyOn(
+      manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+      "sendRequest",
+    ).mockReturnValue(pending.promise);
+    const threadId = "child_provider_unmapped";
+    handleServerNotificationForTest(manager, context, {
+      method: "turn/started",
+      params: { threadId, turn: { id: "child-turn" } },
+    });
+    handleServerNotificationForTest(manager, context, {
+      method: "thread/name/updated",
+      params: { threadId, threadName: "New name" },
+    });
+    pending.resolve({ thread: { id: threadId, name: "Old name" } });
+    await pending.promise;
+    await Promise.resolve();
+    const metadata = emitEvent.mock.calls.filter(
+      ([event]) => (event as { method: string }).method === "thread/name/updated",
+    );
+    expect(metadata).toHaveLength(1);
+    expect(metadata[0]?.[0]).toMatchObject({ payload: { threadName: "New name" } });
+  });
+
+  it("forwards child lifecycle notifications that arrive before receiver mapping", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
     context.session.status = "running";
     context.session.activeTurnId = "turn_parent";
@@ -3988,9 +4183,44 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_child_unmapped",
+        providerThreadId: "child_provider_unmapped",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
     expect(context.session.activeTurnId).toBe("turn_parent");
+  });
+
+  it("keeps routing a late child terminal event after the parent turn settles", () => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+    context.session.status = "ready";
+    delete (context.session as Partial<typeof context.session>).activeTurnId;
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "turn/completed",
+      params: {
+        threadId: "child_provider_late",
+        turn: { id: "turn_child_late", status: "completed" },
+      },
+    });
+
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/completed",
+        turnId: "turn_child_late",
+        providerThreadId: "child_provider_late",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    expect(updateSession).not.toHaveBeenCalled();
   });
 
   it("keeps handling lifecycle notifications from the active provider thread", () => {
@@ -4020,7 +4250,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("suppresses child lifecycle notifications when only the provider parent is known", () => {
+  it("forwards child lifecycle notifications when only the provider parent is known", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
     context.collabReceiverParents.set("child_provider_1", "provider_parent");
 
@@ -4036,7 +4266,14 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_child_1",
+        providerThreadId: "child_provider_1",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
   });
 
@@ -4298,6 +4535,158 @@ describe("handleServerNotification error normalization", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("coalesces child results into one empty-input continuation of the idle parent", async () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, context } = createCollabNotificationHarness();
+      (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(
+        String(context.session.threadId),
+        context,
+      );
+      const sendRequest = vi
+        .spyOn(
+          manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+          "sendRequest",
+        )
+        .mockResolvedValue({});
+      const notify = (method: string, threadId: string, turnId: string) =>
+        handleServerNotificationForTest(manager, context, {
+          method,
+          params: { threadId, turn: { id: turnId, status: "completed" } },
+        });
+      notify("turn/started", "provider_parent", "turn_parent");
+      notify("turn/completed", "provider_parent", "turn_parent");
+      notify("turn/completed", "child-one", "child-one-turn");
+      notify("turn/completed", "child-two", "child-two-turn");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sendRequest).toHaveBeenCalledExactlyOnceWith(context, "turn/start", {
+        threadId: "provider_parent",
+        input: [],
+        turnTrigger: "subagent_completion",
+      });
+      notify("turn/started", "provider_parent", "resumed-parent");
+      notify("turn/completed", "provider_parent", "resumed-parent");
+      notify("turn/completed", "child-one", "child-one-turn");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sendRequest).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["new-turn", "user-stop", "session-stop"] as const)(
+    "does not auto-resume after %s supersedes the pending child continuation",
+    async (action) => {
+      vi.useFakeTimers();
+      try {
+        const { manager, context } = createCollabNotificationHarness();
+        (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(
+          String(context.session.threadId),
+          context,
+        );
+        const sendRequest = vi
+          .spyOn(
+            manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+            "sendRequest",
+          )
+          .mockResolvedValue({});
+        const notify = (method: string, threadId: string, turnId: string) =>
+          handleServerNotificationForTest(manager, context, {
+            method,
+            params: { threadId, turn: { id: turnId, status: "completed" } },
+          });
+        notify("turn/started", "provider_parent", "turn_parent");
+        notify("turn/completed", "provider_parent", "turn_parent");
+        notify("turn/completed", "child", "child-turn");
+        if (action === "new-turn") notify("turn/started", "provider_parent", "user-turn");
+        if (action === "session-stop") context.stopping = true;
+        if (action === "user-stop") {
+          await manager.interruptTurn(context.session.threadId, TurnId.makeUnsafe("turn_parent"));
+          notify("turn/completed", "provider_parent", "turn_parent");
+        }
+        await vi.advanceTimersByTimeAsync(500);
+        expect(sendRequest.mock.calls.filter((call) => call[1] === "turn/start")).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("preserves native child communication and scopes gateway cleanup to each exact turn", async () => {
+    const { manager, context, emitEvent } = createCollabNotificationHarness();
+    const nativeMcpCalls = { startTurn: vi.fn(), start: vi.fn(), finish: vi.fn() };
+    const cancelTurn = vi.fn((_turnId: string) => Promise.resolve());
+    const retireTurn = vi.fn(() => Promise.resolve());
+    const release = vi.fn();
+    Object.assign(context, {
+      gatewaySessionLease: {
+        connection: { url: "http://localhost/mcp", bearerToken: "token" },
+        nativeMcpCalls,
+        cancelTurn,
+        retireTurn,
+        release,
+      },
+    });
+    context.collabReceiverTurns.set("child", "turn_parent");
+    context.collabReceiverParents.set("child", "provider_parent");
+    const notify = (method: string, params: unknown) =>
+      handleServerNotificationForTest(manager, context, { method, params });
+    notify("turn/started", { threadId: "child", turn: { id: "child-turn" } });
+    notify("turn/completed", {
+      threadId: "provider_parent",
+      turn: { id: "turn_parent", status: "completed" },
+    });
+    expect(context.gatewayCredentialRetired).toBe(false);
+    expect(retireTurn).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(context.collabReceiverTurns.get("child")).toBe("turn_parent");
+    notify("item/started", {
+      threadId: "child",
+      turnId: "child-turn",
+      item: {
+        id: "child-call",
+        type: "mcpToolCall",
+        server: "synara",
+        tool: "write",
+        arguments: { x: 1 },
+      },
+    });
+    expect(nativeMcpCalls.start).toHaveBeenCalledWith({
+      callId: "child-call",
+      turnId: "child-turn",
+      toolName: "write",
+      arguments: { x: 1 },
+    });
+    notify("item/agentMessage/delta", {
+      threadId: "child",
+      turnId: "child-turn",
+      itemId: "reply",
+      delta: "child result",
+    });
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        textDelta: "child result",
+        providerThreadId: "child",
+        providerParentThreadId: "provider_parent",
+      }),
+    );
+    notify("turn/completed", {
+      threadId: "child",
+      turn: { id: "child-turn", status: "completed" },
+    });
+    notify("turn/started", { threadId: "provider_parent", turn: { id: "parent-wakeup" } });
+    expect(nativeMcpCalls.startTurn).toHaveBeenCalledWith("parent-wakeup");
+    expect(cancelTurn.mock.calls.map((args) => args[0])).toEqual(["turn_parent", "child-turn"]);
+    expect(
+      emitEvent.mock.calls.some(
+        ([event]) =>
+          (event as { payload?: Record<string, unknown> }).payload?.[
+            AGENT_GATEWAY_TURN_AUTHORITY_RETIRED
+          ],
+      ),
+    ).toBe(false);
   });
 
   it("retires gateway authority before publishing every terminal parent-turn notification", () => {
