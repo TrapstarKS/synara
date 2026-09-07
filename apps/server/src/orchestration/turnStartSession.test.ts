@@ -1,4 +1,4 @@
-import { ThreadId, type OrchestrationSession } from "@synara/contracts";
+import { CodexProfileId, ThreadId, type OrchestrationSession } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
 
 import { deriveTurnStartModelSelection, deriveTurnStartSession } from "./turnStartSession.ts";
@@ -47,6 +47,25 @@ describe("deriveTurnStartSession", () => {
         canAdoptRequestedProvider: true,
       }),
     ).toEqual({ provider: "pi", model: "openai/gpt-5" });
+  });
+
+  it("does not erase the Codex account from an established thread", () => {
+    const profileId = CodexProfileId.makeUnsafe("679c91a5-a4f8-4f19-b2ca-2744bc779d89");
+    expect(
+      deriveTurnStartModelSelection({
+        currentModelSelection: {
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          profileId,
+        },
+        requestedModelSelection: { provider: "codex", model: "gpt-5.6-luna" },
+        canAdoptRequestedProvider: false,
+      }),
+    ).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      profileId,
+    });
   });
 
   it("creates a starting session when no session exists", () => {

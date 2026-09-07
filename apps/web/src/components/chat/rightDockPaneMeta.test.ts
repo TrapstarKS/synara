@@ -46,8 +46,10 @@ describe("resolveRightDockLauncherItems", () => {
     ).toEqual([
       ["terminal", "Terminal"],
       ["browser", "Browser"],
+      ["images", "Images"],
       ["explorer", "Files"],
       ["sidechat", "Side chats"],
+      ["subagents", "Subagents"],
     ]);
   });
 
@@ -58,7 +60,16 @@ describe("resolveRightDockLauncherItems", () => {
         hasGitRepository: true,
         hasReview: true,
       }).map(({ kind }) => kind),
-    ).toEqual(["diff", "terminal", "browser", "explorer", "sidechat", "git"]);
+    ).toEqual([
+      "diff",
+      "terminal",
+      "browser",
+      "images",
+      "explorer",
+      "sidechat",
+      "subagents",
+      "git",
+    ]);
   });
 
   it("hides workspace-backed tools while no workspace is ready", () => {
@@ -68,7 +79,7 @@ describe("resolveRightDockLauncherItems", () => {
         hasGitRepository: false,
         hasReview: false,
       }).map(({ kind }) => kind),
-    ).toEqual(["terminal", "browser", "sidechat"]);
+    ).toEqual(["terminal", "browser", "images", "sidechat", "subagents"]);
   });
 
   it("hides review for a clean Git repository", () => {
@@ -78,7 +89,7 @@ describe("resolveRightDockLauncherItems", () => {
         hasGitRepository: true,
         hasReview: false,
       }).map(({ kind }) => kind),
-    ).toEqual(["terminal", "browser", "explorer", "sidechat", "git"]);
+    ).toEqual(["terminal", "browser", "images", "explorer", "sidechat", "subagents", "git"]);
   });
 
   it("offers the simulator only when the server can host one", () => {
@@ -91,7 +102,7 @@ describe("resolveRightDockLauncherItems", () => {
         hasReview: false,
         hasDeviceSupport: true,
       }).map(({ kind }) => kind),
-    ).toEqual(["terminal", "browser", "explorer", "sidechat", "device"]);
+    ).toEqual(["terminal", "browser", "images", "explorer", "sidechat", "subagents", "device"]);
 
     expect(
       resolveRightDockLauncherItems({

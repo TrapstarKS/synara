@@ -51,6 +51,7 @@ import {
   IconMessageCircle,
   IconMoon,
   IconPaperclip,
+  IconPhoto,
   IconPlus,
   IconRefresh,
   IconRotate2,
@@ -164,6 +165,7 @@ export const EyeIcon = adaptIcon(IconEye);
 export const CodeIcon: LucideIcon = centralIconWrapper("code");
 export const EyeOpenIcon: LucideIcon = centralIconWrapper("eye-open");
 export const PaperclipIcon = adaptIcon(IconPaperclip);
+export const ImageIcon = adaptIcon(IconPhoto);
 export const ArchiveIcon = adaptIcon(IconArchive);
 export const BrainIcon = adaptIcon(IconBrain);
 export const FileIcon = adaptIcon(IconFile);

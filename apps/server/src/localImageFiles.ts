@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { CodexProfileId } from "@synara/contracts";
 
 import {
   LOCAL_IMAGE_ROUTE_PATH,
@@ -128,6 +129,10 @@ export async function resolveAllowedLocalPreviewFile(input: {
   readonly requestedPath: string | null;
   readonly cwd: string | null;
   readonly codexHomePath?: string;
+  readonly codexProfileHomes?: ReadonlyArray<{
+    readonly homePath: string;
+    readonly profileId: CodexProfileId;
+  }>;
   readonly scratchWorkspacesRoot?: string;
   readonly allowAbsoluteLocalPreviewFile?: boolean;
   readonly previewGrant?: string | null;
@@ -197,7 +202,12 @@ export async function resolveAllowedLocalPreviewFile(input: {
     return null;
   }
   const generatedImagesRoots = await Promise.all(
-    resolveCodexGeneratedImagesRoots(input.codexHomePath).map(realpathOrNull),
+    [
+      ...resolveCodexGeneratedImagesRoots(input.codexHomePath),
+      ...(input.codexProfileHomes ?? []).flatMap(({ homePath, profileId }) =>
+        resolveCodexGeneratedImagesRoots(homePath, profileId),
+      ),
+    ].map(realpathOrNull),
   ).then((roots) => roots.filter((root): root is string => root !== null));
   const allowed =
     generatedImagesRoots.some((root) => isPathInside(realFilePath, root)) ||

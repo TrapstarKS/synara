@@ -24,8 +24,10 @@ describe("RIGHT_DOCK_PANE_KINDS (single source of truth)", () => {
       "diff",
       "explorer",
       "file",
+      "images",
       "terminal",
       "sidechat",
+      "subagents",
       "git",
       "pullRequest",
     ]);
@@ -45,8 +47,10 @@ describe("isRightDockPaneKind", () => {
       "diff",
       "explorer",
       "file",
+      "images",
       "terminal",
       "sidechat",
+      "subagents",
       "git",
       "pullRequest",
     ]) {

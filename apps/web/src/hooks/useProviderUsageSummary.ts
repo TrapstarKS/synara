@@ -3,6 +3,7 @@
 // and provider-specific snapshots into one UI-friendly summary.
 
 import type {
+  CodexProfileId,
   OrchestrationThread,
   ProviderKind,
   ServerGetProviderUsageSnapshotResult,
@@ -97,12 +98,14 @@ export function useProviderUsageSummary(input: {
   threads?: ReadonlyArray<Pick<OrchestrationThread, "activities">>;
   threadRateLimits?: ReadonlyArray<ProviderRateLimit> | undefined;
   codexHomePath?: string | null;
+  codexProfileId?: CodexProfileId | null;
   providerSnapshot?: ServerGetProviderUsageSnapshotResult | undefined;
   fetchOpenUsageData?: boolean | undefined;
 }) {
   const provider = input.provider ?? null;
+  const codexProfileId = provider === "codex" ? (input.codexProfileId ?? null) : null;
   const shouldFetchLiveProviderUsage = provider !== null && input.providerSnapshot === undefined;
-  const shouldFetchLocalProviderUsage = shouldFetchLiveProviderUsage;
+  const shouldFetchLocalProviderUsage = shouldFetchLiveProviderUsage && codexProfileId === null;
   const allProviderUsageQuery = useQuery(
     serverAllProviderUsageQueryOptions({
       enabled: shouldFetchLiveProviderUsage,
@@ -121,15 +124,23 @@ export function useProviderUsageSummary(input: {
     }),
   );
   const liveProviderSnapshot = (allProviderUsageQuery.data ?? []).find(
-    (snapshot) => snapshot.provider === provider,
+    (snapshot) =>
+      snapshot.provider === provider &&
+      (provider !== "codex" || (snapshot.profileId ?? null) === codexProfileId),
   );
-  const authoritativeLiveSnapshot = liveProviderSnapshot ?? input.providerSnapshot ?? null;
-  const accountRateLimits = input.threadRateLimits ?? deriveAccountRateLimits(input.threads ?? []);
+  // A caller-provided snapshot already names the exact card/account being rendered.
+  // Keep it authoritative even when React Query still exposes cached data for a
+  // disabled all-provider query from another Codex account.
+  const authoritativeLiveSnapshot = input.providerSnapshot ?? liveProviderSnapshot ?? null;
+  const accountRateLimits =
+    codexProfileId === null
+      ? (input.threadRateLimits ?? deriveAccountRateLimits(input.threads ?? []))
+      : [];
   const summary = resolveProviderUsageSummary({
     provider,
     accountRateLimits,
     authoritativeLiveSnapshot,
-    localUsageSnapshot: localUsageSnapshotQuery.data ?? null,
+    localUsageSnapshot: codexProfileId === null ? (localUsageSnapshotQuery.data ?? null) : null,
     openUsageSnapshot: openUsageSnapshotQuery.data,
   });
 

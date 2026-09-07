@@ -29,6 +29,7 @@ import type {
   ProviderStopSessionInput,
   ProviderStopTaskInput,
   ThreadId,
+  TurnId,
   ProviderTurnStartResult,
 } from "@synara/contracts";
 import { ServiceMap } from "effect";
@@ -189,7 +190,11 @@ export interface ProviderServiceShape {
    * before stopRuntimeSession: killing the shared subprocess silently
    * terminates those tasks.
    */
-  readonly hasLiveRuntimeTasks?: (input: { readonly threadId: ThreadId }) => Effect.Effect<boolean>;
+  readonly hasLiveRuntimeTasks?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerThreadId?: string;
+    readonly turnId?: TurnId;
+  }) => Effect.Effect<boolean>;
 
   /**
    * Forget a stale provider-native resume cursor while preserving local routing

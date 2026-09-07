@@ -491,6 +491,9 @@ export default function BranchToolbar({
     provider: activeProvider,
     threads,
     codexHomePath: settings.codexHomePath || null,
+    ...(serverThread?.modelSelection.provider === "codex" && serverThread.modelSelection.profileId
+      ? { codexProfileId: serverThread.modelSelection.profileId }
+      : {}),
     fetchOpenUsageData: false,
   });
   const [rateLimitsOpen, setRateLimitsOpen] = useState(true);

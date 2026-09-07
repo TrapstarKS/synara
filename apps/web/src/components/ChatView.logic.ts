@@ -64,6 +64,32 @@ export interface PendingFileUndo {
   readonly existingFailureActivityIds: readonly string[];
 }
 
+export function resolveCodexProfileId(input: {
+  readonly hasThreadStarted: boolean;
+  readonly threadModelSelection: ModelSelection | null;
+  readonly draftModelSelection: ModelSelection | null;
+  readonly defaultProfileId: Extract<ModelSelection, { provider: "codex" }>["profileId"];
+}): Extract<ModelSelection, { provider: "codex" }>["profileId"] {
+  if (input.hasThreadStarted) {
+    if (input.threadModelSelection?.provider === "codex" && input.threadModelSelection.profileId) {
+      return input.threadModelSelection.profileId;
+    }
+    // A promoted draft can receive messages/session state before its refreshed
+    // server projection arrives. Keep showing the account used for the first
+    // turn during that window instead of falling back to "Current account".
+    return input.draftModelSelection?.provider === "codex"
+      ? input.draftModelSelection.profileId
+      : undefined;
+  }
+  if (input.draftModelSelection?.provider === "codex") {
+    return input.draftModelSelection.profileId;
+  }
+  if (input.threadModelSelection?.provider === "codex" && input.threadModelSelection.profileId) {
+    return input.threadModelSelection.profileId;
+  }
+  return input.defaultProfileId;
+}
+
 export function hasFileUndoSettled(input: {
   readonly pending: PendingFileUndo;
   readonly thread: Pick<Thread, "id" | "turnDiffSummaries" | "activities"> | null;
@@ -196,6 +222,9 @@ export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection
   return (
     left.provider === right.provider &&
     left.model === right.model &&
+    (left.provider !== "codex" ||
+      right.provider !== "codex" ||
+      left.profileId === right.profileId) &&
     JSON.stringify(left.options ?? null) === JSON.stringify(right.options ?? null) &&
     (left.provider !== "claudeAgent" ||
       right.provider !== "claudeAgent" ||
@@ -1849,6 +1878,111 @@ export function resolveComposerStripWorkLogEntries(input: {
     : input.activeWorkLogEntries;
 }
 
+function persistedSubagentProviderThreadId(thread: Thread, parentThreadId: ThreadIdType): string {
+  const localPrefix = `subagent:${parentThreadId}:`;
+  return thread.id.startsWith(localPrefix) ? thread.id.slice(localPrefix.length) : thread.id;
+}
+
+function latestSubagentUpdate(thread: Thread): string | undefined {
+  for (let index = thread.activities.length - 1; index >= 0; index -= 1) {
+    const summary = thread.activities[index]?.summary?.trim();
+    if (summary) {
+      return summary;
+    }
+  }
+  return undefined;
+}
+
+function persistedSubagentToWorkLogSubagent(
+  thread: Thread,
+  parentThreadId: ThreadIdType,
+): NonNullable<WorkLogEntry["subagents"]>[number] {
+  const providerThreadId = persistedSubagentProviderThreadId(thread, parentThreadId);
+  const status = deriveSubagentStatus(thread);
+  const latestUpdate = latestSubagentUpdate(thread);
+  return {
+    threadId: providerThreadId,
+    providerThreadId,
+    resolvedThreadId: thread.id,
+    ...(thread.subagentAgentId ? { agentId: thread.subagentAgentId } : {}),
+    ...(thread.subagentNickname ? { nickname: thread.subagentNickname } : {}),
+    ...(thread.subagentRole ? { role: thread.subagentRole } : {}),
+    model: thread.modelSelection.model,
+    ...(thread.modelSelection.provider === "codex" && thread.modelSelection.options?.reasoningEffort
+      ? { effort: thread.modelSelection.options.reasoningEffort }
+      : {}),
+    rawStatus: thread.latestTurn?.state ?? thread.session?.status,
+    ...(latestUpdate ? { latestUpdate } : {}),
+    ...(status.label ? { statusLabel: status.label } : {}),
+    isActive: status.isActive,
+  };
+}
+
+function subagentAlreadyReferencesThread(
+  subagent: NonNullable<WorkLogEntry["subagents"]>[number],
+  thread: Thread,
+  parentThreadId: ThreadIdType,
+): boolean {
+  const providerThreadId = persistedSubagentProviderThreadId(thread, parentThreadId);
+  return (
+    subagent.resolvedThreadId === thread.id ||
+    subagent.threadId === thread.id ||
+    subagent.threadId === providerThreadId ||
+    subagent.providerThreadId === providerThreadId ||
+    (Boolean(subagent.agentId) && subagent.agentId === thread.subagentAgentId)
+  );
+}
+
+function closestCollabEntryToChild(
+  child: Thread,
+  entries: ReadonlyArray<WorkLogEntry>,
+): WorkLogEntry | undefined {
+  const childCreatedAt = Date.parse(child.createdAt);
+  if (!Number.isFinite(childCreatedAt)) {
+    return entries[0];
+  }
+  return entries.reduce<WorkLogEntry | undefined>((closest, entry) => {
+    if (!closest) return entry;
+    const entryDistance = Math.abs(Date.parse(entry.createdAt) - childCreatedAt);
+    const closestDistance = Math.abs(Date.parse(closest.createdAt) - childCreatedAt);
+    return entryDistance < closestDistance ? entry : closest;
+  }, undefined);
+}
+
+function fallbackCollabEntryForChild(
+  child: Thread,
+  collabEntries: ReadonlyArray<WorkLogEntry>,
+  parentThread: Thread | undefined,
+): WorkLogEntry | undefined {
+  const sourceTurnEntries = child.sourceTurnId
+    ? collabEntries.filter((entry) => entry.turnId === child.sourceTurnId)
+    : [];
+  if (sourceTurnEntries.length > 0) {
+    return closestCollabEntryToChild(child, sourceTurnEntries);
+  }
+
+  // Older projections attributed an unmapped child's own turn to sourceTurnId.
+  // Restrict that compatibility path to the current parent turn and assign the
+  // child to one closest collab row, so sibling calls never duplicate its roster.
+  const latestTurn = parentThread?.latestTurn;
+  if (!latestTurn) return undefined;
+  const startedAt = Date.parse(latestTurn.startedAt ?? latestTurn.requestedAt);
+  const completedAt = Date.parse(latestTurn.completedAt ?? "");
+  const childCreatedAt = Date.parse(child.createdAt);
+  if (
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(childCreatedAt) ||
+    childCreatedAt < startedAt ||
+    (Number.isFinite(completedAt) && childCreatedAt > completedAt)
+  ) {
+    return undefined;
+  }
+  return closestCollabEntryToChild(
+    child,
+    collabEntries.filter((entry) => entry.turnId === latestTurn.turnId),
+  );
+}
+
 export function enrichSubagentWorkEntries(
   workEntries: ReadonlyArray<WorkLogEntry>,
   threads: ReadonlyArray<Thread>,
@@ -1859,13 +1993,60 @@ export function enrichSubagentWorkEntries(
   }
 
   const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
+  const parentThread = parentThreadId ? threadById.get(parentThreadId) : undefined;
+  const persistedChildren = parentThreadId
+    ? threads.filter((thread) => thread.parentThreadId === parentThreadId)
+    : [];
+  const collabEntries = workEntries.filter((entry) => entry.itemType === "collab_agent_tool_call");
+  const persistedChildrenByEntryId = new Map<string, Thread[]>();
+  if (parentThreadId) {
+    for (const child of persistedChildren) {
+      const alreadyLinked = workEntries.some((entry) =>
+        entry.subagents?.some((subagent) =>
+          subagentAlreadyReferencesThread(subagent, child, parentThreadId),
+        ),
+      );
+      if (alreadyLinked) continue;
+      const fallbackEntry = fallbackCollabEntryForChild(child, collabEntries, parentThread);
+      if (!fallbackEntry) continue;
+      const children = persistedChildrenByEntryId.get(fallbackEntry.id) ?? [];
+      children.push(child);
+      persistedChildrenByEntryId.set(fallbackEntry.id, children);
+    }
+  }
 
   return workEntries.map((entry) => {
-    if ((entry.subagents?.length ?? 0) === 0) {
+    const entrySubagents = [...(entry.subagents ?? [])];
+    if (parentThreadId) {
+      for (const child of persistedChildrenByEntryId.get(entry.id) ?? []) {
+        entrySubagents.push(persistedSubagentToWorkLogSubagent(child, parentThreadId));
+      }
+      // Native wait_agent waits on the parent's mailbox, without receiver ids.
+      // Its children can have been spawned in an earlier turn or linked to a
+      // previous card; the wait still needs their live status and Open action.
+      const isUntargetedWait =
+        entry.itemType === "collab_agent_tool_call" &&
+        ["wait", "waitAgent", "wait_agent"].includes(entry.subagentAction?.tool ?? "") &&
+        (entry.subagents?.length ?? 0) === 0;
+      if (isUntargetedWait) {
+        for (const child of persistedChildren) {
+          if (
+            Date.parse(child.createdAt) <= Date.parse(entry.createdAt) &&
+            !entrySubagents.some((subagent) =>
+              subagentAlreadyReferencesThread(subagent, child, parentThreadId),
+            )
+          ) {
+            entrySubagents.push(persistedSubagentToWorkLogSubagent(child, parentThreadId));
+          }
+        }
+      }
+    }
+
+    if (entrySubagents.length === 0) {
       return entry;
     }
 
-    const subagents = entry.subagents!.map((subagent) => {
+    const subagents = entrySubagents.map((subagent) => {
       const matchedThread = resolveTimelineSubagentThread({
         subagent,
         parentThreadId,
@@ -1884,6 +2065,13 @@ export function enrichSubagentWorkEntries(
       const nextSubagent = Object.assign({}, subagent);
       if (matchedThread) {
         nextSubagent.resolvedThreadId = matchedThread.id;
+        nextSubagent.model = matchedThread.modelSelection.model;
+        if (
+          matchedThread.modelSelection.provider === "codex" &&
+          matchedThread.modelSelection.options?.reasoningEffort
+        ) {
+          nextSubagent.effort = matchedThread.modelSelection.options.reasoningEffort;
+        }
       }
       if (matchedPresentation) {
         nextSubagent.title = matchedPresentation.fullLabel;

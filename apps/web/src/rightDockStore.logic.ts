@@ -15,8 +15,10 @@ export const RIGHT_DOCK_PANE_KINDS = [
   "diff",
   "explorer",
   "file",
+  "images",
   "terminal",
   "sidechat",
+  "subagents",
   "git",
   "pullRequest",
 ] as const;

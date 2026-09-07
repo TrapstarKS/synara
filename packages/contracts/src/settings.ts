@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { TrimmedString } from "./baseSchemas";
+import { CodexProfileId, TrimmedString } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model";
 import { ModelSelection, ProviderKind, ThreadEnvironmentMode } from "./orchestration";
 
@@ -14,10 +14,23 @@ const ProviderSettingsBase = {
   customModels: CustomModels,
 };
 
+export const CodexProfile = Schema.Struct({
+  id: CodexProfileId,
+  name: TrimmedString.check(Schema.isNonEmpty()).check(Schema.isMaxLength(64)),
+});
+export type CodexProfile = typeof CodexProfile.Type;
+
+const CodexProfiles = Schema.Array(CodexProfile)
+  .check(Schema.isMaxLength(20))
+  .pipe(Schema.withDecodingDefault(() => []));
+
 export const CodexServerProviderSettings = Schema.Struct({
   ...ProviderSettingsBase,
   binaryPath: StringSetting.pipe(Schema.withDecodingDefault(() => "codex")),
   homePath: StringSetting.pipe(Schema.withDecodingDefault(() => "")),
+  proxyBinaryPath: StringSetting.pipe(Schema.withDecodingDefault(() => "claude-code-proxy")),
+  profiles: CodexProfiles,
+  defaultProfileId: Schema.NullOr(CodexProfileId).pipe(Schema.withDecodingDefault(() => null)),
 });
 export type CodexServerProviderSettings = typeof CodexServerProviderSettings.Type;
 
@@ -128,6 +141,7 @@ export const DEFAULT_SERVER_SETTINGS_VIEW: ServerSettingsView = Schema.decodeSyn
 const ModelSelectionPatch = Schema.Struct({
   provider: Schema.optionalKey(ProviderKind),
   model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
+  profileId: Schema.optionalKey(Schema.NullOr(CodexProfileId)),
   options: Schema.optionalKey(Schema.Unknown),
 });
 
@@ -149,6 +163,9 @@ export const ServerSettingsPatch = Schema.Struct({
         Schema.Struct({
           ...ProviderSettingsBasePatch,
           homePath: Schema.optionalKey(StringSetting),
+          proxyBinaryPath: Schema.optionalKey(StringSetting),
+          profiles: Schema.optionalKey(CodexProfiles),
+          defaultProfileId: Schema.optionalKey(Schema.NullOr(CodexProfileId)),
         }),
       ),
       claudeAgent: Schema.optionalKey(

@@ -19,6 +19,12 @@ export interface ProviderUsageContext {
   readonly nowMs: number;
   /** Claude CLI binary (settings.providers.claudeAgent.binaryPath); defaults to "claude". */
   readonly claudeBinaryPath?: string;
+  /** Stable cache scope when one provider has multiple configured accounts. */
+  readonly scopeKey?: string;
+  /** Prevent managed Codex profiles from falling through to global files/keychain. */
+  readonly codexManagedProfile?: boolean;
+  /** Codex archive home; may differ from the credential source because Synara uses overlays. */
+  readonly localUsageHomePath?: string;
 }
 
 export interface ProviderUsageFetcher {
