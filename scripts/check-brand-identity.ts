@@ -15,6 +15,8 @@ const incorrectBundleDomain = characters(99, 111, 109, 46, 115, 121, 110, 97, 11
 const retiredFirstDisplayName = characters(84, 51, 67, 111, 100, 101);
 const retiredFirstSpacedDisplayName = `${characters(84, 51)} Code`;
 const retiredCompanyDisplayName = `${characters(84, 51)} ${characters(84, 111, 111, 108, 115)}`;
+const mobileBackendServiceName = `${incorrectBundleDomain}.mobile.backend`;
+const mobileCompanionServiceName = `${incorrectBundleDomain}.mobile.companion`;
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const joinedWithOptionalSeparator = (left: string, right: string): string =>
@@ -80,6 +82,28 @@ const approvedAttributions: readonly ApprovedAttribution[] = [
     // here refers to someone else's product, not to Synara's own identity.
     path: "apps/marketing/src/data/testimonials.ts",
     line: `"I've been using @trySynara for a few hours now. I'm really impressed. I'd already tried ${retiredFirstDisplayName.slice(0, 2)} Chat, Orca, and Terax, but none of them managed to grab my attention quite like Synara did.",`,
+  },
+  {
+    // These launchd labels predate the production desktop bundle identifier,
+    // but remain the stable identity of the installed mobile companion.
+    path: "extensions/mobile-remote/UPDATES.md",
+    line: `- Discover the actual launchd configuration and path; do not assume saved paths are still current. The installed job is \`${mobileCompanionServiceName}\` (58091), with state in \`~/.synara-mobile\`. It follows the authenticated loopback backend owned by the installed \`Synara.app\` and must never start a second Synara database. Upgrade removes the legacy \`${mobileBackendServiceName}\` preview job. Tailscale HTTPS 8443 points to companion 58091. Never enable Funnel or replace other Serve routes.`,
+  },
+  {
+    path: "extensions/mobile-remote/lib/service-config.test.mjs",
+    line: `label: "${mobileBackendServiceName}",`,
+  },
+  {
+    path: "extensions/mobile-remote/lib/service-config.test.mjs",
+    line: `const path = "/Users/test/Library/LaunchAgents/${mobileBackendServiceName}.plist";`,
+  },
+  {
+    path: "extensions/mobile-remote/service.mjs",
+    line: `label: "${mobileBackendServiceName}",`,
+  },
+  {
+    path: "extensions/mobile-remote/service.mjs",
+    line: `label: "${mobileCompanionServiceName}",`,
   },
 ];
 

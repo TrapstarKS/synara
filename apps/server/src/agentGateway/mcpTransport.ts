@@ -175,8 +175,10 @@ export function makeAgentGatewayMcpTransport(input: {
           "caller_session_inactive: Provider session no longer owns this thread.",
         );
       }
+      const nativeCalls = input.credentials.nativeMcpCalls;
+      const usesNativeCalls = nativeCalls?.hasSession(token) === true;
       const callerWriteAuthority =
-        callerThread.value.latestTurn?.state === "running"
+        !usesNativeCalls && callerThread.value.latestTurn?.state === "running"
           ? input.credentials.bindWriteAuthority(token, callerThread.value.latestTurn.turnId)
           : null;
       const assertCallerTurnActive = () =>
@@ -281,15 +283,59 @@ export function makeAgentGatewayMcpTransport(input: {
       // head-of-line blocking for ordinary batches, this guarantees that a
       // cancellation notification in the same batch can see its target even
       // when the notification appears first.
+      const nativeAdmissionDeadline = Date.now() + 2_000;
       for (const parsed of parsedMessages) {
         switch (parsed.kind) {
           case "request": {
+            let requestContext = context;
+            if (usesNativeCalls && nativeCalls && parsed.request.method === "tools/call") {
+              const callId = asRecord(parsed.request.params._meta)?.callId;
+              const toolName = parsed.request.params.name;
+              let authority = null;
+              if (typeof callId === "string" && typeof toolName === "string") {
+                // The native event and HTTP request use different pipes. Allow
+                // bounded delivery skew, but never admit metadata on its own.
+                while (true) {
+                  authority = nativeCalls.consume(
+                    token,
+                    callId,
+                    toolName,
+                    parsed.request.params.arguments ?? {},
+                  );
+                  if (
+                    authority ||
+                    !nativeCalls.hasSession(token) ||
+                    Date.now() >= nativeAdmissionDeadline
+                  )
+                    break;
+                  yield* Effect.sleep("50 millis");
+                }
+              }
+              const nativeAuthority = authority;
+              requestContext = {
+                ...context,
+                principal: { ...context.principal, turnId: nativeAuthority?.turnId ?? null },
+                callerTurnId: nativeAuthority?.turnId ?? null,
+                assertCallerTurnActive: () =>
+                  Effect.suspend(() =>
+                    nativeAuthority?.isActive()
+                      ? Effect.void
+                      : Effect.fail(
+                          new GatewayToolError(
+                            "caller_turn_inactive",
+                            "This call has no active provider-issued authority. Completed calls and turns cannot authorize later requests.",
+                            { callerThreadId },
+                          ),
+                        ),
+                  ),
+              };
+            }
             const registered = yield* Deferred.make<void>();
             let unregister: () => void = () => undefined;
             let requestStarted = false;
             let cancellationRequested = false;
             const requestEffect = Deferred.await(registered).pipe(
-              Effect.andThen(handleRequest(parsed.request, context)),
+              Effect.andThen(handleRequest(parsed.request, requestContext)),
               Effect.catch((error) =>
                 Effect.succeed(
                   jsonRpcResult(parsed.request.id, mcpToolResultError(errorText(error))),
@@ -304,7 +350,7 @@ export function makeAgentGatewayMcpTransport(input: {
             const fiber = yield* requestEffect.pipe(Effect.forkChild({ startImmediately: true }));
             unregister = input.credentials.registerInFlightRequest({
               sessionKey: callerSession.sessionKey,
-              turnId: context.callerTurnId,
+              turnId: requestContext.callerTurnId,
               requestId: parsed.request.id,
               cancel: () => {
                 cancellationRequested = true;

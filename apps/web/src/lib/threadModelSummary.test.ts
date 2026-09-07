@@ -48,3 +48,49 @@ describe("resolveThreadModelSummary", () => {
     expect(summary?.fastMode).toBe(false);
   });
 });
+
+describe("runtime Codex model effort", () => {
+  it("preserves an explicit effort before discovery without guessing an unknown default", () => {
+    expect(
+      resolveThreadModelSummary({
+        provider: "codex",
+        model: "gpt-6-astra",
+        options: { reasoningEffort: "low" },
+      })?.statusLabel,
+    ).toBe("Low");
+    expect(
+      resolveThreadModelSummary({
+        provider: "codex",
+        model: "gpt-6-astra",
+      })?.statusLabel,
+    ).toBeNull();
+  });
+
+  it("uses the discovered default and labels for dynamic models", () => {
+    const runtimeModel = {
+      slug: "gpt-6-astra",
+      name: "GPT-6 Astra",
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [{ value: "low" }, { value: "medium", label: "Medium" }],
+    };
+    expect(
+      resolveThreadModelSummary(
+        {
+          provider: "codex",
+          model: "gpt-6-astra",
+        },
+        runtimeModel,
+      )?.statusLabel,
+    ).toBe("Medium");
+    expect(
+      resolveThreadModelSummary(
+        {
+          provider: "codex",
+          model: "gpt-6-astra",
+          options: { reasoningEffort: "low" },
+        },
+        runtimeModel,
+      )?.statusLabel,
+    ).toBe("Low");
+  });
+});

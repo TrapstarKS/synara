@@ -224,6 +224,30 @@ export function createRelevantWorkLogThreadsSelector(input: {
     const threadIds: readonly ThreadIdType[] = state.threadIds ?? [];
     const threadShellById: Record<ThreadIdType, ThreadShell> = state.threadShellById ?? {};
 
+    // Message/activity/session updates do not change the shell index. On that hot
+    // path, inspect only the already-selected parent/children instead of scanning
+    // every thread in the workspace again.
+    if (previousThreadIds === threadIds && previousThreadShellById === threadShellById) {
+      const nextSliceRefs = new Map<ThreadIdType, ThreadSliceRefs>();
+      let sliceRefsChanged = false;
+      for (const threadId of previousSelectedThreadIds) {
+        const nextRefs = collectThreadSliceRefs(state, threadId);
+        nextSliceRefs.set(threadId, nextRefs);
+        if (!threadSliceRefsEqual(previousSliceRefs.get(threadId), nextRefs)) {
+          sliceRefsChanged = true;
+        }
+      }
+      if (!sliceRefsChanged) {
+        return previousResult;
+      }
+      previousSliceRefs = nextSliceRefs;
+      const nextResult = buildThreadSelectionResult(state, previousSelectedThreadIds);
+      if (!shallowEqualThreads(previousResult, nextResult)) {
+        previousResult = nextResult;
+      }
+      return previousResult;
+    }
+
     for (const threadId of threadIds) {
       const shell = threadShellById[threadId];
       if (!shell) {

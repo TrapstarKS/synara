@@ -26,6 +26,7 @@ describe("RIGHT_DOCK_PANE_KINDS (single source of truth)", () => {
       "file",
       "terminal",
       "sidechat",
+      "subagents",
       "git",
       "pullRequest",
     ]);
@@ -47,6 +48,7 @@ describe("isRightDockPaneKind", () => {
       "file",
       "terminal",
       "sidechat",
+      "subagents",
       "git",
       "pullRequest",
     ]) {

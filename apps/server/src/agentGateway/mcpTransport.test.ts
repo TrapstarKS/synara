@@ -8,6 +8,7 @@ import { BrowserHostRpcError } from "../browserAutomation/browserHostRpcClient.t
 import { makeAgentGatewaySessionRegistry } from "./Layers/AgentGatewaySessionRegistry.ts";
 import type { AgentGatewayCredentialsShape } from "./Services/AgentGatewayCredentials.ts";
 import { makeAgentGatewayInFlightRequestRegistry } from "./inFlightRequestRegistry.ts";
+import { makeNativeMcpCalls } from "./nativeMcpCalls.ts";
 import { makeAgentGatewayMcpTransport } from "./mcpTransport.ts";
 import { FALLBACK_OBJECT_DESCRIPTION } from "./sanitizeToolInputSchema.ts";
 import { countSchemaKeyOccurrences, isJsonRecord } from "./schemaTestUtils.ts";
@@ -57,6 +58,7 @@ function makeThread(threadId: string): OrchestrationThreadShell {
 }
 
 function makeTransport(input: {
+  readonly native?: boolean;
   readonly tool: ToolEntry;
   readonly extraTools?: ReadonlyArray<ToolEntry>;
   readonly threads: ReadonlyArray<OrchestrationThreadShell>;
@@ -76,13 +78,16 @@ function makeTransport(input: {
     },
   });
   const inFlightRequests = makeAgentGatewayInFlightRequestRegistry();
+  const nativeMcpCalls = input.native ? makeNativeMcpCalls() : undefined;
   const credentials = {
+    nativeMcpCalls,
     verifySession: sessionRegistry.verify,
     bindWriteAuthority: sessionRegistry.bindWriteAuthority,
     verifyWriteAuthority: sessionRegistry.verifyWriteAuthority,
     registerInFlightRequest: inFlightRequests.register,
     cancelInFlightRequests: inFlightRequests.cancel,
     cancelSessionTurnRequests: (token: string, turnId: string) => {
+      nativeMcpCalls?.cancelTurn(token, turnId);
       const session = sessionRegistry.verify(token);
       return session
         ? inFlightRequests.cancelTurn(session.sessionKey, turnId).settled
@@ -96,6 +101,7 @@ function makeTransport(input: {
     },
     revokeSessionToken: (token: string) => {
       const session = sessionRegistry.verify(token);
+      nativeMcpCalls?.revoke(token);
       sessionRegistry.revoke(token);
       if (session) inFlightRequests.revokeSession(session.sessionKey);
     },
@@ -143,6 +149,8 @@ function makeTransport(input: {
     },
   });
   return Object.assign(transport, {
+    nativeMcpCalls,
+    lease: (threadId: string) => leases.get(threadId)!,
     resolveToken: (token: string) => tokenAliases.get(token) ?? token,
     cancelTurn: (sessionKey: string, turnId: string) =>
       inFlightRequests.cancelTurn(sessionKeyAliases.get(sessionKey) ?? sessionKey, turnId),
@@ -520,4 +528,117 @@ describe("makeAgentGatewayMcpTransport tools/list schema sanitization", () => {
       assert.isAbove(countSchemaKeyOccurrences(recursiveTool.definition.inputSchema, "$ref"), 0);
     }),
   );
+});
+
+describe("native MCP call authority", () => {
+  it("cancels the child's in-flight work while preserving the parent credential", async () => {
+    let announceStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      announceStart = resolve;
+    });
+    let finalized = false;
+    const transport = makeTransport({
+      native: true,
+      threads: [makeThread("parent-stop")],
+      tool: {
+        definition: { name: "write", description: "test", inputSchema: { type: "object" } },
+        requiredCapability: "thread:write",
+        requiresActiveTurn: true,
+        handler: (args) =>
+          args.wait
+            ? Effect.sync(announceStart).pipe(
+                Effect.andThen(Effect.never),
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    finalized = true;
+                  }),
+                ),
+              )
+            : Effect.succeed({ content: [{ type: "text" as const, text: "parent still active" }] }),
+      },
+    });
+    const lease = transport.lease("parent-stop");
+    const native = lease.nativeMcpCalls!;
+    native.startTurn("parent-turn");
+    native.startTurn("child-turn");
+    native.start({
+      callId: "child",
+      turnId: "child-turn",
+      toolName: "write",
+      arguments: { wait: true },
+    });
+    const request = (id: string, args: unknown) =>
+      Effect.runPromise(
+        post(transport, "token-1", {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: "write", arguments: args, _meta: { callId: id } },
+        }),
+      );
+    const child = request("child", { wait: true });
+    await started;
+    await lease.cancelTurn("child-turn");
+    assert.deepEqual(await child, { status: 202 });
+    assert.equal(finalized, true);
+    native.start({ callId: "parent", turnId: "parent-turn", toolName: "write", arguments: {} });
+    const parent = await request("parent", {});
+    assert.equal(parent.status, 200);
+    assert.ok(JSON.stringify(parent.body).includes("parent still active"));
+    lease.release();
+  });
+
+  it("keeps child and next-turn calls authorized while rejecting late, forged and replayed calls", async () => {
+    const receivedTurns: Array<string | null> = [];
+    const transport = makeTransport({
+      native: true,
+      threads: [makeThread("parent")],
+      tool: {
+        definition: { name: "write", description: "test", inputSchema: { type: "object" } },
+        requiredCapability: "thread:write",
+        requiresActiveTurn: true,
+        handler: (_, context) => {
+          receivedTurns.push(context.callerTurnId);
+          return Effect.succeed({ content: [{ type: "text" as const, text: "ok" }] });
+        },
+      },
+    });
+    const lease = transport.lease("parent");
+    const native = lease.nativeMcpCalls!;
+    const call = (callId: string, args: unknown = {}) =>
+      Effect.runPromise(
+        post(transport, "token-1", {
+          jsonrpc: "2.0",
+          id: callId,
+          method: "tools/call",
+          params: { name: "write", arguments: args, _meta: { callId } },
+        }),
+      );
+    native.startTurn("parent-a");
+    native.startTurn("child-a");
+    native.start({ callId: "late-a", turnId: "parent-a", toolName: "write", arguments: {} });
+    await lease.cancelTurn("parent-a");
+    transport.setThreadTurnState("parent", "completed");
+    native.start({ callId: "child-call", turnId: "child-a", toolName: "write", arguments: {} });
+    await call("child-call");
+    assert.deepEqual(receivedTurns, ["child-a"]);
+    native.finish("child-call");
+    native.startTurn("parent-b");
+    transport.setThreadTurn("parent", "parent-b");
+    native.start({ callId: "b", turnId: "parent-b", toolName: "write", arguments: { x: 1 } });
+    await Promise.all([call("late-a"), call("child-call"), call("b", { x: 2 }), call("forged")]);
+    assert.deepEqual(receivedTurns, ["child-a"]);
+    await call("b", { x: 1 });
+    assert.deepEqual(receivedTurns, ["child-a", "parent-b"]);
+    // HTTP can beat the trusted stdout notification without losing the call.
+    const delayed = call("delayed");
+    setTimeout(
+      () =>
+        native.start({ callId: "delayed", turnId: "parent-b", toolName: "write", arguments: {} }),
+      20,
+    );
+    await delayed;
+    assert.deepEqual(receivedTurns, ["child-a", "parent-b", "parent-b"]);
+    lease.release();
+  });
 });

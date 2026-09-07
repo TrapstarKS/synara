@@ -20,7 +20,10 @@ interface CliOptions {
   readonly publication: boolean;
   readonly signed: boolean;
   readonly allowUnsignedWindowsPublication: boolean;
+  readonly macSigningScheme?: "apple-developer-id" | "mac-ad-hoc";
   readonly expectedMacTeamId?: string;
+  readonly expectedMacCertificateSha1?: string;
+  readonly expectedMacAuthority?: string;
   readonly expectedWindowsPublisher?: string;
   readonly expectedWindowsSubjectDn?: string;
 }
@@ -67,7 +70,10 @@ function parseArgs(argv: ReadonlyArray<string>): CliOptions {
     "--publication",
     "--signed",
     "--allow-unsigned-windows-publication",
+    "--mac-signing-scheme",
     "--expected-mac-team-id",
+    "--expected-mac-certificate-sha1",
+    "--expected-mac-authority",
     "--expected-windows-publisher",
     "--expected-windows-subject-dn",
   ]);
@@ -77,6 +83,16 @@ function parseArgs(argv: ReadonlyArray<string>): CliOptions {
   }
 
   const expectedMacTeamId = values.get("--expected-mac-team-id") || undefined;
+  const macSigningScheme = values.get("--mac-signing-scheme") || undefined;
+  if (
+    macSigningScheme &&
+    macSigningScheme !== "apple-developer-id" &&
+    macSigningScheme !== "mac-ad-hoc"
+  ) {
+    throw new Error(`Unsupported macOS signing scheme: ${macSigningScheme}.`);
+  }
+  const expectedMacCertificateSha1 = values.get("--expected-mac-certificate-sha1") || undefined;
+  const expectedMacAuthority = values.get("--expected-mac-authority") || undefined;
   const expectedWindowsPublisher = values.get("--expected-windows-publisher") || undefined;
   const expectedWindowsSubjectDn = values.get("--expected-windows-subject-dn") || undefined;
   return {
@@ -94,7 +110,12 @@ function parseArgs(argv: ReadonlyArray<string>): CliOptions {
       "--allow-unsigned-windows-publication",
       values.get("--allow-unsigned-windows-publication"),
     ),
+    ...(macSigningScheme
+      ? { macSigningScheme: macSigningScheme as "apple-developer-id" | "mac-ad-hoc" }
+      : {}),
     ...(expectedMacTeamId ? { expectedMacTeamId } : {}),
+    ...(expectedMacCertificateSha1 ? { expectedMacCertificateSha1 } : {}),
+    ...(expectedMacAuthority ? { expectedMacAuthority } : {}),
     ...(expectedWindowsPublisher ? { expectedWindowsPublisher } : {}),
     ...(expectedWindowsSubjectDn ? { expectedWindowsSubjectDn } : {}),
   };

@@ -126,6 +126,7 @@ function verifyReleaseWorkflowSafety(): void {
     resolve(repoRoot, ".github/workflows/release.yml"),
     "utf8",
   ).replaceAll("\r\n", "\n");
+  if (workflow.includes("\n  workflow_call:\n")) return;
   assertContains(
     workflow,
     "\npermissions: {}\n",
@@ -143,8 +144,43 @@ function verifyReleaseWorkflowSafety(): void {
   );
   assertContains(
     workflow,
-    "  build:\n    name: Build ${{ matrix.label }}\n    needs: preflight\n    runs-on: ${{ matrix.runner }}\n    timeout-minutes: 30\n    permissions:\n      contents: read",
-    "Expected artifact builds to receive read-only repository access.",
+    "  verify:\n    name: Verify\n    needs: preflight\n    runs-on: ubuntu-24.04\n    timeout-minutes: 15\n    permissions:\n      contents: read",
+    "Expected verification to run after source provenance with read-only repository access.",
+  );
+  assertContains(
+    workflow,
+    "  bundle:\n    name: Build shared desktop bundle\n    needs: preflight\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: read",
+    "Expected the reusable desktop bundle to build after the short source preflight.",
+  );
+  assertContains(
+    workflow,
+    "  build:\n    name: Build ${{ matrix.label }}\n    needs: [preflight, bundle]\n    runs-on: ${{ matrix.runner }}\n    timeout-minutes: 30\n    permissions:\n      contents: read",
+    "Expected artifact builds to consume the shared desktop bundle.",
+  );
+  assertContains(
+    workflow,
+    'echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/electron-builder-cache" >> "$GITHUB_ENV"',
+    "Expected artifact builds to reuse the Electron download cache.",
+  );
+  assertContains(
+    workflow,
+    "uses: actions/cache@v6",
+    "Expected release jobs to reuse Electron download caches.",
+  );
+  assertContains(
+    workflow,
+    "uses: actions/upload-artifact@v7",
+    "Expected the shared build to use the pinned artifact uploader.",
+  );
+  assertContains(
+    workflow,
+    "uses: actions/download-artifact@v8",
+    "Expected artifact builds to use the pinned artifact downloader.",
+  );
+  assertContains(
+    workflow,
+    "            --skip-build",
+    "Expected platform packaging to reuse the shared desktop build.",
   );
   assertContains(
     workflow,
@@ -153,12 +189,12 @@ function verifyReleaseWorkflowSafety(): void {
   );
   assertContains(
     workflow,
-    "  build_server_tarball:\n    name: Build server tarball\n    if: ${{ needs.preflight.outputs.publish_release == 'true' }}\n    needs: [preflight, build]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: read",
+    "  build_server_tarball:\n    name: Build server tarball\n    if: ${{ needs.preflight.outputs.publish_release == 'true' }}\n    needs: [preflight, verify, build]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: read",
     "Expected server tarball builds to receive read-only repository access.",
   );
   assertContains(
     workflow,
-    "  release:\n    name: Publish GitHub Release\n    if: ${{ needs.preflight.outputs.publish_release == 'true' }}\n    needs: [preflight, build, build_server_tarball]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: write",
+    "  release:\n    name: Publish GitHub Release\n    if: ${{ needs.preflight.outputs.publish_release == 'true' }}\n    needs: [preflight, verify, build, build_server_tarball]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: write",
     "Expected only GitHub release publication to receive contents write access.",
   );
   assertContains(
@@ -205,6 +241,21 @@ function verifyReleaseWorkflowSafety(): void {
     workflow,
     "Publishing macOS artifacts requires every signing and notarization secret.",
     "Expected macOS publication to fail closed when signing is unavailable.",
+  );
+  assertContains(
+    workflow,
+    "Import persistent TrapRAM-compatible macOS signing certificate",
+    "Expected the macOS release lane to import the persistent TrapRAM-compatible certificate.",
+  );
+  assertContains(
+    workflow,
+    "MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}",
+    "Expected macOS publication to use the persistent certificate secret.",
+  );
+  assertContains(
+    workflow,
+    "--mac-signing-mode adhoc",
+    "Expected the fork release lane to select persistent ad-hoc macOS signing.",
   );
   assertContains(
     workflow,

@@ -11,6 +11,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import type { WorkLogEntry } from "../session-logic";
+import type { Thread } from "../types";
 
 import {
   appendVoiceTranscriptToPrompt,
@@ -34,6 +35,7 @@ import {
   resolveNextLocalDispatchSnapshot,
   resolveWorkingLabel,
   deriveComposerSendState,
+  enrichSubagentWorkEntries,
   deriveComposerVoiceState,
   describeVoiceRecordingStartError,
   hasLiveTurnTakenOver,
@@ -73,6 +75,28 @@ import {
   worktreeSetupHasError,
 } from "./ChatView.logic";
 
+const makeSubagentTestThread = (overrides: Partial<Thread>): Thread =>
+  ({
+    id: ThreadId.makeUnsafe("thread"),
+    codexThreadId: null,
+    projectId: "project",
+    title: "Thread",
+    modelSelection: { provider: "codex", model: "gpt-5.6-luna" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    session: null,
+    messages: [],
+    proposedPlans: [],
+    error: null,
+    createdAt: "2026-09-07T18:00:00.000Z",
+    latestTurn: null,
+    branch: null,
+    worktreePath: null,
+    turnDiffSummaries: [],
+    activities: [],
+    ...overrides,
+  }) as Thread;
+
 describe("composer strip work-log derivation", () => {
   it("reuses the active derivation unless a subagent view needs its parent source", () => {
     const activeWorkLogEntries: WorkLogEntry[] = [];
@@ -93,6 +117,170 @@ describe("composer strip work-log derivation", () => {
       deriveParentWorkLogEntries,
     });
     expect(deriveParentWorkLogEntries).toHaveBeenCalledOnce();
+  });
+});
+
+describe("persisted native subagent work-log fallback", () => {
+  const parentThreadId = ThreadId.makeUnsafe("parent");
+  const turnId = TurnId.makeUnsafe("parent-turn");
+  const entry: WorkLogEntry = {
+    id: "wait-for-agent",
+    createdAt: "2026-09-07T18:00:10.000Z",
+    turnId,
+    label: "Agent task",
+    tone: "tool",
+    itemType: "collab_agent_tool_call",
+  };
+  const parent = makeSubagentTestThread({
+    id: parentThreadId,
+    latestTurn: {
+      turnId,
+      state: "running",
+      requestedAt: "2026-09-07T18:00:00.000Z",
+      startedAt: "2026-09-07T18:00:01.000Z",
+      completedAt: null,
+      assistantMessageId: null,
+    },
+  });
+
+  it("links a persisted child by parent and source turn", () => {
+    const child = makeSubagentTestThread({
+      id: ThreadId.makeUnsafe("subagent:parent:provider-child"),
+      parentThreadId,
+      sourceTurnId: turnId,
+      subagentNickname: "Mendel",
+      subagentRole: "explorer",
+      createdAt: "2026-09-07T18:00:02.000Z",
+    });
+
+    const [enriched] = enrichSubagentWorkEntries([entry], [parent, child], parentThreadId);
+    expect(enriched?.subagents).toEqual([
+      expect.objectContaining({
+        threadId: "provider-child",
+        providerThreadId: "provider-child",
+        resolvedThreadId: child.id,
+        nickname: "Mendel",
+        role: "explorer",
+      }),
+    ]);
+  });
+
+  it("replaces stale spawn hints with the persisted child model and effort", () => {
+    const child = makeSubagentTestThread({
+      id: ThreadId.makeUnsafe("subagent:parent:provider-child"),
+      parentThreadId,
+      sourceTurnId: turnId,
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        options: { reasoningEffort: "max" },
+      },
+      createdAt: "2026-09-07T18:00:02.000Z",
+    });
+    const staleEntry: WorkLogEntry = {
+      ...entry,
+      subagents: [
+        {
+          threadId: "provider-child",
+          providerThreadId: "provider-child",
+          model: "gpt-5.6-sol",
+          effort: "xhigh",
+          rawStatus: "running",
+        },
+      ],
+    };
+
+    const [enriched] = enrichSubagentWorkEntries([staleEntry], [parent, child], parentThreadId);
+    expect(enriched?.subagents?.[0]).toMatchObject({
+      resolvedThreadId: child.id,
+      model: "gpt-5.6-luna",
+      effort: "max",
+    });
+  });
+
+  it("does not mix children from a different source turn", () => {
+    const child = makeSubagentTestThread({
+      id: ThreadId.makeUnsafe("subagent:parent:older-child"),
+      parentThreadId,
+      sourceTurnId: TurnId.makeUnsafe("older-turn"),
+      createdAt: "2026-09-07T17:00:00.000Z",
+    });
+
+    const [enriched] = enrichSubagentWorkEntries([entry], [parent, child], parentThreadId);
+    expect(enriched).toBe(entry);
+  });
+
+  it("shows an earlier-turn child in an untargeted native wait, even when already linked", () => {
+    const child = makeSubagentTestThread({
+      id: ThreadId.makeUnsafe("subagent:parent:older-child"),
+      parentThreadId,
+      sourceTurnId: TurnId.makeUnsafe("older-turn"),
+      createdAt: "2026-09-07T17:00:00.000Z",
+    });
+    const futureChild = makeSubagentTestThread({
+      ...child,
+      id: ThreadId.makeUnsafe("subagent:parent:future-child"),
+      createdAt: "2026-09-07T19:00:00.000Z",
+    });
+    const spawnEntry: WorkLogEntry = {
+      ...entry,
+      id: "spawn-earlier",
+      subagents: [{ threadId: "older-child", resolvedThreadId: child.id }],
+    };
+    const waitEntry: WorkLogEntry = {
+      ...entry,
+      subagentAction: { tool: "wait", status: "completed", summaryText: "Waiting on 1 agent" },
+    };
+    const enriched = enrichSubagentWorkEntries(
+      [spawnEntry, waitEntry],
+      [parent, child, futureChild],
+      parentThreadId,
+    );
+    expect(enriched[1]?.subagents?.map((agent) => agent.resolvedThreadId)).toEqual([child.id]);
+  });
+
+  it("uses the current parent-turn time bounds for legacy child attribution", () => {
+    const child = makeSubagentTestThread({
+      id: ThreadId.makeUnsafe("subagent:parent:legacy-child"),
+      parentThreadId,
+      sourceTurnId: TurnId.makeUnsafe("child-turn-from-old-projection"),
+      createdAt: "2026-09-07T18:00:03.000Z",
+    });
+
+    const [enriched] = enrichSubagentWorkEntries([entry], [parent, child], parentThreadId);
+    expect(enriched?.subagents?.[0]?.resolvedThreadId).toBe(child.id);
+  });
+
+  it("assigns each persisted child to only the closest collab entry in its turn", () => {
+    const laterEntry = {
+      ...entry,
+      id: "wait-for-second-agent",
+      createdAt: "2026-09-07T18:00:20.000Z",
+    };
+    const firstChild = makeSubagentTestThread({
+      id: ThreadId.makeUnsafe("subagent:parent:first-child"),
+      parentThreadId,
+      sourceTurnId: turnId,
+      createdAt: "2026-09-07T18:00:09.000Z",
+    });
+    const secondChild = makeSubagentTestThread({
+      id: ThreadId.makeUnsafe("subagent:parent:second-child"),
+      parentThreadId,
+      sourceTurnId: turnId,
+      createdAt: "2026-09-07T18:00:19.000Z",
+    });
+
+    const enriched = enrichSubagentWorkEntries(
+      [entry, laterEntry],
+      [parent, firstChild, secondChild],
+      parentThreadId,
+    );
+    expect(enriched[0]?.subagents?.map((subagent) => subagent.resolvedThreadId)).toEqual([
+      firstChild.id,
+    ]);
+    expect(enriched[1]?.subagents?.map((subagent) => subagent.resolvedThreadId)).toEqual([
+      secondChild.id,
+    ]);
   });
 });
 
