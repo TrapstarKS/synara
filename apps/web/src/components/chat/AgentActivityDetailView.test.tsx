@@ -38,6 +38,18 @@ describe("AgentActivityDetailView", () => {
                 summaryText: "Agent activity",
                 prompt: "Explore the changelog implementation.",
               },
+              subagents: [
+                {
+                  threadId: "child-provider",
+                  resolvedThreadId: "subagent:parent:child-provider",
+                  nickname: "Newton",
+                  role: "explorer",
+                  model: "gpt-5.6-luna",
+                  statusLabel: "Running",
+                  isActive: true,
+                  latestUpdate: "Inspecting lifecycle events.",
+                },
+              ],
             },
           ],
         }}
@@ -45,6 +57,7 @@ describe("AgentActivityDetailView", () => {
         markdownCwd={undefined}
         onBack={() => {}}
         onImageExpand={() => {}}
+        onOpenThread={() => {}}
         timestampFormat="locale"
       />,
     );
@@ -53,5 +66,9 @@ describe("AgentActivityDetailView", () => {
     expect(markup).toContain("Find changelog implementation");
     expect(markup).toContain("Explore the changelog implementation.");
     expect(markup).toContain("Agent found the relevant files.");
+    expect(markup).toContain("Agents");
+    expect(markup).toContain("Newton");
+    expect(markup).toContain("Inspecting lifecycle events.");
+    expect(markup).toContain("Open");
   });
 });

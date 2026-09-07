@@ -301,6 +301,7 @@ export type SessionExitedPayload = typeof SessionExitedPayload.Type;
 
 const ThreadStartedPayload = Schema.Struct({
   providerThreadId: Schema.optional(TrimmedNonEmptyStringSchema),
+  name: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type ThreadStartedPayload = typeof ThreadStartedPayload.Type;
 

@@ -1922,7 +1922,11 @@ const make = Effect.gen(function* () {
           const childThreadId = ThreadId.makeUnsafe(
             `subagent:${parentThread.id}:${providerThreadId}`,
           );
-          const sourceTurnId = toTurnId(event.turnId) ?? null;
+          const sourceTurnId =
+            toTurnId(event.parentTurnId) ??
+            (event.providerRefs?.providerParentThreadId !== undefined
+              ? (parentThread.session?.activeTurnId ?? null)
+              : (toTurnId(event.turnId) ?? null));
           // A single provider event can describe the child both as a collab receiver and
           // as the event's provider thread, so re-read after any earlier dispatch in this handler.
           // Mirror the parent load: only this event's heavy-detail handlers read the
@@ -2718,7 +2722,10 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "thread.metadata.updated" && event.payload.name) {
+      if (
+        (event.type === "thread.metadata.updated" || event.type === "thread.started") &&
+        event.payload.name
+      ) {
         yield* orchestrationEngine.dispatch({
           type: "thread.meta.update",
           commandId: providerCommandId(event, "thread-meta-update", thread.id),
