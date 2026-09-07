@@ -1399,7 +1399,7 @@ describe("resolveProjectStatusIndicator", () => {
 });
 
 describe("buildProjectThreadTree", () => {
-  it("keeps inactive child threads out of the sidebar", () => {
+  it("shows working child threads without requiring a selection", () => {
     const rows = buildProjectThreadTree({
       threads: [
         makeThread({
@@ -1409,6 +1409,13 @@ describe("buildProjectThreadTree", () => {
         makeThread({
           id: ThreadId.makeUnsafe("thread-child"),
           parentThreadId: ThreadId.makeUnsafe("thread-parent"),
+          session: {
+            provider: "codex",
+            status: "running",
+            orchestrationStatus: "running",
+            createdAt: "2026-03-09T10:00:00.000Z",
+            updatedAt: "2026-03-09T10:00:00.000Z",
+          },
           createdAt: "2026-03-09T10:01:00.000Z",
         }),
       ],
@@ -1419,6 +1426,35 @@ describe("buildProjectThreadTree", () => {
         thread: expect.objectContaining({ id: ThreadId.makeUnsafe("thread-parent") }),
         depth: 0,
       }),
+      expect.objectContaining({
+        thread: expect.objectContaining({ id: ThreadId.makeUnsafe("thread-child") }),
+        depth: 1,
+      }),
+    ]);
+  });
+
+  it("hides completed children even when selected and keeps working descendants visible", () => {
+    const parent = makeThread({ id: ThreadId.makeUnsafe("parent") });
+    const completed = makeThread({
+      id: ThreadId.makeUnsafe("completed"),
+      parentThreadId: parent.id,
+      latestTurn: makeLatestTurn(),
+    });
+    const working = {
+      ...makeThread({
+        id: ThreadId.makeUnsafe("working"),
+        parentThreadId: completed.id,
+      }),
+      hasLiveTailWork: true,
+    };
+    expect(
+      buildProjectThreadTree({
+        threads: [parent, completed, working],
+        forceVisibleThreadId: completed.id,
+      }).map(({ thread, depth }) => [thread.id, depth]),
+    ).toEqual([
+      [parent.id, 0],
+      [working.id, 1],
     ]);
   });
 
@@ -1440,6 +1476,13 @@ describe("buildProjectThreadTree", () => {
         makeThread({
           id: ThreadId.makeUnsafe("thread-grandchild"),
           parentThreadId: ThreadId.makeUnsafe("thread-child"),
+          session: {
+            provider: "codex",
+            status: "running",
+            orchestrationStatus: "running",
+            createdAt: "2026-03-09T10:00:00.000Z",
+            updatedAt: "2026-03-09T10:00:00.000Z",
+          },
           createdAt: "2026-03-09T10:01:00.000Z",
         }),
       ],
@@ -1453,7 +1496,7 @@ describe("buildProjectThreadTree", () => {
     ]);
   });
 
-  it("reveals the active child thread and its ancestors", () => {
+  it("shows working descendants", () => {
     const rows = buildProjectThreadTree({
       threads: [
         makeThread({
@@ -1463,11 +1506,25 @@ describe("buildProjectThreadTree", () => {
         makeThread({
           id: ThreadId.makeUnsafe("thread-child"),
           parentThreadId: ThreadId.makeUnsafe("thread-parent"),
+          session: {
+            provider: "codex",
+            status: "running",
+            orchestrationStatus: "running",
+            createdAt: "2026-03-09T10:00:00.000Z",
+            updatedAt: "2026-03-09T10:00:00.000Z",
+          },
           createdAt: "2026-03-09T10:02:00.000Z",
         }),
         makeThread({
           id: ThreadId.makeUnsafe("thread-grandchild"),
           parentThreadId: ThreadId.makeUnsafe("thread-child"),
+          session: {
+            provider: "codex",
+            status: "running",
+            orchestrationStatus: "running",
+            createdAt: "2026-03-09T10:00:00.000Z",
+            updatedAt: "2026-03-09T10:00:00.000Z",
+          },
           createdAt: "2026-03-09T10:01:00.000Z",
         }),
       ],
@@ -1872,6 +1929,7 @@ describe("deriveSidebarProjectData", () => {
     const child = makeSidebarThreadSummary({
       id: ThreadId.makeUnsafe("thread-child"),
       parentThreadId: parent.id,
+      hasLiveTailWork: true,
     });
     const data = deriveSidebarProjectData({
       projects: [project],

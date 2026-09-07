@@ -1,3 +1,4 @@
+import type { NativeMcpCall } from "./nativeMcpCalls.ts";
 import type { ProviderKind, ThreadId } from "@synara/contracts";
 import { Effect, Exit } from "effect";
 
@@ -13,7 +14,10 @@ type AgentGatewaySessionLeaseCredentials = Pick<
   Partial<
     Pick<
       AgentGatewayCredentialsShape,
-      "cancelSessionTurnRequests" | "issueStdioBootstrapToken" | "retireSessionTurn"
+      | "cancelSessionTurnRequests"
+      | "issueStdioBootstrapToken"
+      | "retireSessionTurn"
+      | "nativeMcpCalls"
     >
   >;
 
@@ -29,6 +33,11 @@ export const AGENT_GATEWAY_TURN_AUTHORITY_RETIRED = "synaraGatewayTurnAuthorityR
  * and every later path becomes a no-op.
  */
 export interface AgentGatewaySessionLease {
+  readonly nativeMcpCalls?: {
+    readonly startTurn: (turnId: string) => void;
+    readonly start: (call: NativeMcpCall) => void;
+    readonly finish: (callId: string) => void;
+  };
   readonly connection: AgentGatewayMcpConnection;
   /** Mint a fresh one-shot proxy credential for a provider turn. */
   readonly issueStdioBootstrapToken?: () => string | null;
@@ -151,9 +160,24 @@ export function acquireAgentGatewaySessionLease(
 
   const connection = credentials.connectionForThread(threadId, provider);
   let released = false;
+  const nativeCalls = provider === "codex" ? credentials.nativeMcpCalls : undefined;
+  nativeCalls?.enable(connection.bearerToken);
 
   return {
     connection,
+    ...(nativeCalls
+      ? {
+          nativeMcpCalls: {
+            startTurn: (turnId: string) => {
+              if (!released) nativeCalls.startTurn(connection.bearerToken, turnId);
+            },
+            start: (call: NativeMcpCall) => {
+              if (!released) nativeCalls.start(connection.bearerToken, call);
+            },
+            finish: (callId: string) => nativeCalls.finish(connection.bearerToken, callId),
+          },
+        }
+      : {}),
     issueStdioBootstrapToken: () => {
       if (released) return null;
       return credentials.issueStdioBootstrapToken?.(connection.bearerToken) ?? null;

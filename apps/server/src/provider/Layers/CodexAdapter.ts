@@ -251,6 +251,18 @@ function asTrimmedString(value: unknown): string | undefined {
   return stringValue ? stringValue : undefined;
 }
 
+function codexThreadDisplayName(thread: Record<string, unknown> | undefined): string | undefined {
+  const name = asTrimmedString(thread?.name);
+  if (name) return name;
+  const source = asObject(thread?.source);
+  const subagent = asObject(source?.subAgent ?? source?.subagent ?? source?.sub_agent);
+  const spawn = asObject(subagent?.thread_spawn ?? subagent?.threadSpawn);
+  const agentPath = asTrimmedString(spawn?.agent_path ?? spawn?.agentPath);
+  const taskName = agentPath?.split("/").findLast(Boolean)?.replaceAll("_", " ");
+  if (taskName) return taskName.charAt(0).toUpperCase() + taskName.slice(1);
+  return asTrimmedString(thread?.agentNickname ?? spawn?.agent_nickname ?? spawn?.agentNickname);
+}
+
 function asArray(value: unknown): unknown[] | undefined {
   return Array.isArray(value) ? value : undefined;
 }
@@ -1210,17 +1222,20 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "thread/started") {
-    const payloadThreadId = asString(asObject(payload?.thread)?.id);
+    const thread = asObject(payload?.thread);
+    const payloadThreadId = asString(thread?.id);
     const providerThreadId = payloadThreadId ?? asString(payload?.threadId);
     if (!providerThreadId) {
       return [];
     }
+    const name = codexThreadDisplayName(thread);
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
         type: "thread.started",
         payload: {
           providerThreadId,
+          ...(name ? { name } : {}),
         },
       },
     ];
@@ -1269,12 +1284,13 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "thread/name/updated") {
+    const name = asString(payload?.threadName) ?? codexThreadDisplayName(asObject(payload?.thread));
     return [
       {
         type: "thread.metadata.updated",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          ...(asString(payload?.threadName) ? { name: asString(payload?.threadName) } : {}),
+          ...(name ? { name } : {}),
           ...(event.payload !== undefined ? { metadata: asObject(event.payload) } : {}),
         },
       },
@@ -2441,6 +2457,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     return {
       provider: PROVIDER,
       capabilities: {
+        supportsTurnScopedGateway: agentGatewayCredentials?.nativeMcpCalls !== undefined,
         sessionModelSwitch: "in-session",
         supportsSkillMentions: true,
         supportsSkillDiscovery: true,

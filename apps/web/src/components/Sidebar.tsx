@@ -146,6 +146,7 @@ import { useThreadPullRequests } from "../hooks/useThreadPullRequests";
 import {
   providerComposerCapabilitiesQueryOptions,
   supportsThreadImport,
+  providerModelsQueryOptions,
 } from "../lib/providerDiscoveryReactQuery";
 import {
   resolveCurrentProjectTargetId,
@@ -354,6 +355,7 @@ import {
   DISCLOSURE_INNER_CLASS,
 } from "~/lib/disclosureMotion";
 import { createClientPointMenuAnchor } from "~/lib/clientPointMenuAnchor";
+import { resolveRuntimeModelDescriptor } from "./chat/runtimeModelCapabilities";
 import { resolveThreadModelSummary } from "~/lib/threadModelSummary";
 import {
   canCreateThreadHandoff,
@@ -1562,6 +1564,9 @@ export default function Sidebar() {
   });
   const serverCwd = serverCwdQuery.data ?? null;
   const providerStatuses = useProviderStatusesForLocalConfig();
+  const codexModelsQuery = useQuery(
+    providerModelsQueryOptions({ provider: "codex", enabled: false }),
+  );
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
   // Declared next to `keybindings` (rather than further down) because the project-row render
   // helpers above read these labels. A const declared after the closure that captures it
@@ -4489,7 +4494,15 @@ export default function Sidebar() {
           sourceProjectName={hoverMetadata.sourceProjectName}
           branch={hoverMetadata.branch}
           worktreeName={hoverMetadata.worktreeName}
-          model={resolveThreadModelSummary(thread.modelSelection)}
+          model={resolveThreadModelSummary(
+            thread.modelSelection,
+            resolveRuntimeModelDescriptor({
+              provider: thread.modelSelection.provider,
+              model: thread.modelSelection.model,
+              runtimeModels:
+                thread.modelSelection.provider === "codex" ? codexModelsQuery.data?.models : null,
+            }),
+          )}
           status={hoverStatus}
         />
       </TooltipPopup>

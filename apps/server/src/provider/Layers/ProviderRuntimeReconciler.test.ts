@@ -33,7 +33,7 @@ import {
 } from "../Services/ProviderSessionDirectory.ts";
 import { makeProviderRuntimeReconcilerLive } from "./ProviderRuntimeReconciler.ts";
 
-const THREAD_ID = ThreadId.makeUnsafe("thread-runtime-reconciler");
+const THREAD_ID = ThreadId.makeUnsafe("subagent:parent-runtime:native-child");
 const TURN_ID = TurnId.makeUnsafe("turn-runtime-reconciler");
 
 function staleShellSnapshot(): OrchestrationShellSnapshot {
@@ -88,6 +88,8 @@ describe("ProviderRuntimeReconcilerLive", () => {
     const reconcileSettledOpenTurns = vi.fn();
     let bindingStatus: "stopped" | "error" = "stopped";
     let providerSession = readyProviderSession();
+    let projectedThread = staleShellSnapshot().threads[0]!;
+    const hasLiveRuntimeTasks = vi.fn(() => Effect.succeed(true));
 
     const engine = {
       dispatch: (command: OrchestrationCommand) =>
@@ -103,7 +105,7 @@ describe("ProviderRuntimeReconcilerLive", () => {
     const snapshotQuery = {
       listStaleInFlightThreadIds: () => Effect.succeed([THREAD_ID]),
       getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),
-      getThreadShellById: () => Effect.succeed(Option.some(staleShellSnapshot().threads[0]!)),
+      getThreadShellById: () => Effect.succeed(Option.some(projectedThread)),
       getShellSnapshot: () => Effect.die("full shell snapshot should not be loaded"),
     } as unknown as ProjectionSnapshotQueryShape;
     const directory = {
@@ -118,6 +120,7 @@ describe("ProviderRuntimeReconcilerLive", () => {
         ]),
     } as unknown as ProviderSessionDirectoryShape;
     const provider = {
+      hasLiveRuntimeTasks,
       listSessions: () => Effect.succeed([providerSession]),
       getRuntimeEventPumpHealth: () =>
         Effect.succeed([
@@ -149,6 +152,20 @@ describe("ProviderRuntimeReconcilerLive", () => {
 
     await Effect.gen(function* () {
       const reconciler = yield* ProviderRuntimeReconciler;
+      projectedThread = {
+        ...projectedThread,
+        parentThreadId: ThreadId.makeUnsafe("parent-runtime"),
+        subagentAgentId: null,
+      };
+      yield* reconciler.reconcileNow;
+      expect(commands).toEqual([]);
+      expect(hasLiveRuntimeTasks).toHaveBeenCalledWith({
+        threadId: "parent-runtime",
+        providerThreadId: "native-child",
+        turnId: TURN_ID,
+      });
+      // Once the native runtime no longer owns the child, ordinary recovery applies.
+      hasLiveRuntimeTasks.mockImplementation(() => Effect.succeed(false));
       yield* reconciler.reconcileNow;
       // The projection can remain stale for another observation cycle.
       yield* reconciler.reconcileNow;

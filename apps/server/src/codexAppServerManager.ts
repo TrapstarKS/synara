@@ -45,11 +45,13 @@ import {
   formatCodexCliUpgradeMessage,
   isCodexCliVersionSupported,
   MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION,
+  MINIMUM_CODEX_NATIVE_GATEWAY_CLI_VERSION,
   parseCodexCliVersion,
 } from "./provider/codexCliVersion";
 import {
   buildCodexMcpConfigToml,
   SYNARA_AGENT_GATEWAY_TOKEN_ENV,
+  SYNARA_MCP_SERVER_NAME,
 } from "./agentGateway/mcpInjection.ts";
 import { SYNARA_GATEWAY_HARNESS_POLICY } from "./agentGateway/harnessPolicy.ts";
 import {
@@ -949,6 +951,10 @@ function setRecentCacheEntry<K, V>(
 
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
+  private readonly childMetadataReads = new WeakMap<
+    CodexSessionContext,
+    Map<string, "reading" | "known">
+  >();
   private readonly previouslyBoundThreadIds = new Set<ThreadId>();
   private readonly discoverySessions = new Map<string, CodexSessionContext>();
   private readonly discoverySessionStartups = new Map<string, Promise<CodexSessionContext>>();
@@ -962,6 +968,15 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   private readonly skillsCache = new Map<string, ProviderListSkillsResult>();
   private readonly pluginsCache = new Map<string, ProviderListPluginsResult>();
   private readonly pluginDetailCache = new Map<string, ProviderReadPluginResult>();
+  private readonly backgroundTurns = new WeakMap<
+    CodexSessionContext,
+    {
+      readonly states: Map<string, "running" | "ready" | "stopped" | "starting">;
+      readonly turnIds: Map<string, TurnId>;
+      readonly wakeups: Map<string, ReturnType<typeof setTimeout>>;
+      readonly completed: Set<string>;
+    }
+  >();
   private readonly modelCache = new Map<string, ProviderListModelsResult>();
 
   private runPromise: (effect: Effect.Effect<unknown, never>) => Promise<unknown>;
@@ -1069,9 +1084,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       await this.assertSupportedCodexCliVersion({
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
-        ...(input.runtimeMode === "auto"
-          ? { minimumVersion: MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION }
-          : {}),
+        ...(this.agentGatewayMcp
+          ? { minimumVersion: MINIMUM_CODEX_NATIVE_GATEWAY_CLI_VERSION }
+          : input.runtimeMode === "auto"
+            ? { minimumVersion: MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION }
+            : {}),
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
       gatewaySessionLease = this.agentGatewayMcp?.acquireSessionLease(threadId);
@@ -1308,8 +1325,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         "Codex session gateway authority is retired; resume the provider runtime before starting another turn.",
       );
     }
-    context.collabReceiverTurns.clear();
-    context.collabReceiverParents.clear();
+    // Child routes belong to the runtime and survive parent turn boundaries.
 
     // Normal sends never interrupt active work. The orchestration layer decides
     // when a queued follow-up is ready to become a provider turn.
@@ -1566,6 +1582,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   private retireGatewayTurn(context: CodexSessionContext, turnId: TurnId): Promise<void> {
     const lease = context.gatewaySessionLease;
     if (!lease) return Promise.resolve();
+    if (lease.nativeMcpCalls) return this.cancelGatewayTurn(context, turnId);
     // Flip the local admission fence before starting asynchronous request
     // drainage. No following turn may reuse this runtime's bearer.
     context.gatewayCredentialRetired = true;
@@ -1603,22 +1620,23 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return;
     }
 
+    const background = this.backgroundTurns.get(context);
+    background?.states.set(providerThreadId, "stopped");
+    clearTimeout(background?.wakeups.get(providerThreadId));
+    background?.wakeups.delete(providerThreadId);
+
     log.info("[codex-review] turn/interrupt requested", {
       threadId,
       providerThreadId,
       turnId: effectiveTurnId,
       isTrackedReviewTurn: context.reviewTurnIds.has(effectiveTurnId),
     });
-    // Codex app-server currently completes `turn/interrupt` without reliably
-    // forwarding MCP `notifications/cancelled` to stdio servers. A collab child
-    // shares the parent's gateway credential, and gateway requests therefore
-    // carry the parent turn id rather than the child's provider-native id. On a
-    // targeted child stop, tombstone the parent gateway turn without stopping
-    // the parent runtime. This deliberately disables gateway tools for the rest
-    // of that parent turn: without a child-specific transport, re-enabling them
-    // would also re-authorize indistinguishable late child requests.
+    // Native call authority can cancel one child without revoking its siblings.
+    // Legacy transports still need the shared parent bearer fence.
     const gatewayTurnId =
-      providerThreadIdOverride === undefined ? effectiveTurnId : context.session.activeTurnId;
+      context.gatewaySessionLease?.nativeMcpCalls || providerThreadIdOverride === undefined
+        ? effectiveTurnId
+        : context.session.activeTurnId;
     const gatewayCancellation = gatewayTurnId
       ? this.cancelGatewayTurn(context, gatewayTurnId)
       : Promise.resolve();
@@ -1627,8 +1645,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       // A session bearer has no trustworthy per-turn provenance. Revoke it
       // after tombstoning A but before asking Codex to interrupt; the provider
       // runtime is retired by ProviderService before another turn can start.
-      context.gatewaySessionLease?.release();
-      if (context.gatewaySessionLease) context.gatewayCredentialRetired = true;
+      if (!context.gatewaySessionLease?.nativeMcpCalls) {
+        context.gatewaySessionLease?.release();
+        if (context.gatewaySessionLease) context.gatewayCredentialRetired = true;
+      }
     } catch (error) {
       gatewayRevocationError = error;
     }
@@ -1767,8 +1787,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
 
     this.clearTaskCompleteFallback(context);
-    context.collabReceiverTurns.clear();
-    context.collabReceiverParents.clear();
     context.reviewTurnIds.delete(turnId);
     this.updateSession(context, {
       status: "ready",
@@ -2295,6 +2313,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     let settleBeforeTeardown: Promise<void> | undefined;
     if (!context.stopping) {
       context.stopping = true;
+      for (const timer of this.backgroundTurns.get(context)?.wakeups.values() ?? [])
+        clearTimeout(timer);
       this.clearTaskCompleteFallback(context);
       context.gatewaySessionLease?.release();
 
@@ -3053,6 +3073,178 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     );
   }
 
+  private reconcileBackgroundTurns(
+    context: CodexSessionContext,
+    notification: JsonRpcNotification,
+    route: ResolvedCollaborationRoute,
+    terminalError: boolean,
+  ): void {
+    if (
+      notification.method !== "turn/started" &&
+      notification.method !== "turn/completed" &&
+      notification.method !== "turn/aborted" &&
+      notification.method !== "item/completed" &&
+      !terminalError
+    )
+      return;
+    const threadId = route.providerThreadId;
+    if (!threadId) return;
+    let state = this.backgroundTurns.get(context);
+    if (!state) {
+      state = { states: new Map(), turnIds: new Map(), wakeups: new Map(), completed: new Set() };
+      this.backgroundTurns.set(context, state);
+    }
+    const turnId = this.readRouteFields(notification.params).turnId;
+    if (notification.method === "turn/started") {
+      if (turnId) state.turnIds.set(threadId, turnId);
+      state.states.set(threadId, "running");
+      clearTimeout(state.wakeups.get(threadId));
+      state.wakeups.delete(threadId);
+      return;
+    }
+    const terminal =
+      notification.method === "turn/completed" ||
+      notification.method === "turn/aborted" ||
+      terminalError;
+    let parentToWake: string | undefined;
+    let completionKey: string | undefined;
+    if (terminal) {
+      const activeTurnId = state.turnIds.get(threadId);
+      if (turnId && activeTurnId && turnId !== activeTurnId) return;
+      state.turnIds.delete(threadId);
+      const status = this.readString(this.readObject(notification.params, "turn"), "status");
+      state.states.set(
+        threadId,
+        state.states.get(threadId) !== "stopped" &&
+          notification.method === "turn/completed" &&
+          status !== "failed" &&
+          status !== "interrupted"
+          ? "ready"
+          : "stopped",
+      );
+      if (route.isChildConversation && turnId) {
+        parentToWake = route.providerParentThreadId;
+        completionKey = `${threadId}:${turnId}`;
+      }
+    }
+    // This notification is emitted after the result is injected into its
+    // recipient's context, and covers a parent settling during child delivery.
+    const item = this.readObject(notification.params, "item");
+    if (
+      notification.method === "item/completed" &&
+      item?.type === "subAgentActivity" &&
+      (item.kind === "completed" || item.kind === "interrupted") &&
+      typeof item.id === "string"
+    ) {
+      parentToWake = threadId;
+      completionKey = item.id;
+    }
+    if (!parentToWake || !completionKey || state.completed.has(completionKey)) return;
+    state.completed.add(completionKey);
+    if (state.completed.size > 1024) state.completed.delete(state.completed.values().next().value!);
+    if (state.states.get(parentToWake) !== "ready" || state.wakeups.has(parentToWake)) return;
+    const parentId = parentToWake;
+    const background = state;
+    // Coalesce siblings and let Codex enqueue its native result notification.
+    const timer = setTimeout(() => {
+      background.wakeups.delete(parentId);
+      if (
+        context.stopping ||
+        this.sessions.get(context.session.threadId) !== context ||
+        context.gatewayCredentialRetired ||
+        background.states.get(parentId) !== "ready"
+      )
+        return;
+      background.states.set(parentId, "starting");
+      // Empty input consumes the native notification without fabricating a
+      // user message. Codex emits the ordinary turn lifecycle for projection.
+      void this.sendRequest(context, "turn/start", {
+        threadId: parentId,
+        input: [],
+        turnTrigger: "subagent_completion",
+      }).catch((error) => {
+        background.states.set(parentId, "stopped");
+        this.emitErrorEvent(
+          context,
+          "subagent/wakeupFailed",
+          `Could not resume after subagent completion: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }, 500);
+    timer.unref();
+    background.wakeups.set(parentId, timer);
+  }
+
+  private settleClosedChildTurns(
+    context: CodexSessionContext,
+    reason: string,
+    closedProviderThreadId?: string,
+  ): void {
+    const background = this.backgroundTurns.get(context);
+    if (!background) return;
+    if (closedProviderThreadId === undefined) {
+      // A runtime exit closes the whole family. Retire pending continuations
+      // before terminal child events can try to wake their parent.
+      for (const [threadId] of background.states) background.states.set(threadId, "stopped");
+      for (const timer of background.wakeups.values()) clearTimeout(timer);
+      background.wakeups.clear();
+    } else {
+      background.states.set(closedProviderThreadId, "stopped");
+      clearTimeout(background.wakeups.get(closedProviderThreadId));
+      background.wakeups.delete(closedProviderThreadId);
+    }
+    for (const [threadId, turnId] of [...background.turnIds]) {
+      if (closedProviderThreadId !== undefined && threadId !== closedProviderThreadId) continue;
+      if (!this.resolveCollaborationRoute(context, { threadId }).isChildConversation) continue;
+      // Thread closure has no turn id. Settle only the exact turn this runtime
+      // observed, through the ordinary terminal path that flushes child output.
+      this.handleServerNotification(context, {
+        method: "turn/aborted",
+        params: { threadId, turn: { id: turnId }, reason },
+      });
+    }
+    if (closedProviderThreadId === undefined) this.backgroundTurns.delete(context);
+  }
+
+  private recoverChildMetadata(
+    context: CodexSessionContext,
+    providerThreadId: string,
+    method: string,
+  ): void {
+    const reads = this.childMetadataReads.get(context) ?? new Map<string, "reading" | "known">();
+    this.childMetadataReads.set(context, reads);
+    // Child starts can omit metadata, and reconnects can first expose a tool
+    // event. Read once for either path; explicit name updates supersede the read.
+    if (method === "thread/name/updated") {
+      reads.set(providerThreadId, "known");
+      return;
+    }
+    if (reads.has(providerThreadId)) return;
+    reads.set(providerThreadId, "reading");
+    void this.sendRequest(context, "thread/read", {
+      threadId: providerThreadId,
+      includeTurns: false,
+    })
+      .then((response) => {
+        if (context.stopping || reads.get(providerThreadId) !== "reading") return;
+        const thread = this.readObject(this.readObject(response)?.thread);
+        if (thread?.id !== providerThreadId) {
+          reads.delete(providerThreadId);
+          return;
+        }
+        // Metadata-only delivery must not restart or settle the child's turn.
+        this.handleServerNotification(context, {
+          method: "thread/name/updated",
+          params: { threadId: providerThreadId, thread },
+        });
+      })
+      .catch(() => {
+        // The child may not be persisted yet. A later notification can retry,
+        // with at most one metadata request in flight for each child.
+        if (reads.get(providerThreadId) === "reading") reads.delete(providerThreadId);
+      });
+  }
+
   private handleServerNotification(
     context: CodexSessionContext,
     notification: JsonRpcNotification,
@@ -3068,9 +3260,21 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     } = resolvedCollaborationRoute;
     if (
       isChildConversation &&
+      (notification.method === "thread/closed" ||
+        (notification.method === "thread/status/changed" &&
+          this.readString(this.readObject(notification.params, "status"), "type") === "notLoaded"))
+    ) {
+      this.settleClosedChildTurns(context, "provider-thread-closed", providerThreadId);
+      return;
+    }
+    if (
+      isChildConversation &&
       this.shouldSuppressChildConversationNotification(notification.method)
     ) {
       return;
+    }
+    if (isChildConversation && providerThreadId) {
+      this.recoverChildMetadata(context, providerThreadId, notification.method);
     }
     const textDelta =
       notification.method === "item/agentMessage/delta"
@@ -3101,13 +3305,54 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       ? (rawRoute.turnId ?? context.session.activeTurnId)
       : undefined;
     const gatewayTurnAuthorityRetired =
-      terminalGatewayTurnId !== undefined && context.gatewaySessionLease !== undefined;
+      terminalGatewayTurnId !== undefined &&
+      context.gatewaySessionLease !== undefined &&
+      context.gatewaySessionLease.nativeMcpCalls === undefined;
     if (gatewayTurnAuthorityRetired) {
       // Fence synchronously before publishing the terminal event. ProviderService
       // may admit B as soon as it consumes that event, so A's bearer must already
       // be permanently unable to bind to another latestTurn.
       void this.retireGatewayTurn(context, terminalGatewayTurnId);
     }
+    const nativeCalls = context.gatewaySessionLease?.nativeMcpCalls;
+    if (nativeCalls) {
+      const nativeTurnId =
+        rawRoute.turnId ?? (!isChildConversation ? context.session.activeTurnId : undefined);
+      if (notification.method === "turn/started" && nativeTurnId)
+        nativeCalls.startTurn(nativeTurnId);
+      const item = this.readObject(notification.params, "item");
+      const callId = this.readString(item, "id");
+      if (
+        notification.method === "item/started" &&
+        item?.type === "mcpToolCall" &&
+        item.server === SYNARA_MCP_SERVER_NAME &&
+        callId &&
+        nativeTurnId &&
+        typeof item.tool === "string"
+      ) {
+        nativeCalls.start({
+          callId,
+          turnId: nativeTurnId,
+          toolName: item.tool,
+          arguments: item.arguments ?? {},
+        });
+      }
+      if (notification.method === "item/completed" && callId) nativeCalls.finish(callId);
+      if (
+        nativeTurnId &&
+        (notification.method === "turn/completed" ||
+          notification.method === "turn/aborted" ||
+          isTerminalError)
+      ) {
+        void this.cancelGatewayTurn(context, nativeTurnId);
+      }
+    }
+    this.reconcileBackgroundTurns(
+      context,
+      notification,
+      resolvedCollaborationRoute,
+      isTerminalError,
+    );
     const eventPayload = gatewayTurnAuthorityRetired
       ? {
           ...(this.readObject(notification.params) ?? {}),
@@ -3189,8 +3434,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         return;
       }
       this.clearTaskCompleteFallback(context, rawRoute.turnId);
-      context.collabReceiverTurns.clear();
-      context.collabReceiverParents.clear();
       if (rawRoute.turnId) {
         context.reviewTurnIds.delete(rawRoute.turnId);
       }
@@ -3214,8 +3457,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         return;
       }
       this.clearTaskCompleteFallback(context, rawRoute.turnId);
-      context.collabReceiverTurns.clear();
-      context.collabReceiverParents.clear();
       if (rawRoute.turnId) {
         context.reviewTurnIds.delete(rawRoute.turnId);
       }
@@ -3528,6 +3769,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (context.discovery) {
       return;
     }
+    if (method === "session/closed" || method === "session/exited") {
+      this.settleClosedChildTurns(context, message);
+    }
     this.emitEvent({
       id: EventId.makeUnsafe(randomUUID()),
       kind: "session",
@@ -3596,11 +3840,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         return;
       }
 
-      context.collabReceiverTurns.clear();
-      context.collabReceiverParents.clear();
       context.reviewTurnIds.delete(turnId);
-      const gatewayTurnAuthorityRetired = context.gatewaySessionLease !== undefined;
-      if (gatewayTurnAuthorityRetired) {
+      const gatewayTurnAuthorityRetired =
+        context.gatewaySessionLease !== undefined &&
+        context.gatewaySessionLease.nativeMcpCalls === undefined;
+      if (context.gatewaySessionLease) {
         // Match native terminal notifications: fence the bearer synchronously
         // before publishing the synthetic completion to ProviderService.
         void this.retireGatewayTurn(context, turnId);
@@ -3859,14 +4103,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         resumeCursor: context.session.resumeCursor,
       }),
     );
+    if (providerThreadId !== undefined && providerThreadId === activeProviderThreadId) {
+      return { providerThreadId, isChildConversation: false };
+    }
     // A child can emit events before its collab tool-call payload populates the
-    // receiver maps. During a live parent turn, another provider thread belongs
-    // to that active conversation. Preserve the mapped parent when one exists;
-    // otherwise provide the active provider thread required for child routing.
+    // receiver maps, or before a restored child has supplied its metadata. This manager owns one active provider conversation, so a different
+    // provider thread is its child even across that terminal ordering race.
     const isUnmappedChildConversation =
       mappedProviderParentThreadId === undefined &&
-      context.session.status === "running" &&
-      context.session.activeTurnId !== undefined &&
       providerThreadId !== undefined &&
       activeProviderThreadId !== undefined &&
       providerThreadId !== activeProviderThreadId;
@@ -3922,8 +4166,24 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.readProviderConversationId(params),
     );
 
+    const rootProviderThreadId = readResumeThreadId({
+      threadId: context.session.threadId,
+      runtimeMode: context.session.runtimeMode,
+      resumeCursor: context.session.resumeCursor,
+    });
+    const isSpawn = item?.tool === "spawnAgent" || item?.tool === "spawn_agent";
     const receiverThreadIds = decodeSubagentReceiverThreadIds(item);
     for (const receiverThreadId of receiverThreadIds) {
+      if (receiverThreadId === rootProviderThreadId || receiverThreadId === parentProviderThreadId)
+        continue;
+      const existingParent = context.collabReceiverParents.get(receiverThreadId);
+      // Sending a message to a sibling or ancestor does not change its ancestry.
+      if (
+        !isSpawn &&
+        ((existingParent && existingParent !== parentProviderThreadId) ||
+          (!existingParent && parentProviderThreadId !== rootProviderThreadId))
+      )
+        continue;
       context.collabReceiverTurns.set(receiverThreadId, parentTurnId);
       if (parentProviderThreadId) {
         context.collabReceiverParents.set(receiverThreadId, parentProviderThreadId);
@@ -3937,17 +4197,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     // card advance ("1 out of 5" → "2 out of 5" ...) and render streaming plan text;
     // suppressing them freezes the plan UI at its initial all-pending snapshot.
     return (
-      method === "thread/started" ||
       method === "thread/status/changed" ||
       method === "thread/archived" ||
       method === "thread/unarchived" ||
       method === "thread/closed" ||
       method === "thread/compacted" ||
-      method === "thread/name/updated" ||
-      method === "thread/tokenUsage/updated" ||
-      method === "turn/started" ||
-      method === "turn/completed" ||
-      method === "turn/aborted"
+      method === "thread/tokenUsage/updated"
     );
   }
 
@@ -4238,7 +4493,7 @@ async function runCodexCliVersionGate(input: {
   const minimumVersion = input.minimumVersion;
   if (minimumVersion && !parsedVersion) {
     throw new Error(
-      `Could not determine the installed Codex CLI version. Auto mode requires v${minimumVersion} or newer.`,
+      `Could not determine the installed Codex CLI version. This session requires v${minimumVersion} or newer.`,
     );
   }
   if (

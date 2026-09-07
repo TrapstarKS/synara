@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#101010" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Celular · Synara</title>
+    <link rel="manifest" href="/mobile/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/mobile/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/mobile/style.css" />
+    <script defer src="/mobile/theme.js"></script>
+    <script defer src="/mobile/app.js"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <a href="/" class="back" aria-label="Voltar às conversas"
+        ><svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          aria-hidden="true"
+        >
+          <path d="m14 6-6 6 6 6" /></svg></a
+      ><span class="logo" aria-hidden="true"></span><span class="brand">Synara</span
+      ><span id="connection" class="connection">Conectando</span>
+    </header>
+    <main>
+      <p class="eyebrow">Configurações</p>
+      <h1>Celular</h1>
+      <p class="intro">Suas conversas e notificações, onde você estiver.</p>
+      <p id="message" role="status" aria-live="polite"></p>
+      <section id="install" class="setup">
+        <h2>Instalar no iPhone</h2>
+        <p>
+          No Safari, toque em <strong>Compartilhar → Adicionar à Tela de Início</strong>. Depois,
+          abra pelo ícone do Synara.
+        </p>
+        <p class="muted">Mantenha o Tailscale conectado e o Mac ligado.</p>
+      </section>
+      <section id="pair" hidden>
+        <h2>Conectar este aparelho</h2>
+        <p>
+          Já abriu pelo ícone da Tela de Início? Cole aqui o link de conexão recebido no Mac. Ele é
+          pessoal e só pode ser usado uma vez.
+        </p>
+        <form id="pair-form">
+          <label for="code">Link ou código de conexão</label
+          ><input
+            id="code"
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+          /><label for="name">Nome do aparelho</label
+          ><input id="name" value="Meu iPhone" maxlength="80" required /><button type="submit">
+            Conectar iPhone
+          </button>
+        </form>
+      </section>
+      <div id="paired" hidden>
+        <a class="open-conversations" href="/"
+          >Voltar às conversas
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            aria-hidden="true"
+          >
+            <path d="M5 12h14m-6-6 6 6-6 6" /></svg
+        ></a>
+        <section>
+          <div class="section-head">
+            <h2>Notificações</h2>
+            <span id="push-state" class="muted">Desativadas</span>
+          </div>
+          <p>
+            Escolha o que chega neste aparelho. O conteúdo das conversas não aparece na notificação.
+          </p>
+          <form id="preferences">
+            <label class="choice"
+              ><span
+                ><strong>Tarefa concluída</strong><small>O agente terminou o trabalho.</small></span
+              ><input type="checkbox" name="completed" role="switch"
+            /></label>
+            <label class="choice"
+              ><span
+                ><strong>Algo deu errado</strong
+                ><small>A tarefa terminou com uma falha.</small></span
+              ><input type="checkbox" name="failed" role="switch"
+            /></label>
+            <label class="choice"
+              ><span
+                ><strong>Precisa da sua aprovação</strong
+                ><small>Há uma ação esperando sua decisão.</small></span
+              ><input type="checkbox" name="approval" role="switch"
+            /></label>
+            <label class="choice"
+              ><span
+                ><strong>O agente fez uma pergunta</strong
+                ><small>Responda para o trabalho continuar.</small></span
+              ><input type="checkbox" name="input" role="switch"
+            /></label>
+            <button type="submit" class="secondary">Salvar preferências</button>
+          </form>
+          <div class="actions">
+            <button id="enable">Ativar notificações</button
+            ><button id="test" class="secondary">Enviar teste</button
+            ><button id="disable" class="text-button">Desativar neste aparelho</button>
+          </div>
+          <p id="push-detail" class="muted" aria-live="polite"></p>
+        </section>
+        <section>
+          <h2>Este aparelho</h2>
+          <p id="device-name"></p>
+          <p class="muted">
+            Toque numa notificação para abrir a conversa e responder. As notificações precisam de
+            internet; o controle remoto usa sua rede Tailscale.
+          </p>
+          <button id="logout" class="text-button">Desconectar aparelho</button>
+        </section>
+      </div>
+      <footer>Conectado pela sua rede privada Tailscale.</footer>
+    </main>
+  </body>
+</html>

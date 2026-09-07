@@ -9,6 +9,8 @@ import {
 export const MINIMUM_CODEX_CLI_VERSION = "0.37.0";
 // `approvalsReviewer: "auto_review"` and its companion messages shipped in rust-v0.124.0.
 export const MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION = "0.124.0";
+// Native MCP admission relies on the provider-issued `_meta.callId`.
+export const MINIMUM_CODEX_NATIVE_GATEWAY_CLI_VERSION = "0.153.0";
 
 function parseSemver(version: string): ParsedCliVersion | null {
   const normalized = normalizeCliVersion(version);
