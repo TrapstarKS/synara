@@ -38,7 +38,7 @@ import { toastManager } from "~/components/ui/toast";
 import { isElectron } from "~/env";
 import { basenameOfPath } from "~/file-icons";
 import type { RepoDiffTotals } from "~/hooks/useRepoDiffTotals";
-import { ArrowUpRightIcon, ChangesIcon, GitHubIcon, SettingsIcon } from "~/lib/icons";
+import { ArrowUpRightIcon, ChangesIcon, GitHubIcon, SettingsIcon, UsersIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import { waitForSidechatCreator } from "~/lib/sidechatCreatorRegistry";
@@ -379,6 +379,17 @@ export function EnvironmentPanel({
       ) : null}
 
       <EnvironmentLocalServersSection enabled={open} />
+
+      {activeThreadId ? (
+        <EnvironmentRow
+          icon={<UsersIcon className={ENVIRONMENT_ROW_ICON_CLASS_NAME} aria-hidden />}
+          label="Subagents"
+          onClick={() => {
+            openRightDockPane(activeThreadId, { kind: "subagents" });
+            onClose();
+          }}
+        />
+      ) : null}
 
       {sidechats && activeThreadId ? (
         <EnvironmentSidechatsSection

@@ -67,6 +67,8 @@ export interface ProviderSteerSubagentPayload {
 export type ProviderConversationRollbackMode = "native" | "restart-session";
 
 export interface ProviderAdapterCapabilities {
+  /** Exact native call authority allows Stop to preserve sibling agents in the runtime. */
+  readonly supportsTurnScopedGateway?: boolean;
   /**
    * Declares whether changing the model on an existing session is supported.
    */

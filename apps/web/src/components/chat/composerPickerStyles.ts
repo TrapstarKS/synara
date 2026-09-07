@@ -248,7 +248,8 @@ export const RUNTIME_AUTO_ICON_ACCENT_CLASS_NAME = "text-[var(--color-text-accen
 /** Minimum composer editor height — two lines at the element's line-height.
  *  `leading-relaxed` (1.625) keeps the input in step with the transcript/bubble leading. */
 export const COMPOSER_EDITOR_LINE_HEIGHT_CLASS_NAME = "leading-relaxed";
-export const COMPOSER_EDITOR_TEXT_CLASS_NAME = "text-[length:var(--app-font-size-chat,12px)]";
+export const COMPOSER_EDITOR_TEXT_CLASS_NAME =
+  "text-[length:var(--app-font-size-chat,12px)] max-md:text-base";
 /** Font, size, and leading shared by the composer editor and its placeholder so the
  *  placeholder always aligns with typed text. Keep both surfaces on this one token. */
 export const COMPOSER_EDITOR_TYPOGRAPHY_CLASS_NAME = `font-system-ui ${COMPOSER_EDITOR_TEXT_CLASS_NAME} ${COMPOSER_EDITOR_LINE_HEIGHT_CLASS_NAME}`;

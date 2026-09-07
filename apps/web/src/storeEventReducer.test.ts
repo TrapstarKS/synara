@@ -35,6 +35,7 @@ import {
   threadsOf,
 } from "./storeTestFixtures";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE } from "./types";
+import { deriveTimelineEntries, deriveWorkLogEntries } from "./workLog";
 
 describe("store event reducer", () => {
   it("hydrates and removes Spaces while clearing matching project assignments", () => {
@@ -1518,14 +1519,14 @@ describe("store event reducer", () => {
     expect(threadsOf(batched)[0]?.updatedAt).toBe("2026-07-09T00:00:02.000Z");
   });
 
-  it("replaces provider-local activity sequences with durable orchestration sequences", () => {
+  it("preserves runtime-journal activity sequences and falls back for legacy events", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const events = [
       makeDomainEvent(
         "thread.activity-appended",
         {
           threadId,
-          activity: makeActivity({ id: "activity-before-restart", sequence: 99 }),
+          activity: makeActivity({ id: "journal-activity", sequence: 99 }),
         },
         { sequence: 40 },
       ),
@@ -1533,9 +1534,14 @@ describe("store event reducer", () => {
         "thread.activity-appended",
         {
           threadId,
-          activity: makeActivity({ id: "activity-after-restart", sequence: 0 }),
+          activity: makeActivity({ id: "zero-sequence-activity", sequence: 0 }),
         },
         { sequence: 41 },
+      ),
+      makeDomainEvent(
+        "thread.activity-appended",
+        { threadId, activity: makeActivity({ id: "legacy-activity" }) },
+        { sequence: 42 },
       ),
     ];
     const initialState = makeState(makeThread());
@@ -1547,12 +1553,64 @@ describe("store event reducer", () => {
     const batched = applyOrchestrationEventsHotPath(initialState, events);
 
     expect(threadsOf(sequential)[0]?.activities.map((activity) => activity.sequence)).toEqual([
-      40, 41,
+      99, 0, 42,
     ]);
     expect(threadsOf(batched)[0]?.activities.map((activity) => activity.sequence)).toEqual([
-      40, 41,
+      99, 0, 42,
     ]);
   });
+
+  it.each([applyOrchestrationEvents, applyOrchestrationEventsHotPath])(
+    "keeps tool placement stable across a snapshot, live events, and resynchronization (%#)",
+    (applyEvents) => {
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      const turnId = TurnId.makeUnsafe("turn-1");
+      const activities = [1, 3, 4].map((second) =>
+        makeActivity({
+          id: `tool-${second}`,
+          turnId,
+          sequence: 11000 + second,
+          createdAt: `2026-07-09T00:00:0${second}.000Z`,
+          kind: "tool.completed",
+          summary: `Tool ${second}`,
+          payload: { itemType: "mcp_tool_call", toolCallId: `call-${second}` },
+        }),
+      );
+      const messages = [
+        {
+          id: MessageId.makeUnsafe("assistant-message"),
+          role: "assistant" as const,
+          text: "Current progress",
+          turnId,
+          streaming: false,
+          createdAt: "2026-07-09T00:00:02.000Z",
+        },
+      ];
+      const initial = makeState(makeThread({ activities: activities.slice(0, 1) }));
+      const live = applyEvents(
+        initial,
+        activities
+          .slice(1)
+          .map((activity, index) =>
+            makeDomainEvent(
+              "thread.activity-appended",
+              { threadId, activity },
+              { sequence: 9000 + index },
+            ),
+          ),
+      );
+      const resynced = syncServerThreadDetailHotPath(live, makeReadModelThread({ activities }));
+      for (const state of [live, resynced]) {
+        const work = deriveWorkLogEntries(threadsOf(state)[0]!.activities, turnId);
+        expect(deriveTimelineEntries(messages, [], work).map((entry) => entry.id)).toEqual([
+          "tool-1",
+          "assistant-message",
+          "tool-3",
+          "tool-4",
+        ]);
+      }
+    },
+  );
 
   it("keeps batched activity timestamps equivalent when a generic duplicate is discarded", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");

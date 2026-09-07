@@ -1108,7 +1108,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       // subagent would otherwise clear the parent's active turn and break
       // main-thread interrupts for the rest of the turn.
       if (event.providerRefs?.providerParentThreadId !== undefined) {
-        return Effect.void;
+        return Effect.sync(() => {
+          const childId = event.providerRefs?.providerThreadId;
+          if (!childId) return;
+          if (!event.turnId) return;
+          const taskId = `native-child:${childId}:${event.turnId}`;
+          if (event.type === "turn.started") markRuntimeTaskLive(event.threadId, taskId);
+          if (
+            event.type === "turn.completed" ||
+            event.type === "turn.aborted" ||
+            event.type === "runtime.error"
+          ) {
+            markRuntimeTaskSettled(event.threadId, taskId);
+          }
+        });
       }
       switch (event.type) {
         case "session.started":
@@ -2288,6 +2301,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           payload: rawInput,
         });
         let rotationStarted = false;
+        let preservesRuntime = false;
         // Urgent: an interrupt is the user's only escape hatch from a wedged
         // turn, so it must not queue behind a lifecycle mutation that hangs.
         const runInterrupt =
@@ -2370,7 +2384,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               }
             }
 
-            if (input.providerThreadId !== undefined) {
+            preservesRuntime = routed.adapter.capabilities.supportsTurnScopedGateway === true;
+            if (input.providerThreadId !== undefined && !preservesRuntime) {
               // Child and parent share one provider MCP transport. The adapter
               // revokes that lease while stopping the child; persist the need
               // to replace the still-running parent runtime before its next
@@ -2399,7 +2414,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               }
             }
 
-            rotationStarted = input.providerThreadId === undefined;
+            rotationStarted = input.providerThreadId === undefined && !preservesRuntime;
             yield* routed.adapter.interruptTurn(
               input.threadId,
               TurnId.makeUnsafe(providerTurnId),
@@ -2423,9 +2438,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               input.providerThreadId === undefined
                 ? interruptActiveTurn.pipe(
                     Effect.andThen(
-                      stopRuntimeSessionInternal({ threadId: input.threadId }, undefined, {
-                        requireAgentGatewayCredentialRotation: true,
-                      }),
+                      Effect.suspend(() =>
+                        preservesRuntime
+                          ? Effect.void
+                          : stopRuntimeSessionInternal({ threadId: input.threadId }, undefined, {
+                              requireAgentGatewayCredentialRotation: true,
+                            }),
+                      ),
                     ),
                   )
                 : interruptActiveTurn,
@@ -2745,7 +2764,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       stopRuntimeSessionInternal(rawInput);
 
     const hasLiveRuntimeTasks: NonNullable<ProviderServiceShape["hasLiveRuntimeTasks"]> = (input) =>
-      Effect.sync(() => (liveRuntimeTaskIds.get(input.threadId)?.size ?? 0) > 0);
+      Effect.sync(() =>
+        input.providerThreadId && input.turnId
+          ? liveRuntimeTaskIds
+              .get(input.threadId)
+              ?.has(`native-child:${input.providerThreadId}:${input.turnId}`) === true
+          : (liveRuntimeTaskIds.get(input.threadId)?.size ?? 0) > 0,
+      );
 
     stopIdleRuntimeSession = (threadId, generation) => {
       const stopEffect = Effect.gen(function* () {

@@ -8,6 +8,7 @@
  *
  * @module agentGateway/Services/AgentGatewayCredentials
  */
+import type { NativeMcpCalls } from "../nativeMcpCalls.ts";
 import type { ProviderKind, ThreadId } from "@synara/contracts";
 import { ServiceMap } from "effect";
 import type {
@@ -35,6 +36,7 @@ export interface AgentGatewayStdioProxySpawn {
 }
 
 export interface AgentGatewayCredentialsShape {
+  readonly nativeMcpCalls?: NativeMcpCalls;
   /** Streamable-HTTP MCP endpoint served by this Synara instance. */
   readonly mcpEndpointUrl: string;
   /** Update the endpoint after the HTTP server resolves a dynamic listen port. */

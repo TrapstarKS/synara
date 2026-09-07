@@ -42,6 +42,7 @@ import {
   ZapIcon,
 } from "~/lib/icons";
 import { describeLinkChip } from "~/lib/linkChips";
+import { isLocalImageMarkdownSrc } from "~/lib/localImageUrls";
 import { cn } from "~/lib/utils";
 
 import { isFileChangeWorkLogEntry, type WorkLogEntry } from "../../session-logic";
@@ -55,6 +56,7 @@ import { AutomationCreatedCard } from "./AutomationCreatedCard";
 import ChatMarkdown from "../ChatMarkdown";
 import { DiffStatLabel } from "./DiffStatLabel";
 import { type ExpandedImagePreview } from "./ExpandedImagePreview";
+import { GeneratedMarkdownImage } from "./GeneratedMarkdownImage";
 import { LinkChipIcon } from "../LinkChipIcon";
 import { normalizeCompactToolLabel } from "./MessagesTimeline.logic";
 import { SynaraLogo } from "../SynaraLogo";
@@ -587,6 +589,10 @@ export const TimelineWorkEntryRow = memo(function TimelineWorkEntryRow(props: {
       ? extractFilePathFromDetail(workEntry.detail)
       : null;
   const canOpenReadFile = readFilePath !== null;
+  const generatedImageSrc =
+    workEntry.itemType === "image_generation" && isLocalImageMarkdownSrc(workEntry.detail)
+      ? workEntry.detail
+      : undefined;
   const canOpenToolDetails =
     !canOpenAgentActivity &&
     Boolean(
@@ -754,6 +760,20 @@ export const TimelineWorkEntryRow = memo(function TimelineWorkEntryRow(props: {
                 detailContent={
                   providerContextLifecycle ? (
                     <ProviderContextLifecycleDetails info={providerContextLifecycle} />
+                  ) : generatedImageSrc ? (
+                    <div className="space-y-3">
+                      <ToolCallDetailsContent
+                        details={workEntry.toolDetails}
+                        activity={workEntry.liveActivity}
+                        timestampFormat={timestampFormat}
+                      />
+                      <GeneratedMarkdownImage
+                        src={generatedImageSrc}
+                        alt="Generated image"
+                        cwd={markdownCwd}
+                        onImageExpand={onImageExpand}
+                      />
+                    </div>
                   ) : undefined
                 }
                 compact={compact}
