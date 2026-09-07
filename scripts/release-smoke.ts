@@ -208,6 +208,21 @@ function verifyReleaseWorkflowSafety(): void {
   );
   assertContains(
     workflow,
+    "Import persistent TrapRAM-compatible macOS signing certificate",
+    "Expected the macOS release lane to import the persistent TrapRAM-compatible certificate.",
+  );
+  assertContains(
+    workflow,
+    "MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}",
+    "Expected macOS publication to use the persistent certificate secret.",
+  );
+  assertContains(
+    workflow,
+    "--mac-signing-mode adhoc",
+    "Expected the fork release lane to select persistent ad-hoc macOS signing.",
+  );
+  assertContains(
+    workflow,
     "Publishing Windows artifacts requires every Azure Trusted Signing secret.",
     "Expected Windows publication to fail closed when signing is unavailable.",
   );
