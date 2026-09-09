@@ -36,6 +36,7 @@ import {
   Effect,
   Equal,
   Exit,
+  Fiber,
   Layer,
   Option,
   Queue,
@@ -220,45 +221,42 @@ const runBoundedProviderCall = <E, R>(input: {
   readonly timeout: Duration.Duration;
   readonly call: Effect.Effect<unknown, E, R>;
 }): Effect.Effect<BoundedProviderCallResult<E>, E, R> =>
-  Effect.suspend(() => {
-    let timedOut = false;
-    return input.call.pipe(
-      Effect.timeoutOption(input.timeout),
-      Effect.flatMap((result) =>
-        Effect.sync(() => {
-          timedOut = Option.isNone(result);
+  Effect.acquireUseRelease(
+    Effect.forkDetach(input.call),
+    (fiber) =>
+      Effect.raceFirst(
+        Fiber.await(fiber).pipe(
+          Effect.map((exit) => ({ _tag: "completed" as const, exit })),
+        ),
+        Effect.sleep(input.timeout).pipe(Effect.as({ _tag: "timeout" as const })),
+      ).pipe(
+        Effect.flatMap((result): Effect.Effect<BoundedProviderCallResult<E>, E> => {
+          if (result._tag === "timeout") {
+            return Effect.succeed({
+              _tag: "timeout",
+              detail: `${input.label} did not respond within ${Duration.toMillis(input.timeout)}ms.`,
+            });
+          }
+          const exit = result.exit;
+          if (Exit.isSuccess(exit)) return Effect.succeed({ _tag: "ok" });
+          if (Cause.hasInterruptsOnly(exit.cause)) return Effect.failCause(exit.cause);
+          return Effect.sync((): BoundedProviderCallResult<E> => {
+            const outcome = classifyProviderAttemptOutcome(exit);
+            return {
+              _tag: "failed",
+              // classify only reports "accepted" for success exits, which
+              // cannot reach this branch; normalize to keep the type honest.
+              outcome:
+                outcome._tag === "accepted"
+                  ? { _tag: "uncertain", detail: Cause.pretty(exit.cause) }
+                  : outcome,
+              cause: exit.cause,
+            };
+          });
         }),
       ),
-      Effect.exit,
-      Effect.flatMap(
-        (exit): Effect.Effect<BoundedProviderCallResult<E>, E> =>
-          Exit.isSuccess(exit)
-            ? Effect.succeed(
-                timedOut
-                  ? {
-                      _tag: "timeout",
-                      detail: `${input.label} did not respond within ${Duration.toMillis(input.timeout)}ms.`,
-                    }
-                  : { _tag: "ok" },
-              )
-            : Cause.hasInterruptsOnly(exit.cause)
-              ? Effect.failCause(exit.cause)
-              : Effect.sync((): BoundedProviderCallResult<E> => {
-                  const outcome = classifyProviderAttemptOutcome(exit);
-                  return {
-                    _tag: "failed",
-                    // classify only reports "accepted" for success exits, which
-                    // cannot reach this branch; normalize to keep the type honest.
-                    outcome:
-                      outcome._tag === "accepted"
-                        ? { _tag: "uncertain", detail: Cause.pretty(exit.cause) }
-                        : outcome,
-                    cause: exit.cause,
-                  };
-                }),
-      ),
-    );
-  });
+    (fiber) => Effect.forkDetach(Fiber.interrupt(fiber)).pipe(Effect.asVoid),
+  );
 
 export function isSafeLegacyProviderBlocker(lastError: string | null): boolean {
   const normalized = lastError?.toLowerCase() ?? "";
@@ -374,6 +372,12 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const PROVIDER_COMMAND_CLAIM_LEASE_MS = 30_000;
+// A turn intent that never acquired a delivery claim was never sent to the
+// provider. Recover recent intents after a quick crash, but do not wake an old
+// user message after the app has been closed long enough for a claim lease to
+// expire. Besides being surprising, replaying that stale work can monopolize
+// the process-wide provider reactor while the provider resumes an obsolete turn.
+const PROVIDER_COMMAND_UNCLAIMED_TURN_REPLAY_MAX_AGE_MS = PROVIDER_COMMAND_CLAIM_LEASE_MS;
 // Poll granularity while waiting out another worker's claim (see
 // processClaimedProviderIntent): re-checking lets a turn proceed the moment
 // the prior attempt settles instead of sleeping blindly to lease expiry.
@@ -433,7 +437,9 @@ const PROVIDER_COMMAND_SAFE_RETRY_DELAY = Duration.millis(50);
  */
 const PROVIDER_COMMAND_INTERRUPT_TIMEOUT = Duration.seconds(10);
 const PROVIDER_COMMAND_STOP_TIMEOUT = Duration.seconds(15);
-const PROVIDER_COMMAND_EVENT_TIMEOUT = Duration.seconds(120);
+// Keep the process-wide delivery permit below the 60s WebSocket RPC deadline.
+// A single stuck provider must settle before unrelated commands start timing out.
+const PROVIDER_COMMAND_EVENT_TIMEOUT = Duration.seconds(30);
 const GATEWAY_OPERATION_COMPLETION_WAIT_TIMEOUT = Duration.seconds(120);
 const PROVIDER_INPUT_SAFETY_MARGIN_CHARS = 1_000;
 const THREAD_MENTION_CONTEXT_SUFFIX_PREFIX_CHARS = 2;
@@ -4752,6 +4758,7 @@ const make = Effect.gen(function* () {
   // canary classes settle before cursor advancement. Remaining classes execute
   // serially in the same source but do not acquire delivery claims yet.
   const startProviderIntentSource = Effect.gen(function* () {
+    const startupReplayStartedAt = Date.now();
     const liveEventSource = yield* orchestrationEngine.subscribeDomainEvents;
     // Detach the engine from this reactor's processing latency. The engine
     // publishes committed events into a bounded PubSub from an uninterruptible
@@ -5174,6 +5181,94 @@ const make = Effect.gen(function* () {
       }
     });
 
+    const retireStaleUnclaimedTurnStart = Effect.fnUntraced(function* (
+      event: ProviderIntentEvent,
+    ) {
+      if (event.type !== "thread.turn-start-requested") return false;
+      const occurredAt = Date.parse(event.occurredAt);
+      if (
+        !Number.isFinite(occurredAt) ||
+        startupReplayStartedAt - occurredAt <= PROVIDER_COMMAND_UNCLAIMED_TURN_REPLAY_MAX_AGE_MS
+      ) {
+        return false;
+      }
+
+      const existing = yield* deliveryRepository.getDelivery({
+        consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+        eventSequence: event.sequence,
+      });
+      if (Option.isSome(existing)) return false;
+
+      const claimOwner = `${processOwner}:${event.sequence}:stale-start`;
+      const claimedAt = new Date().toISOString();
+      const claimed = yield* deliveryRepository.claim({
+        consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+        eventSequence: event.sequence,
+        threadId: event.payload.threadId,
+        claimOwner,
+        claimedAt,
+        claimExpiresAt: new Date(Date.now() + PROVIDER_COMMAND_CLAIM_LEASE_MS).toISOString(),
+      });
+      if (Option.isNone(claimed)) {
+        return yield* Effect.die(
+          new Error(`Stale provider turn delivery ${event.sequence} could not be claimed`),
+        );
+      }
+      const completed = yield* deliveryRepository.complete({
+        consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+        eventSequence: event.sequence,
+        claimOwner,
+        completedAt: new Date().toISOString(),
+      });
+      if (!completed) {
+        return yield* Effect.die(
+          new Error(`Stale provider turn delivery ${event.sequence} lost settlement ownership`),
+        );
+      }
+      yield* requireCursorAdvance(event);
+      yield* Effect.logWarning("provider command reactor retired a stale unclaimed turn start", {
+        eventSequence: event.sequence,
+        threadId: event.payload.threadId,
+        occurredAt: event.occurredAt,
+      });
+
+      const detail =
+        "Synara restarted after this message had been waiting to start. It was not sent to the provider; resend it to continue.";
+      yield* Effect.gen(function* () {
+        const session = (yield* resolveThread(event.payload.threadId))?.session;
+        if (session?.status === "starting" && session.activeTurnId === null) {
+          yield* setThreadSessionError({
+            threadId: event.payload.threadId,
+            runtimeMode: event.payload.runtimeMode,
+            detail,
+            expectedSession: {
+              status: session.status,
+              updatedAt: session.updatedAt,
+            },
+            createdAt: new Date().toISOString(),
+          });
+        }
+        yield* appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.turn.start.failed",
+          summary: "Previous message was not sent",
+          detail,
+          turnId: null,
+          createdAt: new Date().toISOString(),
+        });
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to surface retired stale turn start", {
+            eventSequence: event.sequence,
+            threadId: event.payload.threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      return true;
+    });
+
     const processOrderedEvent = Effect.fnUntraced(function* (event: OrchestrationEvent) {
       if (event.sequence <= cursor) return;
       if (!isProviderIntentEvent(event)) {
@@ -5185,6 +5280,12 @@ const make = Effect.gen(function* () {
         return;
       }
       yield* processUnclaimedProviderIntent(event);
+    });
+
+    const processHistoricalEvent = Effect.fnUntraced(function* (event: OrchestrationEvent) {
+      if (event.sequence <= cursor) return;
+      if (isProviderIntentEvent(event) && (yield* retireStaleUnclaimedTurnStart(event))) return;
+      yield* processOrderedEvent(event);
     });
 
     const readProviderIntentEvent = Effect.fnUntraced(function* (eventSequence: number) {
@@ -5399,11 +5500,13 @@ const make = Effect.gen(function* () {
 
     const processOrderedEventSerially = (event: OrchestrationEvent) =>
       deliverySourceLock.withPermits(1)(processOrderedEvent(event));
+    const processHistoricalEventSerially = (event: OrchestrationEvent) =>
+      deliverySourceLock.withPermits(1)(processHistoricalEvent(event));
 
     const replayThrough = yield* orchestrationEngine.getEventHighWaterSequence;
     yield* Stream.runForEach(
       orchestrationEngine.readEventsThrough(cursor, replayThrough),
-      processOrderedEventSerially,
+      processHistoricalEventSerially,
     );
     yield* Stream.runForEach(liveEvents, processOrderedEventSerially).pipe(
       Effect.catchCause((cause) =>

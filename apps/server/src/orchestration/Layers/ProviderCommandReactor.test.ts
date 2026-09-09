@@ -32,6 +32,7 @@ import {
 import { PROVIDER_DELIVERY_BLOCK_SUMMARY } from "@synara/shared/providerDeliveryBlock";
 import type { DeepPartial } from "@synara/shared/Struct";
 import {
+  Deferred,
   Duration,
   Effect,
   Exit,
@@ -1330,6 +1331,75 @@ describe("ProviderCommandReactor", () => {
       state: "succeeded",
       attemptCount: 2,
     });
+  });
+
+  it("retires a stale unclaimed turn at startup without blocking a new thread", async () => {
+    const harness = await createHarness({ startReactor: false });
+    await dispatchHarnessUserTurn(harness, {
+      messageId: "stale-unclaimed-turn",
+      text: "Do not send this old message after restart",
+      createdAt: "2020-01-01T00:00:00.000Z",
+    });
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const staleTurn = events.find(
+      (event) =>
+        event.type === "thread.turn-start-requested" &&
+        event.payload.messageId === "stale-unclaimed-turn",
+    )!;
+
+    await harness.startReactor();
+    await waitFor(async () => {
+      const delivery = await Effect.runPromise(
+        harness.deliveryRepository.getDelivery({
+          consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+          eventSequence: staleTurn.sequence,
+        }),
+      );
+      return Option.isSome(delivery) && delivery.value.state === "succeeded";
+    });
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+
+    const now = new Date().toISOString();
+    const newThreadId = ThreadId.makeUnsafe("thread-after-stale-replay");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("cmd-thread-after-stale-replay-create"),
+        threadId: newThreadId,
+        projectId: asProjectId("project-1"),
+        title: "Thread after stale replay",
+        modelSelection: { provider: "codex", model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-thread-after-stale-replay-turn"),
+        threadId: newThreadId,
+        message: {
+          messageId: asMessageId("message-after-stale-replay"),
+          role: "user",
+          text: "This new message must reach the provider",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(([request]) => request.threadId === newThreadId),
+    );
   });
 
   it.each(
@@ -6028,38 +6098,45 @@ describe("ProviderCommandReactor", () => {
       commandEventTimeout: Duration.millis(25),
     });
     const now = new Date().toISOString();
-    harness.startSession.mockImplementationOnce(() => Effect.never);
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.makeUnsafe("cmd-turn-start-times-out"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-start-times-out"),
-          role: "user",
-          text: "hello stalled provider",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
+    const releaseUninterruptibleStart = await Effect.runPromise(Deferred.make<void>());
+    harness.startSession.mockImplementationOnce(
+      () => Effect.uninterruptible(Deferred.await(releaseUninterruptibleStart)) as never,
     );
 
-    await waitFor(async () => (await readHarnessThread(harness))?.session?.status === "error");
-    const thread = await readHarnessThread(harness);
-    expect(thread?.session?.activeTurnId).toBeNull();
-    expect(thread?.session?.lastError).toContain("did not respond within 25ms");
-    await waitFor(async () =>
-      Boolean(
-        (await readHarnessThread(harness))?.activities.some(
-          (activity) =>
-            activity.kind === "provider.turn.start.failed" &&
-            (activity.payload as Record<string, unknown> | null)?.settlementStatus === "uncertain",
+    try {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("cmd-turn-start-times-out"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-start-times-out"),
+            role: "user",
+            text: "hello stalled provider",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+
+      await waitFor(async () => (await readHarnessThread(harness))?.session?.status === "error");
+      const thread = await readHarnessThread(harness);
+      expect(thread?.session?.activeTurnId).toBeNull();
+      expect(thread?.session?.lastError).toContain("did not respond within 25ms");
+      await waitFor(async () =>
+        Boolean(
+          (await readHarnessThread(harness))?.activities.some(
+            (activity) =>
+              activity.kind === "provider.turn.start.failed" &&
+              (activity.payload as Record<string, unknown> | null)?.settlementStatus === "uncertain",
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseUninterruptibleStart, undefined));
+    }
   });
 
   it("uses the runtime mode requested by thread.turn.start when starting the provider session", async () => {
