@@ -67,7 +67,7 @@ export interface DeleteCheckpointRefsInput {
  */
 export interface CheckpointStoreShape {
   /**
-   * Check whether cwd is inside a Git worktree.
+   * Check whether cwd is inside a Git worktree with a valid HEAD commit.
    */
   readonly isGitRepository: (cwd: string) => Effect.Effect<boolean, CheckpointStoreError>;
 

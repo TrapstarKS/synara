@@ -35,6 +35,33 @@ describe("CheckpointStoreLive", () => {
     runtime = null;
   });
 
+  it("does not classify an uninitialized Git directory as checkpointable", async () => {
+    const execute = vi.fn<GitCoreShape["execute"]>((input) => {
+      const args = input.args.join(" ");
+      if (args === "rev-parse --is-inside-work-tree") {
+        return Effect.succeed({ code: 0, stdout: "true\n", stderr: "" });
+      }
+      if (args === "rev-parse --verify HEAD") {
+        return Effect.succeed({ code: 1, stdout: "", stderr: "" });
+      }
+      throw new Error(`Unexpected git args: ${args}`);
+    });
+    const layer = CheckpointStoreLive.pipe(
+      Layer.provide(Layer.succeed(GitCore, { execute } as unknown as GitCoreShape)),
+      Layer.provide(NodeServices.layer),
+    );
+    runtime = ManagedRuntime.make(layer);
+
+    const checkpointable = await runtime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CheckpointStore;
+        return yield* store.isGitRepository("/repo");
+      }),
+    );
+
+    expect(checkpointable).toBe(false);
+  });
+
   it("deduplicates concurrent captures for the same checkpoint ref", async () => {
     let releaseAdd: (() => void) | undefined;
     const addGate = new Promise<void>((resolve) => {
@@ -46,7 +73,10 @@ describe("CheckpointStoreLive", () => {
         return Effect.succeed({ code: 0, stdout: "/repo/.git/index\n", stderr: "" });
       }
       if (args === "rev-parse --verify HEAD") {
-        return Effect.succeed({ code: 1, stdout: "", stderr: "" });
+        return Effect.succeed({ code: 0, stdout: "head-oid\n", stderr: "" });
+      }
+      if (args === "read-tree HEAD") {
+        return Effect.succeed({ code: 0, stdout: "", stderr: "" });
       }
       if (args === "add -A -- .") {
         return Effect.promise(() => addGate).pipe(Effect.as({ code: 0, stdout: "", stderr: "" }));
@@ -108,6 +138,9 @@ describe("CheckpointStoreLive", () => {
       if (args === "rev-parse --git-path index") {
         return Effect.succeed({ code: 0, stdout: `${workingIndexPath}\n`, stderr: "" });
       }
+      if (args === "rev-parse --verify HEAD") {
+        return Effect.succeed({ code: 0, stdout: "head-oid\n", stderr: "" });
+      }
       if (args === "update-index --really-refresh") {
         const captureIndexPath = input.env?.GIT_INDEX_FILE ?? "";
         const refreshTime = new Date("2025-01-02T03:04:05.000Z");
@@ -157,7 +190,7 @@ describe("CheckpointStoreLive", () => {
       ).toBe(true);
       expect(
         execute.mock.calls.some(([call]) => call.args.join(" ") === "rev-parse --verify HEAD"),
-      ).toBe(false);
+      ).toBe(true);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -171,7 +204,10 @@ describe("CheckpointStoreLive", () => {
         return Effect.succeed({ code: 0, stdout: "/repo/.git/index\n", stderr: "" });
       }
       if (args === "rev-parse --verify HEAD") {
-        return Effect.succeed({ code: 1, stdout: "", stderr: "" });
+        return Effect.succeed({ code: 0, stdout: "head-oid\n", stderr: "" });
+      }
+      if (args === "read-tree HEAD") {
+        return Effect.succeed({ code: 0, stdout: "", stderr: "" });
       }
       if (args === "add -A -- .") {
         addCalls += 1;
@@ -229,6 +265,42 @@ describe("CheckpointStoreLive", () => {
     );
   });
 
+  it("skips every capture when a repository has no HEAD commit", async () => {
+    const missingRef = "refs/synara-checkpoints/thread/missing";
+    const execute = vi.fn<GitCoreShape["execute"]>((input) => {
+      const args = input.args.join(" ");
+      if (args === `rev-parse --verify --quiet ${missingRef}^{commit}`) {
+        return Effect.succeed({ code: 1, stdout: "", stderr: "" });
+      }
+      if (args === "rev-parse --git-path index") {
+        return Effect.succeed({ code: 0, stdout: "/repo/.git/index\n", stderr: "" });
+      }
+      if (args === "rev-parse --verify HEAD") {
+        return Effect.succeed({ code: 1, stdout: "", stderr: "" });
+      }
+      throw new Error(`Unexpected git args: ${args}`);
+    });
+    const layer = CheckpointStoreLive.pipe(
+      Layer.provide(Layer.succeed(GitCore, { execute } as unknown as GitCoreShape)),
+      Layer.provide(NodeServices.layer),
+    );
+    runtime = ManagedRuntime.make(layer);
+
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CheckpointStore;
+        yield* store.captureCheckpoint({
+          cwd: "/repo",
+          checkpointRef: CheckpointRef.makeUnsafe(missingRef),
+        });
+      }),
+    );
+
+    expect(execute.mock.calls.some(([call]) => call.args.join(" ") === "add -A -- .")).toBe(
+      false,
+    );
+  });
+
   it("skips the capture when skipIfExists is set and the ref already exists", async () => {
     const existingRef = "refs/synara-checkpoints/thread/existing";
     const missingRef = "refs/synara-checkpoints/thread/missing";
@@ -244,7 +316,10 @@ describe("CheckpointStoreLive", () => {
         return Effect.succeed({ code: 0, stdout: "/repo/.git/index\n", stderr: "" });
       }
       if (args === "rev-parse --verify HEAD") {
-        return Effect.succeed({ code: 1, stdout: "", stderr: "" });
+        return Effect.succeed({ code: 0, stdout: "head-oid\n", stderr: "" });
+      }
+      if (args === "read-tree HEAD") {
+        return Effect.succeed({ code: 0, stdout: "", stderr: "" });
       }
       if (args === "add -A -- .") {
         return Effect.succeed({ code: 0, stdout: "", stderr: "" });

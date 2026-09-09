@@ -44,7 +44,6 @@ import {
   checkpointRevertActiveTurnDetail,
   threadHasInFlightTurn,
 } from "../commandInvariants.ts";
-import { isGitRepository } from "../../git/isRepo.ts";
 import { resolveProviderSessionThread } from "../providerSessionThread.ts";
 
 type ReactorInput =
@@ -331,7 +330,8 @@ const make = Effect.gen(function* () {
     return Option.none();
   });
 
-  const isGitWorkspace = (cwd: string) => isGitRepository(cwd);
+  const isGitWorkspace = (cwd: string) =>
+    checkpointStore.isGitRepository(cwd).pipe(Effect.catch(() => Effect.succeed(false)));
 
   const getThreadDetail = Effect.fnUntraced(function* (
     threadId: ThreadId,
@@ -381,7 +381,7 @@ const make = Effect.gen(function* () {
     if (!cwd) {
       return undefined;
     }
-    return { cwd, isGitRepository: isGitWorkspace(cwd) } as const;
+    return { cwd, isGitRepository: yield* isGitWorkspace(cwd) } as const;
   });
 
   const resolveCheckpointCwd = Effect.fnUntraced(function* (input: {

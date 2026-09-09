@@ -1740,86 +1740,43 @@ describe("CheckpointReactor", () => {
     expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
   });
 
-  it("undoes staged renames without an active session or HEAD", async () => {
+  it("does not checkpoint a Git directory without a HEAD commit", async () => {
     const harness = await createHarness({
       hasSession: false,
       hasInitialCommit: false,
       seedFilesystemCheckpoints: false,
     });
-    const createdAt = new Date().toISOString();
     const threadId = ThreadId.makeUnsafe("thread-1");
+    const turnId = asTurnId("turn-uninitialized-git");
 
-    await runtime!.runPromise(
-      harness.checkpointStore.captureCheckpoint({
-        cwd: harness.cwd,
-        checkpointRef: checkpointRefForThreadTurn(threadId, 0),
-      }),
-    );
-    fs.writeFileSync(path.join(harness.cwd, "before.txt"), "before\n", "utf8");
-    runGit(harness.cwd, ["add", "before.txt"]);
-    await runtime!.runPromise(
-      harness.checkpointStore.captureCheckpoint({
-        cwd: harness.cwd,
-        checkpointRef: checkpointRefForThreadTurn(threadId, 1),
-      }),
-    );
-    runGit(harness.cwd, ["mv", "before.txt", "after.txt"]);
-    await runtime!.runPromise(
-      harness.checkpointStore.captureCheckpoint({
-        cwd: harness.cwd,
-        checkpointRef: checkpointRefForThreadTurn(threadId, 2),
-      }),
-    );
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.makeUnsafe("evt-turn-started-uninitialized-git"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId,
+      turnId,
+    });
+    await harness.drain();
 
-    for (const [turnCount, turnId, filePath] of [
-      [1, asTurnId("turn-unborn-add"), "before.txt"],
-      [2, asTurnId("turn-unborn-rename"), "after.txt"],
-    ] as const) {
-      await Effect.runPromise(
-        harness.engine.dispatch({
-          type: "thread.turn.diff.complete",
-          commandId: CommandId.makeUnsafe(`cmd-unborn-diff-${turnCount}`),
-          threadId,
-          turnId,
-          completedAt: createdAt,
-          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
-          status: "ready",
-          files: [{ path: filePath, kind: "modified", additions: 1, deletions: 0 }],
-          checkpointTurnCount: turnCount,
-          createdAt,
-        }),
-      );
-    }
+    fs.writeFileSync(path.join(harness.cwd, "created.txt"), "created\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.makeUnsafe("evt-turn-completed-uninitialized-git"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.checkpoint.revert",
-        commandId: CommandId.makeUnsafe("cmd-unborn-undo-rename"),
-        threadId,
-        turnCount: 2,
-        scope: "files",
-        createdAt,
-      }),
-    );
-    await waitForThread(
-      harness.engine,
-      (entry) =>
-        entry.checkpoints.some(
-          (checkpoint) => checkpoint.checkpointTurnCount === 2 && checkpoint.files?.length === 0,
-        ) && entry.activities.some((activity) => activity.kind === "checkpoint.revert.succeeded"),
-    );
-
-    expect(fs.existsSync(path.join(harness.cwd, "before.txt"))).toBe(true);
-    expect(fs.existsSync(path.join(harness.cwd, "after.txt"))).toBe(false);
-    expect(runGit(harness.cwd, ["diff", "--cached", "--name-only"])).toBe("before.txt\n");
     const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
       (entry) => entry.id === threadId,
     );
-    expect(thread?.activities.map((activity) => activity.kind)).toEqual([
-      "checkpoint.revert.started",
-      "checkpoint.revert.succeeded",
-    ]);
-    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    expect(thread?.checkpoints).toEqual([]);
+    expect(gitRefExists(harness.cwd, checkpointRefForThreadTurnStart(threadId, turnId))).toBe(false);
+    expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 1))).toBe(false);
   });
 
   it("does not undo files when the exact turn baseline is missing", async () => {

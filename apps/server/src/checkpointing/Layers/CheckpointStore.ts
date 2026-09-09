@@ -127,7 +127,11 @@ const makeCheckpointStore = Effect.gen(function* () {
         allowNonZeroExit: true,
       })
       .pipe(
-        Effect.map((result) => result.code === 0 && result.stdout.trim() === "true"),
+        Effect.flatMap((result) =>
+          result.code === 0 && result.stdout.trim() === "true"
+            ? hasHeadCommit(cwd)
+            : Effect.succeed(false),
+        ),
         Effect.catch(() => Effect.succeed(false)),
       );
 
@@ -145,6 +149,13 @@ const makeCheckpointStore = Effect.gen(function* () {
         }
       }
 
+      // A directory containing an uninitialized `.git` folder is not useful
+      // for checkpointing. Treat it like a non-Git workspace so Synara never
+      // blocks a provider turn by hashing the whole directory with `git add`.
+      if (!(yield* hasHeadCommit(input.cwd))) {
+        return;
+      }
+
       yield* Effect.acquireUseRelease(
         fs.makeTempDirectory({ prefix: "synara-fs-checkpoint-" }),
         (tempDir) =>
@@ -160,7 +171,7 @@ const makeCheckpointStore = Effect.gen(function* () {
             };
 
             const workingIndexInfo = yield* seedCheckpointIndex(input.cwd, tempIndexPath);
-            if (workingIndexInfo === null && (yield* hasHeadCommit(input.cwd))) {
+            if (workingIndexInfo === null) {
               yield* git.execute({
                 operation,
                 cwd: input.cwd,
