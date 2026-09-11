@@ -1,0 +1,392 @@
+diff --git a/codex-rs/core/src/agent/control/service_tier.rs b/codex-rs/core/src/agent/control/service_tier.rs
+index 88c301001..2c912fbd8 100644
+--- a/codex-rs/core/src/agent/control/service_tier.rs
++++ b/codex-rs/core/src/agent/control/service_tier.rs
+@@ -1,8 +1,12 @@
+-//! Shares the root user's selected routing tier across the entire agent tree.
++//! Resolves routing tiers shared across an agent tree.
+
+ use super::AgentControl;
++use codex_protocol::config_types::ServiceTier;
++use codex_protocol::openai_models::ReasoningEffort;
+ use std::sync::Arc;
+
++const SYNARA_FAST_SUBAGENT_MODEL: &str = "gpt-5.6-luna";
++
+ impl AgentControl {
+     /// Returns the latest user-selected tier for this root and all its descendants.
+     pub(crate) fn root_service_tier(&self) -> Option<String> {
+@@ -15,4 +19,20 @@ impl AgentControl {
+     pub(crate) fn set_root_service_tier(&self, service_tier: Option<String>) {
+         self.root_service_tier.store(service_tier.map(Arc::new));
+     }
++
++    /// Uses fast routing for Synara's Luna/max workers while retaining the root-owned tier for
++    /// every other subagent.
++    pub(crate) fn service_tier_for_subagent(
++        &self,
++        model: Option<&str>,
++        reasoning_effort: Option<&ReasoningEffort>,
++    ) -> Option<String> {
++        if model == Some(SYNARA_FAST_SUBAGENT_MODEL)
++            && reasoning_effort == Some(&ReasoningEffort::Max)
++        {
++            Some(ServiceTier::Fast.request_value().to_string())
++        } else {
++            self.root_service_tier()
++        }
++    }
+ }
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index 6dccadb96..23f999bb7 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -434,10 +434,13 @@ impl AgentControl {
+                     CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
+                 })?;
+         }
+-        config.service_tier = self.root_service_tier();
+         if let Some(model) = stored_model {
+             config.model = Some(model);
+         }
++        config.service_tier = self.service_tier_for_subagent(
++            config.model.as_deref(),
++            config.model_reasoning_effort.as_ref(),
++        );
+         if config.model_provider_id != stored_model_provider {
+             config.model_provider = config
+                 .model_providers
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 8ffc144d0..4d8f24be9 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -3534,10 +3534,14 @@ impl Session {
+             turn_context.session_source,
+             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+         ) {
+-            let root_service_tier = self.services.agent_control.root_service_tier();
+-            if settings.selected().service_tier != root_service_tier {
++            let effective_reasoning_effort = settings.effective_reasoning_effort();
++            let service_tier = self.services.agent_control.service_tier_for_subagent(
++                Some(settings.model_info.slug.as_str()),
++                effective_reasoning_effort.as_ref(),
++            );
++            if settings.selected().service_tier != service_tier {
+                 let mut selected = settings.selected().clone();
+-                selected.service_tier = root_service_tier;
++                selected.service_tier = service_tier;
+                 let mut inherited_settings = ResolvedStepSettings::new(
+                     Arc::new(selected),
+                     Arc::clone(&settings.model_info),
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_common.rs b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
+index 9cbe72df8..8225b8384 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_common.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
+@@ -326,7 +326,11 @@ pub(crate) async fn apply_spawn_agent_service_tier(
+     session: &Session,
+     config: &mut Config,
+ ) -> Result<(), FunctionCallError> {
+-    let Some(service_tier) = session.services.agent_control.root_service_tier() else {
++    let service_tier = session.services.agent_control.service_tier_for_subagent(
++        config.model.as_deref(),
++        config.model_reasoning_effort.as_ref(),
++    );
++    let Some(service_tier) = service_tier else {
+         config.service_tier = None;
+         return Ok(());
+     };
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+index f9c7b4892..743f90f58 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+@@ -430,6 +430,39 @@ async fn spawn_agent_service_tier_uses_root_preference_when_root_model_cannot_su
+     );
+ }
+
++#[tokio::test]
++async fn spawn_agent_service_tier_forces_fast_only_for_luna_at_max_effort() {
++    let (_session, turn) = make_session_and_context().await;
++    let manager = thread_manager();
++    let root = manager
++        .start_thread(StartThreadOptions::new((*turn.config).clone()))
++        .await
++        .expect("root thread should start");
++    assert_eq!(root.thread.config_snapshot().await.service_tier, None);
++
++    for (model, effort, expected) in [
++        (
++            "gpt-5.6-luna",
++            ReasoningEffort::Max,
++            Some(ServiceTier::Fast.request_value().to_string()),
++        ),
++        ("gpt-5.6-luna", ReasoningEffort::High, None),
++        ("gpt-5.6-sol", ReasoningEffort::Max, None),
++    ] {
++        let mut child_config = (*turn.config).clone();
++        child_config.model = Some(model.to_string());
++        child_config.model_reasoning_effort = Some(effort);
++
++        apply_spawn_agent_service_tier(root.thread.session.as_ref(), &mut child_config)
++            .await
++            .expect("child service tier should resolve");
++
++        assert_eq!(child_config.service_tier, expected, "model: {model}");
++    }
++
++    assert_eq!(root.thread.config_snapshot().await.service_tier, None);
++}
++
+ #[tokio::test]
+ async fn spawn_agent_service_tier_inheritance_uses_root_preference_and_child_model() {
+     #[derive(Debug, Deserialize)]
+diff --git a/codex-rs/core/tests/suite/subagent_service_tier.rs b/codex-rs/core/tests/suite/subagent_service_tier.rs
+index 74d559254..c2bce402e 100644
+--- a/codex-rs/core/tests/suite/subagent_service_tier.rs
++++ b/codex-rs/core/tests/suite/subagent_service_tier.rs
+@@ -92,10 +92,11 @@ async fn mount_root_collaboration_call(
+     server: &wiremock::MockServer,
+     prompt: &'static str,
+     call_id: &'static str,
++    namespace: &'static str,
+     arguments: serde_json::Value,
+-) {
++) -> (ResponseMock, ResponseMock) {
+     let response_id = format!("root-{call_id}");
+-    mount_sse_once_match(
++    let request = mount_sse_once_match(
+         server,
+         move |request: &wiremock::Request| {
+             body_contains(request, prompt) && !body_contains(request, call_id)
+@@ -104,7 +105,7 @@ async fn mount_root_collaboration_call(
+             ev_response_created(&response_id),
+             ev_function_call_with_namespace(
+                 call_id,
+-                "collaboration",
++                namespace,
+                 "spawn_agent",
+                 &arguments.to_string(),
+             ),
+@@ -114,7 +115,7 @@ async fn mount_root_collaboration_call(
+     .await;
+
+     let completion_id = format!("root-{call_id}-finished");
+-    mount_sse_once_match(
++    let completion_request = mount_sse_once_match(
+         server,
+         move |request: &wiremock::Request| {
+             body_contains(request, prompt) && body_contains(request, call_id)
+@@ -126,17 +127,19 @@ async fn mount_root_collaboration_call(
+         ]),
+     )
+     .await;
++
++    (request, completion_request)
+ }
+
+ async fn mount_completed_child(
+     server: &wiremock::MockServer,
+     prompt: &'static str,
+-    root_prompt: &'static str,
++    parent_call_id: &'static str,
+ ) -> ResponseMock {
+     mount_sse_once_match(
+         server,
+         move |request: &wiremock::Request| {
+-            body_contains(request, prompt) && !body_contains(request, root_prompt)
++            body_contains(request, prompt) && !body_contains(request, parent_call_id)
+         },
+         sse(vec![
+             ev_response_created(prompt),
+@@ -147,6 +150,95 @@ async fn mount_completed_child(
+     .await
+ }
+
++#[test_case(false; "multi-agent v1")]
++#[test_case(true; "multi-agent v2")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn luna_max_subagent_uses_priority_service_tier(multi_agent_v2: bool) -> Result<()> {
++    let server = start_mock_server().await;
++    let root_model = if multi_agent_v2 {
++        "gpt-5.6-sol"
++    } else {
++        "gpt-5.2"
++    };
++    let mut builder = test_codex()
++        .with_model(root_model)
++        .with_config(move |config| {
++            config.service_tier = Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string());
++            config
++                .features
++                .enable(Feature::Collab)
++                .expect("test config should allow feature update");
++            let result = if multi_agent_v2 {
++                config.features.enable(Feature::MultiAgentV2)
++            } else {
++                config.features.disable(Feature::MultiAgentV2)
++            };
++            result.expect("test config should allow multi-agent version update");
++            config.model_provider.request_max_retries = Some(0);
++            config.model_provider.stream_max_retries = Some(0);
++        });
++    let test = builder.build_with_auto_env(&server).await?;
++    let mut created_threads = test.thread_manager.subscribe_thread_created();
++
++    let (root_request, root_completion_request) = mount_root_collaboration_call(
++        &server,
++        ROOT_PROMPT,
++        SPAWN_CALL_ID,
++        if multi_agent_v2 {
++            "collaboration"
++        } else {
++            "multi_agent_v1"
++        },
++        if multi_agent_v2 {
++            json!({
++                "message": CHILD_PROMPT,
++                "task_name": "luna_max",
++                "model": "gpt-5.6-luna",
++                "reasoning_effort": "max",
++                "fork_turns": "none",
++            })
++        } else {
++            json!({
++                "message": CHILD_PROMPT,
++                "model": "gpt-5.6-luna",
++                "reasoning_effort": "max",
++            })
++        },
++    )
++    .await;
++    let child_request = mount_completed_child(&server, CHILD_PROMPT, SPAWN_CALL_ID).await;
++
++    test.submit_text_turn(ROOT_PROMPT).await?;
++    let spawn_output = root_completion_request
++        .single_request()
++        .function_call_output_text(SPAWN_CALL_ID)
++        .expect("root completion request should include the spawn result");
++    assert!(
++        spawn_output.contains(if multi_agent_v2 {
++            "task_name"
++        } else {
++            "agent_id"
++        }),
++        "spawn_agent failed: {spawn_output}"
++    );
++    let child_thread_id = created_threads.recv().await?;
++    let child = test.thread_manager.get_thread(child_thread_id).await?;
++    wait_for_turn_complete(&child).await;
++
++    assert_request_service_tier(&root_request, None);
++    assert_request_service_tier(&child_request, Some("priority"));
++    assert_eq!(
++        child.config_snapshot().await.service_tier.as_deref(),
++        Some("priority")
++    );
++    assert_eq!(
++        test.codex.config_snapshot().await.service_tier.as_deref(),
++        Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE),
++        "the root service tier must remain unchanged"
++    );
++    Ok(())
++}
++
+ #[test_case(Some("priority"), None; "disabling fast mode updates active and idle child work")]
+ #[test_case(Some("priority"), Some("default"); "explicit default updates active and idle child work")]
+ #[test_case(None, Some("priority"); "enabling fast mode updates active and idle child work")]
+@@ -169,10 +261,11 @@ async fn root_service_tier_change_updates_existing_subagent(
+     assert!(!test.config.features.enabled(Feature::StepModelSwitching));
+     let mut created_threads = test.thread_manager.subscribe_thread_created();
+
+-    mount_root_collaboration_call(
++    let (_root_request, _root_completion_request) = mount_root_collaboration_call(
+         &server,
+         ROOT_PROMPT,
+         SPAWN_CALL_ID,
++        "collaboration",
+         json!({
+             "message": CHILD_PROMPT,
+             "task_name": "worker",
+@@ -272,7 +365,7 @@ async fn root_service_tier_change_updates_existing_subagent(
+     wait_for_turn_complete(&child).await;
+     assert_request_service_tier(&child_compaction_request, updated_request_service_tier);
+
+-    let future_child_request = mount_completed_child(&server, FOLLOWUP_PROMPT, ROOT_PROMPT).await;
++    let future_child_request = mount_completed_child(&server, FOLLOWUP_PROMPT, SPAWN_CALL_ID).await;
+     child
+         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+             text: FOLLOWUP_PROMPT.to_string(),
+@@ -282,10 +375,11 @@ async fn root_service_tier_change_updates_existing_subagent(
+     wait_for_turn_complete(&child).await;
+     assert_request_service_tier(&future_child_request, updated_request_service_tier);
+
+-    mount_root_collaboration_call(
++    let (_fresh_root_request, _fresh_root_completion_request) = mount_root_collaboration_call(
+         &server,
+         FRESH_ROOT_PROMPT,
+         FRESH_SPAWN_CALL_ID,
++        "collaboration",
+         json!({
+             "message": FRESH_CHILD_PROMPT,
+             "task_name": "fresh",
+@@ -295,7 +389,7 @@ async fn root_service_tier_change_updates_existing_subagent(
+     )
+     .await;
+     let fresh_child_request =
+-        mount_completed_child(&server, FRESH_CHILD_PROMPT, FRESH_ROOT_PROMPT).await;
++        mount_completed_child(&server, FRESH_CHILD_PROMPT, FRESH_SPAWN_CALL_ID).await;
+     test.submit_text_turn(FRESH_ROOT_PROMPT).await?;
+     let fresh_thread_id = created_threads.recv().await?;
+     let fresh_thread = test.thread_manager.get_thread(fresh_thread_id).await?;
+@@ -317,10 +411,11 @@ async fn evicted_role_subagent_uses_root_service_tier_after_reload() -> Result<(
+     let test = builder.build_with_auto_env(&server).await?;
+     let mut created_threads = test.thread_manager.subscribe_thread_created();
+
+-    mount_root_collaboration_call(
++    let (_root_request, _root_completion_request) = mount_root_collaboration_call(
+         &server,
+         ROOT_PROMPT,
+         SPAWN_CALL_ID,
++        "collaboration",
+         json!({
+             "message": CHILD_PROMPT,
+             "task_name": "original",
+@@ -329,7 +424,7 @@ async fn evicted_role_subagent_uses_root_service_tier_after_reload() -> Result<(
+         }),
+     )
+     .await;
+-    let original_request = mount_completed_child(&server, CHILD_PROMPT, ROOT_PROMPT).await;
++    let original_request = mount_completed_child(&server, CHILD_PROMPT, SPAWN_CALL_ID).await;
+     test.submit_text_turn(ROOT_PROMPT).await?;
+     let original_thread_id = created_threads.recv().await?;
+     let original_thread = test.thread_manager.get_thread(original_thread_id).await?;
+@@ -337,10 +432,11 @@ async fn evicted_role_subagent_uses_root_service_tier_after_reload() -> Result<(
+     assert_request_service_tier(&original_request, Some("priority"));
+     drop(original_thread);
+
+-    mount_root_collaboration_call(
++    let (_fresh_root_request, _fresh_root_completion_request) = mount_root_collaboration_call(
+         &server,
+         FRESH_ROOT_PROMPT,
+         FRESH_SPAWN_CALL_ID,
++        "collaboration",
+         json!({
+             "message": FRESH_CHILD_PROMPT,
+             "task_name": "replacement",
+@@ -348,7 +444,7 @@ async fn evicted_role_subagent_uses_root_service_tier_after_reload() -> Result<(
+         }),
+     )
+     .await;
+-    mount_completed_child(&server, FRESH_CHILD_PROMPT, FRESH_ROOT_PROMPT).await;
++    mount_completed_child(&server, FRESH_CHILD_PROMPT, FRESH_SPAWN_CALL_ID).await;
+     test.submit_text_turn(FRESH_ROOT_PROMPT).await?;
+     let replacement_thread_id = created_threads.recv().await?;
+     let replacement_thread = test
+@@ -381,7 +477,7 @@ async fn evicted_role_subagent_uses_root_service_tier_after_reload() -> Result<(
+         "reload ignores the role tier and preserves the root-owned preference"
+     );
+
+-    let reloaded_request = mount_completed_child(&server, FOLLOWUP_PROMPT, ROOT_PROMPT).await;
++    let reloaded_request = mount_completed_child(&server, FOLLOWUP_PROMPT, SPAWN_CALL_ID).await;
+     reloaded_thread
+         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+             text: FOLLOWUP_PROMPT.to_string(),

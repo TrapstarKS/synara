@@ -1,0 +1,138 @@
+name: Publish Codex Luna Max Fast
+
+on:
+  schedule:
+    - cron: "41 8 * * *"
+  workflow_dispatch:
+    inputs:
+      codex_version:
+        description: Codex version to build; blank uses the latest npm release
+        required: false
+        type: string
+      force:
+        description: Rebuild even when this version is already published
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: codex-luna-max-fast-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: codex-luna-max-fast-latest
+  VERSION_ASSET: codex-luna-max-fast-version.txt
+
+jobs:
+  resolve:
+    name: Resolve Codex version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      should_build: ${{ steps.version.outputs.should_build }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - id: version
+        name: Compare published and upstream versions
+        env:
+          REQUESTED_VERSION: ${{ inputs.codex_version }}
+          FORCE_BUILD: ${{ inputs.force }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${REQUESTED_VERSION:-}"
+          if [[ -z "$version" ]]; then
+            version="$(npm view @openai/codex version)"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid Codex version: $version" >&2
+            exit 1
+          fi
+
+          current="$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${VERSION_ASSET}" 2>/dev/null || true)"
+          should_build=false
+          if [[ "$FORCE_BUILD" == "true" || "$current" != "$version" ]]; then
+            should_build=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+          echo "Published: ${current:-none}; upstream: $version; build: $should_build"
+
+  build:
+    name: Build Apple Silicon bundle
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      CODEX_VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Check out and patch Codex
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "rust-v${CODEX_VERSION}" \
+            https://github.com/openai/codex.git "$RUNNER_TEMP/codex"
+          git -C "$RUNNER_TEMP/codex" apply --3way \
+            "$GITHUB_WORKSPACE/tools/codex-luna-max-fast/luna-max-fast.patch"
+          git -C "$RUNNER_TEMP/codex" diff --check
+
+      - name: Test and build patched Codex
+        working-directory: ${{ runner.temp }}/codex/codex-rs
+        env:
+          RUST_MIN_STACK: "8388608"
+        run: |
+          cargo test -p codex-core spawn_agent_service_tier_forces_fast_only_for_luna_at_max_effort
+          cargo test -p codex-core luna_max_subagent_uses_priority_service_tier
+          cargo build -p codex-cli --release
+
+      - name: Download matching official runtime files
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p codex-npm
+          npm pack "@openai/codex@${CODEX_VERSION}-darwin-arm64" --pack-destination codex-npm
+          tar -xzf codex-npm/*.tgz -C codex-npm
+
+      - name: Package release bundle
+        shell: zsh {0}
+        run: |
+          tools/codex-luna-max-fast/package.sh \
+            "$CODEX_VERSION" \
+            "$RUNNER_TEMP/codex/codex-rs/target/release/codex" \
+            "$RUNNER_TEMP/codex-npm/package/vendor/aarch64-apple-darwin" \
+            "$RUNNER_TEMP/release"
+          print -r -- "$CODEX_VERSION" >"$RUNNER_TEMP/release/$VERSION_ASSET"
+
+      - name: Publish fixed prerelease feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Codex Luna Max Fast" \
+              --notes "Apple Silicon Codex ${CODEX_VERSION}: Luna subagents at max effort use Fast routing." \
+              --prerelease \
+              --latest=false
+          fi
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/release/"* \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber

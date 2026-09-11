@@ -1,0 +1,156 @@
+#!/bin/zsh
+
+emulate -L zsh
+set -euo pipefail
+umask 077
+
+readonly default_release_base="https://github.com/TrapstarKS/synara/releases/download/codex-luna-max-fast-latest"
+readonly release_base="${SYNARA_LUNA_RELEASE_BASE_URL:-${default_release_base}}"
+readonly synara_home="${SYNARA_LUNA_HOME:-${HOME}/.synara}"
+readonly state_dir="${synara_home}/codex-luna-max-fast"
+readonly bin_dir="${synara_home}/bin"
+readonly real_binary="${bin_dir}/codex-luna-max-fast.real"
+readonly code_mode_host="${bin_dir}/codex-code-mode-host"
+readonly installed_checksum="${state_dir}/archive.sha256"
+readonly installed_version="${state_dir}/version"
+readonly last_check="${state_dir}/last-check"
+readonly lock_dir="${state_dir}/update.lock.d"
+
+force=0
+if [[ "${1:-}" == "--force" ]]; then
+  force=1
+  shift
+fi
+if (( $# )); then
+  print -u2 "usage: update-codex-luna-max-fast [--force]"
+  exit 2
+fi
+
+case "$(/usr/bin/uname -m)" in
+  arm64 | aarch64) readonly target="aarch64-apple-darwin" ;;
+  *)
+    print -u2 "Codex Luna Max Fast currently supports Apple Silicon Macs only."
+    exit 1
+    ;;
+esac
+
+readonly asset="codex-luna-max-fast-${target}.tar.gz"
+readonly checksum_url="${release_base}/${asset}.sha256"
+readonly archive_url="${release_base}/${asset}"
+
+/bin/mkdir -p "${state_dir}" "${bin_dir}"
+if ! /bin/mkdir "${lock_dir}" 2>/dev/null; then
+  exit 0
+fi
+
+temp_dir="$(/usr/bin/mktemp -d "${state_dir}/update.XXXXXX")"
+cleanup() {
+  /bin/rm -rf "${temp_dir}" "${lock_dir}"
+}
+trap cleanup EXIT INT TERM
+
+checksum_file="${temp_dir}/${asset}.sha256"
+archive_file="${temp_dir}/${asset}"
+/usr/bin/curl --fail --silent --show-error --location --retry 3 \
+  --output "${checksum_file}" "${checksum_url}"
+
+expected_checksum="$(/usr/bin/awk 'NR == 1 { print $1 }' "${checksum_file}")"
+if [[ ! "${expected_checksum}" =~ '^[0-9A-Fa-f]{64}$' ]]; then
+  print -u2 "Release checksum is malformed."
+  exit 1
+fi
+expected_checksum="${expected_checksum:l}"
+/usr/bin/touch "${last_check}"
+
+if (( ! force )) && \
+  [[ -x "${real_binary}" && -x "${code_mode_host}" && \
+    -x "${synara_home}/codex-path/rg" && \
+    -x "${synara_home}/codex-resources/zsh/bin/zsh" ]] && \
+  [[ "$(/bin/cat "${installed_checksum}" 2>/dev/null || true)" == "${expected_checksum}" ]]; then
+  exit 0
+fi
+
+/usr/bin/curl --fail --silent --show-error --location --retry 3 \
+  --output "${archive_file}" "${archive_url}"
+actual_checksum="$(/usr/bin/shasum -a 256 "${archive_file}" | /usr/bin/awk '{ print $1 }')"
+if [[ "${actual_checksum}" != "${expected_checksum}" ]]; then
+  print -u2 "Release checksum mismatch."
+  exit 1
+fi
+
+while IFS= read -r entry; do
+  if [[ "${entry}" == /* || "${entry}" == ".." || "${entry}" == ../* || \
+    "${entry}" == */../* || "${entry}" == */.. ]]; then
+    print -u2 "Release archive contains an unsafe path: ${entry}"
+    exit 1
+  fi
+  case "${entry}" in
+    payload | payload/*) ;;
+    *)
+      print -u2 "Release archive contains an unexpected path: ${entry}"
+      exit 1
+      ;;
+  esac
+done < <(/usr/bin/tar -tzf "${archive_file}")
+
+/usr/bin/tar -xzf "${archive_file}" -C "${temp_dir}"
+payload="${temp_dir}/payload"
+required_executables=(
+  "bin/codex-luna-max-fast"
+  "bin/codex-luna-max-fast.real"
+  "bin/codex-code-mode-host"
+  "codex-path/rg"
+  "codex-resources/zsh/bin/zsh"
+)
+for relative_path in "${required_executables[@]}"; do
+  if [[ ! -x "${payload}/${relative_path}" ]]; then
+    print -u2 "Release is missing executable ${relative_path}."
+    exit 1
+  fi
+done
+if [[ ! -x "${payload}/bin/update-codex-luna-max-fast" || ! -f "${payload}/VERSION" ]]; then
+  print -u2 "Release is incomplete."
+  exit 1
+fi
+
+version="$(<"${payload}/VERSION")"
+if [[ ! "${version}" =~ '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$' ]]; then
+  print -u2 "Release version is malformed."
+  exit 1
+fi
+if [[ "$("${payload}/bin/codex-luna-max-fast.real" --version)" != "codex-cli ${version}" ]]; then
+  print -u2 "Release binary version does not match VERSION."
+  exit 1
+fi
+
+install_file() {
+  local source="$1"
+  local destination="$2"
+  local mode="$3"
+  local pending="${destination}.next.$$"
+  /bin/mkdir -p "${destination:h}"
+  /bin/cp -f "${source}" "${pending}"
+  /bin/chmod "${mode}" "${pending}"
+  /usr/bin/xattr -d com.apple.quarantine "${pending}" 2>/dev/null || true
+  /bin/mv -f "${pending}" "${destination}"
+}
+
+install_file "${payload}/codex-path/rg" "${synara_home}/codex-path/rg" 755
+install_file "${payload}/codex-resources/zsh/bin/zsh" \
+  "${synara_home}/codex-resources/zsh/bin/zsh" 755
+install_file "${payload}/bin/codex-code-mode-host" "${code_mode_host}" 755
+install_file "${payload}/bin/codex-luna-max-fast" \
+  "${bin_dir}/codex-luna-max-fast" 755
+install_file "${payload}/bin/update-codex-luna-max-fast" \
+  "${bin_dir}/update-codex-luna-max-fast" 755
+install_file "${payload}/OPENAI_CODEX_LICENSE" \
+  "${state_dir}/OPENAI_CODEX_LICENSE" 644
+install_file "${payload}/OPENAI_CODEX_NOTICE" \
+  "${state_dir}/OPENAI_CODEX_NOTICE" 644
+install_file "${payload}/bin/codex-luna-max-fast.real" "${real_binary}" 755
+
+print -r -- "${expected_checksum}" >"${installed_checksum}.next"
+/bin/mv -f "${installed_checksum}.next" "${installed_checksum}"
+print -r -- "${version}" >"${installed_version}.next"
+/bin/mv -f "${installed_version}.next" "${installed_version}"
+print "Codex ${version} with Luna Max Fast is ready."

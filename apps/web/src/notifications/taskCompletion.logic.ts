@@ -526,6 +526,9 @@ export function collectCompletedThreadCandidates(
   const candidates: CompletedThreadCandidate[] = [];
 
   for (const thread of nextThreads) {
+    if (thread.parentThreadId != null) {
+      continue;
+    }
     const previousThread = previousById.get(thread.id);
     if (!previousThread) {
       continue;

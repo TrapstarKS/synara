@@ -136,6 +136,34 @@ describe("shouldAttemptSystemTaskNotification", () => {
 });
 
 describe("collectCompletedThreadCandidates", () => {
+  it("does not notify when a subagent thread completes", () => {
+    const parentThreadId = ThreadId.makeUnsafe("thread-parent");
+    const previous = [makeThread({ parentThreadId })];
+    const next = [
+      makeThread({
+        parentThreadId,
+        session: {
+          provider: "codex",
+          status: "ready",
+          orchestrationStatus: "ready",
+          createdAt: "2026-04-05T10:00:00.000Z",
+          updatedAt: "2026-04-05T10:00:05.000Z",
+        },
+        latestTurn: {
+          turnId: TurnId.makeUnsafe("turn-1"),
+          state: "completed",
+          requestedAt: "2026-04-05T10:00:00.000Z",
+          startedAt: "2026-04-05T10:00:00.000Z",
+          completedAt: "2026-04-05T10:00:05.000Z",
+          assistantMessageId: MessageId.makeUnsafe("msg-1"),
+          sourceProposedPlan: undefined,
+        },
+      }),
+    ];
+
+    expect(collectCompletedThreadCandidates(previous, next)).toEqual([]);
+  });
+
   it("returns threads that moved from working to completed", () => {
     const previous = [
       makeThread({
