@@ -97,6 +97,12 @@ describe("ensureBundledCodexRuntime", () => {
     ).toBe("codex-cli 1.2.3\n");
     expect(FS.readFileSync(Path.join(fixture.baseDir, "codex-luna-max-fast", "version"), "utf8"))
       .toBe("1.2.3\n");
+    expect(
+      FS.readFileSync(
+        Path.join(fixture.baseDir, "codex-luna-max-fast", "OPENAI_CODEX_LICENSE"),
+        "utf8",
+      ),
+    ).toBe("license\n");
   });
 
   it("keeps a complete newer runtime when the embedded archive is unavailable", async () => {
@@ -117,6 +123,56 @@ describe("ensureBundledCodexRuntime", () => {
       }),
     ).resolves.toMatchObject({ status: "ready" });
   });
+
+  it("reinstalls a same-version runtime when its pinned archive changed", async () => {
+    const fixture = makeFixture();
+    await ensureBundledCodexRuntime({
+      ...fixture,
+      platform: "darwin",
+      arch: "arm64",
+    });
+    FS.writeFileSync(
+      Path.join(fixture.baseDir, "codex-luna-max-fast", "archive.sha256"),
+      `${"0".repeat(64)}\n`,
+    );
+
+    await expect(
+      ensureBundledCodexRuntime({
+        ...fixture,
+        manifest: {
+          ...fixture.manifest,
+          supersededSha256s: ["0".repeat(64)],
+        },
+        platform: "darwin",
+        arch: "arm64",
+      }),
+    ).resolves.toMatchObject({ status: "installed" });
+  });
+
+  it("keeps an unknown same-version runtime installed by the verified update feed", async () => {
+    const fixture = makeFixture();
+    await ensureBundledCodexRuntime({
+      ...fixture,
+      platform: "darwin",
+      arch: "arm64",
+    });
+    FS.writeFileSync(
+      Path.join(fixture.baseDir, "codex-luna-max-fast", "archive.sha256"),
+      `${"1".repeat(64)}\n`,
+    );
+
+    await expect(
+      ensureBundledCodexRuntime({
+        ...fixture,
+        manifest: {
+          ...fixture.manifest,
+          supersededSha256s: ["0".repeat(64)],
+        },
+        platform: "darwin",
+        arch: "arm64",
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+  });
 });
 
 describe("settingsUseManagedCodexRuntime", () => {
@@ -125,6 +181,12 @@ describe("settingsUseManagedCodexRuntime", () => {
     expect(
       settingsUseManagedCodexRuntime(
         { settings: { providers: { codex: { binaryPath: "codex" } } } },
+        "/managed/codex",
+      ),
+    ).toBe(true);
+    expect(
+      settingsUseManagedCodexRuntime(
+        { settings: { providers: { codex: { binaryPath: "/managed/codex" } } } },
         "/managed/codex",
       ),
     ).toBe(true);

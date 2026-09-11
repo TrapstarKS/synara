@@ -70,7 +70,7 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.should_build == 'true'
     runs-on: macos-14
-    timeout-minutes: 90
+    timeout-minutes: 240
     permissions:
       contents: write
     env:

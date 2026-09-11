@@ -22,10 +22,22 @@ const EXECUTABLES = [
   "codex-resources/zsh/bin/zsh",
 ] as const;
 
-const PAYLOAD_FILES = [
-  ...EXECUTABLES.map((relativePath) => ({ relativePath, mode: 0o755 })),
-  { relativePath: "OPENAI_CODEX_LICENSE", mode: 0o644 },
-  { relativePath: "OPENAI_CODEX_NOTICE", mode: 0o644 },
+const INSTALL_FILES = [
+  ...EXECUTABLES.map((relativePath) => ({
+    sourcePath: relativePath,
+    destinationPath: relativePath,
+    mode: 0o755,
+  })),
+  {
+    sourcePath: "OPENAI_CODEX_LICENSE",
+    destinationPath: "codex-luna-max-fast/OPENAI_CODEX_LICENSE",
+    mode: 0o644,
+  },
+  {
+    sourcePath: "OPENAI_CODEX_NOTICE",
+    destinationPath: "codex-luna-max-fast/OPENAI_CODEX_NOTICE",
+    mode: 0o644,
+  },
 ] as const;
 
 export type ManagedCodexRuntimeStatus = "installed" | "ready" | "unavailable" | "unsupported";
@@ -96,15 +108,15 @@ function parseVersion(value: string): readonly [number, number, number] | null {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
-function versionAtLeast(candidate: string, minimum: string): boolean {
+function compareVersions(candidate: string, baseline: string): number | null {
   const parsedCandidate = parseVersion(candidate);
-  const parsedMinimum = parseVersion(minimum);
-  if (!parsedCandidate || !parsedMinimum) return false;
+  const parsedBaseline = parseVersion(baseline);
+  if (!parsedCandidate || !parsedBaseline) return null;
   for (let index = 0; index < parsedCandidate.length; index += 1) {
-    if (parsedCandidate[index]! > parsedMinimum[index]!) return true;
-    if (parsedCandidate[index]! < parsedMinimum[index]!) return false;
+    if (parsedCandidate[index]! > parsedBaseline[index]!) return 1;
+    if (parsedCandidate[index]! < parsedBaseline[index]!) return -1;
   }
-  return true;
+  return 0;
 }
 
 async function isExecutable(filePath: string): Promise<boolean> {
@@ -116,7 +128,10 @@ async function isExecutable(filePath: string): Promise<boolean> {
   }
 }
 
-async function hasUsableInstalledRuntime(baseDir: string, minimumVersion: string): Promise<boolean> {
+async function hasUsableInstalledRuntime(
+  baseDir: string,
+  manifest: ManagedCodexRuntimeManifest,
+): Promise<boolean> {
   const versionPath = Path.join(baseDir, "codex-luna-max-fast", "version");
   let installedVersion: string;
   try {
@@ -124,7 +139,18 @@ async function hasUsableInstalledRuntime(baseDir: string, minimumVersion: string
   } catch {
     return false;
   }
-  if (!versionAtLeast(installedVersion, minimumVersion)) return false;
+  const comparison = compareVersions(installedVersion, manifest.version);
+  if (comparison === null || comparison < 0) return false;
+  if (comparison === 0) {
+    const installedChecksum = await FS.readFile(
+      Path.join(baseDir, "codex-luna-max-fast", "archive.sha256"),
+      "utf8",
+    ).then(
+      (contents) => contents.trim(),
+      () => null,
+    );
+    if (installedChecksum && manifest.supersededSha256s?.includes(installedChecksum)) return false;
+  }
   const executableChecks = await Promise.all(
     EXECUTABLES.map((relativePath) => isExecutable(Path.join(baseDir, relativePath))),
   );
@@ -197,7 +223,7 @@ export async function ensureBundledCodexRuntime(input: {
     return { status: "unsupported" };
   }
   const manifest = input.manifest ?? MANAGED_CODEX_RUNTIME_MANIFEST;
-  if (await hasUsableInstalledRuntime(input.baseDir, manifest.version)) {
+  if (await hasUsableInstalledRuntime(input.baseDir, manifest)) {
     return {
       status: "ready",
       binaryPath: await ensureDefaultCodexAlias(input.baseDir),
@@ -240,10 +266,10 @@ export async function ensureBundledCodexRuntime(input: {
       throw new Error(`Bundled Codex runtime version check returned: ${reportedVersion || "empty"}.`);
     }
 
-    for (const { relativePath, mode } of PAYLOAD_FILES) {
+    for (const { sourcePath, destinationPath, mode } of INSTALL_FILES) {
       await installFile(
-        Path.join(payloadRoot, relativePath),
-        Path.join(input.baseDir, relativePath),
+        Path.join(payloadRoot, sourcePath),
+        Path.join(input.baseDir, destinationPath),
         mode,
       );
     }
