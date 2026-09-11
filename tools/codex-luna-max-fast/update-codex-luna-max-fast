@@ -6,7 +6,8 @@ umask 077
 
 readonly default_release_base="https://github.com/TrapstarKS/synara/releases/download/codex-luna-max-fast-latest"
 readonly release_base="${SYNARA_LUNA_RELEASE_BASE_URL:-${default_release_base}}"
-readonly synara_home="${SYNARA_LUNA_HOME:-${HOME}/.synara}"
+readonly updater_dir="${0:A:h}"
+readonly synara_home="${SYNARA_LUNA_HOME:-${updater_dir:h}}"
 readonly state_dir="${synara_home}/codex-luna-max-fast"
 readonly bin_dir="${synara_home}/bin"
 readonly real_binary="${bin_dir}/codex-luna-max-fast.real"

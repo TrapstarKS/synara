@@ -54,6 +54,10 @@ import { isKeyboardShortcutsHelpChord } from "@synara/shared/browserShortcuts";
 import { getMacTrafficLightPosition } from "@synara/shared/desktopChrome";
 import { DEVICE_HELPER_SOURCE_DIR_ENV } from "@synara/shared/deviceHelperCache";
 import {
+  MANAGED_CODEX_RUNTIME_MANIFEST,
+  SYNARA_MANAGED_CODEX_BIN_DIR_ENV,
+} from "@synara/shared/managedCodexRuntime";
+import {
   SYNARA_DESKTOP_SMOKE_USER_DATA_ENV,
   SYNARA_DESKTOP_UPDATE_CHANNEL,
   SYNARA_SOURCE_DESKTOP_BUILD_MARKER,
@@ -61,7 +65,10 @@ import {
   synaraDesktopIdentity,
 } from "@synara/shared/desktopIdentity";
 import { NetService } from "@synara/shared/Net";
-import { applyShellEnvironmentHydrationMarker } from "@synara/shared/shell";
+import {
+  applyShellEnvironmentHydrationMarker,
+  mergePathEntries,
+} from "@synara/shared/shell";
 import { RotatingFileSink } from "@synara/shared/logging";
 import {
   MIGRATION_DIVERGENCE_CONSENT_ENV,
@@ -265,6 +272,10 @@ import {
 } from "./desktopStorageMigration";
 import { DESKTOP_IPC_CHANNELS } from "./ipcChannels";
 import { DesktopAppSnapManager } from "./appSnapManager";
+import {
+  ensureBundledCodexRuntime,
+  settingsUseManagedCodexRuntime,
+} from "./managedCodexRuntime";
 import { hardenBrowserAnnotationWebviewPreferences } from "./browserAnnotations/webviewSecurity";
 import { LOCAL_HTML_PREVIEW_SCHEME } from "./localHtmlPreviewProtocol";
 import {
@@ -1785,6 +1796,50 @@ function resolveResourcePath(fileName: string): string | null {
   }
 
   return null;
+}
+
+async function prepareManagedCodexRuntime(): Promise<void> {
+  if (!app.isPackaged) return;
+  const managedBinaryPath = Path.join(BASE_DIR, "bin", "codex-luna-max-fast");
+  try {
+    const rawSettings = JSON.parse(FS.readFileSync(Path.join(STATE_DIR, "settings.json"), "utf8"));
+    if (!settingsUseManagedCodexRuntime(rawSettings, managedBinaryPath)) {
+      writeDesktopLogHeader("managed Codex runtime skipped for custom binary");
+      return;
+    }
+  } catch {
+    // Missing or invalid settings fall back to the server's default Codex configuration.
+  }
+  const archivePath = Path.join(
+    process.resourcesPath,
+    MANAGED_CODEX_RUNTIME_MANIFEST.assetFileName,
+  );
+  try {
+    const result = await ensureBundledCodexRuntime({
+      archivePath: FS.existsSync(archivePath) ? archivePath : null,
+      baseDir: BASE_DIR,
+    });
+    if (!result.binaryPath) {
+      if (result.status === "unavailable" && process.platform === "darwin") {
+        console.warn("[desktop] Bundled Codex Luna Max Fast runtime is unavailable.");
+      }
+      return;
+    }
+    process.env.SYNARA_LUNA_HOME = BASE_DIR;
+    process.env[SYNARA_MANAGED_CODEX_BIN_DIR_ENV] = Path.dirname(result.binaryPath);
+    process.env.PATH = mergePathEntries(
+      Path.dirname(result.binaryPath),
+      process.env.PATH,
+      process.platform,
+    );
+    writeDesktopLogHeader(
+      `managed Codex runtime ${result.status} version=${MANAGED_CODEX_RUNTIME_MANIFEST.version}`,
+    );
+  } catch (error) {
+    console.warn(
+      `[desktop] Failed to prepare bundled Codex Luna Max Fast runtime: ${formatErrorMessage(error)}`,
+    );
+  }
 }
 
 function resolveIconPath(ext: "ico" | "icns" | "png"): string | null {
@@ -5135,6 +5190,8 @@ async function bootstrap(): Promise<void> {
   if (migrationRecoveryOutcome !== "continue") {
     return;
   }
+
+  await prepareManagedCodexRuntime();
 
   backendAuthToken = Crypto.randomBytes(24).toString("hex");
   await reserveBackendEndpoint("bootstrap");

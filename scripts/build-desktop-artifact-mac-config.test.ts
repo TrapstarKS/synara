@@ -5,6 +5,9 @@ import {
   MAC_APPSNAP_HELPER_ASAR_EXCLUSION,
   MAC_APPSNAP_HELPER_BUNDLE_PATH,
   MAC_APPSNAP_HELPER_STAGE_PATH,
+  MAC_CODEX_RUNTIME_ASAR_EXCLUSION,
+  MAC_CODEX_RUNTIME_RESOURCE_PATH,
+  MAC_CODEX_RUNTIME_STAGE_PATH,
   MAC_DEVICE_HELPER_RESOURCE_PATH,
   MAC_DEVICE_HELPER_STAGE_PATH,
   MAC_ENTITLEMENTS_PATH,
@@ -20,6 +23,7 @@ describe("createDesktopPlatformBuildConfig", () => {
   it("adds explicit microphone entitlements to macOS builds", () => {
     const config = createDesktopPlatformBuildConfig({
       platform: "mac",
+      arch: "arm64",
       target: "dmg",
       signed: true,
     });
@@ -44,7 +48,11 @@ describe("createDesktopPlatformBuildConfig", () => {
       "apps/desktop/native/appsnap/build/synara-appsnap-helper",
     );
     assert.equal(MAC_APPSNAP_HELPER_ASAR_EXCLUSION, "!apps/desktop/native/appsnap/build/**");
-    assert.deepStrictEqual(config.files, ["**/*", MAC_APPSNAP_HELPER_ASAR_EXCLUSION]);
+    assert.deepStrictEqual(config.files, [
+      "**/*",
+      MAC_APPSNAP_HELPER_ASAR_EXCLUSION,
+      MAC_CODEX_RUNTIME_ASAR_EXCLUSION,
+    ]);
     assert.deepStrictEqual(config.extraFiles, [
       {
         from: "apps/desktop/native/appsnap/build/synara-appsnap-helper",
@@ -54,6 +62,10 @@ describe("createDesktopPlatformBuildConfig", () => {
         from: MAC_DEVICE_HELPER_STAGE_PATH,
         to: MAC_DEVICE_HELPER_RESOURCE_PATH,
       },
+      {
+        from: MAC_CODEX_RUNTIME_STAGE_PATH,
+        to: MAC_CODEX_RUNTIME_RESOURCE_PATH,
+      },
     ]);
     assert.equal(extendInfo.NSMicrophoneUsageDescription, MICROPHONE_USAGE_DESCRIPTION);
     assert.equal(extendInfo.NSScreenCaptureUsageDescription, undefined);
@@ -62,6 +74,7 @@ describe("createDesktopPlatformBuildConfig", () => {
   it("leaves the DMG container unsigned for build-only macOS artifacts", () => {
     const config = createDesktopPlatformBuildConfig({
       platform: "mac",
+      arch: "arm64",
       target: "dmg",
       signed: false,
     });
@@ -72,6 +85,7 @@ describe("createDesktopPlatformBuildConfig", () => {
   it("keeps a persistent ad-hoc macOS build signed without enabling notarization", () => {
     const config = createDesktopPlatformBuildConfig({
       platform: "mac",
+      arch: "arm64",
       target: "dmg",
       signed: true,
       macSigningMode: "adhoc",
@@ -83,13 +97,37 @@ describe("createDesktopPlatformBuildConfig", () => {
     assert.deepStrictEqual(config.dmg, { sign: true, writeUpdateInfo: false });
   });
 
+  it("bundles the Apple Silicon Codex runtime in arm64-capable macOS artifacts", () => {
+    const universal = createDesktopPlatformBuildConfig({
+      platform: "mac",
+      arch: "universal",
+      target: "dmg",
+    });
+    const x64 = createDesktopPlatformBuildConfig({
+      platform: "mac",
+      arch: "x64",
+      target: "dmg",
+    });
+
+    assert.equal(
+      universal.extraFiles?.some((entry) => entry.to === MAC_CODEX_RUNTIME_RESOURCE_PATH),
+      true,
+    );
+    assert.equal(
+      x64.extraFiles?.some((entry) => entry.to === MAC_CODEX_RUNTIME_RESOURCE_PATH),
+      false,
+    );
+  });
+
   it("leaves non-macOS platform configs unchanged", () => {
     const linux = createDesktopPlatformBuildConfig({
       platform: "linux",
+      arch: "x64",
       target: "AppImage",
     });
     const win = createDesktopPlatformBuildConfig({
       platform: "win",
+      arch: "x64",
       target: "nsis",
       windowsAzureSignOptions: { publisherName: "Synara" },
     });
@@ -127,6 +165,7 @@ describe("createDesktopPlatformBuildConfig", () => {
   it("omits Azure signing options for unsigned build-only artifacts", () => {
     const config = createDesktopPlatformBuildConfig({
       platform: "win",
+      arch: "x64",
       target: "nsis",
     });
 
@@ -139,6 +178,7 @@ describe("createDesktopPlatformBuildConfig", () => {
   it("keeps node-pty unpacked from ASAR in generated build config", () => {
     const config = createDesktopPlatformBuildConfig({
       platform: "linux",
+      arch: "x64",
       target: "AppImage",
     });
 

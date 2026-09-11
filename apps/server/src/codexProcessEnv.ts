@@ -9,8 +9,10 @@ import path from "node:path";
 import type { CodexProfileId } from "@synara/contracts";
 
 import { readActiveCodexProviderEnvKey } from "@synara/shared/codexConfig";
+import { SYNARA_MANAGED_CODEX_BIN_DIR_ENV } from "@synara/shared/managedCodexRuntime";
 import { ensureManagedCodexHome } from "./codexProfiles.ts";
 import {
+  mergePathEntries,
   readEnvironmentFromLoginShell,
   resolveLoginShell,
   type ShellEnvironmentReader,
@@ -754,6 +756,7 @@ export async function buildCodexProcessEnv(
   const effectiveEnv = buildProviderChildEnvironment({
     provider: "codex",
     baseEnv: configuredEnv,
+    inheritedSynaraKeys: [SYNARA_MANAGED_CODEX_BIN_DIR_ENV],
   });
   const providerEnvKey = readActiveCodexProviderEnvKey(effectiveEnv);
   if (providerEnvKey) {
@@ -782,6 +785,11 @@ export async function buildCodexProcessEnv(
     } catch {
       // Keep inherited environment if shell lookup fails.
     }
+  }
+
+  const managedBinDir = effectiveEnv[SYNARA_MANAGED_CODEX_BIN_DIR_ENV]?.trim();
+  if (managedBinDir) {
+    effectiveEnv.PATH = mergePathEntries(managedBinDir, effectiveEnv.PATH, platform);
   }
 
   return effectiveEnv;

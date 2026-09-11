@@ -3,7 +3,9 @@
 emulate -L zsh
 set -u
 
-readonly synara_home="${SYNARA_LUNA_HOME:-${HOME}/.synara}"
+readonly launcher_dir="${0:A:h}"
+readonly synara_home="${SYNARA_LUNA_HOME:-${launcher_dir:h}}"
+export SYNARA_LUNA_HOME="${synara_home}"
 readonly updater="${synara_home}/bin/update-codex-luna-max-fast"
 readonly real_binary="${synara_home}/bin/codex-luna-max-fast.real"
 readonly state_dir="${synara_home}/codex-luna-max-fast"

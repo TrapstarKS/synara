@@ -272,6 +272,10 @@
       "types": "./src/migrationRecovery.ts",
       "import": "./src/migrationRecovery.ts"
     },
+    "./managedCodexRuntime": {
+      "types": "./src/managedCodexRuntime.ts",
+      "import": "./src/managedCodexRuntime.ts"
+    },
     "./threadMentions": {
       "types": "./src/threadMentions.ts",
       "import": "./src/threadMentions.ts"

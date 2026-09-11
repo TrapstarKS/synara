@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { CodexProfileId } from "@synara/contracts";
+import { SYNARA_MANAGED_CODEX_BIN_DIR_ENV } from "@synara/shared/managedCodexRuntime";
 
 import {
   buildCodexProcessEnv,
@@ -123,6 +124,36 @@ describe("disableCodexConfigSections", () => {
 });
 
 describe("buildCodexProcessEnv", () => {
+  it("keeps the managed Codex directory first when a provider shell refreshes PATH", async () => {
+    const sourceHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-path-source-"));
+    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-path-runtime-"));
+    writeFileSync(
+      path.join(sourceHome, "config.toml"),
+      ['model_provider = "acme"', "", "[model_providers.acme]", 'env_key = "ACME_KEY"'].join(
+        "\n",
+      ),
+    );
+
+    try {
+      const env = await buildCodexProcessEnv({
+        env: {
+          CODEX_HOME: sourceHome,
+          SYNARA_HOME: runtimeHome,
+          SHELL: "/bin/zsh",
+          PATH: "/inherited/bin",
+          [SYNARA_MANAGED_CODEX_BIN_DIR_ENV]: "/managed/bin",
+        },
+        platform: "darwin",
+        readEnvironment: () => ({ PATH: "/shell/bin", ACME_KEY: "secret" }),
+      });
+
+      expect(env.PATH).toBe("/managed/bin:/shell/bin");
+    } finally {
+      rmSync(sourceHome, { recursive: true, force: true });
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
+  });
+
   it("isolates managed profile overlays and keeps them private", async () => {
     const sourceHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-profile-source-"));
     const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-profile-runtime-"));
