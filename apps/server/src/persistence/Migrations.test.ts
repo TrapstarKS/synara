@@ -916,8 +916,8 @@ mindMigrationLayer("Mind migration", (it) => {
       const executed = yield* runMigrations();
       assert.deepStrictEqual(executed, [
         [99, "InvalidateProjectionThreadsCursor"],
-        [101, "Mind"],
-        [102, "MindRuntimeIntegrity"],
+        [104, "Mind"],
+        [105, "MindRuntimeIntegrity"],
       ]);
 
       yield* sql`INSERT INTO mind_memories (id, project_id, text, type, text_hash, peak_weight, created_at, last_accessed_at) VALUES ('m1', 'p1', 'delete me', 'semantic', 'hash', 0.6, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`;
