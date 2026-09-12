@@ -97,8 +97,8 @@ jobs:
         env:
           RUST_MIN_STACK: "8388608"
         run: |
-          cargo test -p codex-core spawn_agent_service_tier_forces_fast_only_for_luna_at_max_effort
-          cargo test -p codex-core luna_max_subagent_uses_priority_service_tier
+          cargo test -p codex-core spawn_agent_service_tier_forces_fast_for_luna_at_any_effort
+          cargo test -p codex-core luna_subagent_uses_priority_service_tier
           cargo build -p codex-cli --release
 
       - name: Download matching official runtime files
@@ -129,7 +129,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "Codex Luna Max Fast" \
-              --notes "Apple Silicon Codex ${CODEX_VERSION}: Luna subagents at max effort use Fast routing." \
+              --notes "Apple Silicon Codex ${CODEX_VERSION}: Luna subagents at every reasoning effort use Fast routing." \
               --prerelease \
               --latest=false
           fi

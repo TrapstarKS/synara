@@ -1,14 +1,13 @@
 diff --git a/codex-rs/core/src/agent/control/service_tier.rs b/codex-rs/core/src/agent/control/service_tier.rs
-index 88c301001..2c912fbd8 100644
+index 88c3010..acebf91 100644
 --- a/codex-rs/core/src/agent/control/service_tier.rs
 +++ b/codex-rs/core/src/agent/control/service_tier.rs
-@@ -1,8 +1,12 @@
+@@ -1,8 +1,11 @@
 -//! Shares the root user's selected routing tier across the entire agent tree.
 +//! Resolves routing tiers shared across an agent tree.
 
  use super::AgentControl;
 +use codex_protocol::config_types::ServiceTier;
-+use codex_protocol::openai_models::ReasoningEffort;
  use std::sync::Arc;
 
 +const SYNARA_FAST_SUBAGENT_MODEL: &str = "gpt-5.6-luna";
@@ -16,21 +15,15 @@ index 88c301001..2c912fbd8 100644
  impl AgentControl {
      /// Returns the latest user-selected tier for this root and all its descendants.
      pub(crate) fn root_service_tier(&self) -> Option<String> {
-@@ -15,4 +19,20 @@ impl AgentControl {
+@@ -15,4 +18,14 @@ impl AgentControl {
      pub(crate) fn set_root_service_tier(&self, service_tier: Option<String>) {
          self.root_service_tier.store(service_tier.map(Arc::new));
      }
 +
-+    /// Uses fast routing for Synara's Luna/max workers while retaining the root-owned tier for
++    /// Uses fast routing for Synara's Luna workers while retaining the root-owned tier for
 +    /// every other subagent.
-+    pub(crate) fn service_tier_for_subagent(
-+        &self,
-+        model: Option<&str>,
-+        reasoning_effort: Option<&ReasoningEffort>,
-+    ) -> Option<String> {
-+        if model == Some(SYNARA_FAST_SUBAGENT_MODEL)
-+            && reasoning_effort == Some(&ReasoningEffort::Max)
-+        {
++    pub(crate) fn service_tier_for_subagent(&self, model: Option<&str>) -> Option<String> {
++        if model == Some(SYNARA_FAST_SUBAGENT_MODEL) {
 +            Some(ServiceTier::Fast.request_value().to_string())
 +        } else {
 +            self.root_service_tier()
@@ -38,10 +31,10 @@ index 88c301001..2c912fbd8 100644
 +    }
  }
 diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
-index 6dccadb96..23f999bb7 100644
+index 6dccadb..ea353f1 100644
 --- a/codex-rs/core/src/agent/control/spawn.rs
 +++ b/codex-rs/core/src/agent/control/spawn.rs
-@@ -434,10 +434,13 @@ impl AgentControl {
+@@ -434,10 +434,10 @@ impl AgentControl {
                      CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
                  })?;
          }
@@ -49,28 +42,24 @@ index 6dccadb96..23f999bb7 100644
          if let Some(model) = stored_model {
              config.model = Some(model);
          }
-+        config.service_tier = self.service_tier_for_subagent(
-+            config.model.as_deref(),
-+            config.model_reasoning_effort.as_ref(),
-+        );
++        config.service_tier = self.service_tier_for_subagent(config.model.as_deref());
          if config.model_provider_id != stored_model_provider {
              config.model_provider = config
                  .model_providers
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 8ffc144d0..4d8f24be9 100644
+index 8ffc144..9001d85 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -3534,10 +3534,14 @@ impl Session {
+@@ -3534,10 +3534,13 @@ impl Session {
              turn_context.session_source,
              SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
          ) {
 -            let root_service_tier = self.services.agent_control.root_service_tier();
 -            if settings.selected().service_tier != root_service_tier {
-+            let effective_reasoning_effort = settings.effective_reasoning_effort();
-+            let service_tier = self.services.agent_control.service_tier_for_subagent(
-+                Some(settings.model_info.slug.as_str()),
-+                effective_reasoning_effort.as_ref(),
-+            );
++            let service_tier = self
++                .services
++                .agent_control
++                .service_tier_for_subagent(Some(settings.model_info.slug.as_str()));
 +            if settings.selected().service_tier != service_tier {
                  let mut selected = settings.selected().clone();
 -                selected.service_tier = root_service_tier;
@@ -79,7 +68,7 @@ index 8ffc144d0..4d8f24be9 100644
                      Arc::new(selected),
                      Arc::clone(&settings.model_info),
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_common.rs b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
-index 9cbe72df8..8225b8384 100644
+index 9cbe72d..6219254 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 @@ -326,7 +326,11 @@ pub(crate) async fn apply_spawn_agent_service_tier(
@@ -87,24 +76,24 @@ index 9cbe72df8..8225b8384 100644
      config: &mut Config,
  ) -> Result<(), FunctionCallError> {
 -    let Some(service_tier) = session.services.agent_control.root_service_tier() else {
-+    let service_tier = session.services.agent_control.service_tier_for_subagent(
-+        config.model.as_deref(),
-+        config.model_reasoning_effort.as_ref(),
-+    );
++    let service_tier = session
++        .services
++        .agent_control
++        .service_tier_for_subagent(config.model.as_deref());
 +    let Some(service_tier) = service_tier else {
          config.service_tier = None;
          return Ok(());
      };
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
-index f9c7b4892..743f90f58 100644
+index f9c7b48..cfb586c 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
-@@ -430,6 +430,39 @@ async fn spawn_agent_service_tier_uses_root_preference_when_root_model_cannot_su
+@@ -430,6 +430,37 @@ async fn spawn_agent_service_tier_uses_root_preference_when_root_model_cannot_su
      );
  }
 
 +#[tokio::test]
-+async fn spawn_agent_service_tier_forces_fast_only_for_luna_at_max_effort() {
++async fn spawn_agent_service_tier_forces_fast_for_luna_at_any_effort() {
 +    let (_session, turn) = make_session_and_context().await;
 +    let manager = thread_manager();
 +    let root = manager
@@ -113,23 +102,21 @@ index f9c7b4892..743f90f58 100644
 +        .expect("root thread should start");
 +    assert_eq!(root.thread.config_snapshot().await.service_tier, None);
 +
-+    for (model, effort, expected) in [
-+        (
-+            "gpt-5.6-luna",
-+            ReasoningEffort::Max,
-+            Some(ServiceTier::Fast.request_value().to_string()),
-+        ),
-+        ("gpt-5.6-luna", ReasoningEffort::High, None),
-+        ("gpt-5.6-sol", ReasoningEffort::Max, None),
++    for (model, effort, expects_fast) in [
++        ("gpt-5.6-luna", Some(ReasoningEffort::Max), true),
++        ("gpt-5.6-luna", Some(ReasoningEffort::High), true),
++        ("gpt-5.6-luna", None, true),
++        ("gpt-5.6-sol", Some(ReasoningEffort::Max), false),
 +    ] {
 +        let mut child_config = (*turn.config).clone();
 +        child_config.model = Some(model.to_string());
-+        child_config.model_reasoning_effort = Some(effort);
++        child_config.model_reasoning_effort = effort;
 +
 +        apply_spawn_agent_service_tier(root.thread.session.as_ref(), &mut child_config)
 +            .await
 +            .expect("child service tier should resolve");
 +
++        let expected = expects_fast.then(|| ServiceTier::Fast.request_value().to_string());
 +        assert_eq!(child_config.service_tier, expected, "model: {model}");
 +    }
 +
@@ -140,7 +127,7 @@ index f9c7b4892..743f90f58 100644
  async fn spawn_agent_service_tier_inheritance_uses_root_preference_and_child_model() {
      #[derive(Debug, Deserialize)]
 diff --git a/codex-rs/core/tests/suite/subagent_service_tier.rs b/codex-rs/core/tests/suite/subagent_service_tier.rs
-index 74d559254..c2bce402e 100644
+index 74d5592..37ec455 100644
 --- a/codex-rs/core/tests/suite/subagent_service_tier.rs
 +++ b/codex-rs/core/tests/suite/subagent_service_tier.rs
 @@ -92,10 +92,11 @@ async fn mount_root_collaboration_call(
@@ -204,7 +191,7 @@ index 74d559254..c2bce402e 100644
 +#[test_case(false; "multi-agent v1")]
 +#[test_case(true; "multi-agent v2")]
 +#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-+async fn luna_max_subagent_uses_priority_service_tier(multi_agent_v2: bool) -> Result<()> {
++async fn luna_subagent_uses_priority_service_tier(multi_agent_v2: bool) -> Result<()> {
 +    let server = start_mock_server().await;
 +    let root_model = if multi_agent_v2 {
 +        "gpt-5.6-sol"
@@ -243,16 +230,16 @@ index 74d559254..c2bce402e 100644
 +        if multi_agent_v2 {
 +            json!({
 +                "message": CHILD_PROMPT,
-+                "task_name": "luna_max",
++                "task_name": "luna_low",
 +                "model": "gpt-5.6-luna",
-+                "reasoning_effort": "max",
++                "reasoning_effort": "low",
 +                "fork_turns": "none",
 +            })
 +        } else {
 +            json!({
 +                "message": CHILD_PROMPT,
 +                "model": "gpt-5.6-luna",
-+                "reasoning_effort": "max",
++                "reasoning_effort": "low",
 +            })
 +        },
 +    )
