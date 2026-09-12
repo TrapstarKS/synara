@@ -100,6 +100,14 @@ test("the Home Screen app starts in Synara and uses the original icon at its rea
   assert.equal(manifest.start_url, "/");
   assert.equal(manifest.scope, "/");
   assert.equal(manifest.display, "standalone");
+  for (const size of [192, 512]) {
+    const entry = manifest.icons.find((icon) => icon.sizes === `${size}x${size}`);
+    assert.ok(entry);
+    const png = readFileSync(new URL(`../public/icon-${size}.png`, import.meta.url));
+    assert.equal(png.readUInt32BE(16), size);
+    assert.equal(png.readUInt32BE(20), size);
+    assert.match(entry.purpose, /maskable/);
+  }
   const icon = readFileSync(new URL("../public/icon.png", import.meta.url));
   assert.equal(manifest.icons[0].sizes, `${icon.readUInt32BE(16)}x${icon.readUInt32BE(20)}`);
   assert.deepEqual(

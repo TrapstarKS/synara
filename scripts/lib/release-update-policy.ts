@@ -134,10 +134,16 @@ function copyChannelManifests(
 export function prepareReleaseUpdateManifests(
   assetDirectory: string,
   config: ReleaseUpdatePolicyConfig,
+  options: { readonly includeLinux?: boolean } = {},
 ): readonly string[] {
   const normalizedConfig = validateReleaseUpdatePolicyConfig(config);
-  const sourceNames = ["latest-mac.yml", "latest.yml", "latest-linux.yml"] as const;
-  const destinationNames = channelManifestNames(normalizedConfig.channel);
+  if (normalizedConfig.lane === "bridge" && options.includeLinux === false) {
+    throw new Error("Compatibility releases require all platform manifests.");
+  }
+  const includeManifest = (name: string): boolean =>
+    options.includeLinux !== false || !name.endsWith("-linux.yml");
+  const sourceNames = ["latest-mac.yml", "latest.yml", "latest-linux.yml"].filter(includeManifest);
+  const destinationNames = channelManifestNames(normalizedConfig.channel).filter(includeManifest);
   if (normalizedConfig.lane === "bridge") {
     const missing = sourceNames.filter((name) => !existsSync(resolve(assetDirectory, name)));
     if (missing.length > 0) {

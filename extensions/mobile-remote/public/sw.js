@@ -11,6 +11,7 @@ self.addEventListener("push", (event) => {
       body: data.body || "Há uma atualização no seu trabalho.",
       icon: "/mobile/icon.png",
       tag: data.tag || "synara",
+      ...(data.actionTitle ? { actions: [{ action: "open", title: data.actionTitle }] } : {}),
       data: { url: safePath(data.url) },
     }),
   );

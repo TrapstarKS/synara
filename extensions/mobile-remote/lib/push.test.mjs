@@ -60,6 +60,20 @@ const wait = async (fn) => {
   throw new Error("Timed out");
 };
 
+test("rich alerts keep their preview and group by thread and kind without merging other tasks", () => {
+  const store = fixture();
+  const push = createPush(store, "https://synara.example", { now: () => NOW });
+  push.stop();
+  for (const [id, threadId, kind] of [["one", "task-a", "input"], ["two", "task-a", "input"], ["three", "task-b", "input"], ["four", "task-a", "approval"]])
+    push.enqueue({ ...event(id, kind), threadId, body: "Qual conta devo usar?", actionTitle: "Responder" });
+  const payloads = store.state.outbox.map((item) => item.payload);
+  assert.equal(payloads[0].tag, payloads[1].tag);
+  assert.notEqual(payloads[0].tag, payloads[2].tag);
+  assert.notEqual(payloads[0].tag, payloads[3].tag);
+  assert.equal(payloads[0].body, "Qual conta devo usar?");
+  assert.equal(payloads[0].actionTitle, "Responder");
+});
+
 test("bounded concurrency re-selects new approvals ahead of a durable completion backlog", async (t) => {
   const store = fixture(Array.from({ length: 100 }, (_, i) => queued(`old-${i}`)));
   const calls = [];

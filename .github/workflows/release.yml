@@ -1,10 +1,18 @@
 name: Release Desktop
 
-# Personal-fork releases are tested, signed, and published from the owner's Mac.
-# Keep the upstream workflow body mergeable as an inert reusable reference. No
-# workflow in this fork calls it, and push/tag/manual events cannot start it.
+# Publish only on an explicit manual dispatch against the exact release tag.
+# macOS includes DMG + updater ZIP; Windows includes NSIS + updater metadata.
 on:
-  workflow_call:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (must match the selected tag and package versions)
+        required: true
+        type: string
+      publish_release:
+        description: Publish the verified artifacts to GitHub Releases
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -226,11 +234,6 @@ jobs:
             runner: macos-15-intel
             platform: mac
             target: dmg
-            arch: x64
-          - label: Linux x64
-            runner: ubuntu-24.04
-            platform: linux
-            target: AppImage
             arch: x64
           - label: Windows x64
             runner: windows-2022
@@ -685,7 +688,7 @@ jobs:
           rm -f release-assets/latest-mac-x64.yml
 
       - name: Prepare updater feed metadata
-        run: node scripts/prepare-release-update-feed.ts release-assets
+        run: node scripts/prepare-release-update-feed.ts release-assets --no-linux
 
       - name: Prevent compatibility channel rollback
         if: ${{ needs.preflight.outputs.release_lane == 'bridge' }}
@@ -776,7 +779,6 @@ jobs:
           files: |
             release-assets/*.dmg
             release-assets/*.zip
-            release-assets/*.AppImage
             release-assets/*.exe
             release-assets/*.blockmap
             release-assets/*.yml

@@ -11,9 +11,10 @@ import {
 } from "./lib/service-config.mjs";
 
 const [command, ...args] = process.argv.slice(2);
-if (process.platform !== "darwin" || !["install", "uninstall", "status"].includes(command)) {
+if (!["darwin", "win32"].includes(process.platform) ||
+    !["install", "uninstall", "status", ...(process.platform === "win32" ? ["run"] : [])].includes(command)) {
   console.error(
-    "macOS usage: node service.mjs install [--origin https://MAC.ts.net:8443] | status | uninstall",
+    "macOS/Windows usage: node service.mjs install [--origin https://COMPUTER.ts.net:8443] | status | uninstall",
   );
   process.exit(1);
 }
@@ -24,6 +25,14 @@ for (let i = 0; i < args.length; i += 2) {
 }
 const root = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(root, "../..");
+if (process.platform === "win32") {
+  // The task runs under the logged-in user and follows the already running desktop.
+  if (process.env.SYNARA_MOBILE_HOME)
+    throw new Error("Windows login service uses %USERPROFILE%\\.synara-mobile; use server.mjs for a custom mobile home");
+  const { windowsService } = await import("./lib/windows-service.mjs");
+  await windowsService({ command, origin: options["--origin"],
+    directory: join(homedir(), ".synara-mobile"), entry: fileURLToPath(import.meta.url), repo });
+} else {
 const agents = join(homedir(), "Library/LaunchAgents");
 const domain = `gui/${process.getuid()}`;
 const legacyBackend = {
@@ -173,3 +182,4 @@ for (const job of [companion]) {
 console.log(
   "The companion follows Synara.app, starts at login, and restarts after a crash. Run node cli.mjs pair to connect your phone.",
 );
+}

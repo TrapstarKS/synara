@@ -32,17 +32,23 @@
       <p class="intro">Suas conversas e notificações, onde você estiver.</p>
       <p id="message" role="status" aria-live="polite"></p>
       <section id="install" class="setup">
-        <h2>Instalar no iPhone</h2>
-        <p>
+        <h2>Instalar no celular</h2>
+        <p id="install-ios" hidden>
           No Safari, toque em <strong>Compartilhar → Adicionar à Tela de Início</strong>. Depois,
           abra pelo ícone do Synara.
         </p>
-        <p class="muted">Mantenha o Tailscale conectado e o Mac ligado.</p>
+        <p id="install-android">
+          No Chrome, abra o menu <strong>⋮ → Adicionar à tela inicial → Instalar</strong>.
+          No Samsung Internet, use <strong>☰ → Adicionar página a → Tela inicial</strong>
+          ou o ícone de instalação na barra de endereço. Depois, abra pelo ícone do Synara.
+        </p>
+        <button id="install-app" type="button" hidden>Instalar Synara</button>
+        <p class="muted">Mantenha o Tailscale conectado e o computador ligado, com o Synara aberto.</p>
       </section>
       <section id="pair" hidden>
         <h2>Conectar este aparelho</h2>
         <p>
-          Já abriu pelo ícone da Tela de Início? Cole aqui o link de conexão recebido no Mac. Ele é
+          Já abriu pelo ícone da Tela de Início? Cole aqui o link de conexão recebido no computador. Ele é
           pessoal e só pode ser usado uma vez.
         </p>
         <form id="pair-form">
@@ -54,8 +60,8 @@
             spellcheck="false"
             required
           /><label for="name">Nome do aparelho</label
-          ><input id="name" value="Meu iPhone" maxlength="80" required /><button type="submit">
-            Conectar iPhone
+          ><input id="name" value="Meu celular" maxlength="80" required /><button type="submit">
+            Conectar aparelho
           </button>
         </form>
       </section>
@@ -77,7 +83,8 @@
             <span id="push-state" class="muted">Desativadas</span>
           </div>
           <p>
-            Escolha o que chega neste aparelho. O conteúdo das conversas não aparece na notificação.
+            Os avisos mostram o nome da tarefa e uma prévia do resultado, da pergunta ou da ação
+            que precisa de aprovação. Toque para abrir a conversa.
           </p>
           <form id="preferences">
             <label class="choice"

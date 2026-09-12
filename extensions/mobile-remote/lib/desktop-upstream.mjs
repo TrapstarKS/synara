@@ -1,6 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { assertPrivateWindowsPath } from "./windows.mjs";
 
 const DEFAULT_DESKTOP_EXECUTABLE = "/Applications/Synara.app/Contents/MacOS/Synara";
 const SERVER_ENTRY_SUFFIX = "/apps/server/dist/index.mjs";
@@ -55,9 +58,11 @@ export function parseDesktopEnvironment(output, expectedHome) {
 
 export function discoverDesktopUpstream({
   desktopExecutable = DEFAULT_DESKTOP_EXECUTABLE,
-  desktopHome = resolve(homedir(), ".synara"),
+  desktopHome = resolve(process.env.SYNARA_MOBILE_DESKTOP_HOME || join(homedir(), ".synara")),
   exec = run,
+  platform = process.platform,
 } = {}) {
+  if (platform !== "darwin") return discoverRuntimeUpstream({ desktopHome });
   let rows;
   try {
     rows = parseProcessTable(exec("/bin/ps", ["-axo", "pid=,ppid=,command="]), desktopExecutable);
@@ -91,11 +96,59 @@ export function discoverDesktopUpstream({
   throw new Error("Synara.app is not running");
 }
 
+export async function discoverRuntimeUpstream({
+  desktopHome = resolve(process.env.SYNARA_MOBILE_DESKTOP_HOME || join(homedir(), ".synara")),
+  fetchImpl = fetch,
+} = {}) {
+  const candidates = ["userdata", "dev"].flatMap((kind) => {
+    const path = join(desktopHome, kind, "server-runtime.json");
+    if (!existsSync(path)) return [];
+    for (const entry of [dirname(path), path]) {
+      const stat = lstatSync(entry);
+      if (stat.isSymbolicLink() || !(entry === path ? stat.isFile() : stat.isDirectory()))
+        throw new Error("Unsafe Synara runtime path");
+      if (process.platform === "win32") assertPrivateWindowsPath(entry);
+      else if (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0)
+        throw new Error("Synara runtime must be private to the current user");
+    }
+    const state = JSON.parse(readFileSync(path, "utf8"));
+    if (state.version !== 1 || !Number.isSafeInteger(state.pid) || state.pid <= 0 ||
+        !Number.isInteger(state.port) || state.port < 1024 || state.port > 65535 ||
+        typeof state.externalMcpRuntimeSecret !== "string" || state.externalMcpRuntimeSecret.length < 32)
+      throw new Error("Invalid Synara runtime state");
+    if (!/^[a-f0-9]{48}$/i.test(state.desktopAuthToken ?? "")) return [];
+    try { process.kill(state.pid, 0); }
+    catch (error) {
+      if (error.code === "ESRCH") return [];
+      if (error.code !== "EPERM") throw error;
+    }
+    return [state];
+  });
+  if (!candidates.length) throw new Error("Open an updated Synara desktop to enable mobile access");
+  if (candidates.length > 1) throw new Error("Multiple Synara desktops found; use a separate desktop home");
+  const state = candidates[0];
+  const target = fixedTarget(state.origin, state.desktopAuthToken);
+  if (Number(new URL(target.origin).port) !== state.port) throw new Error("Invalid runtime port");
+  // A recycled PID or port must not receive the desktop credential.
+  const nonce = randomBytes(24).toString("base64url");
+  const response = await fetchImpl(new URL("/api/mcp/external/runtime-challenge", target.origin), {
+    method: "POST", headers: { "x-synara-runtime-challenge": nonce },
+    signal: AbortSignal.timeout(2000), redirect: "error",
+  });
+  const body = await response.json();
+  const expected = createHmac("sha256", state.externalMcpRuntimeSecret)
+    .update("synara.external-mcp.runtime\0").update(nonce).digest("base64url");
+  if (!response.ok || typeof body.proof !== "string" || body.proof.length !== expected.length ||
+      !timingSafeEqual(Buffer.from(body.proof), Buffer.from(expected)))
+    throw new Error("Cannot verify the running Synara instance");
+  return { ...target, scope: `desktop:${resolve(desktopHome)}` };
+}
+
 function fixedTarget(origin, token) {
   const url = new URL(origin);
   if (
     url.protocol !== "http:" ||
-    !["127.0.0.1", "[::1]"].includes(url.hostname) ||
+    !["127.0.0.1", "[::1]", "localhost"].includes(url.hostname) ||
     url.pathname !== "/" ||
     url.search ||
     url.hash ||
@@ -121,6 +174,8 @@ export function createUpstreamResolver({
       if (fixed) return fixed;
       if (!fresh && cached && now() < expiresAt) return cached;
       cached = discover();
+      // Keep sync macOS callers compatible while invalidating failed async discovery.
+      if (cached?.then) cached = cached.catch((error) => { expiresAt = 0; throw error; });
       expiresAt = now() + cacheMs;
       return cached;
     },

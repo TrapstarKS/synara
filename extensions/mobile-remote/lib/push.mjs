@@ -149,7 +149,11 @@ export function createPush(store, publicOrigin, dependencies = {}) {
         attempts: 0,
         nextAttempt: 0,
         expiresAt: now() + 3600_000,
-        payload: { title: event.title, body: event.body, url: event.url, tag: event.id },
+        payload: {
+          title: event.title, body: event.body, url: event.url,
+          actionTitle: event.actionTitle,
+          tag: event.threadId ? `synara:${event.threadId}:${event.kind}` : event.id,
+        },
       });
     }
     while (state.outbox.length > MAX_OUTBOX) {

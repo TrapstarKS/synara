@@ -3,14 +3,14 @@
 // Layer: Server process integration test
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { prepareWindowsSafeProcess } from "@synara/shared/windowsProcess";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as Path from "node:path";
 
 import { Effect } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/unstable/process";
 import { expect, it } from "vitest";
+import { makeEffectProcessCommand } from "./platform/effectProcessRuntime";
 
 it.runIf(process.platform === "win32")(
   "forwards encoded Codex arguments verbatim through the Effect Node spawner",
@@ -41,22 +41,16 @@ it.runIf(process.platform === "win32")(
       writeFileSync(commandPath, `@echo off\r\n"${process.execPath}" "%~dp0capture.mjs" %*\r\n`);
 
       const env = { ...process.env, SYNARA_CAPTURE_PATH: outputPath };
-      const prepared = prepareWindowsSafeProcess(commandPath, expectedArgs, {
+      const command = makeEffectProcessCommand(commandPath, expectedArgs, {
         platform: "win32",
         env,
       });
-      const options = {
-        env,
-        shell: prepared.shell,
-        ...(prepared.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-      };
+      expect(command).toMatchObject({ options: { windowsHide: true, windowsVerbatimArguments: true } });
 
       const exitCode = await Effect.runPromise(
         Effect.gen(function* () {
           const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-          const child = yield* spawner.spawn(
-            ChildProcess.make(prepared.command, prepared.args, options),
-          );
+          const child = yield* spawner.spawn(command);
           return yield* child.exitCode;
         }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
       );

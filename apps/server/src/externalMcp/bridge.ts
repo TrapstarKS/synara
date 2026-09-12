@@ -222,7 +222,7 @@ function sameFile(left: fs.Stats, right: fs.Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-function assertPrivateWindowsRuntimePath(targetPath: string, kind: "file" | "directory"): void {
+export function assertPrivateWindowsRuntimePath(targetPath: string, kind: "file" | "directory"): void {
   let snapshot: WindowsRuntimeAclSnapshot;
   try {
     const invocation = makeWindowsRuntimeAclPowerShellInvocation(targetPath);

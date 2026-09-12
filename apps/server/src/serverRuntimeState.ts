@@ -1,9 +1,11 @@
 import { Effect, FileSystem, Schema } from "effect";
+import { dirname } from "node:path";
 
 import { writeFileStringAtomically } from "./atomicWrite";
 import type { ServerConfigShape } from "./config";
-import { formatHostForUrl, isWildcardHost } from "./startupAccess";
+import { formatHostForUrl, isLoopbackHost, isWildcardHost } from "./startupAccess";
 import { externalMcpRuntimeSecret } from "./externalMcp/runtimeProof.ts";
+import { assertPrivateWindowsRuntimePath } from "./externalMcp/bridge.ts";
 
 export const PersistedServerRuntimeState = Schema.Struct({
   version: Schema.Literal(1),
@@ -13,6 +15,7 @@ export const PersistedServerRuntimeState = Schema.Struct({
   origin: Schema.String,
   startedAt: Schema.String,
   externalMcpRuntimeSecret: Schema.String,
+  desktopAuthToken: Schema.optional(Schema.String),
 });
 export type PersistedServerRuntimeState = typeof PersistedServerRuntimeState.Type;
 
@@ -26,7 +29,8 @@ const runtimeOriginForConfig = (
 };
 
 export const makePersistedServerRuntimeState = (input: {
-  readonly config: Pick<ServerConfigShape, "host">;
+  readonly config: Pick<ServerConfigShape, "host"> &
+    Partial<Pick<ServerConfigShape, "mode" | "authToken" | "publicUrl">>;
   readonly port: number;
 }): PersistedServerRuntimeState => ({
   version: 1,
@@ -36,15 +40,37 @@ export const makePersistedServerRuntimeState = (input: {
   origin: runtimeOriginForConfig(input.config, input.port),
   startedAt: new Date().toISOString(),
   externalMcpRuntimeSecret,
+  // The private runtime file lets local companions follow desktop restarts on Windows.
+  ...(input.config.mode === "desktop" &&
+  isLoopbackHost(input.config.host) &&
+  !input.config.publicUrl &&
+  input.config.authToken
+    ? { desktopAuthToken: input.config.authToken }
+    : {}),
 });
 
 export const persistServerRuntimeState = (input: {
   readonly path: string;
   readonly state: PersistedServerRuntimeState;
 }) =>
-  writeFileStringAtomically({
-    filePath: input.path,
-    contents: `${JSON.stringify(input.state)}\n`,
+  Effect.gen(function* () {
+    let state = input.state;
+    if (process.platform === "win32" && state.desktopAuthToken) {
+      // New files inherit their directory's DACL. Never publish a desktop credential
+      // under a shared Windows home; keep ordinary desktop startup available there.
+      const privateDirectory = yield* Effect.try(() =>
+        assertPrivateWindowsRuntimePath(dirname(input.path), "directory"),
+      ).pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
+      if (!privateDirectory) {
+        const { desktopAuthToken: _token, ...withoutCredential } = state;
+        state = withoutCredential;
+        yield* Effect.logWarning("Mobile discovery disabled: Windows runtime directory ACL is not private.");
+      }
+    }
+    yield* writeFileStringAtomically({
+      filePath: input.path,
+      contents: `${JSON.stringify(state)}\n`,
+    });
   });
 
 export const clearPersistedServerRuntimeState = (path: string) =>

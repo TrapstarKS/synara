@@ -1,20 +1,29 @@
 import http from "node:http";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { adminAddress, mobileDirectory } from "./lib/admin.mjs";
+import { assertPrivateWindowsPath } from "./lib/windows.mjs";
 const [command, id] = process.argv.slice(2);
 if (!["pair", "devices", "revoke"].includes(command) || (command === "revoke" && !id)) {
   console.error("Usage: node cli.mjs pair | devices | revoke <device-id>");
   process.exit(1);
 }
+const directory = mobileDirectory(process.env, homedir());
+let adminToken;
+if (process.platform === "win32") {
+  assertPrivateWindowsPath(directory);
+  const path = join(directory, "state.json");
+  assertPrivateWindowsPath(path);
+  adminToken = JSON.parse(readFileSync(path, "utf8")).adminToken;
+  if (!adminToken) throw new Error("Start the mobile companion before pairing");
+}
 const request = http.request(
   {
-    socketPath: join(
-      resolve(process.env.SYNARA_MOBILE_HOME ?? join(homedir(), ".synara-mobile")),
-      "admin.sock",
-    ),
+    socketPath: adminAddress(directory),
     path: "/" + command,
     method: command === "devices" ? "GET" : "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}) },
   },
   (response) => {
     let raw = "";

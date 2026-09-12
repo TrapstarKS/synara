@@ -16,6 +16,7 @@ import {
 import { createPush } from "./lib/push.mjs";
 import { watchSynara } from "./lib/synara-events.mjs";
 import { createUpstreamResolver } from "./lib/desktop-upstream.mjs";
+import { adminAddress } from "./lib/admin.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicUrl = new URL(process.env.SYNARA_MOBILE_ORIGIN ?? "https://localhost:8443");
@@ -61,6 +62,7 @@ process.on("exit", () => {
   } catch {}
 });
 const { state, save } = store;
+if (process.platform === "win32") state.adminToken ??= secret();
 function newPairing() {
   const code = secret();
   state.pairing = { hash: hash(code), expiresAt: Date.now() + 15 * 60_000 };
@@ -134,6 +136,9 @@ const assetMap = {
   "/mobile/theme.js": ["theme.js", "text/javascript"],
   "/mobile/manifest.webmanifest": ["manifest.webmanifest", "application/manifest+json"],
   "/mobile/icon.svg": ["icon.svg", "image/svg+xml"],
+  "/mobile/app-icon.svg": ["app-icon.svg", "image/svg+xml"],
+  "/mobile/icon-192.png": ["icon-192.png", "image/png"],
+  "/mobile/icon-512.png": ["icon-512.png", "image/png"],
   "/mobile/icon.png": ["icon.png", "image/png"],
   "/mobile/apple-touch-icon.png": ["apple-touch-icon.png", "image/png"],
   "/mobile/sw.js": ["sw.js", "text/javascript"],
@@ -165,15 +170,15 @@ function offline(req, res) {
       "Retry-After": "2",
     });
     return res.end(
-      '<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="2"><title>Synara</title><style>html{color-scheme:light dark;font:16px system-ui}body{display:grid;min-height:90vh;place-items:center;margin:0;background:#101010;color:#ededed}main{max-width:28rem;padding:2rem;text-align:center}p{color:#a1a1a1}</style><main><h1>Synara está iniciando</h1><p>Abra o Synara no Mac. Esta tela reconecta automaticamente.</p></main></html>',
+      '<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="2"><title>Synara</title><style>html{color-scheme:light dark;font:16px system-ui}body{display:grid;min-height:90vh;place-items:center;margin:0;background:#101010;color:#ededed}main{max-width:28rem;padding:2rem;text-align:center}p{color:#a1a1a1}</style><main><h1>Synara está iniciando</h1><p>Abra o Synara no computador. Esta tela reconecta automaticamente.</p></main></html>',
     );
   }
-  return json(res, 503, { error: "Synara.app is not running" }, { "Retry-After": "2" });
+  return json(res, 503, { error: "Synara desktop is not running" }, { "Retry-After": "2" });
 }
 async function proxy(req, res) {
   let targetConfig;
   try {
-    targetConfig = upstreamResolver.resolve();
+    targetConfig = await upstreamResolver.resolve();
   } catch {
     return offline(req, res);
   }
@@ -230,7 +235,7 @@ async function proxy(req, res) {
   target.on("error", () => {
     upstreamResolver.invalidate();
     if (!res.headersSent)
-      json(res, 502, { error: "Synara is offline. Start it on the Mac and retry." });
+      json(res, 502, { error: "Synara is offline. Start it on the computer and retry." });
     else res.destroy();
   });
   target.setTimeout(120_000, () => target.destroy());
@@ -393,7 +398,7 @@ server.on("upgrade", async (req, socket, head) => {
   }
   let targetConfig;
   try {
-    targetConfig = upstreamResolver.resolve();
+    targetConfig = await upstreamResolver.resolve();
   } catch {
     socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
     return;
@@ -467,15 +472,16 @@ server.listen(port, "127.0.0.1", () => {
   console.log(`Synara Mobile listening on 127.0.0.1:${port}`);
   console.log(`Open ${publicUrl.origin}/mobile; run node cli.mjs pair for a private pairing link.`);
 });
-// Local administration uses a private Unix socket, never a remotely reachable endpoint.
-const adminPath = join(directory, "admin.sock");
-try {
-  unlinkSync(adminPath);
-} catch (error) {
-  if (error.code !== "ENOENT") throw error;
+// Windows named pipes additionally require a credential held in the private store.
+const adminPath = adminAddress(directory);
+if (process.platform !== "win32") {
+  try { unlinkSync(adminPath); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
 }
 const admin = http.createServer(async (req, res) => {
   try {
+    if (process.platform === "win32" && hash(req.headers.authorization ?? "") !== hash(`Bearer ${state.adminToken}`))
+      return json(res, 403, { error: "Local administration credential required" });
     if (req.method === "POST" && req.url === "/pair")
       return json(res, 200, { url: newPairing(), expiresInMinutes: 15 });
     if (req.method === "GET" && req.url === "/devices")
@@ -500,7 +506,7 @@ const admin = http.createServer(async (req, res) => {
     return json(res, 400, { error: error.message });
   }
 });
-admin.listen(adminPath, () => chmodSync(adminPath, 0o600));
+admin.listen(adminPath, () => { if (process.platform !== "win32") chmodSync(adminPath, 0o600); });
 function shutdown() {
   clearInterval(expiryTimer);
   stopMonitor();

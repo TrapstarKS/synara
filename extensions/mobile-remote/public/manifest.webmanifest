@@ -2,7 +2,7 @@
   "id": "/mobile",
   "name": "Synara",
   "short_name": "Synara",
-  "description": "Seu Synara no iPhone, com notificações e controle remoto.",
+  "description": "Seu Synara no Android e iPhone, com notificações e controle remoto.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -10,6 +10,8 @@
   "theme_color": "#101010",
   "icons": [
     { "src": "/mobile/icon.png", "sizes": "256x256", "type": "image/png", "purpose": "any" },
-    { "src": "/mobile/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "/mobile/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/mobile/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/mobile/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
   ]
 }

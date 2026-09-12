@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import WebSocket from "ws";
+import { notificationCopy, preview, readNotificationThread } from "./notification-copy.mjs";
 
 // Deliberately pinned to contracts/wsCompatibility.ts and orchestration.ts.
 // This read-only client never falls back to an unnegotiated or provider socket.
@@ -16,6 +17,9 @@ const text = (v) => typeof v === "string" && v.length > 0 && v.length <= 512;
 const date = (v) => typeof v === "string" && Number.isFinite(Date.parse(v));
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 class Incompatible extends Error {}
+const isSubagentThread = (thread) =>
+  thread.parentThreadId != null || thread.subagentAgentId != null ||
+  thread.creationSource === "provider_native" || thread.id.startsWith("subagent:");
 
 function summary(thread) {
   if (
@@ -46,6 +50,10 @@ function summary(thread) {
   if (thread.goal !== undefined && typeof thread.goal !== "string") {
     throw new Incompatible("Unsupported Synara goal schema.");
   }
+  for (const key of ["parentThreadId", "subagentAgentId", "creationSource"]) {
+    if (thread[key] != null && !text(thread[key]))
+      throw new Incompatible("Unsupported Synara subagent metadata.");
+  }
   if (
     thread.goalPausedAt !== undefined &&
     thread.goalPausedAt !== null &&
@@ -55,12 +63,14 @@ function summary(thread) {
   }
   return {
     id: thread.id,
+    title: preview(thread.title, 72),
     turn: turn?.turnId ?? null,
     state: turn?.state ?? null,
     approval: thread.hasPendingApprovals === true,
     input: thread.hasPendingUserInput === true,
     updatedAt: thread.updatedAt,
     archived: !!thread.archivedAt,
+    isSubagent: isSubagentThread(thread),
     goalActive:
       typeof thread.goal === "string" &&
       thread.goal.trim().length > 0 &&
@@ -71,24 +81,19 @@ function summary(thread) {
 }
 
 function eventFor(current, id, kind) {
-  const titles = {
-    completed: "Tarefa concluída",
-    failed: "A tarefa encontrou uma falha",
-    approval: "Sua aprovação é necessária",
-    input: "O agente precisa da sua resposta",
-  };
-  return {
+  const event = {
     id,
     kind,
     threadId: current.id,
-    title: titles[kind],
-    body: "Abra o Synara para acompanhar esta conversa.",
+    turnId: current.turn,
+    taskTitle: current.title,
     url: `/${encodeURIComponent(current.id)}`,
     createdAt: current.updatedAt,
   };
+  return { ...event, ...notificationCopy(event) };
 }
 
-/** Small projection only: no titles, prompts, transcripts, or provider payloads. */
+/** Bounded task titles and lifecycle metadata; no transcripts or provider payloads. */
 export function createShellMonitor({
   checkpoint,
   scope = "",
@@ -125,6 +130,7 @@ export function createShellMonitor({
         typeof t.approval === "boolean" &&
         typeof t.input === "boolean" &&
         typeof t.archived === "boolean" &&
+        (t.isSubagent === undefined || typeof t.isSubagent === "boolean") &&
         (t.goalActive === undefined || typeof t.goalActive === "boolean") &&
         (t.sessionStatus === undefined || t.sessionStatus === null || text(t.sessionStatus)) &&
         (t.activeTurn === undefined || t.activeTurn === null || text(t.activeTurn)),
@@ -136,6 +142,8 @@ export function createShellMonitor({
       goalActive: thread.goalActive === true,
       sessionStatus: thread.sessionStatus ?? null,
       activeTurn: thread.activeTurn ?? null,
+      title: preview(thread.title, 72),
+      isSubagent: thread.isSubagent === true || thread.id.startsWith("subagent:"),
     }));
   }
   const pendingCompletions = new Map();
@@ -150,6 +158,7 @@ export function createShellMonitor({
   const completionIsStable = (current, candidate) =>
     current?.turn === candidate.turn &&
     current.state === "completed" &&
+    !current.isSubagent &&
     !current.goalActive &&
     current.activeTurn === null &&
     !LIVE_SESSION_STATES.has(current.sessionStatus);
@@ -251,6 +260,8 @@ export function createShellMonitor({
             kinds.push("approval");
           if (current.input && (!old?.input || old.turn !== current.turn)) kinds.push("input");
           for (const kind of kinds) {
+            // Child lifecycle is internal work; requests needing the user still notify.
+            if (current.isSubagent && (kind === "completed" || kind === "failed")) continue;
             // Boolean request flags do not expose request IDs. Use their rising-edge timestamp.
             const edge = kind === "approval" || kind === "input" ? current.updatedAt : "";
             const id = hash(JSON.stringify([scope, current.id, current.turn, kind, edge]));
@@ -330,6 +341,7 @@ export function watchSynara({
   const lifetime = new AbortController();
   let stopped = false,
     socket,
+    notificationUrl,
     retry,
     heartbeat,
     attempt = 0;
@@ -341,7 +353,17 @@ export function watchSynara({
   const monitor = createShellMonitor({
     checkpoint,
     scope: scope ?? (upstream ? new URL(upstream).origin : "desktop"),
-    onEvent,
+    onEvent: async (event) => {
+      const detail = await readNotificationThread(notificationUrl, event.threadId).catch(() => null);
+      if (stopped) return;
+      if (detail && isSubagentThread(detail) && ["completed", "failed"].includes(event.kind)) return;
+      // Don't describe a later turn or notify about work that already resumed.
+      if (detail && (detail.latestTurn?.turnId !== event.turnId ||
+          (event.kind === "completed" && detail.latestTurn?.state !== "completed") ||
+          (event.kind === "approval" && detail.hasPendingApprovals === false) ||
+          (event.kind === "input" && detail.hasPendingUserInput === false))) return;
+      await onEvent({ ...event, ...notificationCopy(event, detail) });
+    },
     saveCheckpoint,
     ...(completionDelayMs === undefined ? {} : { completionDelayMs }),
   });
@@ -413,6 +435,7 @@ export function watchSynara({
       }))
         wsUrl.searchParams.set(`x-synara-${key}`, value);
       const ws = new WebSocket(wsUrl, { handshakeTimeout: 5000, maxPayload: 16 * 1024 * 1024 });
+      notificationUrl = wsUrl;
       socket = ws;
       let pong = true,
         pending = 0,

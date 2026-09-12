@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import {
   parseLoadedJob,
   listenerPids,
@@ -56,7 +57,7 @@ const settings = (extra = {}) =>
 
 test("reinstall preserves the mobile home and origin unless explicitly overridden", () => {
   assert.deepEqual(settings(), {
-    mobileHome: "/data/custom mobile",
+    mobileHome: resolve("/data/custom mobile"),
     origin: "https://test.ts.net:8443",
   });
   assert.deepEqual(
@@ -64,14 +65,14 @@ test("reinstall preserves the mobile home and origin unless explicitly overridde
       origin: "https://new.ts.net:8443",
       mobileHome: "/new/mobile",
     }),
-    { mobileHome: "/new/mobile", origin: "https://new.ts.net:8443" },
+    { mobileHome: resolve("/new/mobile"), origin: "https://new.ts.net:8443" },
   );
 });
 
 test("new install requires origin and inconsistent persisted settings fail closed", () => {
   assert.throws(() => settings({ backend: null, companion: null }), /origin is required/);
   assert.deepEqual(settings({ backend: null, companion: null, origin: "https://new.ts.net" }), {
-    mobileHome: "/default/mobile",
+    mobileHome: resolve("/default/mobile"),
     origin: "https://new.ts.net",
   });
   assert.throws(
@@ -83,7 +84,7 @@ test("new install requires origin and inconsistent persisted settings fail close
       companion: { EnvironmentVariables: { SYNARA_MOBILE_HOME: "/other" } },
       mobileHome: "/explicit",
     }).mobileHome,
-    "/explicit",
+    resolve("/explicit"),
   );
   for (const origin of [
     "http://test.ts.net",

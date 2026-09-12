@@ -79,6 +79,43 @@ describe("release update policy", () => {
     }
   });
 
+  it("publishes Mac and Windows updater feeds without requiring Linux when explicitly excluded", () => {
+    const root = mkdtempSync(join(tmpdir(), "synara-release-policy-"));
+    try {
+      writeFileSync(resolve(root, "latest-mac.yml"), "mac-updater");
+      writeFileSync(resolve(root, "latest.yml"), "windows-updater");
+      expect(prepareReleaseUpdateManifests(root, cleanConfig, { includeLinux: false })).toEqual([
+        "latest-mac.yml",
+        "latest.yml",
+        "synara-mac.yml",
+        "synara.yml",
+      ]);
+      expect(readFileSync(resolve(root, "synara-mac.yml"), "utf8")).toBe("mac-updater");
+      expect(readFileSync(resolve(root, "synara.yml"), "utf8")).toBe("windows-updater");
+      expect(existsSync(resolve(root, "synara-linux.yml"))).toBe(false);
+      expect(() =>
+        prepareReleaseUpdateManifests(root, { ...cleanConfig, lane: "bridge" }, {
+          includeLinux: false,
+        }),
+      ).toThrow("Compatibility releases require all platform manifests");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still requires the Windows updater manifest when Linux is excluded", () => {
+    const root = mkdtempSync(join(tmpdir(), "synara-release-policy-"));
+    try {
+      writeFileSync(resolve(root, "latest-mac.yml"), "mac-updater");
+      expect(() => prepareReleaseUpdateManifests(root, cleanConfig, { includeLinux: false })).toThrow(
+        "Latest release is missing update manifests: latest.yml",
+      );
+      expect(existsSync(resolve(root, "synara-mac.yml"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps default metadata and copies same-version channel placeholders on the compatibility release", () => {
     const root = mkdtempSync(join(tmpdir(), "synara-release-policy-"));
     try {

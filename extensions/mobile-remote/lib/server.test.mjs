@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { validatePreferences, validateSubscription } from "./store.mjs";
+import { adminAddress } from "./admin.mjs";
 
 test("preferences and outbound push URLs reject untrusted payloads", () => {
   assert.throws(() => validatePreferences({ completed: true }));
@@ -107,10 +108,10 @@ test(
     });
     const base = `http://127.0.0.1:${port}`;
     let ready = false;
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 400; i++) {
       if (child.exitCode !== null) assert.fail(output);
       try {
-        await stat(join(directory, "admin.sock"));
+        await stat(join(directory, process.platform === "win32" ? "state.json" : "admin.sock"));
         ready = (await fetch(base + "/mobile/api/status")).ok;
         if (ready) break;
       } catch {}
@@ -127,10 +128,23 @@ test(
       (await fetch(base + "/mobile/icon.svg", { headers: { Origin: base } })).status,
       200,
     );
+    const adminToken = JSON.parse(await readFile(join(directory, "state.json"), "utf8")).adminToken;
+    if (process.platform === "win32") {
+      const rejected = await new Promise((resolve, reject) => {
+        const request = http.request({ socketPath: adminAddress(directory), path: "/pair", method: "POST" }, (response) => {
+          response.resume();
+          resolve(response.statusCode);
+        });
+        request.on("error", reject);
+        request.end("{}");
+      });
+      assert.equal(rejected, 403, "Named pipe access alone must not grant administration");
+    }
     function admin(path, method = "POST", data = {}) {
       return new Promise((resolve, reject) => {
         const req = http.request(
-          { socketPath: join(directory, "admin.sock"), path, method },
+          { socketPath: adminAddress(directory), path, method,
+            headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {} },
           (res) => {
             let body = "";
             res.on("data", (chunk) => (body += chunk));
@@ -169,8 +183,10 @@ test(
     assert.equal((await post("/mobile/api/preferences", preferences, cookie)).status, 200);
     const saved = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
     assert.deepEqual(saved.devices[0].preferences, preferences);
-    assert.equal((await stat(join(directory, "state.json"))).mode & 0o777, 0o600);
-    assert.equal((await stat(join(directory, "admin.sock"))).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal((await stat(join(directory, "state.json"))).mode & 0o777, 0o600);
+      assert.equal((await stat(join(directory, "admin.sock"))).mode & 0o777, 0o600);
+    }
     const proxied = await fetch(base + "/", { headers: { Cookie: cookie } });
     assert.equal(proxied.status, 200);
     assert.match(await proxied.text(), /mobile\/manifest.webmanifest/);

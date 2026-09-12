@@ -1,7 +1,22 @@
 const $ = (id) => document.getElementById(id);
 let status;
-const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+let standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
 const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+$("install-ios").hidden = !ios;
+$("install-android").hidden = ios;
+$("name").value = ios ? "Meu iPhone" : /Android/.test(navigator.userAgent) ? "Meu Android" : "Meu aparelho";
+let installPrompt;
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  installPrompt = event;
+  $("install-app").hidden = Boolean(standalone);
+});
+window.addEventListener("appinstalled", () => {
+  standalone = true;
+  installPrompt = null;
+  $("install").hidden = true;
+  $("install-app").hidden = true;
+});
 const code = new URLSearchParams(location.hash.slice(1)).get("pair");
 if (code) {
   $("code").value = code;
@@ -33,8 +48,8 @@ async function refresh() {
   $("connection").textContent = !status.paired
     ? "Não conectado"
     : status.monitor.state === "connected"
-      ? "Mac conectado"
-      : "Mac indisponível";
+      ? "Computador conectado"
+      : "Computador indisponível";
   if (!status.paired) return;
   $("device-name").textContent = status.name;
   for (const key of Object.keys(status.preferences))
@@ -61,7 +76,7 @@ async function refresh() {
   $("disable").hidden = !status.subscribed && !browserSubscription;
   $("enable").hidden = active;
   $("push-detail").textContent = status.pushError
-    ? "A entrega falhou. Confira a internet do Mac e envie um novo teste."
+    ? "A entrega falhou. Confira a internet do computador e envie um novo teste."
     : status.lastPushAt
       ? "Último envio: " + new Date(status.lastPushAt).toLocaleString("pt-BR")
       : "";
@@ -80,13 +95,21 @@ function action(id, fn, event = "click") {
     }
   });
 }
+action("install-app", async () => {
+  if (!installPrompt) return;
+  const prompt = installPrompt;
+  installPrompt = null;
+  $("install-app").hidden = true;
+  await prompt.prompt();
+  await prompt.userChoice;
+});
 action(
   "pair-form",
   async () => {
     let pairingCode = $("code").value.trim();
     if (pairingCode.startsWith("https://")) {
       const link = new URL(pairingCode);
-      if (link.origin !== location.origin) throw new Error("Use o link de conexão deste Mac.");
+      if (link.origin !== location.origin) throw new Error("Use o link de conexão deste computador.");
       pairingCode = new URLSearchParams(link.hash.slice(1)).get("pair") ?? "";
     }
     await api("pair", { code: pairingCode, name: $("name").value.trim() });
@@ -115,12 +138,12 @@ action("enable", async () => {
     throw new Error("Adicione o Synara à Tela de Início e abra pelo ícone antes de ativar.");
   if (!("Notification" in window) || !("PushManager" in window))
     throw new Error(
-      "Este navegador não oferece notificações. Use o app da Tela de Início com iOS 16.4 ou mais recente.",
+      "Use Chrome ou Samsung Internet atualizado no Android, ou o app da Tela de Início no iOS 16.4 ou mais recente.",
     );
   // Request directly from the user's tap; iOS requires this gesture.
   const permission = await Notification.requestPermission();
   if (permission !== "granted")
-    throw new Error("Permita notificações do Synara nos Ajustes do iPhone e tente novamente.");
+    throw new Error("Permita notificações do Synara nas configurações do aparelho ou navegador e tente novamente.");
   await navigator.serviceWorker.register("/mobile/sw.js", { scope: "/" });
   const registration = await navigator.serviceWorker.ready;
   const raw = atob(status.publicKey.replace(/-/g, "+").replace(/_/g, "/"));

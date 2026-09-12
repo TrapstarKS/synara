@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import {
   createUpstreamResolver,
   discoverDesktopUpstream,
@@ -43,11 +44,11 @@ test("desktop discovery verifies that the candidate owns its advertised listener
     throw new Error("unexpected command");
   };
   assert.deepEqual(
-    discoverDesktopUpstream({ desktopExecutable: executable, desktopHome: home, exec }),
+    discoverDesktopUpstream({ desktopExecutable: executable, desktopHome: home, exec, platform: "darwin" }),
     {
       origin: "http://127.0.0.1:56673",
       token,
-      scope: `desktop:${home}`,
+      scope: `desktop:${resolve(home)}`,
     },
   );
   assert.equal(
@@ -59,6 +60,7 @@ test("desktop discovery verifies that the candidate owns its advertised listener
       discoverDesktopUpstream({
         desktopExecutable: executable,
         desktopHome: home,
+        platform: "darwin",
         exec: (command, args) =>
           command === "/bin/ps" && args.includes("-axo")
             ? table
