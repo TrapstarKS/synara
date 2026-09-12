@@ -97,8 +97,8 @@ jobs:
         env:
           RUST_MIN_STACK: "8388608"
         run: |
-          cargo test -p codex-core spawn_agent_service_tier_forces_fast_for_luna_at_any_effort
-          cargo test -p codex-core luna_subagent_uses_priority_service_tier
+          cargo test --release -p codex-core spawn_agent_service_tier_forces_fast_for_luna_at_any_effort
+          cargo test --release -p codex-core luna_subagent_uses_priority_service_tier
           cargo build -p codex-cli --release
 
       - name: Download matching official runtime files
