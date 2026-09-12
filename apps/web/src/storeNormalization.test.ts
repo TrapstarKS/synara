@@ -5,6 +5,7 @@ import { MessageId, TurnId } from "@synara/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  capThreadActivities,
   createThreadActivityAccumulator,
   dedupeActivitiesById,
   dedupeActivitiesByIdAfterAppend,
@@ -460,5 +461,21 @@ describe("asynchronous question hydration", () => {
     const restored = normalizeChatMessage(pending, answered);
     expect(restored.asyncUserInput?.response).toEqual(response);
     expect(restored.completedAt).toBe(createdAt);
+  });
+});
+
+describe("provider transition retention", () => {
+  it("keeps the provider path and pending transition outside the work-log cap", () => {
+    const transitions = [
+      "provider.handoff.requested",
+      "provider.handoff.completed",
+      "provider.handoff.failed",
+    ].map((kind, index) => makeActivity({ id: `handoff-${index}`, kind }));
+    const noise = Array.from({ length: 2_010 }, (_, index) =>
+      makeActivity({ id: `noise-${index}` }),
+    );
+    const capped = capThreadActivities([...transitions, ...noise]);
+    expect(capped.slice(0, 3)).toEqual(transitions);
+    expect(capped).toHaveLength(2_003);
   });
 });
