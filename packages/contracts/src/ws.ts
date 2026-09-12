@@ -19,6 +19,8 @@ import {
   MindForgetInput,
   MindHistoryInput,
   MindListInput,
+  MindProfileGetInput,
+  MindProfileSetInput,
   MindSetPinnedInput,
   MindUpdateInput,
 } from "./mind";
@@ -338,6 +340,8 @@ export const WS_METHODS = {
   mindAffirm: "mind.affirm",
   mindUpdate: "mind.update",
   mindHistory: "mind.history",
+  mindProfileGet: "mind.profileGet",
+  mindProfileSet: "mind.profileSet",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -571,6 +575,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.mindAffirm, MindAffirmInput),
   tagRequestBody(WS_METHODS.mindUpdate, MindUpdateInput),
   tagRequestBody(WS_METHODS.mindHistory, MindHistoryInput),
+  tagRequestBody(WS_METHODS.mindProfileGet, MindProfileGetInput),
+  tagRequestBody(WS_METHODS.mindProfileSet, MindProfileSetInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({
