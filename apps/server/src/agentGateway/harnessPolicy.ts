@@ -3,7 +3,7 @@ import type { ProviderKind } from "@synara/contracts";
 import { AUTOMATION_AUTHORING_GUIDANCE } from "./automationAuthoringGuidance.ts";
 
 /** Canonical, versioned host policy delivered to every supported provider. */
-export const SYNARA_HARNESS_POLICY_VERSION = "2026-09-08.1";
+export const SYNARA_HARNESS_POLICY_VERSION = "2026-09-03.1";
 export const SYNARA_HARNESS_POLICY_MARKER = `[Synara harness policy ${SYNARA_HARNESS_POLICY_VERSION}]`;
 
 export interface SynaraHarnessCapabilities {
@@ -35,7 +35,7 @@ export function renderSynaraHarnessPolicy(capabilities: SynaraHarnessCapabilitie
         "When results are requested, call synara_wait_for_threads for the created thread ids, wait for every requested result, then synthesize all outcomes.",
         "After an operationId, retries keep the same requestId and exact plan. Report terminal failures; no replacement threads without a new user request.",
         "Synara automations support heartbeat, standalone, and dedicated modes plus interval, once, daily, weekdays, weekly, and cron schedules. Existing everyMinutes heartbeat calls remain supported. Use fastInterval: true only when the user explicitly accepts a sub-minute bounded loop.",
-        "Mode controls execution: heartbeat appends to an idle target; standalone opens a fresh thread per run; dedicated reuses its own thread across runs.",
+        "Mode controls execution: heartbeat appends to an idle target thread; standalone opens a fresh thread per independent run; dedicated reuses one automation-owned thread so runs build on each other without writing into another thread.",
         "Prefer dedicated for ongoing observation or tracking: standalone runs cannot see prior runs beyond memory, while dedicated keeps one growing thread.",
         'Mode does not restrict stop conditions. completionPolicy {"type":"ai-evaluated","stopWhen":"..."} works in both modes and disables the automation when the clause matches a successful run; prefer it over encoding the stop condition in the prompt. maxIterations remains the backstop, and an automation-dispatched run may always call synara_cancel_automation on its own automation.',
         // Claude discovers these same instructions on create/update tool schemas.
