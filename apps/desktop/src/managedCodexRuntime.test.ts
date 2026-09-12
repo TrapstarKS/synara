@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import * as FS from "node:fs";
 import * as OS from "node:os";
 import * as Path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -34,12 +33,7 @@ function makeFixture(version = "1.2.3") {
       relativePath === "bin/codex-luna-max-fast.real"
         ? `#!/bin/sh\nprintf 'codex-cli ${version}\\n'\n`
         : relativePath === "bin/codex-luna-max-fast"
-          ? FS.readFileSync(
-              fileURLToPath(
-                new URL("../../../tools/codex-luna-max-fast/codex-luna-max-fast", import.meta.url),
-              ),
-              "utf8",
-            )
+          ? `#!/bin/sh\nexec "$(dirname "$0")/codex-luna-max-fast.real" "$@"\n`
           : "#!/bin/sh\nexit 0\n";
     FS.writeFileSync(filePath, contents, { mode: 0o755 });
   }
