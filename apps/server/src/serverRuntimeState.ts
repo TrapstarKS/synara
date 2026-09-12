@@ -58,9 +58,10 @@ export const persistServerRuntimeState = (input: {
     if (process.platform === "win32" && state.desktopAuthToken) {
       // New files inherit their directory's DACL. Never publish a desktop credential
       // under a shared Windows home; keep ordinary desktop startup available there.
-      const privateDirectory = yield* Effect.try(() =>
-        assertPrivateWindowsRuntimePath(dirname(input.path), "directory"),
-      ).pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
+      const privateDirectory = yield* Effect.try({
+        try: () => assertPrivateWindowsRuntimePath(dirname(input.path), "directory"),
+        catch: (cause) => cause,
+      }).pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
       if (!privateDirectory) {
         const { desktopAuthToken: _token, ...withoutCredential } = state;
         state = withoutCredential;
