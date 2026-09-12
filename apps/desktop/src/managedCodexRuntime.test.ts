@@ -83,7 +83,7 @@ describe("ensureBundledCodexRuntime", () => {
     expect(FS.readlinkSync(Path.join(fixture.baseDir, "bin", "codex"))).toBe(
       "codex-luna-max-fast",
     );
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: Path.join(Path.dirname(fixture.baseDir), "unrelated-home"),
       SYNARA_CODEX_AUTO_UPDATE: "0",

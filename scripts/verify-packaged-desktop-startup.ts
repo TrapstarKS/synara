@@ -342,6 +342,18 @@ function hasStartupProof(logPath: string): boolean {
   }
 }
 
+export function readPackagedStartupDiagnostics(logDirectory: string): string {
+  return ["desktop-main.log", "server-child.log"]
+    .map((name) => {
+      try {
+        return `${name}:\n${readFileSync(join(logDirectory, name), "utf8").slice(-16_384)}`;
+      } catch {
+        return `${name}: not written`;
+      }
+    })
+    .join("\n");
+}
+
 export function resolveNativePackagedDesktopPlatform(
   platform: NodeJS.Platform,
 ): PackagedDesktopPlatform {
@@ -364,11 +376,14 @@ export async function verifyPackagedDesktopStartup(
   mkdirSync(extractionRoot, { recursive: true });
 
   let child: ChildProcess | null = null;
+  let outputTail = "";
+  let logDirectory: string | null = null;
   try {
     const launch = prepareLaunch(options, extractionRoot);
     const env = createPackagedDesktopSmokeEnvironment(join(temporaryRoot, "state"), options);
     verifyPackagedRuntimeDependencies(launch.runtime, env, options.timeoutMs);
-    const logPath = join(env.SYNARA_HOME!, "userdata", "logs", "desktop-main.log");
+    logDirectory = join(env.SYNARA_HOME!, "userdata", "logs");
+    const logPath = join(logDirectory, "desktop-main.log");
     child = spawn(launch.command, [...launch.args], {
       cwd: launch.cwd,
       env,
@@ -387,8 +402,11 @@ export async function verifyPackagedDesktopStartup(
     child.once("error", (error) => {
       childOutcome.launchError = error;
     });
-    child.stdout?.resume();
-    child.stderr?.resume();
+    const captureOutput = (chunk: Buffer) => {
+      outputTail = `${outputTail}${chunk.toString("utf8")}`.slice(-16_384);
+    };
+    child.stdout?.on("data", captureOutput);
+    child.stderr?.on("data", captureOutput);
 
     const deadline = Date.now() + options.timeoutMs;
     while (Date.now() < deadline) {
@@ -409,6 +427,10 @@ export async function verifyPackagedDesktopStartup(
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
     }
     throw new Error(`Packaged startup proof timed out after ${options.timeoutMs}ms.`);
+  } catch (error) {
+    console.error(`Packaged startup process output:\n${outputTail || "(no output)"}`);
+    if (logDirectory) console.error(readPackagedStartupDiagnostics(logDirectory));
+    throw error;
   } finally {
     if (child) {
       await terminateProcessTree(child);

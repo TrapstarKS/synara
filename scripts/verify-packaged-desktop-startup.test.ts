@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createPackagedDesktopSmokeEnvironment,
   parsePackagedDesktopStartupArgs,
+  readPackagedStartupDiagnostics,
   resolveNativePackagedDesktopPlatform,
   verifyPackagedRuntimeDependencies,
 } from "./verify-packaged-desktop-startup.ts";
@@ -20,6 +21,18 @@ afterEach(() => {
 });
 
 describe("packaged desktop startup verification", () => {
+  it("preserves bounded startup failure details before the isolated tree is removed", () => {
+    const root = mkdtempSync(join(tmpdir(), "synara-startup-diagnostics-"));
+    temporaryRoots.push(root);
+    writeFileSync(join(root, "desktop-main.log"), `old-prefix${"x".repeat(20_000)}bootstrap failed`);
+    writeFileSync(join(root, "server-child.log"), "Error: packaged backend could not start");
+    const diagnostics = readPackagedStartupDiagnostics(root);
+    expect(diagnostics).toContain("bootstrap failed");
+    expect(diagnostics).toContain("Error: packaged backend could not start");
+    expect(diagnostics).not.toContain("old-prefix");
+    expect(diagnostics.length).toBeLessThan(17_000);
+  });
+
   it("parses a bounded native payload request", () => {
     expect(
       parsePackagedDesktopStartupArgs([

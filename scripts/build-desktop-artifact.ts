@@ -8,7 +8,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
@@ -912,7 +913,7 @@ const assertPackagedMacDeviceHelper = Effect.fn("assertPackagedMacDeviceHelper")
   });
 });
 
-const assertPackagedMacCodexRuntime = Effect.fn("assertPackagedMacCodexRuntime")(function* (
+export const assertPackagedMacCodexRuntime = Effect.fn("assertPackagedMacCodexRuntime")(function* (
   stageDistDir: string,
   productName: string,
 ) {
@@ -920,9 +921,11 @@ const assertPackagedMacCodexRuntime = Effect.fn("assertPackagedMacCodexRuntime")
   const fs = yield* FileSystem.FileSystem;
   const entries = yield* fs.readDirectory(stageDistDir);
   for (const entry of entries) {
+    const packagedEntryPath = path.join(stageDistDir, entry);
+    const packagedEntryStat = yield* fs.stat(packagedEntryPath);
+    if (packagedEntryStat.type !== "Directory") continue;
     const archivePath = path.join(
-      stageDistDir,
-      entry,
+      packagedEntryPath,
       `${productName}.app`,
       "Contents",
       MAC_CODEX_RUNTIME_RESOURCE_PATH,
@@ -1392,8 +1395,10 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
 
 const cliRuntimeLayer = Layer.mergeAll(Logger.layer([Logger.consolePretty()]), NodeServices.layer);
 
-Command.run(buildDesktopArtifactCli, { version: "0.0.0" }).pipe(
-  Effect.scoped,
-  Effect.provide(cliRuntimeLayer),
-  NodeRuntime.runMain,
-);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  Command.run(buildDesktopArtifactCli, { version: "0.0.0" }).pipe(
+    Effect.scoped,
+    Effect.provide(cliRuntimeLayer),
+    NodeRuntime.runMain,
+  );
+}
