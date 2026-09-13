@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Schema } from "effect";
 
 import { cn } from "~/lib/utils";
 import {
@@ -49,12 +50,14 @@ import {
   resolveRightDockPaneLabel,
 } from "./rightDockPaneMeta";
 import { useDesktopTopBarWindowControlsGutterClassName } from "~/hooks/useDesktopTopBarGutter";
+import { getLocalStorageItem } from "~/hooks/useLocalStorage";
 
 // Shared sizing defaults for dock hosts: the resize floor for a single readable pane and the
 // "half the shell, but never cramped" opening width. The thread route tunes its own values
 // around the composer; simpler hosts (e.g. the /pull-requests route) use these as-is.
 export const RIGHT_DOCK_MIN_WIDTH = 26 * 16;
 export const RIGHT_DOCK_DEFAULT_WIDTH = "max(28rem, calc(50vw - 8rem))";
+export const RIGHT_DOCK_WIDTH_STORAGE_KEY = "synara:right-dock-width:v1";
 
 // Pane kinds whose content has a natural width, opened at that size rather than
 // at the even split. The device pane frames a portrait phone, so its useful
@@ -194,8 +197,8 @@ export function RightDock(props: RightDockProps) {
   // The dock must open as an exact 50/50 split of the chat shell. The CSS
   // default can only approximate half (it cannot observe the resizable left
   // sidebar), so on every open we measure the shell row hosting chat + dock and
-  // pin the dock width to exactly half of it. Mid-session drags still resize
-  // freely; the next open re-centers the split.
+  // pin the dock width to exactly half of it when no user width has been saved.
+  // Mid-session drags still resize freely, and a saved width wins on every remount.
   const contentRef = useRef<HTMLDivElement | null>(null);
   const minWidth = props.minWidth;
   const activePaneKind = activePane?.kind ?? null;
@@ -206,6 +209,9 @@ export function RightDock(props: RightDockProps) {
     const wrapper = contentRef.current?.closest<HTMLElement>("[data-slot='sidebar-wrapper']");
     const shell = wrapper?.parentElement;
     if (!wrapper || !shell) {
+      return;
+    }
+    if (getLocalStorageItem(RIGHT_DOCK_WIDTH_STORAGE_KEY, Schema.Finite) !== null) {
       return;
     }
     // A phone-shaped pane has a natural width: half the shell leaves the device
@@ -271,6 +277,7 @@ export function RightDock(props: RightDockProps) {
         resizable={{
           minWidth: props.minWidth,
           shouldAcceptWidth: props.shouldAcceptWidth,
+          storageKey: RIGHT_DOCK_WIDTH_STORAGE_KEY,
         }}
       >
         <div
