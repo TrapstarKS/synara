@@ -1,34 +1,6 @@
-import type {
-  ModelSelection,
-  OrchestrationSession,
-  RuntimeMode,
-  ThreadId,
-} from "@synara/contracts";
+import type { OrchestrationSession, RuntimeMode, ThreadId } from "@synara/contracts";
 
-export function deriveTurnStartModelSelection(input: {
-  readonly currentModelSelection: ModelSelection;
-  readonly requestedModelSelection: ModelSelection | undefined;
-  readonly canAdoptRequestedProvider: boolean;
-}): ModelSelection {
-  const requestedModelSelection = input.requestedModelSelection;
-  if (
-    requestedModelSelection === undefined ||
-    (requestedModelSelection.provider !== input.currentModelSelection.provider &&
-      !input.canAdoptRequestedProvider)
-  ) {
-    return input.currentModelSelection;
-  }
-  if (
-    !input.canAdoptRequestedProvider &&
-    requestedModelSelection.provider === "codex" &&
-    input.currentModelSelection.provider === "codex" &&
-    input.currentModelSelection.profileId &&
-    !requestedModelSelection.profileId
-  ) {
-    return { ...requestedModelSelection, profileId: input.currentModelSelection.profileId };
-  }
-  return requestedModelSelection;
-}
+export { deriveTurnStartModelSelection } from "@synara/shared/model";
 
 export function deriveTurnStartSession(input: {
   readonly threadId: ThreadId;

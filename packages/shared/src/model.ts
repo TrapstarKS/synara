@@ -73,6 +73,35 @@ export function getDefaultModel(provider: ProviderKind = "codex"): ModelSlug | n
   return hasDefaultModel(provider) ? DEFAULT_MODEL_BY_PROVIDER[provider] : null;
 }
 
+/**
+ * Keeps an established thread's provider identity intact when a turn request
+ * carries only the model controls currently visible in the composer.
+ */
+export function deriveTurnStartModelSelection(input: {
+  readonly currentModelSelection: ModelSelection;
+  readonly requestedModelSelection: ModelSelection | undefined;
+  readonly canAdoptRequestedProvider: boolean;
+}): ModelSelection {
+  const requestedModelSelection = input.requestedModelSelection;
+  if (
+    requestedModelSelection === undefined ||
+    (requestedModelSelection.provider !== input.currentModelSelection.provider &&
+      !input.canAdoptRequestedProvider)
+  ) {
+    return input.currentModelSelection;
+  }
+  if (
+    !input.canAdoptRequestedProvider &&
+    requestedModelSelection.provider === "codex" &&
+    input.currentModelSelection.provider === "codex" &&
+    input.currentModelSelection.profileId &&
+    !requestedModelSelection.profileId
+  ) {
+    return { ...requestedModelSelection, profileId: input.currentModelSelection.profileId };
+  }
+  return requestedModelSelection;
+}
+
 const MODEL_NAME_BY_SLUG = new Map(
   Object.values(MODEL_OPTIONS_BY_PROVIDER)
     .flat()

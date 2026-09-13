@@ -144,7 +144,10 @@ import {
   isReplaySafeClaimedProviderIntent,
   type ProviderIntentEvent,
 } from "../providerIntentClassification.ts";
-import { deriveTurnStartSession } from "../turnStartSession.ts";
+import {
+  deriveTurnStartModelSelection,
+  deriveTurnStartSession,
+} from "../turnStartSession.ts";
 import { TurnCheckpointCoordinator } from "../Services/TurnCheckpointCoordinator.ts";
 import {
   resolveProviderSessionThread as resolveProviderSessionThreadFromProjection,
@@ -1610,7 +1613,7 @@ const make = Effect.gen(function* () {
       ? thread.session.providerName
       : undefined;
     const requestedModelSelection = options?.modelSelection;
-    const requestChangesCodexProfile =
+    const requestedChangesCodexProfile =
       requestedModelSelection?.provider === "codex" &&
       thread.modelSelection.provider === "codex" &&
       requestedModelSelection.profileId !== thread.modelSelection.profileId;
@@ -1625,7 +1628,7 @@ const make = Effect.gen(function* () {
       currentProvider !== undefined &&
       thread.latestTurn === null &&
       requestedModelSelection !== undefined &&
-      (requestedModelSelection.provider !== currentProvider || requestChangesCodexProfile)
+      (requestedModelSelection.provider !== currentProvider || requestedChangesCodexProfile)
         ? yield* resolveActiveSession(threadId)
         : undefined;
     // A session row alone can be an optimistic placeholder written before the
@@ -1651,7 +1654,16 @@ const make = Effect.gen(function* () {
       requestedModelSelection?.provider ??
       currentProvider ??
       thread.modelSelection.provider;
-    const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
+    const desiredModelSelection = deriveTurnStartModelSelection({
+      currentModelSelection: thread.modelSelection,
+      requestedModelSelection,
+      canAdoptRequestedProvider:
+        thread.latestTurn === null && activeSession === undefined && thread.messages.length <= 1,
+    });
+    const requestChangesCodexProfile =
+      desiredModelSelection.provider === "codex" &&
+      thread.modelSelection.provider === "codex" &&
+      desiredModelSelection.profileId !== thread.modelSelection.profileId;
     const settings = yield* serverSettings.getSettings;
     if (!settings.providers[preferredProvider].enabled) {
       return yield* new ProviderAdapterValidationError({
@@ -1795,6 +1807,7 @@ const make = Effect.gen(function* () {
         return {
           activeSessionBeforeEnsure,
           activeSession: reusableSession,
+          modelSelection: desiredModelSelection,
           nativeResumeSucceeded: false,
           nativeResumeFailed: false,
           nativeSessionRestarted: false,
@@ -1842,6 +1855,7 @@ const make = Effect.gen(function* () {
       return {
         activeSessionBeforeEnsure,
         activeSession: restartedSession,
+        modelSelection: desiredModelSelection,
         nativeResumeSucceeded: restartedOutcome.nativeResumeSucceeded,
         nativeResumeFailed:
           restartedOutcome.nativeResumeAttempted && !restartedOutcome.nativeResumeSucceeded,
@@ -1883,6 +1897,7 @@ const make = Effect.gen(function* () {
         return {
           activeSessionBeforeEnsure,
           activeSession: forkedSession,
+          modelSelection: desiredModelSelection,
           nativeResumeSucceeded: false,
           nativeResumeFailed: false,
           nativeSessionRestarted: false,
@@ -1966,6 +1981,7 @@ const make = Effect.gen(function* () {
     return {
       activeSessionBeforeEnsure,
       activeSession: startedSession,
+      modelSelection: desiredModelSelection,
       nativeResumeSucceeded: startOutcome.nativeResumeSucceeded,
       nativeResumeFailed: startOutcome.nativeResumeFailed,
       nativeSessionRestarted: true,
@@ -2105,6 +2121,7 @@ const make = Effect.gen(function* () {
     const {
       activeSessionBeforeEnsure,
       activeSession,
+      modelSelection: effectiveModelSelection,
       nativeResumeSucceeded,
       nativeResumeFailed,
       nativeSessionRestarted,
@@ -2119,9 +2136,7 @@ const make = Effect.gen(function* () {
     if (input.providerOptions !== undefined) {
       threadProviderOptions.set(input.threadId, input.providerOptions);
     }
-    if (input.modelSelection !== undefined) {
-      threadSessionModelSelections.set(input.threadId, input.modelSelection);
-    }
+    threadSessionModelSelections.set(input.threadId, effectiveModelSelection);
     // Bootstrap prompts wrap the user message in `<latest_user_message>` tags;
     // mentioned-thread context is appended after the assembled provider input
     // instead so it never reads as part of the user's own words. The budget
@@ -2339,7 +2354,7 @@ const make = Effect.gen(function* () {
     });
     const sessionModelSwitch = (yield* providerService.getCapabilities(activeSession.provider))
       .sessionModelSwitch;
-    const requestedModelSelection = input.modelSelection ?? thread.modelSelection;
+    const requestedModelSelection = effectiveModelSelection;
     const modelForTurn =
       sessionModelSwitch === "unsupported"
         ? activeSession.model !== undefined

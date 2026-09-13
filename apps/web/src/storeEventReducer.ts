@@ -8,6 +8,7 @@ import {
   type ThreadId,
 } from "@synara/contracts";
 import { resolveThreadBranchRegressionGuard } from "@synara/shared/git";
+import { deriveTurnStartModelSelection } from "@synara/shared/model";
 import {
   addPinnedMessage,
   removePinnedMessage,
@@ -1366,10 +1367,16 @@ function applyOrchestrationEvent(
         state,
         event.payload.threadId,
         (thread) => {
-          const modelSelection =
-            event.payload.modelSelection !== undefined
-              ? normalizeModelSelection(event.payload.modelSelection, thread.modelSelection)
-              : thread.modelSelection;
+          const requestedModelSelection = deriveTurnStartModelSelection({
+            currentModelSelection: thread.modelSelection,
+            requestedModelSelection: event.payload.modelSelection,
+            canAdoptRequestedProvider:
+              thread.latestTurn === null && thread.session === null && thread.messages.length <= 1,
+          });
+          const modelSelection = normalizeModelSelection(
+            requestedModelSelection,
+            thread.modelSelection,
+          );
           // Automation-dispatched turns must not repaint the thread's persisted
           // modes (mirrors the server projection): the automation's modes govern
           // its own turn only, while the user's composer selection stays put.

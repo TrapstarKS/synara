@@ -201,8 +201,13 @@ export function normalizeLegacyModelSelection(input: {
   readonly provider: unknown;
   readonly model: string;
   readonly options: unknown;
+  readonly profileId?: unknown;
 }): Record<string, unknown> {
   const provider = inferLegacyModelProvider(input.provider, input.model);
+  const profileId =
+    provider === "codex" && typeof input.profileId === "string"
+      ? input.profileId.trim() || undefined
+      : undefined;
   const migratedGeminiSelection = input.provider === "gemini";
   const normalizedOptions = migratedGeminiSelection
     ? undefined
@@ -230,6 +235,7 @@ export function normalizeLegacyModelSelection(input: {
   return {
     provider,
     model: antigravityModel?.model ?? input.model,
+    ...(profileId === undefined ? {} : { profileId }),
     ...(options === undefined ? {} : { options }),
   };
 }
@@ -249,6 +255,7 @@ export function normalizePersistedModelSelection(input: unknown): unknown {
   return normalizeLegacyModelSelection({
     provider: input.provider ?? input.instanceId,
     model,
+    profileId: input.profileId,
     options: input.options,
   });
 }

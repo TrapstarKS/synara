@@ -19,6 +19,7 @@ import type {
 import {
   ApprovalRequestId,
   type ChatAttachment,
+  CodexProfileId,
   CommandId,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -706,6 +707,7 @@ describe("ProviderCommandReactor", () => {
       startSessionWithOutcome,
       completePriorTranscriptBootstrap,
       pendingPriorTranscriptBootstraps,
+      persistedResumeCursors,
       listSessions,
       sendTurn,
       steerTurn,
@@ -9741,6 +9743,101 @@ describe("ProviderCommandReactor", () => {
       ).toEqual([]);
     },
   );
+
+  it("resumes an established Codex thread with its persisted account when the request omits it", async () => {
+    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const now = new Date().toISOString();
+    const confirmNativeResume = vi.fn(() => true);
+    const harness = await createHarness({
+      threadModelSelection: {
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        profileId,
+        options: { reasoningEffort: "max" },
+      },
+      serverSettings: {
+        providers: {
+          codex: {
+            profiles: [{ id: profileId, name: "Trapstar" }],
+            defaultProfileId: profileId,
+          },
+        },
+      },
+      confirmNativeResume,
+    });
+
+    await seedRollbackTarget(harness, {
+      messageId: asMessageId("codex-profile-resume-seed"),
+      turnId: asTurnId("turn-1"),
+      createdAt: now,
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.makeUnsafe("cmd-codex-profile-resume-seed-completed"),
+        threadId,
+        turnId: asTurnId("turn-1"),
+        completedAt: now,
+        checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt: now,
+      }),
+    );
+    expect((await readHarnessThread(harness))?.modelSelection).toMatchObject({ profileId });
+    harness.persistedResumeCursors.set(threadId, { opaque: "trapstar-rollout" });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-codex-profile-resume-follow-up"),
+        threadId,
+        message: {
+          messageId: asMessageId("codex-profile-resume-follow-up"),
+          role: "user",
+          text: "Resume the same rollout.",
+          attachments: [],
+        },
+        modelSelection: {
+          provider: "codex",
+          model: "gpt-5.6-luna",
+          options: { reasoningEffort: "max" },
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSessionWithOutcome.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSessionWithOutcome.mock.calls[0]?.[1]).toMatchObject({
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        profileId,
+        options: { reasoningEffort: "max" },
+      },
+      providerOptions: {
+        codex: {
+          profileId,
+          homePath: expect.stringContaining(`codex-profiles/${profileId}`),
+        },
+      },
+    });
+    expect(confirmNativeResume).toHaveBeenCalledWith({ opaque: "trapstar-rollout" });
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId,
+      input: "Resume the same rollout.",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        profileId,
+      },
+    });
+  });
 
   it("preserves pending transcript context for an idle-stopped OpenCode session", async () => {
     const harness = await createHarness({

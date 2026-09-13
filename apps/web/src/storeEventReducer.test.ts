@@ -4,6 +4,7 @@
 import {
   ApprovalRequestId,
   CheckpointRef,
+  CodexProfileId,
   CommandId,
   EventId,
   MessageId,
@@ -519,6 +520,81 @@ describe("store event reducer", () => {
     ]);
 
     expect(threadsOf(next)[0]?.runtimeMode).toBe("full-access");
+  });
+
+  it("keeps the Codex account on an established thread when a turn omits it", () => {
+    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const initialState = makeState(
+      makeThread({
+        modelSelection: {
+          provider: "codex",
+          model: "gpt-5.6-luna",
+          profileId,
+          options: { reasoningEffort: "max" },
+        },
+        latestTurn: {
+          turnId: TurnId.makeUnsafe("turn-before-restart"),
+          state: "completed",
+          requestedAt: "2026-02-27T00:00:00.000Z",
+          startedAt: "2026-02-27T00:00:01.000Z",
+          completedAt: "2026-02-27T00:00:02.000Z",
+          assistantMessageId: MessageId.makeUnsafe("assistant-before-restart"),
+        },
+      }),
+    );
+
+    const next = applyOrchestrationEvents(initialState, [
+      makeDomainEvent("thread.turn-start-requested", {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        messageId: MessageId.makeUnsafe("user-after-restart"),
+        modelSelection: {
+          provider: "codex",
+          model: "gpt-5.6-luna",
+          options: { reasoningEffort: "max" },
+        },
+        runtimeMode: "full-access",
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        dispatchMode: "queue",
+        createdAt: "2026-02-27T00:01:00.000Z",
+      }),
+    ]);
+
+    expect(threadsOf(next)[0]?.modelSelection).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      profileId,
+      options: { reasoningEffort: "max" },
+    });
+  });
+
+  it("allows an unstarted Codex thread to choose the current account", () => {
+    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const initialState = makeState(
+      makeThread({
+        modelSelection: {
+          provider: "codex",
+          model: "gpt-5.6-luna",
+          profileId,
+        },
+      }),
+    );
+
+    const next = applyOrchestrationEvents(initialState, [
+      makeDomainEvent("thread.turn-start-requested", {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        messageId: MessageId.makeUnsafe("first-user-message"),
+        modelSelection: { provider: "codex", model: "gpt-5.6-luna" },
+        runtimeMode: "full-access",
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        dispatchMode: "queue",
+        createdAt: "2026-02-27T00:01:00.000Z",
+      }),
+    ]);
+
+    expect(threadsOf(next)[0]?.modelSelection).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+    });
   });
 
   it("replaces streamed assistant text when a non-streaming completion diverges from the local prefix", () => {

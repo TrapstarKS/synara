@@ -326,6 +326,49 @@ describe("composerDraftStore modelSelection", () => {
     );
   });
 
+  it("keeps the selected Codex account while model options change or clear", () => {
+    const store = useComposerDraftStore.getState();
+    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const selection = {
+      ...modelSelection("codex", "gpt-5.6-luna", { reasoningEffort: "high" }),
+      profileId,
+    } as const;
+
+    store.setModelSelection(threadId, selection);
+    store.setStickyModelSelection(selection);
+    store.setProviderModelOptions(
+      threadId,
+      "codex",
+      { reasoningEffort: "max", fastMode: true },
+      { persistSticky: true },
+    );
+
+    let state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toMatchObject({
+      profileId,
+      options: { reasoningEffort: "max", fastMode: true },
+    });
+    expect(state.stickyModelSelectionByProvider.codex).toMatchObject({ profileId });
+
+    store.setModelOptions(
+      threadId,
+      providerModelOptions({ codex: { reasoningEffort: "xhigh" } }),
+    );
+    state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toMatchObject({
+      profileId,
+      options: { reasoningEffort: "xhigh" },
+    });
+
+    store.setProviderModelOptions(threadId, "codex", undefined);
+    state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      profileId,
+    });
+  });
+
   it.each([
     { label: "omitted", options: undefined },
     { label: "disabled", options: { persistSticky: false } as const },

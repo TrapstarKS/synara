@@ -14,6 +14,23 @@ it("preserves canonical Pi model selections", () => {
   });
 });
 
+it("preserves the selected Codex profile in canonical persisted selections", () => {
+  assert.deepEqual(
+    normalizePersistedModelSelection({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      profileId: "4ae646ed-62ad-4e45-965a-d11cd459a853",
+      options: { reasoningEffort: "max" },
+    }),
+    {
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      profileId: "4ae646ed-62ad-4e45-965a-d11cd459a853",
+      options: { reasoningEffort: "max" },
+    },
+  );
+});
+
 it("migrates legacy Kilo provider values and labels to OpenCode", () => {
   assert.deepEqual(
     normalizePersistedModelSelection({

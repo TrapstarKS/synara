@@ -81,6 +81,15 @@ import {
 import { buildModelSelection } from "./providerModelOptions";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE } from "./types";
 
+function withPreservedCodexProfile(
+  selection: ModelSelection,
+  current: ModelSelection | null | undefined,
+): ModelSelection {
+  return selection.provider === "codex" && current?.provider === "codex" && current.profileId
+    ? { ...selection, profileId: current.profileId }
+    : selection;
+}
+
 function removeDraftThreadIfUnmapped(input: {
   threadId: ThreadId | undefined;
   projectDraftThreadIdByProjectId: Record<string, ThreadId>;
@@ -839,19 +848,25 @@ export const createComposerDraftStoreState =
           if (opts) {
             const model = current?.model ?? getDefaultModel(provider);
             if (!model) continue;
-            nextMap[provider] = makeModelSelection(
-              provider,
-              model,
-              opts,
-              current?.provider === "claudeAgent" ? current.supportsAutoMode : undefined,
+            nextMap[provider] = withPreservedCodexProfile(
+              makeModelSelection(
+                provider,
+                model,
+                opts,
+                current?.provider === "claudeAgent" ? current.supportsAutoMode : undefined,
+              ),
+              current,
             );
           } else if (current?.options) {
             // Remove options but keep the selection
-            nextMap[provider] = buildModelSelection(
-              provider,
-              current.model,
-              undefined,
-              current.provider === "claudeAgent" ? current.supportsAutoMode : undefined,
+            nextMap[provider] = withPreservedCodexProfile(
+              buildModelSelection(
+                provider,
+                current.model,
+                undefined,
+                current.provider === "claudeAgent" ? current.supportsAutoMode : undefined,
+              ),
+              current,
             );
           }
         }
@@ -901,22 +916,28 @@ export const createComposerDraftStoreState =
           if (!nextModel) {
             return state;
           }
-          nextMap[normalizedProvider] = makeModelSelection(
-            normalizedProvider,
-            nextModel,
-            providerOpts,
-            currentForProvider?.provider === "claudeAgent"
-              ? currentForProvider.supportsAutoMode
-              : undefined,
+          nextMap[normalizedProvider] = withPreservedCodexProfile(
+            makeModelSelection(
+              normalizedProvider,
+              nextModel,
+              providerOpts,
+              currentForProvider?.provider === "claudeAgent"
+                ? currentForProvider.supportsAutoMode
+                : undefined,
+            ),
+            currentForProvider,
           );
         } else if (currentForProvider?.options) {
-          nextMap[normalizedProvider] = buildModelSelection(
-            normalizedProvider,
-            currentForProvider.model,
-            undefined,
-            currentForProvider.provider === "claudeAgent"
-              ? currentForProvider.supportsAutoMode
-              : undefined,
+          nextMap[normalizedProvider] = withPreservedCodexProfile(
+            buildModelSelection(
+              normalizedProvider,
+              currentForProvider.model,
+              undefined,
+              currentForProvider.provider === "claudeAgent"
+                ? currentForProvider.supportsAutoMode
+                : undefined,
+            ),
+            currentForProvider,
           );
         }
 
@@ -934,19 +955,25 @@ export const createComposerDraftStoreState =
           }
           if (providerOpts) {
             nextStickyMap[normalizedProvider] = stripNonStickyModelOptions(
-              makeModelSelection(
-                normalizedProvider,
-                stickyBase.model,
-                providerOpts,
-                stickyBase.provider === "claudeAgent" ? stickyBase.supportsAutoMode : undefined,
+              withPreservedCodexProfile(
+                makeModelSelection(
+                  normalizedProvider,
+                  stickyBase.model,
+                  providerOpts,
+                  stickyBase.provider === "claudeAgent" ? stickyBase.supportsAutoMode : undefined,
+                ),
+                stickyBase,
               ),
             );
           } else if (stickyBase.options) {
-            nextStickyMap[normalizedProvider] = buildModelSelection(
-              normalizedProvider,
-              stickyBase.model,
-              undefined,
-              stickyBase.provider === "claudeAgent" ? stickyBase.supportsAutoMode : undefined,
+            nextStickyMap[normalizedProvider] = withPreservedCodexProfile(
+              buildModelSelection(
+                normalizedProvider,
+                stickyBase.model,
+                undefined,
+                stickyBase.provider === "claudeAgent" ? stickyBase.supportsAutoMode : undefined,
+              ),
+              stickyBase,
             );
           }
           nextStickyActiveProvider = base.activeProvider ?? normalizedProvider;

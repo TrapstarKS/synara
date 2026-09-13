@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   CheckpointRef,
+  CodexProfileId,
   CommandId,
   EventId,
   MessageId,
@@ -1181,7 +1182,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'thread-imported-shape',
           'project-imported-shape',
           'Imported Shape Thread',
-          '{"provider":"codex","model":"gpt-5.5","options":[{"id":"reasoningEffort","value":"medium"}]}',
+          '{"provider":"codex","model":"gpt-5.5","profileId":"4ae646ed-62ad-4e45-965a-d11cd459a853","options":[{"id":"reasoningEffort","value":"medium"}]}',
           NULL,
           NULL,
           'full-access',
@@ -1201,6 +1202,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const expectedThreadSelection = {
         provider: "codex",
         model: "gpt-5.5",
+        profileId: CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853"),
         options: { reasoningEffort: "medium" },
       } as const;
 
