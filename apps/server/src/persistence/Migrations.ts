@@ -125,6 +125,7 @@ import MindMigration from "./Migrations/106_Mind.ts";
 import MindRuntimeIntegrityMigration from "./Migrations/107_MindRuntimeIntegrity.ts";
 import MindTextRevisionsMigration from "./Migrations/108_MindTextRevisions.ts";
 import MindProfilesMigration from "./Migrations/109_MindProfiles.ts";
+import MindProjectionDecouplingMigration from "./Migrations/110_MindProjectionDecoupling.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -250,6 +251,7 @@ export const migrationEntries = [
   [107, "MindRuntimeIntegrity", MindRuntimeIntegrityMigration],
   [108, "MindTextRevisions", MindTextRevisionsMigration],
   [109, "MindProfiles", MindProfilesMigration],
+  [110, "MindProjectionDecoupling", MindProjectionDecouplingMigration],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
