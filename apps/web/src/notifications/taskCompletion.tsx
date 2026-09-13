@@ -73,6 +73,13 @@ function isWindowForeground(): boolean {
   return document.visibilityState === "visible" && document.hasFocus();
 }
 
+function isMobileRemoteShell(): boolean {
+  return (
+    typeof document !== "undefined" &&
+    document.querySelector('meta[name="synara-mobile-remote"][content="true"]') !== null
+  );
+}
+
 interface ThreadNotificationCopy {
   title: string;
   body: string;
@@ -252,7 +259,8 @@ export function TaskCompletionNotifications() {
     }
 
     const shouldAttemptSystemNotification = shouldAttemptSystemTaskNotification({
-      enabled: settings.enableSystemTaskCompletionNotifications,
+      enabled:
+        settings.enableSystemTaskCompletionNotifications && !isMobileRemoteShell(),
       isWindowForeground: isWindowForeground(),
     });
 

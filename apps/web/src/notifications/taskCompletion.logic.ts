@@ -13,6 +13,7 @@ import type { Thread, ThreadSession } from "../types";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveActiveBackgroundTasksState,
   hasLiveLatestTurn,
 } from "../session-logic";
 
@@ -506,14 +507,26 @@ function hadUnsettledTurn(thread: Thread | undefined): boolean {
   return !thread.latestTurn?.completedAt && isRunningStatus(thread.session?.status);
 }
 
+function isSubagentThread(thread: Thread): boolean {
+  return (
+    thread.parentThreadId != null ||
+    thread.subagentAgentId != null ||
+    thread.creationSource === "provider_native" ||
+    thread.id.startsWith("subagent:")
+  );
+}
+
 function isCompletionNotificationSettled(thread: Thread | undefined): boolean {
   if (!thread?.latestTurn?.startedAt || !thread.latestTurn.completedAt) {
     return false;
   }
   if (!thread.session) {
-    return true;
+    return deriveActiveBackgroundTasksState(thread.activities, thread.latestTurn.turnId) === null;
   }
-  return thread.session.orchestrationStatus !== "running";
+  if (thread.session.activeTurnId != null || thread.session.orchestrationStatus === "running") {
+    return false;
+  }
+  return deriveActiveBackgroundTasksState(thread.activities, thread.latestTurn.turnId) === null;
 }
 
 // Compare consecutive snapshots and emit fresh settled completions, even if the
@@ -526,7 +539,7 @@ export function collectCompletedThreadCandidates(
   const candidates: CompletedThreadCandidate[] = [];
 
   for (const thread of nextThreads) {
-    if (thread.parentThreadId != null) {
+    if (isSubagentThread(thread)) {
       continue;
     }
     const previousThread = previousById.get(thread.id);

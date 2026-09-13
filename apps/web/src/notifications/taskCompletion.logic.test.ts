@@ -7,6 +7,7 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationPendingInteraction,
+  type OrchestrationThreadActivity,
 } from "@synara/contracts";
 import {
   buildInputNeededCopy,
@@ -162,6 +163,108 @@ describe("collectCompletedThreadCandidates", () => {
     ];
 
     expect(collectCompletedThreadCandidates(previous, next)).toEqual([]);
+  });
+
+  it("keeps provider-native and late-identified subagents silent", () => {
+    const completion = {
+      session: {
+        provider: "codex",
+        status: "ready",
+        orchestrationStatus: "ready",
+        createdAt: "2026-04-05T10:00:00.000Z",
+        updatedAt: "2026-04-05T10:00:05.000Z",
+      },
+      latestTurn: {
+        turnId: TurnId.makeUnsafe("turn-1"),
+        state: "completed",
+        requestedAt: "2026-04-05T10:00:00.000Z",
+        startedAt: "2026-04-05T10:00:00.000Z",
+        completedAt: "2026-04-05T10:00:05.000Z",
+        assistantMessageId: null,
+        sourceProposedPlan: undefined,
+      },
+    } as const;
+
+    for (const metadata of [
+      { creationSource: "provider_native" as const },
+      { subagentAgentId: "agent-1" },
+      { id: "subagent:thread-1" as ThreadId },
+    ]) {
+      expect(
+        collectCompletedThreadCandidates(
+          [makeThread(metadata)],
+          [makeThread({ ...metadata, ...completion })],
+        ),
+      ).toEqual([]);
+    }
+  });
+
+  it("waits for background tasks and the active turn to settle", () => {
+    const startedTask: OrchestrationThreadActivity = {
+      id: EventId.makeUnsafe("task-started"),
+      tone: "info",
+      kind: "task.started",
+      summary: "Subagent task started",
+      payload: { taskId: "subagent-1", taskType: "subagent" },
+      turnId: TurnId.makeUnsafe("turn-1"),
+      createdAt: "2026-04-05T10:00:01.000Z",
+    };
+    const completedTask: OrchestrationThreadActivity = {
+      ...startedTask,
+      id: EventId.makeUnsafe("task-completed"),
+      kind: "task.completed",
+      summary: "Subagent task completed",
+      createdAt: "2026-04-05T10:00:06.000Z",
+    };
+    const completedSession = {
+      provider: "codex",
+      status: "ready",
+      orchestrationStatus: "ready",
+      createdAt: "2026-04-05T10:00:00.000Z",
+      updatedAt: "2026-04-05T10:00:05.000Z",
+    } as const;
+    const completedTurn = {
+      turnId: TurnId.makeUnsafe("turn-1"),
+      state: "completed",
+      requestedAt: "2026-04-05T10:00:00.000Z",
+      startedAt: "2026-04-05T10:00:00.000Z",
+      completedAt: "2026-04-05T10:00:05.000Z",
+      assistantMessageId: null,
+      sourceProposedPlan: undefined,
+    } as const;
+
+    expect(
+      collectCompletedThreadCandidates(
+        [makeThread({})],
+        [
+          makeThread({
+            session: { ...completedSession, activeTurnId: TurnId.makeUnsafe("turn-1") },
+            latestTurn: completedTurn,
+            activities: [startedTask],
+          }),
+        ],
+      ),
+    ).toEqual([]);
+
+    expect(
+      collectCompletedThreadCandidates(
+        [makeThread({})],
+        [makeThread({ session: completedSession, latestTurn: completedTurn, activities: [startedTask] })],
+      ),
+    ).toEqual([]);
+
+    expect(
+      collectCompletedThreadCandidates(
+        [makeThread({ activities: [startedTask] })],
+        [
+          makeThread({
+            session: completedSession,
+            latestTurn: completedTurn,
+            activities: [startedTask, completedTask],
+          }),
+        ],
+      ),
+    ).toHaveLength(1);
   });
 
   it("returns threads that moved from working to completed", () => {

@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import WebSocket from "ws";
-import { notificationCopy, preview, readNotificationThread } from "./notification-copy.mjs";
+import {
+  hasLiveBackgroundTasks,
+  notificationCopy,
+  preview,
+  readNotificationThread,
+} from "./notification-copy.mjs";
 
 // Deliberately pinned to contracts/wsCompatibility.ts and orchestration.ts.
 // This read-only client never falls back to an unnegotiated or provider socket.
@@ -168,7 +173,7 @@ export function createShellMonitor({
     clearTimeout(pending.timer);
     pendingCompletions.delete(threadId);
   };
-  const scheduleCompletion = (current, id, delivered = false) => {
+  const scheduleCompletion = (current, id, delivered = false, delayMs = completionDelayMs) => {
     const existing = pendingCompletions.get(current.id);
     if (existing?.id === id) return;
     cancelCompletion(current.id);
@@ -183,7 +188,19 @@ export function createShellMonitor({
         }
         try {
           if (!candidate.delivered) {
-            await onEvent(eventFor(latest, id, "completed"));
+            const accepted = await onEvent(eventFor(latest, id, "completed"));
+            if (accepted === false) {
+              if (!stopped && pendingCompletions.get(current.id) === candidate) {
+                pendingCompletions.delete(current.id);
+                scheduleCompletion(
+                  latest,
+                  id,
+                  candidate.delivered,
+                  Math.max(50, Math.min(completionDelayMs, 1000)),
+                );
+              }
+              return;
+            }
             candidate.delivered = true;
           }
           if (stopped || pendingCompletions.get(current.id) !== candidate) return;
@@ -201,7 +218,7 @@ export function createShellMonitor({
           }
         }
       });
-    }, completionDelayMs);
+    }, delayMs);
     candidate.timer.unref?.();
     pendingCompletions.set(current.id, candidate);
   };
@@ -362,6 +379,9 @@ export function watchSynara({
           (event.kind === "completed" && detail.latestTurn?.state !== "completed") ||
           (event.kind === "approval" && detail.hasPendingApprovals === false) ||
           (event.kind === "input" && detail.hasPendingUserInput === false))) return;
+      if (event.kind === "completed" && detail && hasLiveBackgroundTasks(detail, event.turnId)) {
+        return false;
+      }
       await onEvent({ ...event, ...notificationCopy(event, detail) });
     },
     saveCheckpoint,

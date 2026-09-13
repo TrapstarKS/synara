@@ -182,6 +182,25 @@ test("callback failure leaves checkpoint retryable; input and failed transitions
   await assert.rejects(monitor.accept(upsert({ id: "bad" })), /Unsupported/);
 });
 
+test("a deferred completion is retried instead of being marked seen", async (t) => {
+  const events = [];
+  let attempts = 0;
+  const monitor = createShellMonitor({
+    completionDelayMs: 0,
+    onEvent: async (event) => {
+      attempts++;
+      if (attempts === 1) return false;
+      events.push(event);
+    },
+  });
+  t.after(() => monitor.stop());
+  await monitor.accept(snapshot(thread()));
+  await monitor.accept(upsert(thread("completed")));
+  await wait(() => events.length === 1);
+  assert.equal(attempts, 2);
+  assert.equal(events[0].kind, "completed");
+});
+
 test("negotiated Effect socket acknowledges chunks, reconnects, recovers latest change, and stops", async (t) => {
   const server = createServer((_req, res) => {
     res.setHeader("Content-Type", "application/json");

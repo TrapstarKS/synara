@@ -24,6 +24,43 @@ const fallback = {
   approval: "O agente aguarda sua autorização para continuar. Toque para revisar a ação.",
   input: "Há uma pergunta aguardando sua resposta. Toque para responder.",
 };
+const backgroundTaskKinds = new Set(["task.started", "task.progress", "task.updated", "task.completed"]);
+const terminalTaskStatuses = new Set(["completed", "failed", "killed", "paused"]);
+
+export function hasLiveBackgroundTasks(thread, turnId) {
+  const activeTasks = new Map();
+  const activities = Array.isArray(thread?.activities) ? thread.activities : [];
+  for (const activity of activities) {
+    if (!activity || typeof activity !== "object" || !backgroundTaskKinds.has(activity.kind)) continue;
+    if (
+      turnId &&
+      activity.turnId &&
+      activity.turnId !== turnId &&
+      activity.kind !== "task.completed" &&
+      activity.kind !== "task.updated"
+    ) continue;
+    const payload = activity.payload && typeof activity.payload === "object" && !Array.isArray(activity.payload)
+      ? activity.payload
+      : null;
+    const taskId = typeof payload?.taskId === "string" && payload.taskId.length > 0
+      ? payload.taskId
+      : null;
+    if (!taskId) continue;
+    if (activity.kind === "task.completed") {
+      activeTasks.delete(taskId);
+      continue;
+    }
+    if (activity.kind === "task.updated") {
+      if (terminalTaskStatuses.has(payload?.status)) activeTasks.delete(taskId);
+      continue;
+    }
+    const previous = activeTasks.get(taskId);
+    activeTasks.set(taskId, {
+      taskType: typeof payload?.taskType === "string" ? payload.taskType : previous?.taskType,
+    });
+  }
+  return [...activeTasks.values()].some((task) => task.taskType !== "plan");
+}
 
 export function notificationCopy(event, thread) {
   const title = preview(thread?.title || event.taskTitle, 72);

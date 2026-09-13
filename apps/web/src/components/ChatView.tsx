@@ -11532,30 +11532,28 @@ export default function ChatView({
     activeContextWindowLabel: contextWindowSelectionStatus.activeLabel,
     pendingContextWindowLabel: contextWindowSelectionStatus.pendingSelectedLabel,
   };
-  // The composer's leading controls (extras "+" menu, access-rules/runtime
-  // indicator). At the narrowest footer tier they relocate from the footer to
-  // the branch-toolbar row below the input instead of getting clipped; the
-  // relocated variant is icon-only since relocation means space is minimal.
+  // Attachments stay in the footer at every tier so the mobile composer never
+  // loses its upload affordance. Only the non-essential runtime indicator is
+  // relocated below the input when the footer is genuinely too narrow.
   const relocateComposerLeadingControls = composerFooterControlsPlan.relocateLeadingControls;
-  const renderComposerLeadingControls = (options: { iconOnly: boolean }) => (
-    <>
-      <ComposerExtrasMenu
-        interactionMode={interactionMode}
-        supportsFastMode={composerTraitSelection.caps.supportsFastMode}
-        fastModeEnabled={composerTraitSelection.fastModeEnabled}
-        onAddAttachments={addComposerAttachments}
-        onToggleFastMode={toggleFastMode}
-        onInteractionModeChange={handleInteractionModeChange}
-      />
-      {!isVoiceRecording && !isVoiceTranscribing ? (
-        <RuntimeUsageControls
-          {...runtimeUsageControlsProps}
-          className="shrink-0"
-          hideLabel={options.iconOnly}
-        />
-      ) : null}
-    </>
+  const renderComposerExtrasControl = () => (
+    <ComposerExtrasMenu
+      interactionMode={interactionMode}
+      supportsFastMode={composerTraitSelection.caps.supportsFastMode}
+      fastModeEnabled={composerTraitSelection.fastModeEnabled}
+      onAddAttachments={addComposerAttachments}
+      onToggleFastMode={toggleFastMode}
+      onInteractionModeChange={handleInteractionModeChange}
+    />
   );
+  const renderComposerRuntimeUsageControl = (options: { iconOnly: boolean }) =>
+    !isVoiceRecording && !isVoiceTranscribing ? (
+      <RuntimeUsageControls
+        {...runtimeUsageControlsProps}
+        className="shrink-0"
+        hideLabel={options.iconOnly}
+      />
+    ) : null;
   const branchToolbarProps = {
     threadId: activeThread.id,
     onEnvModeChange,
@@ -11707,7 +11705,7 @@ export default function ChatView({
     activeThread.id,
   ).map((definition) => ({ definition }));
   const activeCodexProfileId =
-    !hasThreadStarted && selectedProvider === "codex"
+    selectedProvider === "codex"
       ? selectedCodexProfileId
       : activeThread.modelSelection.provider === "codex"
         ? activeThread.modelSelection.profileId
@@ -12147,9 +12145,10 @@ export default function ChatView({
                             : "min-w-0 flex-1 gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:min-w-max sm:overflow-visible",
                       )}
                     >
-                      {relocateComposerLeadingControls
-                        ? null
-                        : renderComposerLeadingControls({ iconOnly: false })}
+                      {renderComposerExtrasControl()}
+                      {!relocateComposerLeadingControls
+                        ? renderComposerRuntimeUsageControl({ iconOnly: false })
+                        : null}
 
                       {!isVoiceRecording && !isVoiceTranscribing ? (
                         <>
@@ -12688,7 +12687,7 @@ export default function ChatView({
                     <div className={COMPOSER_COLUMN_FRAME_CLASS_NAME}>
                       <div className="flex w-full items-center gap-1">
                         <div className="flex shrink-0 items-center gap-1 pl-1">
-                          {renderComposerLeadingControls({ iconOnly: true })}
+                          {renderComposerRuntimeUsageControl({ iconOnly: true })}
                         </div>
                       </div>
                     </div>
@@ -12819,7 +12818,7 @@ export default function ChatView({
                         <div className="flex w-full items-center gap-1">
                           {relocateComposerLeadingControls ? (
                             <div className="flex shrink-0 items-center gap-1 pl-1">
-                              {renderComposerLeadingControls({ iconOnly: true })}
+                              {renderComposerRuntimeUsageControl({ iconOnly: true })}
                             </div>
                           ) : null}
                           {isGitRepo && !environmentEnabled ? (

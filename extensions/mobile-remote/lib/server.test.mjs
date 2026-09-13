@@ -189,7 +189,9 @@ test(
     }
     const proxied = await fetch(base + "/", { headers: { Cookie: cookie } });
     assert.equal(proxied.status, 200);
-    assert.match(await proxied.text(), /mobile\/manifest.webmanifest/);
+    const proxiedHtml = await proxied.text();
+    assert.match(proxiedHtml, /mobile\/manifest.webmanifest/);
+    assert.match(proxiedHtml, /name="synara-mobile-remote" content="true"/);
     const proxiedRequest = await (
       await fetch(base + "/headers?token=untrusted&client=mobile", {
         headers: { Cookie: cookie + "; synara-session=target", Origin: origin },

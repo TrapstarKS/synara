@@ -2,7 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WebSocketServer } from "ws";
 import { once } from "node:events";
-import { notificationCopy, preview, readNotificationThread } from "./notification-copy.mjs";
+import {
+  hasLiveBackgroundTasks,
+  notificationCopy,
+  preview,
+  readNotificationThread,
+} from "./notification-copy.mjs";
 
 const event = (kind) => ({ kind, threadId: "task", turnId: "turn", taskTitle: "Corrigir login" });
 
@@ -42,6 +47,22 @@ test("completion previews use only the final assistant message from the matching
     { id: "final", role: "assistant", turnId: "turn", text: "Final answer" },
     { id: "late", role: "assistant", turnId: "turn", text: "Later transcript bookkeeping" },
   ] }).body, "Final answer");
+});
+
+test("background task detection ignores plans and completed tasks", () => {
+  const activities = [
+    { kind: "task.started", turnId: "turn", payload: { taskId: "plan", taskType: "plan" } },
+    { kind: "task.started", turnId: "turn", payload: { taskId: "child", taskType: "subagent" } },
+    { kind: "task.completed", turnId: "turn", payload: { taskId: "child" } },
+  ];
+  assert.equal(hasLiveBackgroundTasks({ activities }, "turn"), false);
+  assert.equal(
+    hasLiveBackgroundTasks(
+      { activities: [...activities.slice(0, 2), { kind: "task.started", turnId: "turn", payload: { taskId: "worker" } }] },
+      "turn",
+    ),
+    true,
+  );
 });
 
 test("detail reads are bounded, read-only and fall back when unavailable", async (t) => {

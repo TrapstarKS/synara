@@ -218,7 +218,7 @@ async function proxy(req, res) {
           .toString()
           .replace(
             "</head>",
-            '<link rel="manifest" href="/mobile/manifest.webmanifest"><link rel="apple-touch-icon" href="/mobile/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes"><script defer src="/mobile/theme.js"></script><script defer src="/mobile/install.js"></script></head>',
+            '<link rel="manifest" href="/mobile/manifest.webmanifest"><link rel="apple-touch-icon" href="/mobile/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="synara-mobile-remote" content="true"><script defer src="/mobile/theme.js"></script><script defer src="/mobile/install.js"></script></head>',
           );
         delete headers["content-length"];
         delete headers["content-encoding"];
