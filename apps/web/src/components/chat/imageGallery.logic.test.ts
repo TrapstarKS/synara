@@ -14,7 +14,7 @@ describe("image gallery", () => {
     ]);
   });
 
-  it("collects sent attachments and generated images once in message order", () => {
+  it("collects sent attachments and generated images once with newest images first", () => {
     const images = collectChatGalleryImages([
       {
         id: "user-1" as never,
@@ -41,8 +41,8 @@ describe("image gallery", () => {
     ]);
 
     expect(images).toMatchObject([
-      { src: "/api/attachments/upload-1", name: "reference.png", origin: "You" },
       { src: "/tmp/result.png", name: "Generated image", origin: "Agent" },
+      { src: "/api/attachments/upload-1", name: "reference.png", origin: "You" },
     ]);
   });
 

@@ -1,5 +1,5 @@
 // FILE: imageGallery.logic.ts
-// Purpose: Collect every image shared in a chat into one chronological, deduplicated gallery.
+// Purpose: Collect every image shared in a chat into one recency-ordered, deduplicated gallery.
 // Layer: Pure chat UI logic
 
 import type { ChatMessage } from "~/types";
@@ -73,7 +73,7 @@ export function collectChatGalleryImages(
     }
   }
 
-  return images;
+  return images.toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 export function resolveChatGalleryPreviewUrl(src: string, cwd: string | null): string {

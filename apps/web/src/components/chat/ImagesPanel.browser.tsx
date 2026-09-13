@@ -52,7 +52,7 @@ it("shows sent and generated images and expands the selected item", async () => 
     await expect
       .element(page.getByRole("dialog", { name: "Expanded image preview" }))
       .toBeVisible();
-    await expect.element(page.getByText("Generated result (2/2)")).toBeVisible();
+    await expect.element(page.getByText("Generated result (1/2)")).toBeVisible();
   } finally {
     await screen.unmount();
   }
