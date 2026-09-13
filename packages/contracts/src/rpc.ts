@@ -271,6 +271,8 @@ import {
   MindProfileGetInput,
   MindProfileGetResult,
   MindProfileSetInput,
+  MindSearchInput,
+  MindSearchResult,
   MindSetPinnedInput,
   MindUpdateInput,
 } from "./mind";
@@ -1400,6 +1402,12 @@ export const WsMindListRpc = Rpc.make(WS_METHODS.mindList, {
   error: WsRpcError,
 });
 
+export const WsMindSearchRpc = Rpc.make(WS_METHODS.mindSearch, {
+  payload: MindSearchInput,
+  success: MindSearchResult,
+  error: WsRpcError,
+});
+
 export const WsMindForgetRpc = Rpc.make(WS_METHODS.mindForget, {
   payload: MindForgetInput,
   success: Schema.Void,
@@ -1588,6 +1596,7 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsAutomationResolveProposalRpc,
   WsSubscribeAutomationEventsRpc,
   WsMindListRpc,
+  WsMindSearchRpc,
   WsMindForgetRpc,
   WsMindSetPinnedRpc,
   WsMindAffirmRpc,
