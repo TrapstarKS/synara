@@ -355,6 +355,27 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGenerationServiceLive", (
     }),
   );
 
+  it.effect("times out stalled OpenCode text generation requests", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.promptWaits.push(new Promise<void>(() => {}));
+      const textGeneration = yield* OpenCodeTextGeneration;
+      const request = yield* textGeneration
+        .generateThreadTitle({
+          cwd: process.cwd(),
+          message: "name this thread",
+          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        })
+        .pipe(Effect.flip, Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.millis(30_000));
+
+      const error = yield* Fiber.join(request);
+      expect(error.message).toContain("OpenCode request timed out after 30000ms.");
+      expect(error.message).toContain("model=openai/gpt-5");
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("parses JSON returned inside plain text output", () =>
     Effect.gen(function* () {
       runtimeMock.state.promptResult = {

@@ -5041,6 +5041,87 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
     ]);
   });
 
+  it("fails a turn when OpenCode stays busy without provider activity", async () => {
+    const runtime = createMockOpenCodeRuntime({
+      promptAsync: async () => ({ data: null }),
+      status: async () => ({
+        data: {
+          "opencode-session-1": { type: "busy" },
+        },
+      }),
+    });
+    const threadId = asThreadId("thread-opencode-no-provider-activity");
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 5)).pipe(
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: "opencode",
+          threadId,
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "hello",
+          attachments: [],
+          modelSelection: {
+            provider: "opencode",
+            model: "opencode/claude-opus-4-7",
+          },
+        });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        const [session] = yield* adapter.listSessions();
+        return { events, session };
+      }).pipe(
+        Effect.provide(
+          makeOpenCodeAdapterLive({
+            runtime: runtime.runtime,
+            promptSubmissionInlineWaitMs: 1,
+            snapshotWatchdogPollMs: 5,
+            turnNoActivityTimeoutMs: 30,
+          }).pipe(
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-test-" }),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+
+    expect(result.events.map((event) => event.type)).toEqual([
+      "session.started",
+      "thread.started",
+      "turn.started",
+      "turn.completed",
+      "runtime.error",
+    ]);
+    expect(result.events[3]).toMatchObject({
+      type: "turn.completed",
+      payload: {
+        state: "failed",
+        errorMessage: expect.stringContaining("stopped responding"),
+      },
+    });
+    expect(result.events[4]).toMatchObject({
+      type: "runtime.error",
+      payload: {
+        class: "provider_error",
+        message: expect.stringContaining("choose another model"),
+      },
+    });
+    expect(result.session).toMatchObject({
+      status: "error",
+      lastError: expect.stringContaining("stopped responding"),
+    });
+    expect(runtime.abortCalls).toContainEqual({ sessionID: "opencode-session-1" });
+  });
+
   it("keeps immediate OpenCode prompt failures on the sendTurn failure path", async () => {
     const runtime = createMockOpenCodeRuntime({
       promptAsync: async () => {

@@ -53,6 +53,7 @@ import {
 } from "../textGenerationShared.ts";
 
 const OPENCODE_TEXT_GENERATION_IDLE_TTL = "30 seconds";
+const OPENCODE_TEXT_GENERATION_REQUEST_TIMEOUT_MS = 30_000;
 
 function getOpenCodePromptErrorMessage(error: unknown): string | null {
   if (!error || typeof error !== "object") {
@@ -377,7 +378,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
 
       const runAgainstServer = (server: Pick<OpenCodeServerConnection, "url">) =>
         Effect.tryPromise({
-          try: async () => {
+          try: async (signal) => {
             const client = openCodeRuntime.createOpenCodeSdkClient({
               baseUrl: server.url,
               directory: input.cwd,
@@ -396,6 +397,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
             };
             const session = await client.session.create(
               sessionCreateInput as unknown as Parameters<typeof client.session.create>[0],
+              { signal },
             );
             if (!session.data) {
               throw new Error("OpenCode session.create returned no session payload.");
@@ -407,7 +409,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
               ...(agent ? { agent } : {}),
               ...(variant ? { variant } : {}),
               parts: [{ type: "text", text: promptText }, ...fileParts],
-            });
+            }, { signal });
             const info = result.data?.info;
             const errorMessage = getOpenCodePromptErrorMessage(info?.error);
             if (errorMessage) {
@@ -433,7 +435,26 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
                 .join(" "),
               cause,
             }),
-        });
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: `${OPENCODE_TEXT_GENERATION_REQUEST_TIMEOUT_MS} millis`,
+            onTimeout: () =>
+              Effect.fail(
+                new TextGenerationError({
+                  operation: input.operation,
+                  detail: [
+                    `OpenCode request timed out after ${OPENCODE_TEXT_GENERATION_REQUEST_TIMEOUT_MS}ms.`,
+                    `model=${providerId}/${modelId}`,
+                    variant ? `variant=${variant}` : null,
+                    agent ? `agent=${agent}` : null,
+                    serverUrl.length > 0 ? "server=external" : "server=managed",
+                  ]
+                    .filter(Boolean)
+                    .join(" "),
+                }),
+              ),
+          }),
+        );
 
       yield* Effect.logDebug("OpenCode text generation request", {
         operation: input.operation,

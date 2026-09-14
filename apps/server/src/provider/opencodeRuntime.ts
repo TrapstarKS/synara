@@ -52,6 +52,7 @@ import {
 import { isWindowsShellCommandMissingResult } from "../shell-command-detection.ts";
 
 const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 20_000;
+export const OPENCODE_SDK_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
 export const OPENCODE_LOCAL_SERVER_IDLE_TTL_MS = 5 * 60_000;
 const OPENCODE_STARTUP_OUTPUT_MAX_CHARS = 4_000;
@@ -128,13 +129,36 @@ export function openCodeRuntimeErrorDetail(cause: unknown): string {
 
 export const runOpenCodeSdk = <A>(
   operation: string,
-  fn: () => Promise<A>,
+  fn: (signal: AbortSignal) => Promise<A>,
 ): Effect.Effect<A, OpenCodeRuntimeError> =>
   Effect.tryPromise({
     try: fn,
     catch: (cause) =>
       new OpenCodeRuntimeError({ operation, detail: openCodeRuntimeErrorDetail(cause), cause }),
   }).pipe(Effect.withSpan(`opencode.${operation}`));
+
+/**
+ * Bounds finite SDK requests while preserving the abort signal provided by
+ * Effect.tryPromise. The event SSE subscription deliberately does not use
+ * this helper because it is expected to stay open for the session lifetime.
+ */
+export const runOpenCodeSdkWithTimeout = <A>(
+  operation: string,
+  fn: (signal: AbortSignal) => Promise<A>,
+  timeoutMs = OPENCODE_SDK_REQUEST_TIMEOUT_MS,
+): Effect.Effect<A, OpenCodeRuntimeError> =>
+  runOpenCodeSdk(operation, fn).pipe(
+    Effect.timeoutOrElse({
+      duration: `${timeoutMs} millis`,
+      onTimeout: () =>
+        Effect.fail(
+          new OpenCodeRuntimeError({
+            operation,
+            detail: `OpenCode ${operation} timed out after ${timeoutMs}ms.`,
+          }),
+        ),
+    }),
+  );
 
 export interface OpenCodeCommandResult {
   readonly stdout: string;
@@ -1284,7 +1308,9 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
       });
 
     const loadProviders = (client: OpencodeClient) =>
-      runOpenCodeSdk("provider.list", () => client.provider.list()).pipe(
+      runOpenCodeSdkWithTimeout("provider.list", (signal) =>
+        client.provider.list(undefined, { signal }),
+      ).pipe(
         Effect.filterMapOrFail(
           (list) =>
             list.data
@@ -1300,7 +1326,7 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
       );
 
     const loadAgents = (client: OpencodeClient) =>
-      runOpenCodeSdk("app.agents", () => client.app.agents()).pipe(
+      runOpenCodeSdkWithTimeout("app.agents", (signal) => client.app.agents(undefined, { signal })).pipe(
         Effect.map((result) => result.data ?? []),
       );
 
@@ -1316,7 +1342,9 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
       );
 
     const loadConsoleState = (client: OpencodeClient) =>
-      runOpenCodeSdk("experimental.console.get", () => client.experimental.console.get()).pipe(
+      runOpenCodeSdkWithTimeout("experimental.console.get", (signal) =>
+        client.experimental.console.get(undefined, { signal }),
+      ).pipe(
         Effect.map((result) => result.data ?? null),
         // Console metadata is optional and should not block model discovery.
         Effect.catch(() => Effect.succeed(null)),
@@ -1334,7 +1362,7 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
       );
 
     const loadOpenCodePaths = (client: OpencodeClient) =>
-      runOpenCodeSdk("path.get", () => client.path.get()).pipe(
+      runOpenCodeSdkWithTimeout("path.get", (signal) => client.path.get(undefined, { signal })).pipe(
         Effect.filterMapOrFail(
           (response) =>
             response.data
