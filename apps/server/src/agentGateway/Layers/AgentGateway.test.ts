@@ -2427,6 +2427,9 @@ describe("AgentGateway", () => {
       const create = harness.dispatched.find((command) => command.type === "thread.create");
       assert.exists(create);
       if (create?.type === "thread.create") {
+        if (create.modelSelection.provider !== "codex") {
+          throw new Error("Expected the child thread to use Codex.");
+        }
         assert.equal(create.modelSelection.profileId, profileId);
       }
     }).pipe(Effect.provide(gatewayLayer));
