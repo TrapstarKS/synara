@@ -138,6 +138,13 @@ import {
 } from "./orchestration";
 import { ProviderCompactThreadInput } from "./provider";
 import {
+  ProviderAddMcpServerInput,
+  ProviderListMcpServersInput,
+  ProviderListMcpServersResult,
+  ProviderMcpServerActionInput,
+  ProviderMcpServerActionResult,
+} from "./mcp";
+import {
   ProviderGetComposerCapabilitiesInput,
   ProviderComposerCapabilities,
   ProviderListAgentsInput,
@@ -1216,6 +1223,36 @@ export const WsProviderListAgentsRpc = Rpc.make(WS_METHODS.providerListAgents, {
   error: WsRpcError,
 });
 
+export const WsProviderListMcpServersRpc = Rpc.make(WS_METHODS.providerListMcpServers, {
+  payload: ProviderListMcpServersInput,
+  success: ProviderListMcpServersResult,
+  error: WsRpcError,
+});
+
+export const WsProviderReloadMcpServersRpc = Rpc.make(WS_METHODS.providerReloadMcpServers, {
+  payload: ProviderListMcpServersInput,
+  success: ProviderMcpServerActionResult,
+  error: WsRpcError,
+});
+
+export const WsProviderConnectMcpServerRpc = Rpc.make(WS_METHODS.providerConnectMcpServer, {
+  payload: ProviderMcpServerActionInput,
+  success: ProviderMcpServerActionResult,
+  error: WsRpcError,
+});
+
+export const WsProviderDisconnectMcpServerRpc = Rpc.make(WS_METHODS.providerDisconnectMcpServer, {
+  payload: ProviderMcpServerActionInput,
+  success: ProviderMcpServerActionResult,
+  error: WsRpcError,
+});
+
+export const WsProviderAddMcpServerRpc = Rpc.make(WS_METHODS.providerAddMcpServer, {
+  payload: ProviderAddMcpServerInput,
+  success: ProviderMcpServerActionResult,
+  error: WsRpcError,
+});
+
 export const WsAutomationListRpc = Rpc.make(WS_METHODS.automationList, {
   payload: AutomationListInput,
   success: AutomationListResult,
@@ -1404,6 +1441,11 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsProviderReadPluginRpc,
   WsProviderListModelsRpc,
   WsProviderListAgentsRpc,
+  WsProviderListMcpServersRpc,
+  WsProviderReloadMcpServersRpc,
+  WsProviderConnectMcpServerRpc,
+  WsProviderDisconnectMcpServerRpc,
+  WsProviderAddMcpServerRpc,
   WsAutomationListRpc,
   WsAutomationGetMemoryRpc,
   WsAutomationCreateRpc,

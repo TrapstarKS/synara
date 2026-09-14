@@ -24,6 +24,10 @@ const CONTROL_METHODS = new Set<string>([
   WS_METHODS.serverCancelCodexAccountLogin,
   WS_METHODS.serverLogoutCodexAccount,
   WS_METHODS.serverSetCodexAccountBridge,
+  WS_METHODS.providerReloadMcpServers,
+  WS_METHODS.providerConnectMcpServer,
+  WS_METHODS.providerDisconnectMcpServer,
+  WS_METHODS.providerAddMcpServer,
   WS_METHODS.automationCancelRun,
   WS_METHODS.automationMarkRunRead,
   WS_METHODS.automationArchiveRun,
@@ -67,6 +71,7 @@ const EXPENSIVE_READ_METHODS = new Set<string>([
   WS_METHODS.providerReadPlugin,
   WS_METHODS.providerListModels,
   WS_METHODS.providerListAgents,
+  WS_METHODS.providerListMcpServers,
 ]);
 
 export function classifyWsRequest(method: string): WsRequestClass {

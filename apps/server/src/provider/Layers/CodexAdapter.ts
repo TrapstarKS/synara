@@ -12,12 +12,17 @@ import {
   type CanonicalRequestType,
   type ModelSelection,
   type ProviderComposerCapabilities,
+  type ProviderAddMcpServerInput,
+  type ProviderListMcpServersInput,
+  type ProviderListMcpServersResult,
   type ProviderEvent,
   type ProviderListModelsResult,
   type ProviderListPluginsResult,
   type ProviderReadPluginResult,
   type ProviderSendTurnInput,
   type ProviderListSkillsResult,
+  type ProviderMcpServerActionInput,
+  type ProviderMcpServerActionResult,
   type ProviderRuntimeEvent,
   type ServerVoiceTranscriptionResult,
   type ThreadTokenUsageSnapshot,
@@ -2338,6 +2343,66 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }),
       }).pipe(Effect.map((result) => result satisfies ProviderListModelsResult));
 
+    const listMcpServers: NonNullable<CodexAdapterShape["listMcpServers"]> = (input) =>
+      Effect.tryPromise({
+        try: () => manager.listMcpServers(input.threadId),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "mcpServerStatus/list",
+            detail: toMessage(cause, "mcpServerStatus/list failed"),
+            cause,
+          }),
+      }).pipe(Effect.map((result) => result satisfies ProviderListMcpServersResult));
+
+    const reloadMcpServers: NonNullable<CodexAdapterShape["reloadMcpServers"]> = (input) =>
+      Effect.tryPromise({
+        try: () => manager.reloadMcpServers(input.threadId),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "config/mcpServer/reload",
+            detail: toMessage(cause, "config/mcpServer/reload failed"),
+            cause,
+          }),
+      }).pipe(Effect.map((result) => result satisfies ProviderMcpServerActionResult));
+
+    const connectMcpServer: NonNullable<CodexAdapterShape["connectMcpServer"]> = (input) =>
+      Effect.tryPromise({
+        try: () => manager.connectMcpServer(input.threadId, input.name),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "config/value/write",
+            detail: toMessage(cause, "Failed to connect MCP server"),
+            cause,
+          }),
+      }).pipe(Effect.map((result) => result satisfies ProviderMcpServerActionResult));
+
+    const disconnectMcpServer: NonNullable<CodexAdapterShape["disconnectMcpServer"]> = (input) =>
+      Effect.tryPromise({
+        try: () => manager.disconnectMcpServer(input.threadId, input.name),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "config/value/write",
+            detail: toMessage(cause, "Failed to disconnect MCP server"),
+            cause,
+          }),
+      }).pipe(Effect.map((result) => result satisfies ProviderMcpServerActionResult));
+
+    const addMcpServer: NonNullable<CodexAdapterShape["addMcpServer"]> = (input) =>
+      Effect.tryPromise({
+        try: () => manager.addMcpServer(input),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "config/value/write",
+            detail: toMessage(cause, "Failed to add MCP server"),
+            cause,
+          }),
+      }).pipe(Effect.map((result) => result satisfies ProviderMcpServerActionResult));
+
     const transcribeVoice: NonNullable<CodexAdapterShape["transcribeVoice"]> = (input) =>
       Effect.tryPromise({
         try: () => manager.transcribeVoice(input),
@@ -2498,6 +2563,11 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       listPlugins,
       readPlugin,
       listModels,
+      listMcpServers,
+      reloadMcpServers,
+      connectMcpServer,
+      disconnectMcpServer,
+      addMcpServer,
       prewarmVoice,
       transcribeVoice,
       streamEvents: Stream.fromQueue(runtimeEventQueue),

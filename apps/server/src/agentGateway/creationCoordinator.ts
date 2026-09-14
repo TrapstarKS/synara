@@ -50,6 +50,7 @@ import {
 } from "./targetResolver.ts";
 import { ToolInputError, errorText } from "./toolInput.ts";
 import { GatewayToolError, gatewayToolErrorResult } from "./toolRuntime.ts";
+import { inheritCodexProfile } from "./profileInheritance.ts";
 
 const CREATION_REPLAY_WAIT_MS = 60_000;
 
@@ -490,7 +491,10 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
           );
           const providerAvailability = providerAvailabilities.get(spec.target.provider);
           const target = yield* resolveAgentGatewayTarget({
-            target: spec.target,
+            target: inheritCodexProfile({
+              target: spec.target,
+              ...(caller ? { parentModelSelection: caller.modelSelection } : {}),
+            }),
             discovery: providerDiscovery,
             ...(providerAvailability !== undefined ? { availability: providerAvailability } : {}),
             cwd: project.workspaceRoot,

@@ -532,6 +532,7 @@ import { ComposerVoiceButton } from "./chat/ComposerVoiceButton";
 import { ComposerVoiceRecorderBar } from "./chat/ComposerVoiceRecorderBar";
 import { ComposerReferenceAttachments } from "./chat/ComposerReferenceAttachments";
 import { ComposerSlashStatusDialog } from "./chat/ComposerSlashStatusDialog";
+import { McpServersDialog } from "./chat/McpServersDialog";
 import { ExpandedImageOverlay } from "./chat/ExpandedImageOverlay";
 import { TranscriptSelectionActionLayer } from "./chat/TranscriptSelectionActionLayer";
 import { useChatTerminalController } from "./chat/useChatTerminalController";
@@ -10743,6 +10744,8 @@ export default function ChatView({
     handleForkFromMessage,
     handleForkTargetSelection,
     handleReviewTargetSelection,
+    isMcpDialogOpen,
+    setIsMcpDialogOpen,
     isSlashStatusDialogOpen,
     setIsSlashStatusDialogOpen,
     handleStandaloneSlashCommand,
@@ -12935,6 +12938,12 @@ export default function ChatView({
         rateLimitStatus={activeRateLimitStatus}
         activeContextWindowLabel={contextWindowSelectionStatus.activeLabel}
         pendingContextWindowLabel={contextWindowSelectionStatus.pendingSelectedLabel}
+      />
+      <McpServersDialog
+        open={isMcpDialogOpen}
+        onOpenChange={setIsMcpDialogOpen}
+        provider={selectedProvider}
+        threadId={threadId}
       />
       <ThreadWorktreeHandoffDialog
         open={worktreeHandoffDialogOpen}

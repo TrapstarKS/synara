@@ -559,6 +559,11 @@ describe("ProviderCommandReactor", () => {
         }),
       rollbackConversation,
       compactThread: () => unsupported(),
+      listMcpServers: () => unsupported(),
+      reloadMcpServers: () => unsupported(),
+      connectMcpServer: () => unsupported(),
+      disconnectMcpServer: () => unsupported(),
+      addMcpServer: () => unsupported(),
       closeRuntimeEvents: Effect.void,
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     };

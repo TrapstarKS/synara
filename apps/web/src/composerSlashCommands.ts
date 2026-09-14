@@ -108,6 +108,7 @@ function shouldKeepBuiltInSlashCommandDespiteNativeCollision(
     command === "btw" ||
     command === "goal" ||
     command === "rename" ||
+    (provider === "codex" && command === "mcp") ||
     (providerUsesAppOwnedReviewSlashCommand(provider) && command === "review")
   );
 }
@@ -129,6 +130,7 @@ export function shouldHideProviderNativeCommandFromComposerMenu(
     (normalizedCommand === "btw" && appCommandIsAvailable) ||
     (normalizedCommand === "goal" && appCommandIsAvailable) ||
     (normalizedCommand === "rename" && appCommandIsAvailable) ||
+    (provider === "codex" && normalizedCommand === "mcp" && appCommandIsAvailable) ||
     (providerUsesAppOwnedReviewSlashCommand(provider) && normalizedCommand === "review")
   );
 }
@@ -226,6 +228,12 @@ const COMPOSER_SLASH_COMMAND_DEFINITIONS: Record<
     command: "status",
     label: "/status",
     description: "Show context usage and rate-limit status",
+    source: "app",
+  },
+  mcp: {
+    command: "mcp",
+    label: "/mcp",
+    description: "List and manage MCP servers for this Codex session",
     source: "app",
   },
   subagents: {
@@ -482,6 +490,7 @@ export function getAvailableComposerSlashCommands(input: {
           ...(input.canOfferSideCommand ? (["side"] as const) : []),
           ...(input.canOfferSideCommand ? (["btw"] as const) : []),
           "status",
+          ...(input.provider === "codex" ? (["mcp"] as const) : []),
           "subagents",
           ...(input.canOfferExportCommand ? (["export"] as const) : []),
           "goal",

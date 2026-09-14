@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type {
   OrchestrationEvent,
+  ModelSelection,
   OrchestrationReadModel,
   ProviderKind,
   ProviderRuntimeEvent,
@@ -12,6 +13,7 @@ import type {
 import {
   ApprovalRequestId,
   CommandId,
+  CodexProfileId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
   MessageId,
@@ -98,6 +100,11 @@ function createProviderServiceHarness() {
       }),
     rollbackConversation: () => unsupported(),
     compactThread: () => unsupported(),
+    listMcpServers: () => unsupported(),
+    reloadMcpServers: () => unsupported(),
+    connectMcpServer: () => unsupported(),
+    disconnectMcpServer: () => unsupported(),
+    addMcpServer: () => unsupported(),
     closeRuntimeEvents: Effect.void,
     streamEvents: Stream.fromPubSub(runtimeEventPubSub),
   };
@@ -252,7 +259,10 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness(options?: { readonly startIngestion?: boolean }) {
+  async function createHarness(options?: {
+    readonly startIngestion?: boolean;
+    readonly parentModelSelection?: ModelSelection;
+  }) {
     const workspaceRoot = makeTempDir("synara-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -314,7 +324,7 @@ describe("ProviderRuntimeIngestion", () => {
         threadId: ThreadId.makeUnsafe("thread-1"),
         projectId: asProjectId("project-1"),
         title: "Thread",
-        modelSelection: {
+        modelSelection: options?.parentModelSelection ?? {
           provider: "codex",
           model: "gpt-5-codex",
         },
@@ -6865,7 +6875,10 @@ describe("ProviderRuntimeIngestion", () => {
   });
 
   it("persists native child display names and renames without renaming the parent", async () => {
-    const harness = await createHarness();
+    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const harness = await createHarness({
+      parentModelSelection: { provider: "codex", model: "gpt-5-codex", profileId },
+    });
     const childId = asThreadId("subagent:thread-1:child-named");
     const parentBefore = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
       (t) => t.id === "thread-1",
@@ -6908,6 +6921,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(updatedChild.modelSelection).toEqual({
       provider: "codex",
       model: "gpt-5.6-luna",
+      profileId,
       options: { reasoningEffort: "max" },
     });
     const parentAfter = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(

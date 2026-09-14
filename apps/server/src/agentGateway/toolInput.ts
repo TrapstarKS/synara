@@ -30,6 +30,12 @@ export const MODEL_SELECTION_INPUT_SCHEMA = {
       type: "string",
       description: "Exact model slug from synara_capabilities providers[].models[].slug.",
     },
+    profileId: {
+      type: "string",
+      format: "uuid",
+      description:
+        "Codex profile id from synara_capabilities.codexProfiles. Omit to inherit the caller thread's profile.",
+    },
     options: {
       type: "object",
       description: AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION,

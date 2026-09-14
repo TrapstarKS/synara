@@ -18,8 +18,13 @@ import type {
   ProviderListAgentsResult,
   ProviderListCommandsInput,
   ProviderListCommandsResult,
+  ProviderListMcpServersInput,
+  ProviderListMcpServersResult,
   ProviderListModelsInput,
   ProviderListModelsResult,
+  ProviderMcpServerActionInput,
+  ProviderMcpServerActionResult,
+  ProviderAddMcpServerInput,
   ProviderListPluginsInput,
   ProviderListPluginsResult,
   ProviderReadPluginInput,
@@ -295,6 +300,31 @@ export interface ProviderAdapterShape<TError> {
   readonly listModels?: (
     input: ProviderListModelsInput,
   ) => Effect.Effect<ProviderListModelsResult, TError>;
+
+  /** List provider-native MCP servers and their live runtime status. */
+  readonly listMcpServers?: (
+    input: ProviderListMcpServersInput,
+  ) => Effect.Effect<ProviderListMcpServersResult, TError>;
+
+  /** Reload all MCP server runtimes for a provider session. */
+  readonly reloadMcpServers?: (
+    input: ProviderListMcpServersInput,
+  ) => Effect.Effect<ProviderMcpServerActionResult, TError>;
+
+  /** Enable a configured MCP server and reload the provider runtime. */
+  readonly connectMcpServer?: (
+    input: ProviderMcpServerActionInput,
+  ) => Effect.Effect<ProviderMcpServerActionResult, TError>;
+
+  /** Disable a configured MCP server and reload the provider runtime. */
+  readonly disconnectMcpServer?: (
+    input: ProviderMcpServerActionInput,
+  ) => Effect.Effect<ProviderMcpServerActionResult, TError>;
+
+  /** Add or update a configured MCP server and reload the provider runtime. */
+  readonly addMcpServer?: (
+    input: ProviderAddMcpServerInput,
+  ) => Effect.Effect<ProviderMcpServerActionResult, TError>;
 
   /**
    * List agents/subagents directly from the provider runtime when supported.

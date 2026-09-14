@@ -757,6 +757,15 @@ export function createWsNativeApi(): NativeApi {
       readPlugin: (input) => transport.request(WS_METHODS.providerReadPlugin, input),
       listModels: (input) => transport.request(WS_METHODS.providerListModels, input),
       listAgents: (input) => transport.request(WS_METHODS.providerListAgents, input),
+      listMcpServers: (input) => transport.request(WS_METHODS.providerListMcpServers, input),
+      reloadMcpServers: (input) =>
+        transport.request(WS_METHODS.providerReloadMcpServers, input, { timeoutMs: null }),
+      connectMcpServer: (input) =>
+        transport.request(WS_METHODS.providerConnectMcpServer, input, { timeoutMs: null }),
+      disconnectMcpServer: (input) =>
+        transport.request(WS_METHODS.providerDisconnectMcpServer, input, { timeoutMs: null }),
+      addMcpServer: (input) =>
+        transport.request(WS_METHODS.providerAddMcpServer, input, { timeoutMs: null }),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

@@ -11,12 +11,16 @@
  */
 import {
   EventId,
+  ProviderAddMcpServerInput,
   ProviderCompactThreadInput,
   ProviderForkThreadInput,
   ModelSelection,
   NonNegativeInt,
   ThreadId,
   ProviderInterruptTurnInput,
+  ProviderListMcpServersInput,
+  ProviderMcpServerActionInput,
+  ProviderMcpServerActionResult,
   ProviderStopTaskInput,
   ProviderBackgroundTaskInput,
   ProviderSteerSubagentInput,
@@ -3024,6 +3028,137 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
       });
 
+    const resolveMcpAdapter = (input: {
+      readonly provider: ProviderKind;
+      readonly threadId: ThreadId;
+      readonly operation: string;
+    }) =>
+      Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: input.operation,
+          allowRecovery: false,
+        });
+        if (!routed.isActive) {
+          return yield* toValidationError(
+            input.operation,
+            `MCP management requires an active provider session for thread '${input.threadId}'. Start the thread and try again.`,
+          );
+        }
+        if (routed.adapter.provider !== input.provider) {
+          return yield* toValidationError(
+            input.operation,
+            `Thread '${input.threadId}' is routed to provider '${routed.adapter.provider}', not '${input.provider}'.`,
+          );
+        }
+        return routed.adapter;
+      });
+
+    const listMcpServers: ProviderServiceShape["listMcpServers"] = (rawInput) =>
+      Effect.gen(function* () {
+        const input = yield* decodeInputOrValidationError({
+          operation: "ProviderService.listMcpServers",
+          schema: ProviderListMcpServersInput,
+          payload: rawInput,
+        });
+        const adapter = yield* resolveMcpAdapter({
+          provider: input.provider,
+          threadId: input.threadId,
+          operation: "ProviderService.listMcpServers",
+        });
+        if (!adapter.listMcpServers) {
+          return yield* toValidationError(
+            "ProviderService.listMcpServers",
+            `MCP management is unavailable for provider '${input.provider}'.`,
+          );
+        }
+        return yield* adapter.listMcpServers(input);
+      });
+
+    const reloadMcpServers: ProviderServiceShape["reloadMcpServers"] = (rawInput) =>
+      Effect.gen(function* () {
+        const input = yield* decodeInputOrValidationError({
+          operation: "ProviderService.reloadMcpServers",
+          schema: ProviderListMcpServersInput,
+          payload: rawInput,
+        });
+        const adapter = yield* resolveMcpAdapter({
+          provider: input.provider,
+          threadId: input.threadId,
+          operation: "ProviderService.reloadMcpServers",
+        });
+        if (!adapter.reloadMcpServers) {
+          return yield* toValidationError(
+            "ProviderService.reloadMcpServers",
+            `MCP management is unavailable for provider '${input.provider}'.`,
+          );
+        }
+        return yield* adapter.reloadMcpServers(input);
+      });
+
+    const connectMcpServer: ProviderServiceShape["connectMcpServer"] = (rawInput) =>
+      Effect.gen(function* () {
+        const input = yield* decodeInputOrValidationError({
+          operation: "ProviderService.connectMcpServer",
+          schema: ProviderMcpServerActionInput,
+          payload: rawInput,
+        });
+        const adapter = yield* resolveMcpAdapter({
+          provider: input.provider,
+          threadId: input.threadId,
+          operation: "ProviderService.connectMcpServer",
+        });
+        if (!adapter.connectMcpServer) {
+          return yield* toValidationError(
+            "ProviderService.connectMcpServer",
+            `MCP management is unavailable for provider '${input.provider}'.`,
+          );
+        }
+        return yield* adapter.connectMcpServer(input);
+      });
+
+    const disconnectMcpServer: ProviderServiceShape["disconnectMcpServer"] = (rawInput) =>
+      Effect.gen(function* () {
+        const input = yield* decodeInputOrValidationError({
+          operation: "ProviderService.disconnectMcpServer",
+          schema: ProviderMcpServerActionInput,
+          payload: rawInput,
+        });
+        const adapter = yield* resolveMcpAdapter({
+          provider: input.provider,
+          threadId: input.threadId,
+          operation: "ProviderService.disconnectMcpServer",
+        });
+        if (!adapter.disconnectMcpServer) {
+          return yield* toValidationError(
+            "ProviderService.disconnectMcpServer",
+            `MCP management is unavailable for provider '${input.provider}'.`,
+          );
+        }
+        return yield* adapter.disconnectMcpServer(input);
+      });
+
+    const addMcpServer: ProviderServiceShape["addMcpServer"] = (rawInput) =>
+      Effect.gen(function* () {
+        const input = yield* decodeInputOrValidationError({
+          operation: "ProviderService.addMcpServer",
+          schema: ProviderAddMcpServerInput,
+          payload: rawInput,
+        });
+        const adapter = yield* resolveMcpAdapter({
+          provider: input.provider,
+          threadId: input.threadId,
+          operation: "ProviderService.addMcpServer",
+        });
+        if (!adapter.addMcpServer) {
+          return yield* toValidationError(
+            "ProviderService.addMcpServer",
+            `MCP management is unavailable for provider '${input.provider}'.`,
+          );
+        }
+        return yield* adapter.addMcpServer(input);
+      });
+
     const runStopAll = () =>
       Effect.gen(function* () {
         const stoppedAt = new Date().toISOString();
@@ -3167,6 +3302,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       getCapabilities,
       rollbackConversation,
       compactThread,
+      listMcpServers,
+      reloadMcpServers,
+      connectMcpServer,
+      disconnectMcpServer,
+      addMcpServer,
       closeRuntimeEvents,
       getRuntimeEventPumpHealth: () => Effect.sync(runtimeEventPumpHealth.snapshot),
       // Each access creates a fresh PubSub subscription so that multiple

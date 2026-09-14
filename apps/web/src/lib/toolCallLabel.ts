@@ -236,6 +236,31 @@ const SYNARA_MCP_TOOL_PRESENTATIONS = {
     completed: "Synara updated a thread",
     failed: "Synara couldn't update a thread",
   },
+  synara_mcp_list: {
+    running: "Synara is listing MCP servers",
+    completed: "Synara listed MCP servers",
+    failed: "Synara couldn't list MCP servers",
+  },
+  synara_mcp_reload: {
+    running: "Synara is reloading MCP servers",
+    completed: "Synara reloaded MCP servers",
+    failed: "Synara couldn't reload MCP servers",
+  },
+  synara_mcp_connect: {
+    running: "Synara is connecting an MCP server",
+    completed: "Synara connected an MCP server",
+    failed: "Synara couldn't connect an MCP server",
+  },
+  synara_mcp_disconnect: {
+    running: "Synara is disconnecting an MCP server",
+    completed: "Synara disconnected an MCP server",
+    failed: "Synara couldn't disconnect an MCP server",
+  },
+  synara_mcp_add: {
+    running: "Synara is adding an MCP server",
+    completed: "Synara added an MCP server",
+    failed: "Synara couldn't add an MCP server",
+  },
   synara_create_automation: {
     running: "Synara is creating an automation",
     completed: "Synara created an automation",

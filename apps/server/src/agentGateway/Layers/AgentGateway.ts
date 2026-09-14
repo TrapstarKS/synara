@@ -46,6 +46,7 @@ import { AgentGatewayCredentials } from "../Services/AgentGatewayCredentials.ts"
 import { AgentGatewayOperationRepository } from "../Services/AgentGatewayOperationRepository.ts";
 import { ProviderDiscoveryService } from "../../provider/Services/ProviderDiscoveryService.ts";
 import { ProviderHealth } from "../../provider/Services/ProviderHealth.ts";
+import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION,
@@ -72,6 +73,7 @@ import { makeCreateThreadsHandler } from "../creationCoordinator.ts";
 import { makeAgentGatewayAutomationTools } from "../automationTools.ts";
 import { makeAgentGatewayBrowserTools } from "../browserTools.ts";
 import { makeAgentGatewayDeviceTools } from "../deviceTools.ts";
+import { makeAgentGatewayMcpTools } from "../mcpTools.ts";
 import { DeviceService } from "../../device/Services/DeviceService.ts";
 import { BrowserAutomationHost } from "../../browserAutomation/Services/BrowserAutomationHost.ts";
 import { makeBrowserAutomationHost } from "../../browserAutomation/Layers/BrowserAutomationHost.ts";
@@ -115,6 +117,7 @@ export const makeAgentGateway = Effect.gen(function* () {
   const git = yield* GitCore;
   const gitManager = yield* GitManager;
   const providerDiscovery = yield* ProviderDiscoveryService;
+  const providerService = Option.getOrUndefined(yield* Effect.serviceOption(ProviderService));
   const providerHealth = yield* ProviderHealth;
   const serverSettings = yield* ServerSettingsService;
   const operationRepository = yield* AgentGatewayOperationRepository;
@@ -212,6 +215,14 @@ export const makeAgentGateway = Effect.gen(function* () {
     projectionTurns,
     providerDiscovery,
     loadProviderAvailabilities,
+    loadCodexProfiles: serverSettings.getSettings.pipe(
+      Effect.map((settings) =>
+        settings.providers.codex.profiles.map((profile) => ({
+          profileId: profile.id,
+          name: profile.name,
+        })),
+      ),
+    ),
     requireThreadShell,
     workspacePaths: {
       homeDir: serverConfig.homeDir,
@@ -322,6 +333,12 @@ export const makeAgentGateway = Effect.gen(function* () {
           },
           provider: { type: "string", enum: [...PROVIDER_KINDS] },
           model: { type: "string" },
+          profileId: {
+            type: "string",
+            format: "uuid",
+            description:
+              "Codex profile id from synara_capabilities.codexProfiles. Omit to inherit the caller thread's profile.",
+          },
           options: {
             type: "object",
             description: AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION,
@@ -352,14 +369,22 @@ export const makeAgentGateway = Effect.gen(function* () {
     handler: (args, context) =>
       Effect.suspend(() => {
         const explicitTarget = readRecordArg(args, "target");
+        const profileId = readStringArg(args, "profileId");
         let target: Record<string, unknown>;
         if (explicitTarget) {
-          target = explicitTarget;
+          target = {
+            ...explicitTarget,
+            ...(profileId && explicitTarget.profileId === undefined ? { profileId } : {}),
+          };
         } else {
           const provider = parseProviderKind(readStringArg(args, "provider", { required: true })!);
           const modelSelection = buildModelSelection(provider, readStringArg(args, "model"));
           const options = readRecordArg(args, "options");
-          target = { ...modelSelection, ...(options ? { options } : {}) };
+          target = {
+            ...modelSelection,
+            ...(profileId ? { profileId } : {}),
+            ...(options ? { options } : {}),
+          };
         }
         const spec: Record<string, unknown> = {
           prompt: readStringArg(args, "prompt", { required: true })!,
@@ -782,6 +807,7 @@ export const makeAgentGateway = Effect.gen(function* () {
         );
       }).pipe(Effect.orElseSucceed(() => null)),
   });
+  const mcpTools = providerService ? makeAgentGatewayMcpTools({ providerService }) : [];
 
   const tools: ReadonlyArray<ToolEntry> = [
     ...readTools,
@@ -796,6 +822,7 @@ export const makeAgentGateway = Effect.gen(function* () {
     setThreadGoal,
     ...automationTools,
     ...browserTools,
+    ...mcpTools,
     ...(deviceService?.supported === true
       ? makeAgentGatewayDeviceTools({ manager: deviceService.manager })
       : []),

@@ -60,6 +60,11 @@ export interface ThreadReadToolsInput {
     unknown,
     never
   >;
+  readonly loadCodexProfiles: Effect.Effect<
+    ReadonlyArray<{ readonly profileId: string; readonly name: string }>,
+    unknown,
+    never
+  >;
   readonly requireThreadShell: (
     threadId: string,
   ) => Effect.Effect<OrchestrationThreadShell, unknown, never>;
@@ -72,6 +77,7 @@ export function makeThreadReadTools(input: ThreadReadToolsInput): ReadonlyArray<
     projectionTurns,
     providerDiscovery,
     loadProviderAvailabilities,
+    loadCodexProfiles,
     requireThreadShell,
     workspacePaths,
   } = input;
@@ -142,6 +148,7 @@ export function makeThreadReadTools(input: ThreadReadToolsInput): ReadonlyArray<
           ),
         );
         const availabilities = yield* loadProviderAvailabilities;
+        const codexProfiles = yield* loadCodexProfiles;
         const providers = yield* Effect.forEach(PROVIDER_KINDS, (provider) =>
           loadAgentGatewayProviderCatalog({
             provider,
@@ -164,6 +171,11 @@ export function makeThreadReadTools(input: ThreadReadToolsInput): ReadonlyArray<
         return mcpToolResultJson({
           targetConstruction,
           providers,
+          codexProfiles,
+          inheritedCodexProfileId:
+            caller.modelSelection.provider === "codex"
+              ? (caller.modelSelection.profileId ?? null)
+              : null,
           limits: {
             maxThreadsPerOperation: SYNARA_GATEWAY_MAX_THREADS_PER_OPERATION,
             maxWaitMs: 60_000,

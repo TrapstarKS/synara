@@ -75,6 +75,8 @@ export function provideThreadDeletionReactorDeviceService<
 export function makeServerRuntimeServicesLayer(
   options: {
     readonly agentGatewayCredentialsLayer?: typeof AgentGatewayCredentialsWithSecretsLive;
+    /** Provide the live provider service so provider-native gateway tools are registered. */
+    readonly providerLayer?: ReturnType<typeof makeServerProviderLayer>;
   } = {},
 ) {
   const agentGatewayCredentialsLayer =
@@ -195,7 +197,7 @@ export function makeServerRuntimeServicesLayer(
     Layer.provideMerge(ServerSettingsLive),
     Layer.provideMerge(providerHealthLayer),
   );
-  const agentGatewayLayer = AgentGatewayLive.pipe(
+  const agentGatewayBaseLayer = AgentGatewayLive.pipe(
     Layer.provideMerge(agentGatewayCredentialsLayer),
     Layer.provideMerge(automationServiceLayer),
     Layer.provideMerge(runtimeServicesLayer),
@@ -212,6 +214,9 @@ export function makeServerRuntimeServicesLayer(
     // resolves the service on every platform to make that decision.
     Layer.provideMerge(DeviceServiceLive),
   );
+  const agentGatewayLayer = options.providerLayer
+    ? agentGatewayBaseLayer.pipe(Layer.provideMerge(options.providerLayer))
+    : agentGatewayBaseLayer;
   const pullRequestServiceLayer = PullRequestServiceLive.pipe(
     Layer.provideMerge(GitLayerLive),
     Layer.provideMerge(ProjectPullRequestPinsLive),
@@ -263,15 +268,16 @@ export function makeServerRuntimeServicesLayer(
  */
 export function makeServerApplicationLayers() {
   const agentGatewayCredentialsLayer = AgentGatewayCredentialsWithSecretsLive;
-  const runtimeServicesLayer = makeServerRuntimeServicesLayer({
-    agentGatewayCredentialsLayer,
-  });
   // Provider start/discovery gates must observe the same settings instance as
   // the RPC layer. Reusing this layer in the final graph lets Effect memoize a
   // single ServerSettings service instead of capturing private defaults.
   const providerLayer = makeServerProviderLayer({ agentGatewayCredentialsLayer }).pipe(
     Layer.provideMerge(ServerSettingsLive),
   );
+  const runtimeServicesLayer = makeServerRuntimeServicesLayer({
+    agentGatewayCredentialsLayer,
+    providerLayer,
+  });
   return {
     runtimeServicesLayer,
     providerLayer,

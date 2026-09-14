@@ -122,6 +122,7 @@ export function useComposerSlashCommands(input: {
   };
 }) {
   const [isSlashStatusDialogOpen, setIsSlashStatusDialogOpen] = useState(false);
+  const [isMcpDialogOpen, setIsMcpDialogOpen] = useState(false);
   const openGlobalFeedbackDialog = useFeedbackDialogStore((state) => state.openDialog);
   const {
     activeProject,
@@ -920,6 +921,11 @@ export function useComposerSlashCommands(input: {
         setIsSlashStatusDialogOpen(true);
         return true;
       }
+      if (slashInvocation.command === "mcp") {
+        editorActions.clearComposerSlashDraft();
+        setIsMcpDialogOpen(true);
+        return true;
+      }
       if (slashInvocation.command === "goal") {
         const kickoffPrompt = await runGoalSlashCommand(slashInvocation.args);
         if (kickoffPrompt !== null) {
@@ -1083,6 +1089,7 @@ export function useComposerSlashCommands(input: {
       openForkTargetPicker,
       openFeedbackDialog,
       openReviewTargetPicker,
+      setIsMcpDialogOpen,
       selectedProvider,
       selectedModelSelection.provider,
       sidechatTargetProviders,
@@ -1183,6 +1190,16 @@ export function useComposerSlashCommands(input: {
         if (wasPromptReplacementApplied(applied)) {
           editorActions.setComposerHighlightedItemId(null);
           setIsSlashStatusDialogOpen(true);
+          editorActions.scheduleComposerFocus();
+        }
+        return;
+      }
+
+      if (item.command === "mcp") {
+        const applied = clearSlashCommandFromComposer();
+        if (wasPromptReplacementApplied(applied)) {
+          editorActions.setComposerHighlightedItemId(null);
+          setIsMcpDialogOpen(true);
           editorActions.scheduleComposerFocus();
         }
         return;
@@ -1295,6 +1312,7 @@ export function useComposerSlashCommands(input: {
       openForkTargetPicker,
       openFeedbackDialog,
       openReviewTargetPicker,
+      setIsMcpDialogOpen,
       selectedProvider,
       supportsTextNativeReviewCommand,
       runExportSlashCommand,
@@ -1308,6 +1326,8 @@ export function useComposerSlashCommands(input: {
     handleReviewTargetSelection,
     isSlashStatusDialogOpen,
     setIsSlashStatusDialogOpen,
+    isMcpDialogOpen,
+    setIsMcpDialogOpen,
     handleStandaloneSlashCommand,
     handleSlashCommandSelection,
     clearThreadGoal,

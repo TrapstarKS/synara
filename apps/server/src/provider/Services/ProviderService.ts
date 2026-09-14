@@ -12,11 +12,16 @@
  * @module ProviderService
  */
 import type {
+  ProviderAddMcpServerInput,
   ProviderBackgroundTaskInput,
   ProviderForkThreadInput,
   ProviderForkThreadResult,
   ProviderInterruptTurnInput,
   ProviderKind,
+  ProviderListMcpServersInput,
+  ProviderListMcpServersResult,
+  ProviderMcpServerActionInput,
+  ProviderMcpServerActionResult,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
@@ -234,6 +239,31 @@ export interface ProviderServiceShape {
   readonly compactThread: (input: {
     readonly threadId: ThreadId;
   }) => Effect.Effect<void, ProviderServiceError>;
+
+  /** List MCP servers reported by the provider-native runtime. */
+  readonly listMcpServers: (
+    input: ProviderListMcpServersInput,
+  ) => Effect.Effect<ProviderListMcpServersResult, ProviderServiceError>;
+
+  /** Reload all MCP server runtimes for a provider session. */
+  readonly reloadMcpServers: (
+    input: ProviderListMcpServersInput,
+  ) => Effect.Effect<ProviderMcpServerActionResult, ProviderServiceError>;
+
+  /** Enable a configured MCP server and reload the provider runtime. */
+  readonly connectMcpServer: (
+    input: ProviderMcpServerActionInput,
+  ) => Effect.Effect<ProviderMcpServerActionResult, ProviderServiceError>;
+
+  /** Disable a configured MCP server and reload the provider runtime. */
+  readonly disconnectMcpServer: (
+    input: ProviderMcpServerActionInput,
+  ) => Effect.Effect<ProviderMcpServerActionResult, ProviderServiceError>;
+
+  /** Add or update a configured MCP server and reload the provider runtime. */
+  readonly addMcpServer: (
+    input: ProviderAddMcpServerInput,
+  ) => Effect.Effect<ProviderMcpServerActionResult, ProviderServiceError>;
 
   /**
    * Stop provider event producers, drain the lossless fan-out while subscribers

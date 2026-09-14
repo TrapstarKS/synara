@@ -2153,6 +2153,16 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(providerDiscoveryService.listModels(input), "Failed to list models"),
         [WS_METHODS.providerListAgents]: (input) =>
           rpcEffect(providerDiscoveryService.listAgents(input), "Failed to list agents"),
+        [WS_METHODS.providerListMcpServers]: (input) =>
+          rpcEffect(providerService.listMcpServers(input), "Failed to list MCP servers"),
+        [WS_METHODS.providerReloadMcpServers]: (input) =>
+          rpcEffect(providerService.reloadMcpServers(input), "Failed to reload MCP servers"),
+        [WS_METHODS.providerConnectMcpServer]: (input) =>
+          rpcEffect(providerService.connectMcpServer(input), "Failed to connect MCP server"),
+        [WS_METHODS.providerDisconnectMcpServer]: (input) =>
+          rpcEffect(providerService.disconnectMcpServer(input), "Failed to disconnect MCP server"),
+        [WS_METHODS.providerAddMcpServer]: (input) =>
+          rpcEffect(providerService.addMcpServer(input), "Failed to add MCP server"),
         [WS_METHODS.automationList]: (input) =>
           rpcEffect(automationService.list(input), "Failed to list automations"),
         [WS_METHODS.automationGetMemory]: ({ automationId }) =>

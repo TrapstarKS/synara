@@ -263,6 +263,13 @@ import type {
 } from "./providerDiscovery";
 import type { ProviderCompactThreadInput } from "./provider";
 import type {
+  ProviderAddMcpServerInput,
+  ProviderListMcpServersInput,
+  ProviderListMcpServersResult,
+  ProviderMcpServerActionInput,
+  ProviderMcpServerActionResult,
+} from "./mcp";
+import type {
   StatsGetProfileStatsInput,
   StatsGetProfileStatsResult,
   StatsGetProfileTokenStatsInput,
@@ -877,6 +884,21 @@ export interface NativeApi {
     readPlugin: (input: ProviderReadPluginInput) => Promise<ProviderReadPluginResult>;
     listModels: (input: ProviderListModelsInput) => Promise<ProviderListModelsResult>;
     listAgents: (input: ProviderListAgentsInput) => Promise<ProviderListAgentsResult>;
+    listMcpServers: (
+      input: ProviderListMcpServersInput,
+    ) => Promise<ProviderListMcpServersResult>;
+    reloadMcpServers: (
+      input: ProviderListMcpServersInput,
+    ) => Promise<ProviderMcpServerActionResult>;
+    connectMcpServer: (
+      input: ProviderMcpServerActionInput,
+    ) => Promise<ProviderMcpServerActionResult>;
+    disconnectMcpServer: (
+      input: ProviderMcpServerActionInput,
+    ) => Promise<ProviderMcpServerActionResult>;
+    addMcpServer: (
+      input: ProviderAddMcpServerInput,
+    ) => Promise<ProviderMcpServerActionResult>;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

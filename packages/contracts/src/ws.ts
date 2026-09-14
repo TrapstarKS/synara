@@ -148,6 +148,11 @@ import {
 } from "./providerDiscovery";
 import { ProviderCompactThreadInput } from "./provider";
 import {
+  ProviderAddMcpServerInput,
+  ProviderListMcpServersInput,
+  ProviderMcpServerActionInput,
+} from "./mcp";
+import {
   PullRequestActionInput,
   PullRequestCommentInput,
   PullRequestDetailInput,
@@ -288,6 +293,11 @@ export const WS_METHODS = {
   providerReadPlugin: "provider.readPlugin",
   providerListModels: "provider.listModels",
   providerListAgents: "provider.listAgents",
+  providerListMcpServers: "provider.listMcpServers",
+  providerReloadMcpServers: "provider.reloadMcpServers",
+  providerConnectMcpServer: "provider.connectMcpServer",
+  providerDisconnectMcpServer: "provider.disconnectMcpServer",
+  providerAddMcpServer: "provider.addMcpServer",
 
   // Automation methods
   automationList: "automation.list",
@@ -500,6 +510,11 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.providerReadPlugin, ProviderReadPluginInput),
   tagRequestBody(WS_METHODS.providerListModels, ProviderListModelsInput),
   tagRequestBody(WS_METHODS.providerListAgents, ProviderListAgentsInput),
+  tagRequestBody(WS_METHODS.providerListMcpServers, ProviderListMcpServersInput),
+  tagRequestBody(WS_METHODS.providerReloadMcpServers, ProviderListMcpServersInput),
+  tagRequestBody(WS_METHODS.providerConnectMcpServer, ProviderMcpServerActionInput),
+  tagRequestBody(WS_METHODS.providerDisconnectMcpServer, ProviderMcpServerActionInput),
+  tagRequestBody(WS_METHODS.providerAddMcpServer, ProviderAddMcpServerInput),
 
   // Automation methods
   tagRequestBody(WS_METHODS.automationList, AutomationListInput),

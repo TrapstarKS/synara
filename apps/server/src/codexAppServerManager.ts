@@ -10,6 +10,9 @@ import {
   type ProviderComposerCapabilities,
   ProviderItemId,
   type ProviderListModelsResult,
+  type ProviderAddMcpServerInput,
+  type ProviderListMcpServersResult,
+  type ProviderMcpServerActionResult,
   type ProviderListPluginsResult,
   type ProviderMentionReference,
   type ProviderForkThreadInput,
@@ -80,6 +83,13 @@ import {
   type CodexImageInputItem,
   type CodexTurnInputItem,
 } from "./codexTurnInput.ts";
+import {
+  buildCodexMcpServerConfig,
+  MCP_SERVER_LIST_PAGE_LIMIT,
+  MAX_MCP_SERVER_STATUS_PAGES,
+  parseCodexMcpServerListResponse,
+  validateMcpServerName,
+} from "./provider/mcpServer.ts";
 import {
   parseCodexModelListResponse,
   parseCodexPluginListResponse,
@@ -2554,6 +2564,98 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     };
     setRecentCacheEntry(this.modelCache, cacheKey, result);
     return result;
+  }
+
+  async listMcpServers(threadId: string): Promise<ProviderListMcpServersResult> {
+    const context = await this.resolveContextForDiscovery(threadId);
+    return this.listMcpServersFromContext(context);
+  }
+
+  async reloadMcpServers(threadId: string): Promise<ProviderMcpServerActionResult> {
+    const context = await this.resolveContextForDiscovery(threadId);
+    await this.sendRequest<Record<string, unknown>>(context, "config/mcpServer/reload", null);
+    return {
+      action: "reloaded",
+      ...(await this.listMcpServersFromContext(context)),
+    };
+  }
+
+  async connectMcpServer(threadId: string, name: string): Promise<ProviderMcpServerActionResult> {
+    return this.setMcpServerEnabled(threadId, name, true);
+  }
+
+  async disconnectMcpServer(
+    threadId: string,
+    name: string,
+  ): Promise<ProviderMcpServerActionResult> {
+    return this.setMcpServerEnabled(threadId, name, false);
+  }
+
+  async addMcpServer(input: ProviderAddMcpServerInput): Promise<ProviderMcpServerActionResult> {
+    const context = await this.resolveContextForDiscovery(input.threadId);
+    const name = validateMcpServerName(input.name);
+    await this.sendRequest<Record<string, unknown>>(context, "config/value/write", {
+      keyPath: `mcp_servers.${name}`,
+      mergeStrategy: "upsert",
+      value: buildCodexMcpServerConfig(input),
+    });
+    await this.sendRequest<Record<string, unknown>>(context, "config/mcpServer/reload", null);
+    return {
+      action: "connected",
+      ...(await this.listMcpServersFromContext(context)),
+    };
+  }
+
+  private async setMcpServerEnabled(
+    threadId: string,
+    rawName: string,
+    enabled: boolean,
+  ): Promise<ProviderMcpServerActionResult> {
+    const context = await this.resolveContextForDiscovery(threadId);
+    const name = validateMcpServerName(rawName);
+    await this.sendRequest<Record<string, unknown>>(context, "config/value/write", {
+      keyPath: `mcp_servers.${name}.enabled`,
+      mergeStrategy: "upsert",
+      value: enabled,
+    });
+    await this.sendRequest<Record<string, unknown>>(context, "config/mcpServer/reload", null);
+    return {
+      action: enabled ? "connected" : "disconnected",
+      ...(await this.listMcpServersFromContext(context)),
+    };
+  }
+
+  private async listMcpServersFromContext(
+    context: CodexSessionContext,
+  ): Promise<ProviderListMcpServersResult> {
+    const servers = new Map<string, ProviderListMcpServersResult["servers"][number]>();
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+
+    for (let page = 0; page < MAX_MCP_SERVER_STATUS_PAGES; page += 1) {
+      const nativeThreadId = readResumeCursorThreadId(context.session.resumeCursor);
+      const response = await this.sendRequest<Record<string, unknown>>(
+        context,
+        "mcpServerStatus/list",
+        {
+          ...(cursor ? { cursor } : {}),
+          detail: "full",
+          limit: MCP_SERVER_LIST_PAGE_LIMIT,
+          ...(nativeThreadId ? { threadId: nativeThreadId } : {}),
+        },
+      );
+      const parsed = parseCodexMcpServerListResponse(response);
+      for (const server of parsed.servers) servers.set(server.name, server);
+      if (!parsed.nextCursor || cursors.has(parsed.nextCursor)) break;
+      cursors.add(parsed.nextCursor);
+      cursor = parsed.nextCursor;
+    }
+
+    return {
+      servers: Array.from(servers.values()).sort((left, right) =>
+        left.name.localeCompare(right.name),
+      ),
+    };
   }
 
   async transcribeVoice(

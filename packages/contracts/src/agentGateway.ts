@@ -7,7 +7,7 @@
  */
 import { Schema } from "effect";
 
-import { ProjectId, ThreadId, TurnId } from "./baseSchemas";
+import { CodexProfileId, ProjectId, ThreadId, TurnId } from "./baseSchemas";
 import { ModelSelection, ProviderKind } from "./orchestration";
 import { ProviderModelDescriptor } from "./providerDiscovery";
 import { ServerProviderAuthStatus } from "./server";
@@ -132,6 +132,15 @@ export type SynaraGatewayTargetConstruction = typeof SynaraGatewayTargetConstruc
 export const SynaraCapabilitiesResult = Schema.Struct({
   targetConstruction: Schema.Record(Schema.String, SynaraGatewayTargetConstruction),
   providers: Schema.Array(SynaraProviderCatalog),
+  codexProfiles: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        profileId: CodexProfileId,
+        name: Schema.String,
+      }),
+    ),
+  ),
+  inheritedCodexProfileId: Schema.optional(Schema.NullOr(CodexProfileId)),
   limits: Schema.Struct({
     maxThreadsPerOperation: Schema.Int,
     maxWaitMs: Schema.Int,

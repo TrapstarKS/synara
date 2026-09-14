@@ -124,6 +124,19 @@ describe("deriveSynaraMcpToolTitle", () => {
       ["synara_interrupt_thread", "Synara is interrupting a thread", "Synara interrupted a thread"],
       ["synara_set_thread_title", "Synara is renaming a thread", "Synara renamed a thread"],
       ["synara_set_thread_archived", "Synara is updating a thread", "Synara updated a thread"],
+      ["synara_mcp_list", "Synara is listing MCP servers", "Synara listed MCP servers"],
+      ["synara_mcp_reload", "Synara is reloading MCP servers", "Synara reloaded MCP servers"],
+      [
+        "synara_mcp_connect",
+        "Synara is connecting an MCP server",
+        "Synara connected an MCP server",
+      ],
+      [
+        "synara_mcp_disconnect",
+        "Synara is disconnecting an MCP server",
+        "Synara disconnected an MCP server",
+      ],
+      ["synara_mcp_add", "Synara is adding an MCP server", "Synara added an MCP server"],
       [
         "synara_create_automation",
         "Synara is creating an automation",

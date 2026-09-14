@@ -15,6 +15,7 @@ import type {
 } from "@synara/contracts";
 import {
   AutomationId,
+  CodexProfileId,
   DEFAULT_AUTOMATION_STOP_CONFIDENCE_THRESHOLD,
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
@@ -2400,6 +2401,33 @@ describe("AgentGateway", () => {
       if (turn.type === "thread.turn.start") {
         assert.equal(turn.dispatchOrigin, "agent");
         assert.equal(turn.message.text, "analyze the feature");
+      }
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("inherits the caller Codex profile for a new thread", () => {
+    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const { gatewayLayer, makeHarness } = makeHarnessLayer([
+      makeThreadShell("thread-parent", {
+        modelSelection: { provider: "codex", model: "gpt-5.5", profileId },
+      }),
+    ]);
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const response = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_create_thread",
+        args: {
+          requestId: "create-codex-profile-child",
+          prompt: "use the parent profile",
+          provider: "codex",
+        },
+      });
+      assert.isFalse(isToolError(response.result), toolErrorText(response.result));
+      const create = harness.dispatched.find((command) => command.type === "thread.create");
+      assert.exists(create);
+      if (create?.type === "thread.create") {
+        assert.equal(create.modelSelection.profileId, profileId);
       }
     }).pipe(Effect.provide(gatewayLayer));
   });

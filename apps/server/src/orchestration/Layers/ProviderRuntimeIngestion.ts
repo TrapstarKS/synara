@@ -65,6 +65,7 @@ import {
 import { makeRuntimeJournalPoisonGate } from "../runtimeJournalPoisonGate.ts";
 import { isExpiredSidechat } from "../sidechatLifecycle.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { inheritCodexProfile } from "../../agentGateway/profileInheritance.ts";
 import {
   ProjectionSnapshotQuery,
   type ProjectionGeneratedImageActivityRecord,
@@ -1978,13 +1979,16 @@ const make = Effect.gen(function* () {
               return parentThread.modelSelection;
             }
             if (parentThread.modelSelection.provider === "codex") {
-              return {
-                provider: "codex",
-                model: identity.model,
-                ...(identity.reasoningEffort
-                  ? { options: { reasoningEffort: identity.reasoningEffort } }
-                  : {}),
-              };
+              return inheritCodexProfile({
+                target: {
+                  provider: "codex",
+                  model: identity.model,
+                  ...(identity.reasoningEffort
+                    ? { options: { reasoningEffort: identity.reasoningEffort } }
+                    : {}),
+                },
+                parentModelSelection: parentThread.modelSelection,
+              });
             }
             return {
               provider: parentThread.modelSelection.provider,
