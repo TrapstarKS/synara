@@ -6,7 +6,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
 import type { ThreadId } from "@synara/contracts";
-import { Effect, Layer } from "effect";
+import { Effect, FileSystem, Layer, Path } from "effect";
 
 import { AgentGatewayCredentials } from "../../../agentGateway/Services/AgentGatewayCredentials.ts";
 import { ServerConfig } from "../../../config.ts";
@@ -342,5 +342,5 @@ export const ChatGptExternalBrowserLive = Layer.effect(
 export type ChatGptExternalBrowserLayer = Layer.Layer<
   ChatGptExternalBrowser,
   never,
-  ServerConfig | AgentGatewayCredentials
+  FileSystem.FileSystem | Path.Path | ServerConfig
 >;
