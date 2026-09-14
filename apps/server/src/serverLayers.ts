@@ -39,7 +39,7 @@ import { ProfileStatsQueryLive } from "./profileStats";
 import { ProfileStatsArchiveLive } from "./profileStatsArchive";
 import { ServerLifecycleEventsLive } from "./serverLifecycleEvents";
 import { ServerRuntimeStartupLive } from "./serverRuntimeStartup";
-import { ServerSettingsLive } from "./serverSettings";
+import { ServerSettingsLive, ServerSettingsService } from "./serverSettings";
 import { WorkspaceLayerLive } from "./workspace/runtimeLayer";
 import { ProjectFaviconResolverLive } from "./project/Layers/ProjectFaviconResolver";
 import { ExternalMcpRepositoryLive } from "./externalMcp/Layers/ExternalMcpRepository";
@@ -56,6 +56,17 @@ import { ManagedAttachmentCleanupLive } from "./managedAttachmentCleanup";
 import { PullRequestServiceLive } from "./pullRequests/Layers/PullRequestService";
 import { ProviderHealthLive } from "./provider/Layers/ProviderHealth";
 import { makeServerProviderLayer } from "./provider/runtimeLayer";
+import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
+import { ProviderDiscoveryService } from "./provider/Services/ProviderDiscoveryService";
+import { ProviderService } from "./provider/Services/ProviderService";
+import { ProviderSessionDirectory } from "./provider/Services/ProviderSessionDirectory";
+
+type ServerProviderServices =
+  | ProviderAdapterRegistry
+  | ProviderDiscoveryService
+  | ProviderService
+  | ProviderSessionDirectory
+  | ServerSettingsService;
 
 export { makeServerProviderLayer } from "./provider/runtimeLayer";
 
@@ -76,7 +87,7 @@ export function makeServerRuntimeServicesLayer(
   options: {
     readonly agentGatewayCredentialsLayer?: typeof AgentGatewayCredentialsWithSecretsLive;
     /** Provide the live provider service so provider-native gateway tools are registered. */
-    readonly providerLayer?: ReturnType<typeof makeServerProviderLayer>;
+    readonly providerLayer?: Layer.Layer<ServerProviderServices, unknown, unknown>;
   } = {},
 ) {
   const agentGatewayCredentialsLayer =

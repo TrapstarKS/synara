@@ -20,11 +20,14 @@ import {
 
 const MCP_PROVIDER = "codex" as const;
 
-function currentSessionInput(context: ToolContext) {
+function currentSessionInput(context: ToolContext): {
+  readonly provider: typeof MCP_PROVIDER;
+  readonly threadId: ThreadId;
+} {
   return {
     provider: MCP_PROVIDER,
-    threadId: ThreadId.makeUnsafe(context.callerThreadId),
-  } as const;
+    threadId: ThreadId.makeUnsafe(context.callerThreadId) as ThreadId,
+  };
 }
 
 function assertCodexSession(context: ToolContext): void {

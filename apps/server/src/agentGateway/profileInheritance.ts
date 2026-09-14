@@ -9,16 +9,17 @@ export function inheritCodexProfile(input: {
   readonly target: ModelSelection;
   readonly parentModelSelection?: ModelSelection;
 }): ModelSelection {
-  if (
-    input.target.provider !== "codex" ||
-    input.target.profileId !== undefined ||
-    input.parentModelSelection?.provider !== "codex" ||
-    input.parentModelSelection.profileId === undefined
-  ) {
+  if (input.target.provider !== "codex") {
     return input.target;
   }
+  if (input.target.profileId !== undefined) return input.target;
+
+  const parentModelSelection = input.parentModelSelection;
+  if (parentModelSelection?.provider !== "codex") return input.target;
+  if (parentModelSelection.profileId === undefined) return input.target;
+
   return {
     ...input.target,
-    profileId: input.parentModelSelection.profileId,
+    profileId: parentModelSelection.profileId,
   };
 }
