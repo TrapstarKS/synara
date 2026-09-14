@@ -2365,6 +2365,51 @@ describe("CodexAppServerManager discovery", () => {
     });
   });
 
+  it("restarts one MCP server by disabling and enabling it in sequence", async () => {
+    const manager = new CodexAppServerManager();
+    const context = {} as never;
+    vi.spyOn(
+      manager as unknown as {
+        resolveContextForDiscovery: (threadId?: string) => Promise<unknown>;
+      },
+      "resolveContextForDiscovery",
+    ).mockResolvedValue(context);
+    const sendRequest = vi
+      .spyOn(
+        manager as unknown as {
+          sendRequest: (...args: unknown[]) => Promise<unknown>;
+        },
+        "sendRequest",
+      )
+      .mockResolvedValue({});
+    vi.spyOn(
+      manager as unknown as {
+        listMcpServersFromContext: (context: unknown) => Promise<unknown>;
+      },
+      "listMcpServersFromContext",
+    ).mockResolvedValue({ servers: [] });
+
+    await expect(manager.restartMcpServer("thread_1", "roblox")).resolves.toEqual({
+      action: "restarted",
+      servers: [],
+    });
+
+    expect(sendRequest.mock.calls.map(([, method, params]) => [method, params])).toEqual([
+      ["config/value/write", {
+        keyPath: "mcp_servers.roblox.enabled",
+        mergeStrategy: "upsert",
+        value: false,
+      }],
+      ["config/mcpServer/reload", null],
+      ["config/value/write", {
+        keyPath: "mcp_servers.roblox.enabled",
+        mergeStrategy: "upsert",
+        value: true,
+      }],
+      ["config/mcpServer/reload", null],
+    ]);
+  });
+
   it("uses a cwd-scoped discovery session instead of an unrelated active session", async () => {
     const manager = new CodexAppServerManager();
     const activeContext = {

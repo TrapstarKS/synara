@@ -136,6 +136,11 @@ describe("deriveSynaraMcpToolTitle", () => {
         "Synara is disconnecting an MCP server",
         "Synara disconnected an MCP server",
       ],
+      [
+        "synara_mcp_restart",
+        "Synara is restarting an MCP server",
+        "Synara restarted an MCP server",
+      ],
       ["synara_mcp_add", "Synara is adding an MCP server", "Synara added an MCP server"],
       [
         "synara_create_automation",

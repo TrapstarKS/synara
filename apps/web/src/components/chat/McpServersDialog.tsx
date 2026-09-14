@@ -8,7 +8,7 @@ import type {
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import {
-  DeviceDetachIcon,
+  DevicePowerIcon,
   McpIcon,
   PlayOutlineIcon,
   PlusIcon,
@@ -132,8 +132,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isConnected(status: ProviderMcpServerStatus): boolean {
-  return status.runtimeStatus === "connected" || status.runtimeStatus === "starting";
+function isDisabled(status: ProviderMcpServerStatus): boolean {
+  return status.runtimeStatus === "disabled";
 }
 
 export function McpServersDialog(props: {
@@ -173,7 +173,7 @@ export function McpServersDialog(props: {
   }, [loadServers, open]);
 
   const runAction = useCallback(
-    async (action: "reload" | "connect" | "disconnect", name?: string) => {
+    async (action: "reload" | "connect" | "disconnect" | "restart", name?: string) => {
       const api = readNativeApi();
       if (!api?.provider) {
         setError("MCP management is unavailable in this client.");
@@ -186,6 +186,8 @@ export function McpServersDialog(props: {
         const result =
           action === "reload"
             ? await api.provider.reloadMcpServers({ provider, threadId })
+            : action === "restart"
+              ? await api.provider.restartMcpServer({ provider, threadId, name: name! })
             : action === "connect"
               ? await api.provider.connectMcpServer({ provider, threadId, name: name! })
               : await api.provider.disconnectMcpServer({ provider, threadId, name: name! });
@@ -278,8 +280,8 @@ export function McpServersDialog(props: {
             MCP servers
           </DialogTitle>
           <DialogDescription>
-            See what this Codex session has loaded, restart the MCP runtimes, or change their
-            connection without restarting the whole session.
+            See what this Codex session has loaded, enable or disable individual servers, or
+            restart one to renegotiate its tools without restarting the whole session.
           </DialogDescription>
         </DialogHeader>
 
@@ -326,8 +328,10 @@ export function McpServersDialog(props: {
             <div className="flex flex-col gap-2">
               {servers.map((server) => {
                 const builtIn = server.name === "synara";
-                const action = isConnected(server) ? "disconnect" : "connect";
+                const serverDisabled = isDisabled(server);
+                const action = serverDisabled ? "connect" : "disconnect";
                 const actionKey = `${action}:${server.name}`;
+                const restartActionKey = `restart:${server.name}`;
                 return (
                   <div
                     key={server.name}
@@ -364,22 +368,51 @@ export function McpServersDialog(props: {
                         Managed by Synara
                       </span>
                     ) : (
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="outline"
-                        disabled={busyAction !== null}
-                        onClick={() => void runAction(action, server.name)}
-                      >
-                        {busyAction === actionKey ? (
-                          <RefreshCwIcon className="size-3.5 animate-spin" />
-                        ) : action === "connect" ? (
-                          <PlayOutlineIcon className="size-3.5" />
-                        ) : (
-                          <DeviceDetachIcon className="size-3.5" />
-                        )}
-                        {action === "connect" ? "Connect" : "Disconnect"}
-                      </Button>
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          disabled={busyAction !== null || !serverDisabled}
+                          onClick={() => void runAction("connect", server.name)}
+                        >
+                          {busyAction === actionKey && action === "connect" ? (
+                            <RefreshCwIcon className="size-3.5 animate-spin" />
+                          ) : (
+                            <PlayOutlineIcon className="size-3.5" />
+                          )}
+                          Enable
+                        </Button>
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          disabled={busyAction !== null || serverDisabled}
+                          onClick={() => void runAction("disconnect", server.name)}
+                        >
+                          {busyAction === actionKey && action === "disconnect" ? (
+                            <RefreshCwIcon className="size-3.5 animate-spin" />
+                          ) : (
+                            <DevicePowerIcon className="size-3.5" />
+                          )}
+                          Disable
+                        </Button>
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="secondary"
+                          disabled={busyAction !== null}
+                          title="Disable and enable this MCP server to refresh its tools"
+                          onClick={() => void runAction("restart", server.name)}
+                        >
+                          {busyAction === restartActionKey ? (
+                            <RefreshCwIcon className="size-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCwIcon className="size-3.5" />
+                          )}
+                          Restart
+                        </Button>
+                      </div>
                     )}
                   </div>
                 );

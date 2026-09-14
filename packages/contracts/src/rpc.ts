@@ -1247,6 +1247,12 @@ export const WsProviderDisconnectMcpServerRpc = Rpc.make(WS_METHODS.providerDisc
   error: WsRpcError,
 });
 
+export const WsProviderRestartMcpServerRpc = Rpc.make(WS_METHODS.providerRestartMcpServer, {
+  payload: ProviderMcpServerActionInput,
+  success: ProviderMcpServerActionResult,
+  error: WsRpcError,
+});
+
 export const WsProviderAddMcpServerRpc = Rpc.make(WS_METHODS.providerAddMcpServer, {
   payload: ProviderAddMcpServerInput,
   success: ProviderMcpServerActionResult,
@@ -1445,6 +1451,7 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsProviderReloadMcpServersRpc,
   WsProviderConnectMcpServerRpc,
   WsProviderDisconnectMcpServerRpc,
+  WsProviderRestartMcpServerRpc,
   WsProviderAddMcpServerRpc,
   WsAutomationListRpc,
   WsAutomationGetMemoryRpc,

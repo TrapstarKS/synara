@@ -105,7 +105,7 @@ export function makeAgentGatewayMcpTools(input: {
     definition: {
       name: "synara_mcp_connect",
       description:
-        "Enable one configured MCP server in the current Codex session, reload the MCP runtime, and return fresh statuses.",
+        "Enable one configured MCP server in the current Codex session, reload its MCP runtime, and return fresh statuses.",
       inputSchema: {
         type: "object",
         properties: { name: { type: "string" } },
@@ -134,7 +134,7 @@ export function makeAgentGatewayMcpTools(input: {
     definition: {
       name: "synara_mcp_disconnect",
       description:
-        "Disable one configured MCP server in the current Codex session, reload the MCP runtime, and return fresh statuses. Configuration is preserved for reconnecting later.",
+        "Disable one configured MCP server in the current Codex session, reload its MCP runtime, and return fresh statuses. Configuration is preserved for enabling it later.",
       inputSchema: {
         type: "object",
         properties: { name: { type: "string" } },
@@ -149,6 +149,35 @@ export function makeAgentGatewayMcpTools(input: {
           assertCodexSession(context);
           const name = readStringArg(args, "name", { required: true })!;
           const result = yield* input.providerService.disconnectMcpServer({
+            ...currentSessionInput(context),
+            name,
+          });
+          return mcpToolResultJson(result);
+        }),
+      ),
+  };
+
+  const restartMcpServer: ToolEntry = {
+    requiredCapability: "thread:write",
+    requiresActiveTurn: true,
+    definition: {
+      name: "synara_mcp_restart",
+      description:
+        "Restart one configured MCP server in the current Codex session by disabling it and then enabling it in sequence. Use this when the server is connected but its tools are missing or stale; return fresh statuses after the handshake.",
+      inputSchema: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+        additionalProperties: false,
+      },
+      annotations: { title: "Restart MCP server", ...WRITE_TOOL_ANNOTATIONS },
+    },
+    handler: (args, context) =>
+      withMcpErrorHandling(
+        Effect.gen(function* () {
+          assertCodexSession(context);
+          const name = readStringArg(args, "name", { required: true })!;
+          const result = yield* input.providerService.restartMcpServer({
             ...currentSessionInput(context),
             name,
           });
@@ -213,5 +242,12 @@ export function makeAgentGatewayMcpTools(input: {
       ),
   };
 
-  return [listMcpServers, reloadMcpServers, connectMcpServer, disconnectMcpServer, addMcpServer];
+  return [
+    listMcpServers,
+    reloadMcpServers,
+    connectMcpServer,
+    disconnectMcpServer,
+    restartMcpServer,
+    addMcpServer,
+  ];
 }

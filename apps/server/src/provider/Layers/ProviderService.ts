@@ -3138,6 +3138,27 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return yield* adapter.disconnectMcpServer(input);
       });
 
+    const restartMcpServer: ProviderServiceShape["restartMcpServer"] = (rawInput) =>
+      Effect.gen(function* () {
+        const input = yield* decodeInputOrValidationError({
+          operation: "ProviderService.restartMcpServer",
+          schema: ProviderMcpServerActionInput,
+          payload: rawInput,
+        });
+        const adapter = yield* resolveMcpAdapter({
+          provider: input.provider,
+          threadId: input.threadId,
+          operation: "ProviderService.restartMcpServer",
+        });
+        if (!adapter.restartMcpServer) {
+          return yield* toValidationError(
+            "ProviderService.restartMcpServer",
+            `MCP management is unavailable for provider '${input.provider}'.`,
+          );
+        }
+        return yield* adapter.restartMcpServer(input);
+      });
+
     const addMcpServer: ProviderServiceShape["addMcpServer"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
@@ -3306,6 +3327,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       reloadMcpServers,
       connectMcpServer,
       disconnectMcpServer,
+      restartMcpServer,
       addMcpServer,
       closeRuntimeEvents,
       getRuntimeEventPumpHealth: () => Effect.sync(runtimeEventPumpHealth.snapshot),

@@ -2391,6 +2391,18 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }),
       }).pipe(Effect.map((result) => result satisfies ProviderMcpServerActionResult));
 
+    const restartMcpServer: NonNullable<CodexAdapterShape["restartMcpServer"]> = (input) =>
+      Effect.tryPromise({
+        try: () => manager.restartMcpServer(input.threadId, input.name),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "config/mcpServer/reload",
+            detail: toMessage(cause, "Failed to restart MCP server"),
+            cause,
+          }),
+      }).pipe(Effect.map((result) => result satisfies ProviderMcpServerActionResult));
+
     const addMcpServer: NonNullable<CodexAdapterShape["addMcpServer"]> = (input) =>
       Effect.tryPromise({
         try: () => manager.addMcpServer(input),
@@ -2567,6 +2579,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       reloadMcpServers,
       connectMcpServer,
       disconnectMcpServer,
+      restartMcpServer,
       addMcpServer,
       prewarmVoice,
       transcribeVoice,

@@ -104,6 +104,7 @@ function createProviderServiceHarness() {
     reloadMcpServers: () => unsupported(),
     connectMcpServer: () => unsupported(),
     disconnectMcpServer: () => unsupported(),
+    restartMcpServer: () => unsupported(),
     addMcpServer: () => unsupported(),
     closeRuntimeEvents: Effect.void,
     streamEvents: Stream.fromPubSub(runtimeEventPubSub),

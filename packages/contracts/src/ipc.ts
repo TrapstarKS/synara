@@ -896,6 +896,9 @@ export interface NativeApi {
     disconnectMcpServer: (
       input: ProviderMcpServerActionInput,
     ) => Promise<ProviderMcpServerActionResult>;
+    restartMcpServer: (
+      input: ProviderMcpServerActionInput,
+    ) => Promise<ProviderMcpServerActionResult>;
     addMcpServer: (
       input: ProviderAddMcpServerInput,
     ) => Promise<ProviderMcpServerActionResult>;

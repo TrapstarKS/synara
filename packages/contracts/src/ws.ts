@@ -297,6 +297,7 @@ export const WS_METHODS = {
   providerReloadMcpServers: "provider.reloadMcpServers",
   providerConnectMcpServer: "provider.connectMcpServer",
   providerDisconnectMcpServer: "provider.disconnectMcpServer",
+  providerRestartMcpServer: "provider.restartMcpServer",
   providerAddMcpServer: "provider.addMcpServer",
 
   // Automation methods
@@ -514,6 +515,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.providerReloadMcpServers, ProviderListMcpServersInput),
   tagRequestBody(WS_METHODS.providerConnectMcpServer, ProviderMcpServerActionInput),
   tagRequestBody(WS_METHODS.providerDisconnectMcpServer, ProviderMcpServerActionInput),
+  tagRequestBody(WS_METHODS.providerRestartMcpServer, ProviderMcpServerActionInput),
   tagRequestBody(WS_METHODS.providerAddMcpServer, ProviderAddMcpServerInput),
 
   // Automation methods

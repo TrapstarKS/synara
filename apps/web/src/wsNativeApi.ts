@@ -764,6 +764,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.providerConnectMcpServer, input, { timeoutMs: null }),
       disconnectMcpServer: (input) =>
         transport.request(WS_METHODS.providerDisconnectMcpServer, input, { timeoutMs: null }),
+      restartMcpServer: (input) =>
+        transport.request(WS_METHODS.providerRestartMcpServer, input, { timeoutMs: null }),
       addMcpServer: (input) =>
         transport.request(WS_METHODS.providerAddMcpServer, input, { timeoutMs: null }),
     },

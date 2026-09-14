@@ -27,6 +27,7 @@ const CONTROL_METHODS = new Set<string>([
   WS_METHODS.providerReloadMcpServers,
   WS_METHODS.providerConnectMcpServer,
   WS_METHODS.providerDisconnectMcpServer,
+  WS_METHODS.providerRestartMcpServer,
   WS_METHODS.providerAddMcpServer,
   WS_METHODS.automationCancelRun,
   WS_METHODS.automationMarkRunRead,

@@ -57,7 +57,12 @@ export const ProviderMcpServerActionInput = Schema.Struct({
 });
 export type ProviderMcpServerActionInput = typeof ProviderMcpServerActionInput.Type;
 
-export const ProviderMcpServerAction = Schema.Literals(["reloaded", "connected", "disconnected"]);
+export const ProviderMcpServerAction = Schema.Literals([
+  "reloaded",
+  "restarted",
+  "connected",
+  "disconnected",
+]);
 export type ProviderMcpServerAction = typeof ProviderMcpServerAction.Type;
 
 export const ProviderMcpServerActionResult = Schema.Struct({

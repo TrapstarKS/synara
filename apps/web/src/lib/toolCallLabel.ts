@@ -256,6 +256,11 @@ const SYNARA_MCP_TOOL_PRESENTATIONS = {
     completed: "Synara disconnected an MCP server",
     failed: "Synara couldn't disconnect an MCP server",
   },
+  synara_mcp_restart: {
+    running: "Synara is restarting an MCP server",
+    completed: "Synara restarted an MCP server",
+    failed: "Synara couldn't restart an MCP server",
+  },
   synara_mcp_add: {
     running: "Synara is adding an MCP server",
     completed: "Synara added an MCP server",

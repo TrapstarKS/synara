@@ -2161,6 +2161,8 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(providerService.connectMcpServer(input), "Failed to connect MCP server"),
         [WS_METHODS.providerDisconnectMcpServer]: (input) =>
           rpcEffect(providerService.disconnectMcpServer(input), "Failed to disconnect MCP server"),
+        [WS_METHODS.providerRestartMcpServer]: (input) =>
+          rpcEffect(providerService.restartMcpServer(input), "Failed to restart MCP server"),
         [WS_METHODS.providerAddMcpServer]: (input) =>
           rpcEffect(providerService.addMcpServer(input), "Failed to add MCP server"),
         [WS_METHODS.automationList]: (input) =>

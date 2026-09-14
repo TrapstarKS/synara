@@ -260,6 +260,11 @@ export interface ProviderServiceShape {
     input: ProviderMcpServerActionInput,
   ) => Effect.Effect<ProviderMcpServerActionResult, ProviderServiceError>;
 
+  /** Disable and re-enable one configured MCP server to force a fresh runtime handshake. */
+  readonly restartMcpServer: (
+    input: ProviderMcpServerActionInput,
+  ) => Effect.Effect<ProviderMcpServerActionResult, ProviderServiceError>;
+
   /** Add or update a configured MCP server and reload the provider runtime. */
   readonly addMcpServer: (
     input: ProviderAddMcpServerInput,

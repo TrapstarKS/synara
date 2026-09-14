@@ -2591,6 +2591,17 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return this.setMcpServerEnabled(threadId, name, false);
   }
 
+  async restartMcpServer(threadId: string, name: string): Promise<ProviderMcpServerActionResult> {
+    const context = await this.resolveContextForDiscovery(threadId);
+    const validatedName = validateMcpServerName(name);
+    await this.setMcpServerEnabledForContext(context, validatedName, false);
+    await this.setMcpServerEnabledForContext(context, validatedName, true);
+    return {
+      action: "restarted",
+      ...(await this.listMcpServersFromContext(context)),
+    };
+  }
+
   async addMcpServer(input: ProviderAddMcpServerInput): Promise<ProviderMcpServerActionResult> {
     const context = await this.resolveContextForDiscovery(input.threadId);
     const name = validateMcpServerName(input.name);
@@ -2613,16 +2624,24 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): Promise<ProviderMcpServerActionResult> {
     const context = await this.resolveContextForDiscovery(threadId);
     const name = validateMcpServerName(rawName);
+    await this.setMcpServerEnabledForContext(context, name, enabled);
+    return {
+      action: enabled ? "connected" : "disconnected",
+      ...(await this.listMcpServersFromContext(context)),
+    };
+  }
+
+  private async setMcpServerEnabledForContext(
+    context: CodexSessionContext,
+    name: string,
+    enabled: boolean,
+  ): Promise<void> {
     await this.sendRequest<Record<string, unknown>>(context, "config/value/write", {
       keyPath: `mcp_servers.${name}.enabled`,
       mergeStrategy: "upsert",
       value: enabled,
     });
     await this.sendRequest<Record<string, unknown>>(context, "config/mcpServer/reload", null);
-    return {
-      action: enabled ? "connected" : "disconnected",
-      ...(await this.listMcpServersFromContext(context)),
-    };
   }
 
   private async listMcpServersFromContext(
