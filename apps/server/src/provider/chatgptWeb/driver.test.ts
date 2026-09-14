@@ -162,9 +162,64 @@ describe("ChatGptWebDriver", () => {
       sleep: fastSleep,
       pollMs: 5,
       readyTimeoutMs: 500,
+      loginWaitMs: 60,
     });
 
-    await expectFailure(() => driver.ensureConversation(), "login-required");
+    const failure = await expectFailure(() => driver.ensureConversation(), "login-required");
+    expect(failure.message).toContain("Finish signing in");
+  });
+
+  it("waits for sign-in and continues automatically once the composer appears", async () => {
+    const fake = createFakeRpc([
+      { name: "browser_tabs", result: { tabs: [], activeTabId: null, assignedTabId: null } },
+      { name: "browser_open", result: { tabId: "t1", finalUrl: "https://chatgpt.com/" } },
+      {
+        name: "browser_evaluate",
+        result: observed({ composerPresent: false, loginRequired: true }),
+        times: 3,
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({ composerPresent: true }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const onLoginRequired = vi.fn();
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 5,
+      loginWaitMs: 2_000,
+      onLoginRequired,
+    });
+
+    const conversation = await driver.ensureConversation();
+
+    expect(conversation.tabId).toBe("t1");
+    expect(onLoginRequired).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a human-control interruption to a retryable, explicit failure", async () => {
+    const call = vi.fn(async (): Promise<unknown> => {
+      throw new BrowserHostRpcError(
+        "remote",
+        "The browser operation was interrupted by human control.",
+        {
+          type: "synara_browser_error",
+          version: 1,
+          error: { code: "BrowserInterruptedByHuman", message: "interrupted" },
+        },
+      );
+    });
+    const driver = new ChatGptWebDriver({
+      rpc: { call },
+      sleep: fastSleep,
+      pollMs: 5,
+      readyTimeoutMs: 200,
+    });
+
+    const failure = await expectFailure(() => driver.ensureConversation(), "interrupted-by-human");
+    expect(failure.message).toContain("leave the tab alone");
   });
 
   it("sends a prompt once the composer holds it and the page proves acceptance", async () => {

@@ -224,3 +224,28 @@ export const ChatGptConnectorState = Schema.Struct({
   lastToolCallAt: Schema.NullOr(Schema.String),
 });
 export type ChatGptConnectorState = typeof ChatGptConnectorState.Type;
+
+/**
+ * Opens (or reuses) the ChatGPT web tab in a Synara thread's browser so the
+ * user can sign in without starting a turn first, then reports whether the
+ * sign-in completed within the wait window.
+ */
+export const ProviderOpenChatGptLoginInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type ProviderOpenChatGptLoginInput = typeof ProviderOpenChatGptLoginInput.Type;
+
+export const ChatGptLoginStatus = Schema.Literals([
+  "signed-in",
+  "sign-in-required",
+  "unavailable",
+  "error",
+]);
+export type ChatGptLoginStatus = typeof ChatGptLoginStatus.Type;
+
+export const ChatGptLoginResult = Schema.Struct({
+  status: ChatGptLoginStatus,
+  message: Schema.String,
+  url: Schema.optional(Schema.String),
+});
+export type ChatGptLoginResult = typeof ChatGptLoginResult.Type;

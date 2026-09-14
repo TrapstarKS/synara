@@ -261,7 +261,12 @@ import type {
   ProviderReadPluginInput,
   ProviderReadPluginResult,
 } from "./providerDiscovery";
-import type { ChatGptConnectorState, ProviderCompactThreadInput } from "./provider";
+import type {
+  ChatGptConnectorState,
+  ChatGptLoginResult,
+  ProviderCompactThreadInput,
+  ProviderOpenChatGptLoginInput,
+} from "./provider";
 import type {
   ProviderAddMcpServerInput,
   ProviderListMcpServersInput,
@@ -901,6 +906,7 @@ export interface NativeApi {
     chatGptConnector: () => Promise<ChatGptConnectorState>;
     restartChatGptTunnel: () => Promise<ChatGptConnectorState>;
     rotateChatGptSecret: () => Promise<ChatGptConnectorState>;
+    openChatGptLogin: (input: ProviderOpenChatGptLoginInput) => Promise<ChatGptLoginResult>;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

@@ -29,6 +29,7 @@ import type {
 export type ChatGptDriverFailureCode =
   | "browser-unavailable"
   | "login-required"
+  | "interrupted-by-human"
   | "rate-limited"
   | "busy"
   | "send-failed"
@@ -66,6 +67,14 @@ export interface ChatGptDriverOptions {
   readonly sendAcceptTimeoutMs?: number;
   readonly stallMs?: number;
   readonly completionTimeoutMs?: number;
+  /**
+   * How long to keep polling after the sign-in page appears, giving the user
+   * time to log in (in the Synara browser) while the turn waits. Zero fails
+   * immediately with `login-required`.
+   */
+  readonly loginWaitMs?: number;
+  /** Called once per wait when the page first asks for a sign-in. */
+  readonly onLoginRequired?: () => void;
 }
 
 const CHATGPT_HOSTS = new Set(["chatgpt.com", "chat.openai.com", "www.chatgpt.com"]);
@@ -76,6 +85,7 @@ const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_SEND_ACCEPT_TIMEOUT_MS = 30_000;
 const DEFAULT_STALL_MS = 10 * 60_000;
 const DEFAULT_COMPLETION_TIMEOUT_MS = 45 * 60_000;
+const DEFAULT_LOGIN_WAIT_MS = 5 * 60_000;
 
 const SEND_SELECTORS = [
   'button[data-testid="send-button"]',
@@ -113,6 +123,14 @@ const isChatGptUrl = (value: string): boolean => {
   }
 };
 
+/** Reads the structured host error code from a remote browser host rejection. */
+const browserHostErrorCode = (error: BrowserHostRpcError): string | null => {
+  const data = asRecord(error.data);
+  const envelope = asRecord(data?.["error"]);
+  const code = envelope?.["code"];
+  return typeof code === "string" ? code : null;
+};
+
 export class ChatGptWebDriver {
   private readonly rpc: ChatGptBrowserRpc;
   private readonly sleep: (milliseconds: number) => Promise<void>;
@@ -122,6 +140,8 @@ export class ChatGptWebDriver {
   private readonly sendAcceptTimeoutMs: number;
   private readonly stallMs: number;
   private readonly completionTimeoutMs: number;
+  private readonly loginWaitMs: number;
+  private readonly onLoginRequired: (() => void) | undefined;
 
   constructor(options: ChatGptDriverOptions) {
     this.rpc = options.rpc;
@@ -132,6 +152,8 @@ export class ChatGptWebDriver {
     this.sendAcceptTimeoutMs = options.sendAcceptTimeoutMs ?? DEFAULT_SEND_ACCEPT_TIMEOUT_MS;
     this.stallMs = options.stallMs ?? DEFAULT_STALL_MS;
     this.completionTimeoutMs = options.completionTimeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS;
+    this.loginWaitMs = options.loginWaitMs ?? DEFAULT_LOGIN_WAIT_MS;
+    this.onLoginRequired = options.onLoginRequired;
   }
 
   private async call(input: ChatGptBrowserCallInput): Promise<unknown> {
@@ -143,6 +165,12 @@ export class ChatGptWebDriver {
           throw new ChatGptDriverFailure(
             "browser-unavailable",
             "The Synara browser is only available in the desktop app. Open Synara desktop to run ChatGPT (Web) sessions.",
+          );
+        }
+        if (browserHostErrorCode(error) === "BrowserInterruptedByHuman") {
+          throw new ChatGptDriverFailure(
+            "interrupted-by-human",
+            "You interacted with the ChatGPT tab while Synara was driving it, so this action was cancelled. Start the turn again and leave the tab alone while it runs.",
           );
         }
         throw new ChatGptDriverFailure("tool-error", `Browser action failed: ${error.message}`);
@@ -230,15 +258,25 @@ export class ChatGptWebDriver {
     url: string,
     options: { readonly navigateIfStale: boolean },
   ): Promise<ChatGptConversationRef> {
-    const deadline = Date.now() + this.readyTimeoutMs;
+    let deadline = Date.now() + this.readyTimeoutMs;
     let navigated = !options.navigateIfStale;
+    let loginSeen = false;
     while (Date.now() < deadline) {
       const observation = await this.observe({ tabId, url, conversationPath: null });
       if (observation.loginRequired) {
-        throw new ChatGptDriverFailure(
-          "login-required",
-          `Sign in to ChatGPT in the Synara browser (${observation.url}). The conversation tab is open and waiting.`,
-        );
+        if (this.loginWaitMs <= 0) {
+          throw new ChatGptDriverFailure(
+            "login-required",
+            `Sign in to ChatGPT in the Synara browser (${observation.url}). The conversation tab is open and waiting.`,
+          );
+        }
+        if (!loginSeen) {
+          loginSeen = true;
+          deadline = Date.now() + this.loginWaitMs;
+          this.onLoginRequired?.();
+        }
+        await this.sleep(Math.min(this.pollMs, 500));
+        continue;
       }
       if (observation.composerPresent) {
         return { tabId, url: observation.url, conversationPath: observation.conversationPath };
@@ -257,10 +295,37 @@ export class ChatGptWebDriver {
       }
       await this.sleep(this.pollMs);
     }
+    if (loginSeen) {
+      throw new ChatGptDriverFailure(
+        "login-required",
+        "ChatGPT is still showing the sign-in page. Finish signing in to chatgpt.com in the Synara browser, then start the turn again.",
+      );
+    }
     throw new ChatGptDriverFailure(
       "timeout",
       "The ChatGPT page did not show its composer in time. Open the conversation tab in Synara and check the page state.",
     );
+  }
+
+  /**
+   * Polls a signed-out page until the composer appears. Returns the refreshed
+   * observation when the page becomes ready, or null when the login wait is
+   * disabled or expires.
+   */
+  private async waitForLogin(
+    ref: ChatGptConversationRef,
+    initial: ChatGptObservation,
+  ): Promise<ChatGptObservation | null> {
+    if (this.loginWaitMs <= 0) return null;
+    this.onLoginRequired?.();
+    const deadline = Date.now() + this.loginWaitMs;
+    let observation = initial;
+    while (Date.now() < deadline) {
+      await this.sleep(Math.min(this.pollMs, 500));
+      observation = await this.observe(ref);
+      if (observation.composerPresent && !observation.loginRequired) return observation;
+    }
+    return null;
   }
 
   async observe(ref: ChatGptConversationRef): Promise<ChatGptObservation> {
@@ -354,10 +419,14 @@ export class ChatGptWebDriver {
       throw this.rateLimitFailure(before);
     }
     if (before.loginRequired) {
-      throw new ChatGptDriverFailure(
-        "login-required",
-        "Sign in to ChatGPT in the Synara browser first.",
-      );
+      const ready = await this.waitForLogin(ref, before);
+      if (!ready) {
+        throw new ChatGptDriverFailure(
+          "login-required",
+          "Sign in to ChatGPT in the Synara browser first.",
+        );
+      }
+      return this.sendPrompt(ref, text);
     }
     if (before.generating) {
       throw new ChatGptDriverFailure(

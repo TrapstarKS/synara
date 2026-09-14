@@ -773,6 +773,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.providerRestartChatGptTunnel, {}, { timeoutMs: null }),
       rotateChatGptSecret: () =>
         transport.request(WS_METHODS.providerRotateChatGptSecret, {}, { timeoutMs: null }),
+      openChatGptLogin: (input) =>
+        transport.request(WS_METHODS.providerOpenChatGptLogin, input, { timeoutMs: null }),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

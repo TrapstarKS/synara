@@ -485,11 +485,17 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
         const startOptions = input.providerOptions?.chatgpt;
         const maxWorkers = yield* resolveMaxWorkers();
 
+        let contextRef: ChatGptSessionContext | null = null;
         const driver =
           dependencies.createDriver?.({ threadId: input.threadId }) ??
-          new ChatGptWebDriver({ rpc: hostRpcFor(input.threadId, workspaceRoot) });
-
-        let contextRef: ChatGptSessionContext | null = null;
+          new ChatGptWebDriver({
+            rpc: hostRpcFor(input.threadId, workspaceRoot),
+            onLoginRequired: () =>
+              emitRuntimeWarning(
+                contextRef,
+                "ChatGPT is showing its sign-in page. Sign in to chatgpt.com in the Synara browser; Synara is waiting and continues automatically once you are signed in.",
+              ),
+          });
         const broker = new ChatGptWorkerBroker({
           workspaceRoot,
           maxWorkers,

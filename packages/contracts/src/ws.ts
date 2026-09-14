@@ -146,7 +146,7 @@ import {
   ProviderListSkillsInput,
   ProviderSkillsCatalogInput,
 } from "./providerDiscovery";
-import { ProviderCompactThreadInput } from "./provider";
+import { ProviderCompactThreadInput, ProviderOpenChatGptLoginInput } from "./provider";
 import {
   ProviderAddMcpServerInput,
   ProviderListMcpServersInput,
@@ -301,6 +301,7 @@ export const WS_METHODS = {
   providerChatGptConnector: "provider.chatGptConnector",
   providerRestartChatGptTunnel: "provider.restartChatGptTunnel",
   providerRotateChatGptSecret: "provider.rotateChatGptSecret",
+  providerOpenChatGptLogin: "provider.openChatGptLogin",
   providerAddMcpServer: "provider.addMcpServer",
 
   // Automation methods
@@ -523,6 +524,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.providerChatGptConnector, Schema.Struct({})),
   tagRequestBody(WS_METHODS.providerRestartChatGptTunnel, Schema.Struct({})),
   tagRequestBody(WS_METHODS.providerRotateChatGptSecret, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.providerOpenChatGptLogin, ProviderOpenChatGptLoginInput),
 
   // Automation methods
   tagRequestBody(WS_METHODS.automationList, AutomationListInput),

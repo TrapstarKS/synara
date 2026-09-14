@@ -117,6 +117,8 @@ import { ServerLifecycleEvents } from "./serverLifecycleEvents";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup";
 import { ServerSettingsService } from "./serverSettings";
 import { ChatGptConnector } from "./provider/chatgptConnector/Services/ChatGptConnector";
+import { openChatGptLogin } from "./provider/chatgptConnector/login";
+import { BrowserAutomationHost } from "./browserAutomation/Services/BrowserAutomationHost";
 import { isLoopbackHost } from "./startupAccess";
 import { TerminalManager } from "./terminal/Services/Manager";
 import { TerminalThreadTitleTracker } from "./terminal/terminalThreadTitleTracker";
@@ -1719,6 +1721,16 @@ const makeWsRpcHandlersLayer = () =>
               return yield* chatGptConnector.rotateSecret;
             }),
             "Failed to rotate the ChatGPT connector secret",
+          ),
+        [WS_METHODS.providerOpenChatGptLogin]: (input) =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const browserHost = yield* BrowserAutomationHost;
+              return yield* Effect.promise(() =>
+                openChatGptLogin({ browserHost, threadId: input.threadId }),
+              );
+            }),
+            "Failed to open the ChatGPT sign-in page",
           ),
         [WS_METHODS.serverGetConfig]: () =>
           rpcEffect(loadServerConfig, "Failed to load server config"),

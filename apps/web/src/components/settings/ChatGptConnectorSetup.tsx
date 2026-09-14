@@ -4,11 +4,14 @@
 //          the connector in ChatGPT.
 // Layer: Settings panel
 
-import type { ChatGptConnectorState, ChatGptTunnelMode } from "@synara/contracts";
+import type { ChatGptConnectorState, ChatGptTunnelMode, ThreadId } from "@synara/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useId, useState } from "react";
 
 import { copyTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { useSpacesUiStore } from "~/spacesUiStore";
+import { useStore } from "~/store";
 import { ExternalLinkIcon, Loader2Icon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import { ensureNativeApi } from "~/nativeApi";
@@ -119,6 +122,72 @@ export function ChatGptConnectorSetup(props: {
 }) {
   const queryClient = useQueryClient();
   const connectorId = useId();
+  const navigate = useNavigate();
+  const activeSpaceId = useSpacesUiStore((state) => state.activeSpaceId);
+  const getLastThreadId = useSpacesUiStore((state) => state.getLastThreadId);
+  const threadIds = useStore((state) => state.threadIds);
+  const [signInPending, setSignInPending] = useState(false);
+
+  /**
+   * Picks the thread whose browser hosts the sign-in tab: the last thread
+   * visited in the active space, else any known thread (cookies are shared
+   * across the whole Synara browser, so one sign-in covers every thread).
+   */
+  const resolveLoginThreadId = (): ThreadId | null => {
+    const remembered = getLastThreadId(activeSpaceId);
+    if (remembered) return remembered;
+    return threadIds?.[0] ?? null;
+  };
+
+  const runSignIn = async () => {
+    const threadId = resolveLoginThreadId();
+    if (!threadId) {
+      toastManager.add({
+        type: "warning",
+        title: "Open a conversation once",
+        description:
+          "The sign-in tab lives in a conversation's browser panel. Open any conversation, then try again.",
+      });
+      return;
+    }
+    setSignInPending(true);
+    // Navigate first so this thread's browser panel is mounted when the tab
+    // opens; the runtime reveals it for the focused thread only.
+    void navigate({ to: "/$threadId", params: { threadId } });
+    try {
+      const result = await ensureNativeApi().provider.openChatGptLogin({ threadId });
+      if (result.status === "signed-in") {
+        toastManager.add({
+          type: "success",
+          title: "Signed in to ChatGPT",
+          description: "The ChatGPT tab in the Synara browser is ready.",
+        });
+        void queryClient.invalidateQueries({ queryKey: CHATGPT_CONNECTOR_QUERY_KEY });
+      } else if (result.status === "sign-in-required") {
+        toastManager.add({
+          type: "warning",
+          title: "Finish signing in",
+          description: result.message,
+        });
+      } else {
+        toastManager.add({
+          type: "error",
+          title:
+            result.status === "unavailable"
+              ? "The Synara browser is unavailable"
+              : "Could not open the ChatGPT sign-in",
+          description: result.message,
+        });
+      }
+    } catch {
+      toastManager.add({
+        type: "error",
+        title: "Could not open the ChatGPT sign-in",
+      });
+    } finally {
+      setSignInPending(false);
+    }
+  };
   const connectorQuery = useQuery({
     queryKey: [...CHATGPT_CONNECTOR_QUERY_KEY, props.tunnelMode],
     queryFn: () => ensureNativeApi().provider.chatGptConnector(),
@@ -196,6 +265,17 @@ export function ChatGptConnectorSetup(props: {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={signInPending}
+            onClick={() => void runSignIn()}
+            title="Open chatgpt.com in this conversation's browser panel and wait for sign-in"
+          >
+            {signInPending ? <Loader2Icon className="size-3 animate-spin" /> : null}
+            {signInPending ? "Waiting for sign-in…" : "Sign in to ChatGPT"}
+          </Button>
           <Button
             type="button"
             size="xs"

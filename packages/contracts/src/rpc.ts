@@ -136,7 +136,12 @@ import {
   OrchestrationShellStreamItem,
   OrchestrationThreadStreamItem,
 } from "./orchestration";
-import { ChatGptConnectorState, ProviderCompactThreadInput } from "./provider";
+import {
+  ChatGptConnectorState,
+  ChatGptLoginResult,
+  ProviderCompactThreadInput,
+  ProviderOpenChatGptLoginInput,
+} from "./provider";
 import {
   ProviderAddMcpServerInput,
   ProviderListMcpServersInput,
@@ -1277,6 +1282,12 @@ export const WsProviderRotateChatGptSecretRpc = Rpc.make(WS_METHODS.providerRota
   error: WsRpcError,
 });
 
+export const WsProviderOpenChatGptLoginRpc = Rpc.make(WS_METHODS.providerOpenChatGptLogin, {
+  payload: ProviderOpenChatGptLoginInput,
+  success: ChatGptLoginResult,
+  error: WsRpcError,
+});
+
 export const WsAutomationListRpc = Rpc.make(WS_METHODS.automationList, {
   payload: AutomationListInput,
   success: AutomationListResult,
@@ -1474,6 +1485,7 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsProviderChatGptConnectorRpc,
   WsProviderRestartChatGptTunnelRpc,
   WsProviderRotateChatGptSecretRpc,
+  WsProviderOpenChatGptLoginRpc,
   WsAutomationListRpc,
   WsAutomationGetMemoryRpc,
   WsAutomationCreateRpc,
