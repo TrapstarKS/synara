@@ -1,3 +1,4 @@
+import { ThreadId } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,6 +7,8 @@ import {
   parseCodexMcpServerStatus,
   validateMcpServerName,
 } from "./mcpServer.ts";
+
+const THREAD_ID = ThreadId.makeUnsafe("thread");
 
 describe("Codex MCP server normalization", () => {
   it("normalizes runtime status, tools, and resource counts", () => {
@@ -59,7 +62,7 @@ describe("Codex MCP server normalization", () => {
     expect(
       buildCodexMcpServerConfig({
         provider: "codex",
-        threadId: "thread",
+        threadId: THREAD_ID,
         name: "local-tools",
         transport: "stdio",
         command: "node",
@@ -78,7 +81,7 @@ describe("Codex MCP server normalization", () => {
     expect(
       buildCodexMcpServerConfig({
         provider: "codex",
-        threadId: "thread",
+        threadId: THREAD_ID,
         name: "remote-tools",
         transport: "streamable-http",
         url: "https://example.test/mcp",
@@ -97,7 +100,7 @@ describe("Codex MCP server normalization", () => {
     expect(() =>
       buildCodexMcpServerConfig({
         provider: "codex",
-        threadId: "thread",
+        threadId: THREAD_ID,
         name: "local",
         transport: "stdio",
       }),
