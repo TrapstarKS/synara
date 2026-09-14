@@ -261,7 +261,7 @@ import type {
   ProviderReadPluginInput,
   ProviderReadPluginResult,
 } from "./providerDiscovery";
-import type { ProviderCompactThreadInput } from "./provider";
+import type { ChatGptConnectorState, ProviderCompactThreadInput } from "./provider";
 import type {
   ProviderAddMcpServerInput,
   ProviderListMcpServersInput,
@@ -884,9 +884,7 @@ export interface NativeApi {
     readPlugin: (input: ProviderReadPluginInput) => Promise<ProviderReadPluginResult>;
     listModels: (input: ProviderListModelsInput) => Promise<ProviderListModelsResult>;
     listAgents: (input: ProviderListAgentsInput) => Promise<ProviderListAgentsResult>;
-    listMcpServers: (
-      input: ProviderListMcpServersInput,
-    ) => Promise<ProviderListMcpServersResult>;
+    listMcpServers: (input: ProviderListMcpServersInput) => Promise<ProviderListMcpServersResult>;
     reloadMcpServers: (
       input: ProviderListMcpServersInput,
     ) => Promise<ProviderMcpServerActionResult>;
@@ -899,9 +897,10 @@ export interface NativeApi {
     restartMcpServer: (
       input: ProviderMcpServerActionInput,
     ) => Promise<ProviderMcpServerActionResult>;
-    addMcpServer: (
-      input: ProviderAddMcpServerInput,
-    ) => Promise<ProviderMcpServerActionResult>;
+    addMcpServer: (input: ProviderAddMcpServerInput) => Promise<ProviderMcpServerActionResult>;
+    chatGptConnector: () => Promise<ChatGptConnectorState>;
+    restartChatGptTunnel: () => Promise<ChatGptConnectorState>;
+    rotateChatGptSecret: () => Promise<ChatGptConnectorState>;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

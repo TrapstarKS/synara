@@ -90,6 +90,28 @@ export const DevinServerProviderSettings = Schema.Struct({
 });
 export type DevinServerProviderSettings = typeof DevinServerProviderSettings.Type;
 
+/**
+ * How the ChatGPT web connector reaches this server. `off` keeps the local MCP
+ * endpoint disabled; `manual` leaves tunneling to the user and only publishes
+ * the loopback connector URL; `cloudflared` runs a Cloudflare quick tunnel;
+ * `openai` runs the OpenAI Secure MCP Tunnel client against a tunnel id.
+ */
+export const ChatGptTunnelMode = Schema.Literals(["off", "manual", "cloudflared", "openai"]);
+export type ChatGptTunnelMode = typeof ChatGptTunnelMode.Type;
+
+export const CHATGPT_MAX_WORKERS_DEFAULT = 2;
+
+export const ChatGptServerProviderSettings = Schema.Struct({
+  ...ProviderSettingsBase,
+  tunnelMode: ChatGptTunnelMode.pipe(Schema.withDecodingDefault(() => "off")),
+  tunnelBinaryPath: StringSetting.pipe(Schema.withDecodingDefault(() => "")),
+  openAiTunnelId: StringSetting.pipe(Schema.withDecodingDefault(() => "")),
+  openAiTunnelApiKeyConfigured: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Simultaneous worker chats the agents tool may keep active (1-8). */
+  maxWorkers: Schema.Int.pipe(Schema.withDecodingDefault(() => CHATGPT_MAX_WORKERS_DEFAULT)),
+});
+export type ChatGptServerProviderSettings = typeof ChatGptServerProviderSettings.Type;
+
 const DisabledSkillNames = Schema.Array(Schema.String.check(Schema.isMaxLength(256))).pipe(
   Schema.withDecodingDefault(() => []),
 );
@@ -122,6 +144,7 @@ export const ServerSettings = Schema.Struct({
     droid: DroidServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     opencode: OpenCodeServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     pi: PiServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+    chatgpt: ChatGptServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   skills: SkillsServerSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 });
@@ -196,6 +219,17 @@ export const ServerSettingsPatch = Schema.Struct({
           ...ProviderSettingsBasePatch,
           binaryPath: Schema.optionalKey(StringSetting),
           agentDir: Schema.optionalKey(StringSetting),
+        }),
+      ),
+      chatgpt: Schema.optionalKey(
+        Schema.Struct({
+          ...ProviderSettingsBasePatch,
+          tunnelMode: Schema.optionalKey(ChatGptTunnelMode),
+          tunnelBinaryPath: Schema.optionalKey(StringSetting),
+          openAiTunnelId: Schema.optionalKey(StringSetting),
+          // Secret: extracted into the server secret store, never echoed back.
+          openAiTunnelApiKey: Schema.optionalKey(StringSetting),
+          maxWorkers: Schema.optionalKey(Schema.Int),
         }),
       ),
       devin: Schema.optionalKey(Schema.Struct(ProviderSettingsBasePatch)),

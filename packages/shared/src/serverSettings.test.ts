@@ -50,6 +50,11 @@ describe("providerStartOptionsFromServerSettings", () => {
           ...DEFAULT_SERVER_SETTINGS.providers.devin,
           binaryPath: "",
         },
+        chatgpt: {
+          ...DEFAULT_SERVER_SETTINGS.providers.chatgpt,
+          tunnelBinaryPath: "",
+          openAiTunnelId: "",
+        },
       },
     };
 
@@ -72,6 +77,7 @@ describe("providerStartOptionsFromServerSettings", () => {
     expect(providerOptions.opencode).toEqual({ experimentalWebSockets: false });
     expect(providerOptions.pi).toEqual({});
     expect(providerOptions.devin).toEqual({});
+    expect(providerOptions.chatgpt).toEqual({});
   });
 
   it("preserves configured launch settings", () => {

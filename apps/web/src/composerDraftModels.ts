@@ -3,9 +3,11 @@
 // Exports: Model state helpers used by persistence, actions, and the public facade.
 
 import {
+  CHATGPT_REASONING_EFFORT_OPTIONS,
   CodexProfileId,
   GROK_REASONING_EFFORT_OPTIONS,
   ProviderKind,
+  type ChatGptReasoningEffort,
   type ClaudeCodeEffort,
   type CodexReasoningEffort,
   type CursorModelOptions,
@@ -40,11 +42,13 @@ export const COMPOSER_PROVIDER_KINDS = [
   "droid",
   "opencode",
   "pi",
+  "chatgpt",
 ] as const satisfies readonly ProviderKind[];
 
 const isProviderKind = Schema.is(ProviderKind);
 
 const GROK_REASONING_EFFORT_SET = new Set<string>(GROK_REASONING_EFFORT_OPTIONS);
+const CHATGPT_REASONING_EFFORT_SET = new Set<string>(CHATGPT_REASONING_EFFORT_OPTIONS);
 
 export const LegacyCodexFields = Schema.Struct({
   effort: Schema.optionalKey(Schema.String),
@@ -135,6 +139,10 @@ function isGrokReasoningEffort(value: unknown): value is GrokReasoningEffort {
   return typeof value === "string" && GROK_REASONING_EFFORT_SET.has(value);
 }
 
+function isChatGptReasoningEffort(value: unknown): value is ChatGptReasoningEffort {
+  return typeof value === "string" && CHATGPT_REASONING_EFFORT_SET.has(value);
+}
+
 export function makeModelSelection(
   provider: ProviderKind,
   model: string,
@@ -219,6 +227,14 @@ export function makeModelSelection(
           ? { options: options as Extract<ModelSelection, { provider: "pi" }>["options"] }
           : {}),
       };
+    case "chatgpt":
+      return {
+        provider,
+        model,
+        ...(options
+          ? { options: options as Extract<ModelSelection, { provider: "chatgpt" }>["options"] }
+          : {}),
+      };
   }
 }
 
@@ -263,6 +279,10 @@ export function normalizeProviderModelOptions(
   const piCandidate =
     candidate?.pi && typeof candidate.pi === "object"
       ? (candidate.pi as Record<string, unknown>)
+      : null;
+  const chatGptCandidate =
+    candidate?.chatgpt && typeof candidate.chatgpt === "object"
+      ? (candidate.chatgpt as Record<string, unknown>)
       : null;
 
   const codexReasoningEffort: CodexReasoningEffort | undefined =
@@ -371,6 +391,13 @@ export function normalizeProviderModelOptions(
       ? piCandidate.thinkingLevel
       : undefined;
   const pi = piThinkingLevel !== undefined ? { thinkingLevel: piThinkingLevel } : undefined;
+  const chatGptReasoningEffort: ChatGptReasoningEffort | undefined = isChatGptReasoningEffort(
+    chatGptCandidate?.reasoningEffort,
+  )
+    ? chatGptCandidate.reasoningEffort
+    : undefined;
+  const chatgpt =
+    chatGptReasoningEffort !== undefined ? { reasoningEffort: chatGptReasoningEffort } : undefined;
   const devinFastMode = booleanOrUndefined(devinCandidate?.fastMode);
   const devinReasoningEffort = trimStringOrUndefined(devinCandidate?.reasoningEffort);
   const devinThinking = booleanOrUndefined(devinCandidate?.thinking);
@@ -399,7 +426,8 @@ export function normalizeProviderModelOptions(
     !grok &&
     !droid &&
     !opencode &&
-    !pi
+    !pi &&
+    !chatgpt
   ) {
     return null;
   }
@@ -413,6 +441,7 @@ export function normalizeProviderModelOptions(
     ...(droid ? { droid } : {}),
     ...(opencode ? { opencode } : {}),
     ...(pi ? { pi } : {}),
+    ...(chatgpt ? { chatgpt } : {}),
   };
 }
 
@@ -478,7 +507,9 @@ export function normalizeModelSelection(
                     ? modelOptions?.pi
                     : provider === "devin"
                       ? modelOptions?.devin
-                      : undefined;
+                      : provider === "chatgpt"
+                        ? modelOptions?.chatgpt
+                        : undefined;
   const normalizedOptions =
     provider === "antigravity" && hasLegacyAntigravityEffort
       ? {

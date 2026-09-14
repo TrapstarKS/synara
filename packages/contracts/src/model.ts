@@ -159,6 +159,27 @@ export const DevinModelOptions = Schema.Struct({
 });
 export type DevinModelOptions = typeof DevinModelOptions.Type;
 
+// ChatGPT web reasoning vocabulary, ported from the conversation picker's
+// reasoning_effort query parameter. "pro" is the Power tier and is modeled as
+// an effort value because the picker exposes it beside the other levels.
+export const CHATGPT_REASONING_EFFORT_OPTIONS = [
+  "pro",
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+export type ChatGptReasoningEffort = (typeof CHATGPT_REASONING_EFFORT_OPTIONS)[number];
+
+export const ChatGptModelOptions = Schema.Struct({
+  reasoningEffort: Schema.optional(TrimmedNonEmptyString),
+});
+export type ChatGptModelOptions = typeof ChatGptModelOptions.Type;
+
 export const ProviderModelOptions = Schema.Struct({
   codex: Schema.optional(CodexModelOptions),
   claudeAgent: Schema.optional(ClaudeModelOptions),
@@ -169,6 +190,7 @@ export const ProviderModelOptions = Schema.Struct({
   droid: Schema.optional(DroidModelOptions),
   opencode: Schema.optional(OpenCodeModelOptions),
   pi: Schema.optional(PiModelOptions),
+  chatgpt: Schema.optional(ChatGptModelOptions),
 });
 export type ProviderModelOptions = typeof ProviderModelOptions.Type;
 
@@ -561,6 +583,30 @@ const EMPTY_MODEL_CAPABILITIES: ModelCapabilities = {
  * should return its own model list over the WS API.
  */
 export const DEFAULT_DROID_GIT_TEXT_GENERATION_MODEL = "deepseek-v4-flash-0731" as const;
+
+/**
+ * Cold-start catalog for the ChatGPT web provider. The picker's full model
+ * list is account-dependent and only observable in the browser; these entries
+ * mirror the slugs the current ChatGPT surface exposes and custom models can
+ * extend them. Reasoning levels follow the conversation-URL vocabulary.
+ */
+const CHATGPT_WEB_CAPABILITIES: ModelCapabilities = {
+  reasoningEffortLevels: [
+    { value: "none", label: "None" },
+    { value: "minimal", label: "Minimal" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium", isDefault: true },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
+    { value: "ultra", label: "Ultra" },
+    { value: "pro", label: "Pro", description: "ChatGPT Power tier" },
+  ],
+  supportsFastMode: false,
+  supportsThinkingToggle: false,
+  promptInjectedEffortLevels: [],
+  contextWindowOptions: [],
+};
 
 export const MODEL_OPTIONS_BY_PROVIDER = {
   codex: [
@@ -1108,6 +1154,26 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       },
     },
   ],
+  // ChatGPT web model availability is account-dependent (plan tier, workspace
+  // policy). These are the known defaults; the browser session is the source
+  // of truth and custom models can add slugs the account sees.
+  chatgpt: [
+    {
+      slug: "gpt-6-astra",
+      name: "GPT-6 Astra",
+      capabilities: CHATGPT_WEB_CAPABILITIES,
+    },
+    {
+      slug: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      capabilities: CHATGPT_WEB_CAPABILITIES,
+    },
+    {
+      slug: "gpt-5.5",
+      name: "GPT-5.5",
+      capabilities: CHATGPT_WEB_CAPABILITIES,
+    },
+  ],
 } as const satisfies Record<ProviderKind, readonly ModelDefinition[]>;
 export type ModelOptionsByProvider = typeof MODEL_OPTIONS_BY_PROVIDER;
 
@@ -1125,6 +1191,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderWithDefaultModel, ModelSl
   grok: "grok-4.6",
   droid: "claude-opus-4-8",
   opencode: "openai/gpt-5",
+  chatgpt: "gpt-6-astra",
 };
 
 // Backward compatibility for existing Codex-only call sites.
@@ -1283,6 +1350,14 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
   },
   opencode: {},
   pi: {},
+  chatgpt: {
+    "6": "gpt-6-astra",
+    astra: "gpt-6-astra",
+    "6-astra": "gpt-6-astra",
+    "5.6": "gpt-5.6-sol",
+    sol: "gpt-5.6-sol",
+    "5.5": "gpt-5.5",
+  },
   devin: {
     adaptive: "adaptive",
     auto: "adaptive",
@@ -1339,4 +1414,5 @@ export const PROVIDER_DISPLAY_NAMES: Record<ProviderKind, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  chatgpt: "ChatGPT (Web)",
 };

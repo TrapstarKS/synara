@@ -112,13 +112,29 @@ export function resolveNewThreadModelPrefetchCwd(input: {
 /**
  * Build the same listModels query options ChatView uses for a provider, so a
  * prefetch lands on the exact cache key the composer will read on mount.
+ * ChatGPT (Web) exposes no model discovery, so it has no prefetch query.
  */
-export function providerModelsPrefetchQueryOptions(input: {
-  provider: ProviderKind;
-  settings: ProviderModelPrefetchSettings;
-  cwd?: string | null;
-  priority?: "background" | "prefetch" | undefined;
-}) {
+interface ProviderModelsPrefetchQueryOptionsInput {
+  readonly provider: ProviderKind;
+  readonly settings: ProviderModelPrefetchSettings;
+  readonly cwd?: string | null;
+  readonly priority?: "background" | "prefetch" | undefined;
+}
+
+export function providerModelsPrefetchQueryOptions(
+  input: ProviderModelsPrefetchQueryOptionsInput & { readonly provider: "chatgpt" },
+): null;
+export function providerModelsPrefetchQueryOptions(
+  input: ProviderModelsPrefetchQueryOptionsInput & {
+    readonly provider: Exclude<ProviderKind, "chatgpt">;
+  },
+): ReturnType<typeof providerModelsQueryOptions>;
+export function providerModelsPrefetchQueryOptions(
+  input: ProviderModelsPrefetchQueryOptionsInput,
+): ReturnType<typeof providerModelsQueryOptions> | null;
+export function providerModelsPrefetchQueryOptions(
+  input: ProviderModelsPrefetchQueryOptionsInput,
+): ReturnType<typeof providerModelsQueryOptions> | null {
   const { priority, provider, settings } = input;
   const cwd = input.cwd ?? null;
 
@@ -180,6 +196,8 @@ export function providerModelsPrefetchQueryOptions(input: {
         cwd,
         priority,
       });
+    case "chatgpt":
+      return null;
   }
 }
 
@@ -228,6 +246,7 @@ export function prefetchProviderModelsForNewThread(
       cwd,
       priority: provider === (input.foregroundProvider ?? providers[0]) ? "prefetch" : "background",
     });
+    if (!modelsOptions) continue;
     void queryClient.prefetchQuery({
       ...modelsOptions,
       retry:
@@ -396,14 +415,14 @@ export function prefetchModelsForNewThread(
       : [selectedProvider, ...providers.filter((provider) => provider !== selectedProvider)];
   const shouldWarmSelectedDroid =
     input.includeDroid === true && selectedProvider === "droid" && isProviderWarmable("droid");
-  const desiredModelQueryKeys = orderedProviders.map(
-    (provider) =>
-      providerModelsPrefetchQueryOptions({
-        provider,
-        settings: input.settings,
-        cwd,
-      }).queryKey,
-  );
+  const desiredModelQueryKeys = orderedProviders.flatMap((provider) => {
+    const options = providerModelsPrefetchQueryOptions({
+      provider,
+      settings: input.settings,
+      cwd,
+    });
+    return options ? [options.queryKey] : [];
+  });
   if (shouldWarmSelectedDroid) {
     desiredModelQueryKeys.push(
       providerModelsPrefetchQueryOptions({

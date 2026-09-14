@@ -440,6 +440,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          chatgpt: [],
         },
         "galapagos-alpha",
       ),
@@ -460,6 +461,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          chatgpt: [],
         },
         "",
       ),
@@ -480,6 +482,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          chatgpt: [],
         },
         "GPT-5.3 Codex",
       ),
@@ -500,6 +503,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          chatgpt: [],
         },
         "sonnet",
       ),
@@ -520,6 +524,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          chatgpt: [],
         },
         "custom/selected-model",
       ),
@@ -757,6 +762,7 @@ describe("provider-indexed custom model settings", () => {
     customDevinModels: ["devin/custom-model"],
     customOpenCodeModels: ["openrouter/gpt-oss-120b"],
     customPiModels: ["anthropic/custom-pi"],
+    customChatGptModels: ["chatgpt/custom-model"],
   } as const;
 
   it("exports one provider config per provider", () => {
@@ -770,6 +776,7 @@ describe("provider-indexed custom model settings", () => {
       "droid",
       "opencode",
       "pi",
+      "chatgpt",
     ]);
   });
 
@@ -788,6 +795,7 @@ describe("provider-indexed custom model settings", () => {
     expect(getCustomModelsForProvider(settings, "devin")).toEqual(["devin/custom-model"]);
     expect(getCustomModelsForProvider(settings, "opencode")).toEqual(["openrouter/gpt-oss-120b"]);
     expect(getCustomModelsForProvider(settings, "pi")).toEqual(["anthropic/custom-pi"]);
+    expect(getCustomModelsForProvider(settings, "chatgpt")).toEqual(["chatgpt/custom-model"]);
   });
 
   it("reads default custom models for each provider", () => {
@@ -801,6 +809,7 @@ describe("provider-indexed custom model settings", () => {
       customDevinModels: ["adaptive"],
       customOpenCodeModels: ["openai/gpt-5"],
       customPiModels: ["anthropic/default-pi"],
+      customChatGptModels: ["chatgpt/default-model"],
     } as const;
 
     expect(getDefaultCustomModelsForProvider(defaults, "codex")).toEqual(["default/codex-model"]);
@@ -816,6 +825,9 @@ describe("provider-indexed custom model settings", () => {
     expect(getDefaultCustomModelsForProvider(defaults, "devin")).toEqual(["adaptive"]);
     expect(getDefaultCustomModelsForProvider(defaults, "opencode")).toEqual(["openai/gpt-5"]);
     expect(getDefaultCustomModelsForProvider(defaults, "pi")).toEqual(["anthropic/default-pi"]);
+    expect(getDefaultCustomModelsForProvider(defaults, "chatgpt")).toEqual([
+      "chatgpt/default-model",
+    ]);
   });
 
   it("patches custom models for codex", () => {
@@ -872,6 +884,12 @@ describe("provider-indexed custom model settings", () => {
     });
   });
 
+  it("patches custom models for chatgpt", () => {
+    expect(patchCustomModels("chatgpt", ["chatgpt/custom-model"])).toEqual({
+      customChatGptModels: ["chatgpt/custom-model"],
+    });
+  });
+
   it("builds a complete provider-indexed custom model record", () => {
     expect(getCustomModelsByProvider(settings)).toEqual({
       codex: ["custom/codex-model"],
@@ -883,6 +901,7 @@ describe("provider-indexed custom model settings", () => {
       devin: ["devin/custom-model"],
       opencode: ["openrouter/gpt-oss-120b"],
       pi: ["anthropic/custom-pi"],
+      chatgpt: ["chatgpt/custom-model"],
     });
   });
 
@@ -940,6 +959,7 @@ describe("provider-indexed custom model settings", () => {
         "anthropic/custom-pi",
         "anthropic/custom-pi",
       ],
+      customChatGptModels: [" gpt-6-astra ", "chatgpt/custom-model", "chatgpt/custom-model"],
     });
 
     expect(
@@ -979,6 +999,12 @@ describe("provider-indexed custom model settings", () => {
     expect(
       modelOptionsByProvider.pi.filter((option) => option.slug === "anthropic/custom-pi"),
     ).toHaveLength(1);
+    expect(
+      modelOptionsByProvider.chatgpt.filter((option) => option.slug === "chatgpt/custom-model"),
+    ).toHaveLength(1);
+    expect(modelOptionsByProvider.chatgpt.some((option) => option.slug === "gpt-6-astra")).toBe(
+      true,
+    );
   });
 });
 

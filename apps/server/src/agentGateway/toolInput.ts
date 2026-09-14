@@ -19,6 +19,7 @@ export const PROVIDER_KINDS: ReadonlyArray<ProviderKind> = [
   "opencode",
   "pi",
   "devin",
+  "chatgpt",
 ];
 
 export const MODEL_SELECTION_INPUT_SCHEMA = {

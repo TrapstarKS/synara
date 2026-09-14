@@ -104,6 +104,17 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
       normalizedOptions = reasoningEffort ? { reasoningEffort } : undefined;
       break;
     }
+    case "chatgpt": {
+      const providerOptions = modelOptions?.chatgpt;
+      rawEffort = trimOrNull(providerOptions?.reasoningEffort);
+      const defaultReasoningEffort = getDefaultEffort(caps);
+      const reasoningEffort =
+        rawEffort && hasEffortLevel(caps, rawEffort) && rawEffort !== defaultReasoningEffort
+          ? providerOptions?.reasoningEffort
+          : undefined;
+      normalizedOptions = reasoningEffort ? { reasoningEffort } : undefined;
+      break;
+    }
     case "droid": {
       const providerOptions = modelOptions?.droid;
       rawEffort = trimOrNull(providerOptions?.reasoningEffort);

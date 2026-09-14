@@ -9,6 +9,7 @@ import {
 } from "../providerCredentials";
 import { ServerSettingsService } from "../serverSettings";
 import { ProviderValidationError } from "./Errors";
+import { makeChatGptAdapterLive } from "./Layers/ChatGptAdapter";
 import { makeClaudeAdapterLive } from "./Layers/ClaudeAdapter";
 import { makeCodexAdapterLive } from "./Layers/CodexAdapter";
 import { makeCursorAdapterLive } from "./Layers/CursorAdapter";
@@ -22,6 +23,12 @@ import { makePiAdapterLive } from "./Layers/PiAdapter";
 import { ProviderAdapterRegistryLive } from "./Layers/ProviderAdapterRegistry";
 import { ProviderDiscoveryServiceLive } from "./Layers/ProviderDiscoveryService";
 import { makeDurableProviderServiceLive } from "./Layers/ProviderService";
+import {
+  ChatGptConnectorLive,
+  type ChatGptConnectorLayer,
+} from "./chatgptConnector/Layers/ChatGptConnector";
+import { BrowserAutomationHostLive } from "../browserAutomation/Layers/BrowserAutomationHost";
+import { CHATGPT_MAX_WORKERS_DEFAULT } from "@synara/contracts";
 import { ProviderSessionDirectoryLive } from "./Layers/ProviderSessionDirectory";
 import { ProviderSessionRuntimeRepositoryLive } from "../persistence/Layers/ProviderSessionRuntime";
 import { ProviderRuntimeEventRepositoryLive } from "../persistence/Layers/ProviderRuntimeEvents";
@@ -29,6 +36,12 @@ import { ProviderRuntimeEventRepositoryLive } from "../persistence/Layers/Provid
 export function makeServerProviderLayer(
   options: {
     readonly agentGatewayCredentialsLayer?: typeof AgentGatewayCredentialsWithSecretsLive;
+    /**
+     * Shared ChatGPT connector layer. `makeServerApplicationLayers` builds it
+     * once so the provider adapter and provider health observe one instance
+     * (one decrypted secret, one tunnel process).
+     */
+    readonly chatGptConnectorLayer?: ChatGptConnectorLayer;
   } = {},
 ) {
   return Effect.gen(function* () {
@@ -86,6 +99,22 @@ export function makeServerProviderLayer(
     const piAdapterLayer = makePiAdapterLive(
       nativeEventLogger ? { nativeEventLogger } : undefined,
     ).pipe(Layer.provide(agentGatewayCredentialsLayer));
+    const fallbackChatGptConnectorLayer: ChatGptConnectorLayer = ChatGptConnectorLive.pipe(
+      Layer.provide(Layer.orDie(ProviderCredentialsLive)),
+    );
+    const chatGptConnectorLayer: ChatGptConnectorLayer =
+      options.chatGptConnectorLayer ?? fallbackChatGptConnectorLayer;
+    const chatGptAdapterLayer = makeChatGptAdapterLive({
+      resolveMaxWorkers: () =>
+        serverSettings.getSettings.pipe(
+          Effect.map((settings) =>
+            settings.providers.chatgpt.maxWorkers > 0
+              ? Math.min(8, settings.providers.chatgpt.maxWorkers)
+              : CHATGPT_MAX_WORKERS_DEFAULT,
+          ),
+          Effect.orDie,
+        ),
+    }).pipe(Layer.provide(chatGptConnectorLayer), Layer.provide(BrowserAutomationHostLive));
     const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
       Layer.provide(codexAdapterLayer),
       Layer.provide(claudeAdapterLayer),
@@ -96,6 +125,7 @@ export function makeServerProviderLayer(
       Layer.provide(droidAdapterLayer),
       Layer.provide(openCodeAdapterLayer),
       Layer.provide(piAdapterLayer),
+      Layer.provide(chatGptAdapterLayer),
       Layer.provideMerge(providerSessionDirectoryLayer),
     );
     const providerServiceLayer = makeDurableProviderServiceLive({

@@ -350,10 +350,7 @@ describe("composerDraftStore modelSelection", () => {
     });
     expect(state.stickyModelSelectionByProvider.codex).toMatchObject({ profileId });
 
-    store.setModelOptions(
-      threadId,
-      providerModelOptions({ codex: { reasoningEffort: "xhigh" } }),
-    );
+    store.setModelOptions(threadId, providerModelOptions({ codex: { reasoningEffort: "xhigh" } }));
     state = useComposerDraftStore.getState();
     expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toMatchObject({
       profileId,
@@ -481,6 +478,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        chatgpt: [],
       },
       availableModelOptionsByProvider: {
         opencode: [{ slug: "opencode/gpt-5-nano", name: "GPT-5 Nano" }],
@@ -509,6 +507,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        chatgpt: [],
       },
       availableModelOptionsByProvider: {
         opencode: [
@@ -542,6 +541,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        chatgpt: [],
       },
       availableModelOptionsByProvider: {
         opencode: [
@@ -575,6 +575,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        chatgpt: [],
       },
       availableModelOptionsByProvider: {
         pi: [

@@ -8,6 +8,8 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type AntigravityModelOptions,
   type AntigravityModelSelection,
+  type ChatGptModelOptions,
+  type ChatGptModelSelection,
   type ClaudeModelOptions,
   type ClaudeModelSelection,
   type CodexModelOptions,
@@ -97,7 +99,7 @@ function normalizeDynamicModelSlug(provider: ProviderKind, slug: string): string
     const withoutContextSuffix = slug.replace(/\[[^\]]+\]$/u, "");
     return normalizeModelSlug(withoutContextSuffix, provider) ?? withoutContextSuffix;
   }
-  if (provider === "grok") {
+  if (provider === "grok" || provider === "chatgpt") {
     return slug.trim();
   }
   if (provider === "cursor") {
@@ -352,6 +354,12 @@ export function buildNextProviderOptions(
       ...patch,
     } as DevinModelOptions;
   }
+  if (provider === "chatgpt") {
+    return {
+      ...(modelOptions as ChatGptModelOptions | undefined),
+      ...patch,
+    } as ChatGptModelOptions;
+  }
   if (provider === "opencode") {
     return {
       ...(modelOptions as OpenCodeModelOptions | undefined),
@@ -418,6 +426,11 @@ export function buildModelSelection(
   model: string,
   options?: DevinModelOptions | null | undefined,
 ): DevinModelSelection;
+export function buildModelSelection(
+  provider: "chatgpt",
+  model: string,
+  options?: ChatGptModelOptions | null | undefined,
+): ChatGptModelSelection;
 export function buildModelSelection(
   provider: ProviderKind,
   model: string,
@@ -500,6 +513,14 @@ export function buildModelSelection(
             provider,
             model,
             options: options as PiModelOptions,
+          }
+        : { provider, model };
+    case "chatgpt":
+      return options
+        ? {
+            provider,
+            model,
+            options: options as ChatGptModelOptions,
           }
         : { provider, model };
   }

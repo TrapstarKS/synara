@@ -983,6 +983,9 @@ function getProviderStartOptionsCustomBinaryPath(
       return normalizeCustomBinaryPath(providerOptions?.devin?.binaryPath);
     case "pi":
       return normalizeCustomBinaryPath(providerOptions?.pi?.binaryPath);
+    case "chatgpt":
+      // ChatGPT (Web) runs through the in-app browser and has no CLI binary.
+      return null;
   }
 }
 
@@ -2375,6 +2378,7 @@ export default function ChatView({
       opencode: resolveHint("opencode"),
       pi: resolveHint("pi"),
       devin: resolveHint("devin"),
+      chatgpt: resolveHint("chatgpt"),
     };
   }, [
     activeProject?.defaultModelSelection,

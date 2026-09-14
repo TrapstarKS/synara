@@ -4,6 +4,7 @@
 
 import {
   PROVIDER_DISPLAY_NAMES,
+  type ChatGptTunnelMode,
   type ProviderKind,
   type ServerProviderStatus,
   type ServerSettings,
@@ -61,13 +62,19 @@ import {
 import { ELEVATED_HOVER_SURFACE_RAISED_TEXT_CLASS_NAME } from "~/surfaceStyles";
 
 import { Button } from "../ui/button";
+import { SelectItem } from "../ui/select";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { DisclosureChevron } from "../ui/DisclosureChevron";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import { ProviderIcon } from "../ProviderIcon";
+import { ChatGptConnectorSetup } from "./ChatGptConnectorSetup";
 import { DebouncedSettingTextInput } from "./DebouncedSettingTextInput";
-import { SettingResetButton, useSettingsRestoreSignal } from "./SettingControls";
+import {
+  SettingResetButton,
+  SettingsSelectControl,
+  useSettingsRestoreSignal,
+} from "./SettingControls";
 import { SettingsListRow, SettingsRow, SettingsSection } from "./SettingsPanelPrimitives";
 
 type ProviderInstallTextKey =
@@ -83,10 +90,15 @@ type ProviderInstallTextKey =
   | "openCodeBinaryPath"
   | "openCodeServerUrl"
   | "piBinaryPath"
-  | "piAgentDir";
-type ProviderInstallPasswordKey = "openCodeServerPassword";
-type ProviderInstallPasswordConfiguredKey = "openCodeServerPasswordConfigured";
+  | "piAgentDir"
+  | "chatGptTunnelBinaryPath"
+  | "chatGptOpenAiTunnelId";
+type ProviderInstallPasswordKey = "openCodeServerPassword" | "chatGptOpenAiTunnelApiKey";
+type ProviderInstallPasswordConfiguredKey =
+  | "openCodeServerPasswordConfigured"
+  | "chatGptOpenAiTunnelApiKeyConfigured";
 type ProviderInstallBooleanKey = "openCodeExperimentalWebSockets";
+type ProviderInstallSelectKey = "chatGptTunnelMode";
 
 type ProviderInstallTextField = {
   readonly kind: "text";
@@ -109,10 +121,18 @@ type ProviderInstallBooleanField = {
   readonly label: string;
   readonly description: ReactNode;
 };
+type ProviderInstallSelectField = {
+  readonly kind: "select";
+  readonly settingsKey: ProviderInstallSelectKey;
+  readonly label: string;
+  readonly description: ReactNode;
+  readonly options: ReadonlyArray<{ readonly value: ChatGptTunnelMode; readonly label: string }>;
+};
 type ProviderInstallField =
   | ProviderInstallTextField
   | ProviderInstallPasswordField
-  | ProviderInstallBooleanField;
+  | ProviderInstallBooleanField
+  | ProviderInstallSelectField;
 type ProviderInstallSettings = {
   readonly provider: ProviderKind;
   readonly docs: ReadonlyArray<{ readonly label: string; readonly href: string }>;
@@ -361,6 +381,62 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
       },
     ],
   },
+  {
+    provider: "chatgpt",
+    docs: [
+      { label: "ChatGPT", href: "https://chatgpt.com" },
+      { label: "Tunnel setup", href: "https://platform.openai.com/settings/organization/tunnels" },
+    ],
+    fields: [
+      {
+        kind: "select",
+        settingsKey: "chatGptTunnelMode",
+        label: "Tool connector tunnel",
+        description: (
+          <>
+            ChatGPT reaches local workspace tools over MCP. <code>manual</code> leaves tunneling to
+            you; <code>cloudflared</code> runs a Cloudflare quick tunnel; <code>openai</code> runs
+            the OpenAI Secure MCP Tunnel client. The connector URL appears in this provider&apos;s
+            status below.
+          </>
+        ),
+        options: [
+          { value: "off", label: "Off" },
+          { value: "manual", label: "Manual tunnel" },
+          { value: "cloudflared", label: "Cloudflare quick tunnel" },
+          { value: "openai", label: "OpenAI Secure MCP Tunnel" },
+        ],
+      },
+      {
+        kind: "text",
+        settingsKey: "chatGptTunnelBinaryPath",
+        label: "Tunnel binary path",
+        placeholder: "cloudflared or tunnel-client",
+        description: (
+          <>
+            Leave blank to resolve <code>cloudflared</code> or <code>tunnel-client</code> from your
+            PATH.
+          </>
+        ),
+      },
+      {
+        kind: "text",
+        settingsKey: "chatGptOpenAiTunnelId",
+        label: "OpenAI tunnel id",
+        placeholder: "tunnel_…",
+        description: "Required for the OpenAI Secure MCP Tunnel mode.",
+      },
+      {
+        kind: "password",
+        settingsKey: "chatGptOpenAiTunnelApiKey",
+        configuredKey: "chatGptOpenAiTunnelApiKeyConfigured",
+        label: "OpenAI tunnel API key",
+        placeholder: "API key",
+        description:
+          "Stored in the server secret store (never echoed back) and passed to tunnel-client via the environment.",
+      },
+    ],
+  },
 ];
 
 function isProviderInstallFieldDirty(
@@ -399,7 +475,9 @@ function createProviderInstallDisclosureState(
       config.fields.some((field) =>
         field.kind === "password"
           ? settings[field.configuredKey]
-          : Boolean(settings[field.settingsKey]),
+          : field.kind === "select"
+            ? settings[field.settingsKey] !== "off"
+            : Boolean(settings[field.settingsKey]),
       ),
     ]),
   ) as Record<ProviderKind, boolean>;
@@ -614,6 +692,38 @@ function ProviderInstallFieldControl(props: {
     );
   }
 
+  if (props.field.kind === "select") {
+    const field = props.field;
+    const current = props.settings[field.settingsKey];
+    return (
+      <label htmlFor={id} className="block">
+        <span className="block text-xs font-medium text-foreground">{field.label}</span>
+        <div className="mt-1">
+          <SettingsSelectControl
+            value={current}
+            onValueChange={(value) =>
+              props.updateSettings({
+                [field.settingsKey]: value as ChatGptTunnelMode,
+              } as Partial<AppSettings>)
+            }
+            ariaLabel={field.label}
+            triggerClassName="w-full sm:w-56"
+            valueContent={
+              field.options.find((option) => option.value === current)?.label ?? current
+            }
+          >
+            {field.options.map((option) => (
+              <SelectItem hideIndicator key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SettingsSelectControl>
+        </div>
+        <span className="mt-1 block text-xs text-muted-foreground">{field.description}</span>
+      </label>
+    );
+  }
+
   const configured =
     props.field.kind === "password" ? props.settings[props.field.configuredKey] : false;
   const isPassword = props.field.kind === "password";
@@ -735,6 +845,18 @@ function ProviderToolRow(props: {
         <CollapsiblePanel>
           <div className="border-t border-border/70 bg-muted/20 px-3 py-3">
             <div className="space-y-3">
+              {props.config.provider === "chatgpt" ? (
+                <ChatGptConnectorSetup
+                  tunnelMode={props.settings.chatGptTunnelMode}
+                  maxWorkers={props.settings.chatGptMaxWorkers}
+                  onEnableCloudflaredTunnel={() =>
+                    props.updateSettings({ chatGptTunnelMode: "cloudflared" })
+                  }
+                  onMaxWorkersChange={(maxWorkers) =>
+                    props.updateSettings({ chatGptMaxWorkers: maxWorkers })
+                  }
+                />
+              ) : null}
               <ProviderDocsLinks docs={props.config.docs} />
               {showProviderUpdateStatus && updateAdvisory?.status === "behind_latest" ? (
                 <div className="text-xs text-muted-foreground">

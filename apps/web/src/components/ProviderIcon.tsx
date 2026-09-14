@@ -11,6 +11,7 @@ import { CentralIcon } from "~/lib/central-icons";
 import { cn } from "~/lib/utils";
 import {
   AntigravityIcon,
+  ChatGptIcon,
   ClaudeAI,
   CursorIcon,
   DevinIcon,
@@ -73,6 +74,7 @@ export const PROVIDER_ICON_COMPONENT_BY_PROVIDER: Record<ProviderKind, Icon> = {
   droid: DroidIcon,
   opencode: OpenCodeProviderIcon,
   pi: PiIcon,
+  chatgpt: ChatGptIcon,
 };
 
 export function providerIconToneClassName(

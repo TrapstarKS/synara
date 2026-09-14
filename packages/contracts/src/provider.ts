@@ -193,3 +193,34 @@ export const ProviderEvent = Schema.Struct({
   payload: Schema.optional(Schema.Unknown),
 });
 export type ProviderEvent = typeof ProviderEvent.Type;
+
+/**
+ * Live state of the ChatGPT web tool connector: the MCP endpoint ChatGPT
+ * connects to, its tunnel, and the runtimes currently attributed to threads.
+ */
+export const ChatGptConnectorTunnelState = Schema.Literals([
+  "off",
+  "manual",
+  "starting",
+  "connected",
+  "error",
+  "stopped",
+]);
+export type ChatGptConnectorTunnelState = typeof ChatGptConnectorTunnelState.Type;
+
+export const ChatGptConnectorState = Schema.Struct({
+  /** Loopback connector URL including the secret path. */
+  localUrl: Schema.String,
+  /** Public tunnel URL including the secret path, when a tunnel is connected. */
+  publicUrl: Schema.NullOr(Schema.String),
+  /** The URL to configure in ChatGPT (public when a tunnel connected). */
+  connectorUrl: Schema.String,
+  tunnelState: ChatGptConnectorTunnelState,
+  tunnelMessage: Schema.NullOr(Schema.String),
+  secretCreatedAt: Schema.String,
+  activeThreadId: Schema.NullOr(Schema.String),
+  registeredThreadIds: Schema.Array(Schema.String),
+  toolCallCount: Schema.Number,
+  lastToolCallAt: Schema.NullOr(Schema.String),
+});
+export type ChatGptConnectorState = typeof ChatGptConnectorState.Type;

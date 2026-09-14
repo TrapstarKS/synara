@@ -14,7 +14,8 @@ type ModelProviderKind =
   | "droid"
   | "opencode"
   | "pi"
-  | "devin";
+  | "devin"
+  | "chatgpt";
 
 const NON_DROID_MODEL_SLUGS = new Set(
   Object.entries(MODEL_OPTIONS_BY_PROVIDER).flatMap(([provider, models]) =>
@@ -87,6 +88,9 @@ function inferProviderFromLabel(label: string): ModelProviderKind | undefined {
   if (/(^|[^a-z0-9])cognition([^a-z0-9]|$)/u.test(lowerLabel)) {
     return "devin";
   }
+  if (lowerLabel.includes("chatgpt")) {
+    return "chatgpt";
+  }
   if (lowerLabel.includes("codex")) {
     return "codex";
   }
@@ -103,7 +107,8 @@ function inferLegacyModelProvider(provider: unknown, model: string): ModelProvid
     provider === "droid" ||
     provider === "opencode" ||
     provider === "pi" ||
-    provider === "devin"
+    provider === "devin" ||
+    provider === "chatgpt"
   ) {
     return provider;
   }

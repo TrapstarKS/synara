@@ -1,6 +1,7 @@
 import { Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
 import {
   AntigravityModelOptions,
+  ChatGptModelOptions,
   ClaudeModelOptions,
   CodexModelOptions,
   CursorModelOptions,
@@ -67,6 +68,7 @@ export const ProviderKind = Schema.Literals([
   "opencode",
   "pi",
   "devin",
+  "chatgpt",
 ]);
 export type ProviderKind = typeof ProviderKind.Type;
 
@@ -175,6 +177,13 @@ export const DevinModelSelection = Schema.Struct({
 });
 export type DevinModelSelection = typeof DevinModelSelection.Type;
 
+export const ChatGptModelSelection = Schema.Struct({
+  provider: Schema.Literal("chatgpt"),
+  model: TrimmedNonEmptyString,
+  options: Schema.optional(ChatGptModelOptions),
+});
+export type ChatGptModelSelection = typeof ChatGptModelSelection.Type;
+
 export const ModelSelection = Schema.Union([
   CodexModelSelection,
   ClaudeModelSelection,
@@ -185,6 +194,7 @@ export const ModelSelection = Schema.Union([
   DroidModelSelection,
   OpenCodeModelSelection,
   PiModelSelection,
+  ChatGptModelSelection,
 ]);
 export type ModelSelection = typeof ModelSelection.Type;
 
@@ -232,6 +242,12 @@ export const DevinProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
 });
 
+export const ChatGptProviderStartOptions = Schema.Struct({
+  // Pin the session to a specific ChatGPT conversation URL. When absent the
+  // adapter opens (or reuses) the thread's own conversation.
+  browserUrl: Schema.optional(TrimmedNonEmptyString),
+});
+
 export const ProviderStartOptions = Schema.Struct({
   codex: Schema.optional(CodexProviderStartOptions),
   claudeAgent: Schema.optional(ClaudeProviderStartOptions),
@@ -242,6 +258,7 @@ export const ProviderStartOptions = Schema.Struct({
   droid: Schema.optional(DroidProviderStartOptions),
   opencode: Schema.optional(OpenCodeProviderStartOptions),
   pi: Schema.optional(PiProviderStartOptions),
+  chatgpt: Schema.optional(ChatGptProviderStartOptions),
 });
 export type ProviderStartOptions = typeof ProviderStartOptions.Type;
 

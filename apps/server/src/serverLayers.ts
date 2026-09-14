@@ -56,6 +56,11 @@ import { ManagedAttachmentCleanupLive } from "./managedAttachmentCleanup";
 import { PullRequestServiceLive } from "./pullRequests/Layers/PullRequestService";
 import { ProviderHealthLive } from "./provider/Layers/ProviderHealth";
 import { makeServerProviderLayer } from "./provider/runtimeLayer";
+import {
+  ChatGptConnectorLive,
+  type ChatGptConnectorLayer,
+} from "./provider/chatgptConnector/Layers/ChatGptConnector";
+import { ProviderCredentialsLive } from "./providerCredentials";
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { ProviderDiscoveryService } from "./provider/Services/ProviderDiscoveryService";
 import { ProviderService } from "./provider/Services/ProviderService";
@@ -88,11 +93,21 @@ export function makeServerRuntimeServicesLayer(
     readonly agentGatewayCredentialsLayer?: typeof AgentGatewayCredentialsWithSecretsLive;
     /** Provide the live provider service so provider-native gateway tools are registered. */
     readonly providerLayer?: Layer.Layer<ServerProviderServices, unknown, unknown>;
+    /** Shared ChatGPT connector layer (built once in makeServerApplicationLayers). */
+    readonly chatGptConnectorLayer?: ChatGptConnectorLayer;
   } = {},
 ) {
   const agentGatewayCredentialsLayer =
     options.agentGatewayCredentialsLayer ?? AgentGatewayCredentialsWithSecretsLive;
-  const providerHealthLayer = ProviderHealthLive.pipe(Layer.provideMerge(ServerSettingsLive));
+  const fallbackChatGptConnectorLayer: ChatGptConnectorLayer = ChatGptConnectorLive.pipe(
+    Layer.provide(Layer.orDie(ProviderCredentialsLive)),
+  );
+  const chatGptConnectorLayer: ChatGptConnectorLayer =
+    options.chatGptConnectorLayer ?? fallbackChatGptConnectorLayer;
+  const providerHealthLayer = ProviderHealthLive.pipe(
+    Layer.provideMerge(ServerSettingsLive),
+    Layer.provideMerge(chatGptConnectorLayer),
+  );
   const checkpointStoreLayer = CheckpointStoreLive.pipe(Layer.provide(GitCoreLive));
 
   const checkpointDiffQueryLayer = CheckpointDiffQueryLive.pipe(
@@ -279,15 +294,25 @@ export function makeServerRuntimeServicesLayer(
  */
 export function makeServerApplicationLayers() {
   const agentGatewayCredentialsLayer = AgentGatewayCredentialsWithSecretsLive;
+  // One connector instance owns the ChatGPT path secret and tunnel; provider
+  // health and the provider adapter must observe the same instance, so the
+  // layer is built here and threaded into both graphs (Effect memoizes it).
+  // ProviderCredentials is provided here because the application graph never
+  // exports it (ServerSettings consumes its own instance internally).
+  const chatGptConnectorLayer: ChatGptConnectorLayer = ChatGptConnectorLive.pipe(
+    Layer.provide(Layer.orDie(ProviderCredentialsLive)),
+  );
   // Provider start/discovery gates must observe the same settings instance as
   // the RPC layer. Reusing this layer in the final graph lets Effect memoize a
   // single ServerSettings service instead of capturing private defaults.
-  const providerLayer = makeServerProviderLayer({ agentGatewayCredentialsLayer }).pipe(
-    Layer.provideMerge(ServerSettingsLive),
-  );
+  const providerLayer = makeServerProviderLayer({
+    agentGatewayCredentialsLayer,
+    chatGptConnectorLayer,
+  }).pipe(Layer.provideMerge(ServerSettingsLive));
   const runtimeServicesLayer = makeServerRuntimeServicesLayer({
     agentGatewayCredentialsLayer,
     providerLayer,
+    chatGptConnectorLayer,
   });
   return {
     runtimeServicesLayer,

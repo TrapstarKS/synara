@@ -5,6 +5,7 @@
 export type ProviderChildKind =
   | "acp"
   | "antigravity"
+  | "chatgpt"
   | "claude"
   | "codex"
   | "cursor"
@@ -60,6 +61,9 @@ const PROVIDER_CREDENTIAL_GRANTS: Record<ProviderChildKind, "all" | ReadonlySet<
   devin: new Set(["DEVIN_API_KEY", "WINDSURF_API_KEY"]),
   droid: new Set(["FACTORY_API_KEY"]),
   grok: new Set(["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]),
+  // The ChatGPT provider spawns only its tunnel helper; it needs no provider
+  // credentials beyond the explicit tunnel key passed as an override.
+  chatgpt: new Set([]),
   // These profiles deliberately support arbitrary upstream model providers.
   acp: "all",
   codex: "all",

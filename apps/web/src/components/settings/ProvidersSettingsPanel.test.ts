@@ -26,6 +26,9 @@ describe("isProviderInstallSettingsDirty", () => {
       { openCodeExperimentalWebSockets: true },
       { piBinaryPath: "/opt/pi" },
       { piAgentDir: "/tmp/pi-agent" },
+      { chatGptTunnelMode: "cloudflared" },
+      { chatGptTunnelBinaryPath: "/opt/cloudflared" },
+      { chatGptOpenAiTunnelId: "tunnel_0123456789abcdef0123456789abcdef" },
     ] satisfies ReadonlyArray<Partial<AppSettings>>;
 
     expect(isProviderInstallSettingsDirty(defaults, defaults)).toBe(false);
@@ -44,6 +47,12 @@ describe("isProviderInstallSettingsDirty", () => {
         defaults,
       ),
     ).toBe(true);
+    expect(
+      isProviderInstallSettingsDirty(
+        { ...defaults, chatGptOpenAiTunnelApiKeyConfigured: true },
+        defaults,
+      ),
+    ).toBe(true);
   });
 });
 
@@ -57,6 +66,10 @@ describe("createProviderInstallResetPatch", () => {
     expect(Object.keys(patch).sort()).toEqual(
       [
         "antigravityBinaryPath",
+        "chatGptOpenAiTunnelApiKey",
+        "chatGptOpenAiTunnelId",
+        "chatGptTunnelBinaryPath",
+        "chatGptTunnelMode",
         "claudeBinaryPath",
         "codexBinaryPath",
         "codexHomePath",
@@ -74,5 +87,6 @@ describe("createProviderInstallResetPatch", () => {
       ].sort(),
     );
     expect(patch.openCodeServerPassword).toBe("");
+    expect(patch.chatGptOpenAiTunnelApiKey).toBe("");
   });
 });

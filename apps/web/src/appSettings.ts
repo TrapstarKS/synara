@@ -8,6 +8,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Option, Schema, SchemaTransformation } from "effect";
 import {
   type AssistantDeliveryMode,
+  ChatGptTunnelMode,
   DesktopAppIcon,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_SERVER_SETTINGS,
@@ -139,7 +140,8 @@ type CustomModelSettingsKey =
   | "customDroidModels"
   | "customDevinModels"
   | "customOpenCodeModels"
-  | "customPiModels";
+  | "customPiModels"
+  | "customChatGptModels";
 export type ProviderCustomModelConfig = {
   provider: ProviderKind;
   settingsKey: CustomModelSettingsKey;
@@ -160,6 +162,7 @@ const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>
   droid: new Set(getModelOptions("droid").map((option) => option.slug)),
   opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
   pi: new Set(getModelOptions("pi").map((option) => option.slug)),
+  chatgpt: new Set(getModelOptions("chatgpt").map((option) => option.slug)),
 };
 
 const withDefaults =
@@ -187,6 +190,7 @@ const PersistedProviderKind = Schema.Literals([
   "kilo",
   "opencode",
   "pi",
+  "chatgpt",
 ]).pipe(
   Schema.decodeTo(
     ProviderKind,
@@ -281,6 +285,18 @@ export const AppSettingsSchema = Schema.Struct({
   ),
   openCodeServerPasswordConfigured: Schema.Boolean.pipe(withDefaults(() => false)),
   openCodeExperimentalWebSockets: Schema.Boolean.pipe(withDefaults(() => false)),
+  chatGptTunnelMode: ChatGptTunnelMode.pipe(withDefaults(() => "off" as const)),
+  chatGptTunnelBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    withDefaults(() => ""),
+  ),
+  chatGptOpenAiTunnelId: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
+  // Password-style fields are write-only: normalization never retains the secret.
+  chatGptOpenAiTunnelApiKey: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    withDefaults(() => ""),
+  ),
+  chatGptOpenAiTunnelApiKeyConfigured: Schema.Boolean.pipe(withDefaults(() => false)),
+  // Simultaneous worker chats the agents tool may keep active (1-8).
+  chatGptMaxWorkers: Schema.Number.pipe(withDefaults(() => 2)),
   defaultThreadEnvMode: EnvMode.pipe(withDefaults(() => "local" as const satisfies EnvMode)),
   confirmThreadDelete: Schema.Boolean.pipe(withDefaults(() => true)),
   // Desktop quit dialog: remember interrupted chats and continue them on the next launch.
@@ -360,6 +376,7 @@ export const AppSettingsSchema = Schema.Struct({
   customDroidModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customOpenCodeModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customPiModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
+  customChatGptModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   textGenerationProvider: PersistedProviderKind.pipe(withDefaults(() => "codex" as const)),
   textGenerationModel: Schema.optional(TrimmedNonEmptyString),
   uiFontFamily: Schema.String.check(Schema.isMaxLength(256)).pipe(withDefaults(() => "")),
@@ -493,6 +510,15 @@ const PROVIDER_CUSTOM_MODEL_CONFIG: Record<ProviderKind, ProviderCustomModelConf
     placeholder: "provider/model",
     example: "anthropic/claude-sonnet-4-5",
   },
+  chatgpt: {
+    provider: "chatgpt",
+    settingsKey: "customChatGptModels",
+    defaultSettingsKey: "customChatGptModels",
+    title: "ChatGPT",
+    description: "Save additional ChatGPT model slugs for the picker and `/model` command.",
+    placeholder: "your-chatgpt-model-slug",
+    example: "gpt-6-astra",
+  },
 };
 
 export const MODEL_PROVIDER_SETTINGS = Object.values(PROVIDER_CUSTOM_MODEL_CONFIG);
@@ -609,6 +635,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     // Password fields are accepted only as write-only update patches. Never retain
     // reusable provider credentials in browser state or localStorage.
     openCodeServerPassword: "",
+    chatGptOpenAiTunnelApiKey: "",
     claudeBinaryPath: normalizeProviderBinaryPathOverride("claudeAgent", settings.claudeBinaryPath),
     codexBinaryPath: normalizeProviderBinaryPathOverride("codex", settings.codexBinaryPath),
     cursorBinaryPath: normalizeProviderBinaryPathOverride("cursor", settings.cursorBinaryPath),
@@ -641,6 +668,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     customDroidModels: normalizeCustomModelSlugs(settings.customDroidModels, "droid"),
     customOpenCodeModels: normalizeCustomModelSlugs(settings.customOpenCodeModels, "opencode"),
     customPiModels: normalizeCustomModelSlugs(settings.customPiModels, "pi"),
+    customChatGptModels: normalizeCustomModelSlugs(settings.customChatGptModels, "chatgpt"),
     hiddenProviders: normalizeHiddenProviders(settings.hiddenProviders),
     disabledProviders: normalizeHiddenProviders(settings.disabledProviders),
     providerOrder: normalizeProviderOrder(settings.providerOrder),
@@ -686,6 +714,11 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     openCodeExperimentalWebSockets: settings.providers.opencode.experimentalWebSockets,
     openCodeServerPasswordConfigured: settings.providers.opencode.serverPasswordConfigured,
     openCodeServerUrl: settings.providers.opencode.serverUrl,
+    chatGptTunnelMode: settings.providers.chatgpt.tunnelMode,
+    chatGptTunnelBinaryPath: settings.providers.chatgpt.tunnelBinaryPath,
+    chatGptOpenAiTunnelId: settings.providers.chatgpt.openAiTunnelId,
+    chatGptOpenAiTunnelApiKeyConfigured: settings.providers.chatgpt.openAiTunnelApiKeyConfigured,
+    chatGptMaxWorkers: settings.providers.chatgpt.maxWorkers,
     piAgentDir: settings.providers.pi.agentDir,
     piBinaryPath: settings.providers.pi.binaryPath,
     customCodexModels: settings.providers.codex.customModels,
@@ -697,6 +730,7 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     customDroidModels: settings.providers.droid.customModels,
     customOpenCodeModels: settings.providers.opencode.customModels,
     customPiModels: settings.providers.pi.customModels,
+    customChatGptModels: settings.providers.chatgpt.customModels,
     disabledProviders: getServerDisabledProviders(settings),
     textGenerationProvider: settings.textGenerationModelSelection.provider,
     textGenerationModel: settings.textGenerationModelSelection.model,
@@ -726,6 +760,7 @@ function touchesProviderDiscoverySettings(patch: Partial<AppSettings>): boolean 
     hasOwn(patch, "openCodeServerPassword") ||
     hasOwn(patch, "openCodeServerUrl") ||
     hasOwn(patch, "piAgentDir") ||
+    hasOwn(patch, "customChatGptModels") ||
     hasOwn(patch, "disabledProviders")
   );
 }
@@ -890,6 +925,35 @@ export function appSettingsPatchToServerSettingsPatch(
       ...(hasOwn(patch, "customPiModels") ? { customModels: patch.customPiModels ?? [] } : {}),
     };
   }
+  if (
+    hasOwn(patch, "chatGptTunnelMode") ||
+    hasOwn(patch, "chatGptTunnelBinaryPath") ||
+    hasOwn(patch, "chatGptOpenAiTunnelId") ||
+    hasOwn(patch, "chatGptOpenAiTunnelApiKey") ||
+    hasOwn(patch, "chatGptMaxWorkers") ||
+    hasOwn(patch, "customChatGptModels")
+  ) {
+    providers.chatgpt = {
+      ...(hasOwn(patch, "chatGptTunnelMode") && patch.chatGptTunnelMode !== undefined
+        ? { tunnelMode: patch.chatGptTunnelMode }
+        : {}),
+      ...(hasOwn(patch, "chatGptTunnelBinaryPath")
+        ? { tunnelBinaryPath: patch.chatGptTunnelBinaryPath ?? "" }
+        : {}),
+      ...(hasOwn(patch, "chatGptOpenAiTunnelId")
+        ? { openAiTunnelId: patch.chatGptOpenAiTunnelId ?? "" }
+        : {}),
+      ...(hasOwn(patch, "chatGptOpenAiTunnelApiKey")
+        ? { openAiTunnelApiKey: patch.chatGptOpenAiTunnelApiKey ?? "" }
+        : {}),
+      ...(hasOwn(patch, "chatGptMaxWorkers") && patch.chatGptMaxWorkers !== undefined
+        ? { maxWorkers: Math.min(8, Math.max(1, Math.round(patch.chatGptMaxWorkers))) }
+        : {}),
+      ...(hasOwn(patch, "customChatGptModels")
+        ? { customModels: patch.customChatGptModels ?? [] }
+        : {}),
+    };
+  }
   if (hasOwn(patch, "disabledProviders")) {
     const disabledProviders = new Set(normalizeHiddenProviders(patch.disabledProviders ?? []));
     for (const provider of DEFAULT_PROVIDER_ORDER) {
@@ -940,6 +1004,10 @@ function buildInitialServerSettingsMigrationPatch(settings: AppSettings): Server
     "openCodeExperimentalWebSockets",
     "openCodeServerPassword",
     "openCodeServerUrl",
+    "chatGptTunnelMode",
+    "chatGptTunnelBinaryPath",
+    "chatGptOpenAiTunnelId",
+    "chatGptOpenAiTunnelApiKey",
     "piAgentDir",
     "piBinaryPath",
     "textGenerationModel",
@@ -955,6 +1023,9 @@ function buildInitialServerSettingsMigrationPatch(settings: AppSettings): Server
   if (settings.openCodeServerPassword.trim()) {
     patch.openCodeServerPassword = settings.openCodeServerPassword;
   }
+  if (settings.chatGptOpenAiTunnelApiKey.trim()) {
+    patch.chatGptOpenAiTunnelApiKey = settings.chatGptOpenAiTunnelApiKey;
+  }
 
   for (const key of [
     "customCodexModels",
@@ -966,6 +1037,7 @@ function buildInitialServerSettingsMigrationPatch(settings: AppSettings): Server
     "customDroidModels",
     "customOpenCodeModels",
     "customPiModels",
+    "customChatGptModels",
   ] as const) {
     if (normalizedSettings[key].length > 0) {
       patch[key] = normalizedSettings[key] as never;
@@ -994,6 +1066,11 @@ export function applyLocalAppSettingsPatch(
     ...localPatch,
     ...(hasOwn(patch, "openCodeServerPassword")
       ? { openCodeServerPasswordConfigured: Boolean(patch.openCodeServerPassword?.trim()) }
+      : {}),
+    ...(hasOwn(patch, "chatGptOpenAiTunnelApiKey")
+      ? {
+          chatGptOpenAiTunnelApiKeyConfigured: Boolean(patch.chatGptOpenAiTunnelApiKey?.trim()),
+        }
       : {}),
   });
 }
@@ -1034,6 +1111,7 @@ export function getCustomModelsByProvider(
     droid: getCustomModelsForProvider(settings, "droid"),
     opencode: getCustomModelsForProvider(settings, "opencode"),
     pi: getCustomModelsForProvider(settings, "pi"),
+    chatgpt: getCustomModelsForProvider(settings, "chatgpt"),
   };
 }
 
@@ -1168,6 +1246,7 @@ export function getCustomModelOptionsByProvider(
     droid: getAppModelOptions("droid", customModelsByProvider.droid),
     opencode: getAppModelOptions("opencode", customModelsByProvider.opencode),
     pi: getAppModelOptions("pi", customModelsByProvider.pi),
+    chatgpt: getAppModelOptions("chatgpt", customModelsByProvider.chatgpt),
   };
 }
 
@@ -1347,6 +1426,10 @@ export function getCustomBinaryPathForProvider(
       return normalizeProviderBinaryPathOverride(provider, settings.openCodeBinaryPath);
     case "pi":
       return normalizeProviderBinaryPathOverride(provider, settings.piBinaryPath);
+    case "chatgpt":
+      // ChatGPT (Web) is driven through the in-app browser, so there is no CLI
+      // binary to override and a custom path is never persisted.
+      return "";
   }
 }
 

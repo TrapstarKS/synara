@@ -116,6 +116,7 @@ import { ExternalMcpService } from "./externalMcp/Services/ExternalMcpService";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup";
 import { ServerSettingsService } from "./serverSettings";
+import { ChatGptConnector } from "./provider/chatgptConnector/Services/ChatGptConnector";
 import { isLoopbackHost } from "./startupAccess";
 import { TerminalManager } from "./terminal/Services/Manager";
 import { TerminalThreadTitleTracker } from "./terminal/terminalThreadTitleTracker";
@@ -1695,6 +1696,30 @@ const makeWsRpcHandlersLayer = () =>
             ),
           ),
 
+        [WS_METHODS.providerChatGptConnector]: () =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const chatGptConnector = yield* ChatGptConnector;
+              return yield* chatGptConnector.getInfo;
+            }),
+            "Failed to load the ChatGPT connector state",
+          ),
+        [WS_METHODS.providerRestartChatGptTunnel]: () =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const chatGptConnector = yield* ChatGptConnector;
+              return yield* chatGptConnector.restartTunnel;
+            }),
+            "Failed to restart the ChatGPT tunnel",
+          ),
+        [WS_METHODS.providerRotateChatGptSecret]: () =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const chatGptConnector = yield* ChatGptConnector;
+              return yield* chatGptConnector.rotateSecret;
+            }),
+            "Failed to rotate the ChatGPT connector secret",
+          ),
         [WS_METHODS.serverGetConfig]: () =>
           rpcEffect(loadServerConfig, "Failed to load server config"),
         [WS_METHODS.serverGetEnvironment]: () =>

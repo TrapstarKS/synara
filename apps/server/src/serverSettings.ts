@@ -254,11 +254,13 @@ function readLegacyProviderPasswords(raw: string): ReadonlyMap<ExternalProviderS
 function omitProviderPasswords(patch: ServerSettingsPatch): ServerSettingsPatch {
   if (!patch.providers) return patch;
   const { serverPassword: _openCodePassword, ...opencode } = patch.providers.opencode ?? {};
+  const { openAiTunnelApiKey: _tunnelApiKey, ...chatgpt } = patch.providers.chatgpt ?? {};
   return {
     ...patch,
     providers: {
       ...patch.providers,
       ...(patch.providers.opencode ? { opencode } : {}),
+      ...(patch.providers.chatgpt ? { chatgpt } : {}),
     },
   };
 }
@@ -384,6 +386,7 @@ const makeServerSettings = Effect.gen(function* () {
   const withCredentialState = (settings: ServerSettings) =>
     Effect.all({
       opencode: providerCredentials.isServerPasswordConfigured("opencode"),
+      chatgptTunnelApiKey: providerCredentials.isServerPasswordConfigured("chatgpt"),
     }).pipe(
       Effect.map(
         (configured): ServerSettings => ({
@@ -393,6 +396,10 @@ const makeServerSettings = Effect.gen(function* () {
             opencode: {
               ...settings.providers.opencode,
               serverPasswordConfigured: configured.opencode,
+            },
+            chatgpt: {
+              ...settings.providers.chatgpt,
+              openAiTunnelApiKeyConfigured: configured.chatgptTunnelApiKey,
             },
           },
         }),
@@ -553,6 +560,19 @@ const makeServerSettings = Effect.gen(function* () {
               ),
             );
           }
+        }
+        const tunnelApiKey = patch.providers?.chatgpt?.openAiTunnelApiKey;
+        if (tunnelApiKey !== undefined) {
+          yield* providerCredentials.replaceServerPassword("chatgpt", tunnelApiKey).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ServerSettingsError({
+                  settingsPath,
+                  detail: "failed to update the ChatGPT tunnel API key",
+                  cause,
+                }),
+            ),
+          );
         }
         const normalized = yield* normalizeSettings(
           settingsPath,

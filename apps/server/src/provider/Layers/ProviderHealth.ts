@@ -51,6 +51,7 @@ import {
   parseCodexCliVersion,
 } from "../codexCliVersion";
 import { ServerConfig } from "../../config";
+import { ChatGptConnector } from "../chatgptConnector/Services/ChatGptConnector";
 import {
   buildProviderChildEnvironment,
   type ProviderChildKind,
@@ -125,6 +126,7 @@ const DROID_PROVIDER = "droid" as const;
 const DEVIN_PROVIDER = "devin" as const;
 const OPENCODE_PROVIDER = "opencode" as const;
 const PI_PROVIDER = "pi" as const;
+const CHATGPT_PROVIDER = "chatgpt" as const;
 type ProviderStatuses = ReadonlyArray<ServerProviderStatus>;
 const DISABLED_PROVIDER_STATUS_MESSAGE = "Provider is disabled in Synara settings.";
 const MINIMUM_ANTIGRAVITY_CLI_VERSION = "1.0.12";
@@ -139,6 +141,7 @@ const PROVIDERS = [
   DEVIN_PROVIDER,
   OPENCODE_PROVIDER,
   PI_PROVIDER,
+  CHATGPT_PROVIDER,
 ] as const satisfies ReadonlyArray<ProviderKind>;
 
 const providerChildKind = (provider: ProviderKind): ProviderChildKind =>
@@ -1271,6 +1274,73 @@ export const checkGrokProviderStatus = makeCheckGrokProviderStatus();
 const runDroidCommand = (args: ReadonlyArray<string>, executable = "droid") =>
   runProviderCommand(executable, args, providerCommandEnv(DROID_PROVIDER));
 
+/**
+ * The ChatGPT provider has no CLI to probe. Availability is a settings
+ * question: the browser adapter can always start a session, while the native
+ * tool connector is only reachable from chatgpt.com after a tunnel mode is
+ * configured. A missing connector is reported as a warning rather than an
+ * unavailable provider so chat-only threads still work.
+ */
+export const checkChatGptProviderStatus = (
+  settings: ServerSettings["providers"]["chatgpt"],
+): Effect.Effect<ServerProviderStatus> => {
+  return Effect.gen(function* () {
+    const checkedAt = new Date().toISOString();
+    if (settings.tunnelMode === "off") {
+      return {
+        provider: CHATGPT_PROVIDER,
+        status: "warning" as const,
+        available: true,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message:
+          "ChatGPT connector is off. Choose a tunnel mode in Settings → Providers to let ChatGPT use workspace tools.",
+      } satisfies ServerProviderStatus;
+    }
+    const connectorOption = yield* Effect.serviceOption(ChatGptConnector);
+    if (Option.isNone(connectorOption)) {
+      return {
+        provider: CHATGPT_PROVIDER,
+        status: "ready" as const,
+        available: true,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: `ChatGPT connector tunnel mode: ${settings.tunnelMode}. Sign in to chatgpt.com in the Synara browser before the first turn.`,
+      } satisfies ServerProviderStatus;
+    }
+    const info = yield* connectorOption.value.getInfo.pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    if (info === null) {
+      return {
+        provider: CHATGPT_PROVIDER,
+        status: "warning" as const,
+        available: true,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: "The ChatGPT connector could not read its state.",
+      } satisfies ServerProviderStatus;
+    }
+    const tunnel =
+      info.publicUrl !== null
+        ? `${info.connectorUrl}`
+        : settings.tunnelMode === "manual"
+          ? `${info.localUrl} (expose it with your own tunnel and use the public URL, secret path included, in ChatGPT)`
+          : settings.tunnelMode === "openai"
+            ? "managed by the OpenAI tunnel for this workspace"
+            : info.localUrl;
+    const stateLine = info.tunnelMessage ? ` ${info.tunnelState}: ${info.tunnelMessage}` : "";
+    return {
+      provider: CHATGPT_PROVIDER,
+      status: info.tunnelState === "error" ? ("warning" as const) : ("ready" as const),
+      available: true,
+      authStatus: "unknown" as const,
+      checkedAt,
+      message: `Connector (${settings.tunnelMode}): ${tunnel}.${stateLine} Sign in to chatgpt.com in the Synara browser before the first turn.`,
+    } satisfies ServerProviderStatus;
+  });
+};
+
 export const makeCheckDroidProviderStatus = (
   binaryPath?: string,
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
@@ -2153,6 +2223,10 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
             return settings.providers.pi.binaryPath;
           case "devin":
             return settings.providers.devin.binaryPath;
+          // The ChatGPT provider has no provider binary; its optional tunnel
+          // helper is supervised separately by the connector service.
+          case "chatgpt":
+            return "";
         }
       };
 
@@ -2365,6 +2439,11 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
                     settings.providers.pi.agentDir,
                     settings.providers.pi.binaryPath,
                   ),
+                ),
+                checkProviderWhenEnabled(
+                  settings,
+                  CHATGPT_PROVIDER,
+                  checkChatGptProviderStatus(settings.providers.chatgpt),
                 ),
               ],
               {

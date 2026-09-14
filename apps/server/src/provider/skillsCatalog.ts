@@ -481,6 +481,8 @@ const PROVIDER_SKILL_ORIGIN_PREFERENCES = {
   opencode: ["opencode", "claude", "agents"],
   pi: ["pi", "agents"],
   devin: ["devin", "claude", "agents"],
+  // The ChatGPT web provider has no CLI home of its own.
+  chatgpt: [],
 } as const satisfies Partial<Record<ProviderKind, readonly SkillsHomeOrigin[]>>;
 
 function homeRootsForOrigin(

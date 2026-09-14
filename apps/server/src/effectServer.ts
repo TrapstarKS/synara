@@ -48,6 +48,7 @@ import { makeBoundedNodeHttpServer } from "./nodeHttpServer";
 import { websocketRpcRouteLayer } from "./wsRpc";
 import { recoverGitHandoffOperations } from "./gitHandoffOperations";
 import { externalMcpRouteLayer } from "./externalMcp/httpRoute";
+import { chatGptConnectorRouteLayer } from "./provider/chatgptConnector/httpRoute";
 import { ExternalMcpGateway } from "./externalMcp/Services/ExternalMcpGateway";
 import { ExternalMcpService } from "./externalMcp/Services/ExternalMcpService";
 
@@ -169,6 +170,7 @@ export const createEffectServer = Effect.fn(function* (
     websocketRpcRouteLayer,
     agentGatewayRouteLayer,
     externalMcpRouteLayer,
+    chatGptConnectorRouteLayer,
   );
   const httpApp = yield* HttpRouter.toHttpEffect(routesLayer);
   yield* httpServer

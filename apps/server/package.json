@@ -53,6 +53,7 @@
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "@types/ws": "^8.5.13",
+    "happy-dom": "^20.14.5",
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

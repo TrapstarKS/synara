@@ -768,6 +768,11 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.providerRestartMcpServer, input, { timeoutMs: null }),
       addMcpServer: (input) =>
         transport.request(WS_METHODS.providerAddMcpServer, input, { timeoutMs: null }),
+      chatGptConnector: () => transport.request(WS_METHODS.providerChatGptConnector),
+      restartChatGptTunnel: () =>
+        transport.request(WS_METHODS.providerRestartChatGptTunnel, {}, { timeoutMs: null }),
+      rotateChatGptSecret: () =>
+        transport.request(WS_METHODS.providerRotateChatGptSecret, {}, { timeoutMs: null }),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

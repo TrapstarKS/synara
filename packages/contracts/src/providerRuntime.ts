@@ -30,6 +30,8 @@ const RuntimeEventRawSource = Schema.Literals([
   "acp.cursor.extension",
   "opencode.sdk.event",
   "pi.sdk.event",
+  "chatgpt.browser.event",
+  "chatgpt.connector.request",
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
 

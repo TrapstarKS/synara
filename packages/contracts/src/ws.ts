@@ -298,6 +298,9 @@ export const WS_METHODS = {
   providerConnectMcpServer: "provider.connectMcpServer",
   providerDisconnectMcpServer: "provider.disconnectMcpServer",
   providerRestartMcpServer: "provider.restartMcpServer",
+  providerChatGptConnector: "provider.chatGptConnector",
+  providerRestartChatGptTunnel: "provider.restartChatGptTunnel",
+  providerRotateChatGptSecret: "provider.rotateChatGptSecret",
   providerAddMcpServer: "provider.addMcpServer",
 
   // Automation methods
@@ -517,6 +520,9 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.providerDisconnectMcpServer, ProviderMcpServerActionInput),
   tagRequestBody(WS_METHODS.providerRestartMcpServer, ProviderMcpServerActionInput),
   tagRequestBody(WS_METHODS.providerAddMcpServer, ProviderAddMcpServerInput),
+  tagRequestBody(WS_METHODS.providerChatGptConnector, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.providerRestartChatGptTunnel, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.providerRotateChatGptSecret, Schema.Struct({})),
 
   // Automation methods
   tagRequestBody(WS_METHODS.automationList, AutomationListInput),

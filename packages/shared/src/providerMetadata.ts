@@ -121,6 +121,15 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
       learnMoreHref: "https://app.devin.ai/usage",
     },
   },
+  {
+    kind: "chatgpt",
+    displayName: PROVIDER_DISPLAY_NAMES.chatgpt,
+    available: true,
+    // Turns are steered by typing into the ChatGPT composer only between
+    // turns; a live turn cannot accept injected input.
+    supportsNativeTurnSteering: false,
+    usage: null,
+  },
 ] as const satisfies readonly ProviderDescriptor[]);
 
 export const PROVIDER_DESCRIPTOR_BY_KIND = Object.fromEntries(

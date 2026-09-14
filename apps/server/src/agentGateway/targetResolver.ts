@@ -1,4 +1,5 @@
 import {
+  CHATGPT_REASONING_EFFORT_OPTIONS,
   CLAUDE_CODE_EFFORT_OPTIONS,
   CODEX_REASONING_EFFORT_OPTIONS,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -247,6 +248,21 @@ const PROVIDER_TARGET_OPTION_RULES = {
         validation: { kind: "non-empty-string" },
         allowsCustomValue: true,
       }),
+    },
+  }),
+  chatgpt: defineProviderOptionConfig<"chatgpt">({
+    primaryOptionKey: "reasoningEffort",
+    options: {
+      // The ChatGPT picker vocabulary is account-dependent; accept the known
+      // levels and let custom values through to the conversation URL.
+      reasoningEffort: providerOptionRule(
+        "string",
+        CHATGPT_REASONING_EFFORT_OPTIONS,
+        "provider-contract",
+        {
+          allowsCustomValue: true,
+        },
+      ),
     },
   }),
 } as const satisfies Record<ProviderKind, ProviderTargetOptionConfig>;

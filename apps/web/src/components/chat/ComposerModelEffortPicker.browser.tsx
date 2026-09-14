@@ -27,6 +27,7 @@ describe("ComposerModelEffortPicker", () => {
           droid: [],
           opencode: [],
           pi: [],
+          chatgpt: [],
         }}
         hideStatusLabel
         onProviderModelChange={vi.fn()}

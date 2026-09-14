@@ -28,6 +28,7 @@ export const SUPPORTED_PROVIDERS = [
   "Devin CLI",
   "Pi",
   "Factory Droid",
+  "ChatGPT (Web)",
 ] as const;
 
 export const PRODUCT_PILLARS = [

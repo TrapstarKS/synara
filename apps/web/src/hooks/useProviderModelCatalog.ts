@@ -188,6 +188,9 @@ export function useProviderModelCatalog(input: {
       cwd: discoveryCwd,
       enabled: devinModelDiscoveryEnabled,
     }),
+    // ChatGPT (Web) has no model-discovery endpoint: its catalog is the static
+    // contract list plus user-entered custom models, so keep the query disabled.
+    chatgpt: providerModelsQueryOptions({ provider: "chatgpt", enabled: false }),
   } as const;
 
   const claudeDynamicModelsQuery = useQuery(modelQueryOptionsByProvider.claudeAgent);
@@ -199,6 +202,9 @@ export function useProviderModelCatalog(input: {
   const openCodeDynamicModelsQuery = useQuery(modelQueryOptionsByProvider.opencode);
   const piDynamicModelsQuery = useQuery(modelQueryOptionsByProvider.pi);
   const devinDynamicModelsQuery = useQuery(modelQueryOptionsByProvider.devin);
+  // Disabled at the options level: ChatGPT (Web) has no discovery endpoint, so
+  // this only keeps the selected-provider chain exhaustive.
+  const chatGptDynamicModelsQuery = useQuery(modelQueryOptionsByProvider.chatgpt);
 
   const [, , modelProvider, modelBinaryPath, modelApiEndpoint, modelAgentDir, modelCwd] =
     modelQueryOptionsByProvider[selectedProvider].queryKey;
@@ -326,6 +332,11 @@ export function useProviderModelCatalog(input: {
       ),
       pi: getAppModelOptions("pi", customModelsByProvider.pi, modelHintByProvider?.pi),
       devin: getAppModelOptions("devin", customModelsByProvider.devin, modelHintByProvider?.devin),
+      chatgpt: getAppModelOptions(
+        "chatgpt",
+        customModelsByProvider.chatgpt,
+        modelHintByProvider?.chatgpt,
+      ),
     };
     const result: Record<
       ProviderKind,
@@ -344,6 +355,7 @@ export function useProviderModelCatalog(input: {
       opencode: openCodeDynamicModelsQuery.data,
       pi: piDynamicModelsQuery.data,
       devin: devinDynamicModelsQuery.data,
+      chatgpt: undefined,
     };
     for (const provider of [
       "claudeAgent",
@@ -389,6 +401,8 @@ export function useProviderModelCatalog(input: {
       opencode: openCodeModelDiscoveryPending,
       pi: piModelDiscoveryPending,
       devin: devinModelDiscoveryPending,
+      // Static-only catalog: never blocks the composer on discovery.
+      chatgpt: false,
     }),
     [
       antigravityModelDiscoveryPending,
@@ -413,6 +427,7 @@ export function useProviderModelCatalog(input: {
       opencode: openCodeDynamicModelsQuery.data?.models ?? [],
       pi: piDynamicModelsQuery.data?.models ?? [],
       devin: devinDynamicModelsQuery.data?.models ?? [],
+      chatgpt: [],
     }),
     [
       antigravityModelsQuery.data?.models,
@@ -521,7 +536,9 @@ export function useProviderModelCatalog(input: {
                   ? openCodeDynamicModelsQuery
                   : selectedProvider === "pi"
                     ? piDynamicModelsQuery
-                    : devinDynamicModelsQuery;
+                    : selectedProvider === "chatgpt"
+                      ? chatGptDynamicModelsQuery
+                      : devinDynamicModelsQuery;
   const selectedProviderModelsLoading =
     selectedProviderRuntimeModelDiscoveryPending ||
     (loadingModelProviders[selectedProvider] === undefined &&

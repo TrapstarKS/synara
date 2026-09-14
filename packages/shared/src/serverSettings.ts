@@ -93,5 +93,8 @@ export function providerStartOptionsFromServerSettings(
     devin: {
       ...(providers.devin.binaryPath ? { binaryPath: providers.devin.binaryPath } : {}),
     },
+    // ChatGPT web sessions are configured by their own settings (tunnel mode,
+    // browser URL); no launch options are derived here.
+    chatgpt: {},
   };
 }

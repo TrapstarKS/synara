@@ -6,6 +6,7 @@ import { assertFailure } from "@effect/vitest/utils";
 import { Effect, Layer, Stream } from "effect";
 
 import { AntigravityAdapter, AntigravityAdapterShape } from "../Services/AntigravityAdapter.ts";
+import { ChatGptAdapter, ChatGptAdapterShape } from "../Services/ChatGptAdapter.ts";
 import { ClaudeAdapter, ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { CodexAdapter, CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { CursorAdapter, CursorAdapterShape } from "../Services/CursorAdapter.ts";
@@ -159,6 +160,23 @@ const fakeDevinAdapter: DevinAdapterShape = {
   streamEvents: Stream.empty,
 };
 
+const fakeChatGptAdapter: ChatGptAdapterShape = {
+  provider: "chatgpt",
+  capabilities: { sessionModelSwitch: "restart-session" },
+  startSession: vi.fn(),
+  sendTurn: vi.fn(),
+  interruptTurn: vi.fn(),
+  respondToRequest: vi.fn(),
+  respondToUserInput: vi.fn(),
+  stopSession: vi.fn(),
+  listSessions: vi.fn(),
+  hasSession: vi.fn(),
+  readThread: vi.fn(),
+  rollbackThread: vi.fn(),
+  stopAll: vi.fn(),
+  streamEvents: Stream.empty,
+};
+
 const fakeAntigravityAdapter: AntigravityAdapterShape = {
   provider: "antigravity",
   capabilities: { sessionModelSwitch: "restart-session" },
@@ -190,6 +208,7 @@ const registryLayer = (codexAdapter = fakeCodexAdapter) =>
         Layer.succeed(DroidAdapter, fakeDroidAdapter),
         Layer.succeed(OpenCodeAdapter, fakeOpenCodeAdapter),
         Layer.succeed(PiAdapter, fakePiAdapter),
+        Layer.succeed(ChatGptAdapter, fakeChatGptAdapter),
       ),
     ),
     NodeServices.layer,
@@ -210,6 +229,7 @@ layer("ProviderAdapterRegistryLive", (it) => {
       const droid = yield* registry.getByProvider("droid");
       const opencode = yield* registry.getByProvider("opencode");
       const pi = yield* registry.getByProvider("pi");
+      const chatgpt = yield* registry.getByProvider("chatgpt");
       assert.equal(codex, fakeCodexAdapter);
       assert.equal(claude, fakeClaudeAdapter);
       assert.equal(cursor, fakeCursorAdapter);
@@ -219,6 +239,7 @@ layer("ProviderAdapterRegistryLive", (it) => {
       assert.equal(droid, fakeDroidAdapter);
       assert.equal(opencode, fakeOpenCodeAdapter);
       assert.equal(pi, fakePiAdapter);
+      assert.equal(chatgpt, fakeChatGptAdapter);
 
       const providers = yield* registry.listProviders();
       assert.deepEqual(providers, [
@@ -231,6 +252,7 @@ layer("ProviderAdapterRegistryLive", (it) => {
         "droid",
         "opencode",
         "pi",
+        "chatgpt",
       ]);
     }),
   );

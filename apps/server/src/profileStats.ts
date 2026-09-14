@@ -34,6 +34,7 @@ const PROVIDER_KINDS = new Set<ProviderKind>([
   "opencode",
   "pi",
   "devin",
+  "chatgpt",
 ]);
 
 type HeatmapCell = ProfileStats["activity"]["heatmap"][number];

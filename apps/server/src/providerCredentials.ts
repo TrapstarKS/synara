@@ -7,10 +7,12 @@ import { Effect, Layer, ServiceMap } from "effect";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore";
 import { ServerSecretStore, type SecretStoreError } from "./auth/Services/ServerSecretStore";
 
-export type ExternalProviderServer = "opencode";
+export type ExternalProviderServer = "opencode" | "chatgpt";
 
 const secretName = (provider: ExternalProviderServer): string =>
-  `provider-${provider}-server-password`;
+  provider === "chatgpt"
+    ? "provider-chatgpt-tunnel-api-key"
+    : `provider-${provider}-server-password`;
 
 export interface ProviderCredentialsShape {
   readonly getServerPassword: (

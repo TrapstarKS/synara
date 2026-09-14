@@ -35,6 +35,9 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
   pi: new Set<ModelSlug>(),
   // Devin's built-in list is intentionally empty; its CLI supplies the live catalog.
   devin: new Set<ModelSlug>(),
+  // ChatGPT web exposes an account-dependent catalog; the static entries are
+  // cold-start fallbacks and custom models extend them.
+  chatgpt: new Set(MODEL_OPTIONS_BY_PROVIDER.chatgpt.map((option) => option.slug)),
 };
 
 export interface SelectableModelOption {
