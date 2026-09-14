@@ -5,6 +5,7 @@ import {
   WsAutomationGetMemoryRpc,
   WsAutomationResolveProposalRpc,
   WsBootstrapRpcGroup,
+  WsDeviceRpcGroup,
   WsFeatureRpcGroup,
   WsProjectsDiscoverScriptsRpc,
   WsProjectsProvisionFromGitHubRpc,
@@ -13,6 +14,7 @@ import {
   WsRpcError,
 } from "./rpc";
 import { ORCHESTRATION_WS_METHODS } from "./orchestration";
+import { WS_METHODS } from "./ws";
 
 describe("WS RPC contracts", () => {
   it("keeps bootstrap and feature RPCs in separate groups", () => {
@@ -46,5 +48,22 @@ describe("WS RPC contracts", () => {
 
   it("exports the count-only pull request review RPC", () => {
     expect(WsPullRequestsReviewRequestCountRpc).toBeDefined();
+  });
+
+  it("registers an RPC group entry for every WS method", () => {
+    // The server builds its request handlers from the feature group; a handler
+    // whose method has no group entry crashes handler construction at runtime
+    // (RpcGroup reads `.key` from a missing request), which unit tests on the
+    // source layer never observe. This pins the invariant here.
+    const registered = new Set<string>([
+      ...WsBootstrapRpcGroup.requests.keys(),
+      ...WsFeatureRpcGroup.requests.keys(),
+      ...WsDeviceRpcGroup.requests.keys(),
+    ]);
+    const missing = Object.entries(WS_METHODS)
+      .filter(([, method]) => !registered.has(method))
+      .map(([name, method]) => `${name} (${method})`);
+
+    expect(missing).toEqual([]);
   });
 });
