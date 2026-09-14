@@ -1463,6 +1463,7 @@ const make = Effect.gen(function* () {
     commandTag: string;
     finalDeltaCommandTag: string;
     fallbackText?: string;
+    asyncQuestions?: import("@synara/contracts").AsyncUserInputQuestions;
   }) =>
     Effect.gen(function* () {
       const bufferedText = yield* getBufferedAssistantText(input.messageId);
@@ -1494,6 +1495,7 @@ const make = Effect.gen(function* () {
         commandId: providerCommandId(input.event, input.commandTag, input.messageId),
         threadId: input.threadId,
         messageId: input.messageId,
+        ...(input.asyncQuestions ? { asyncQuestions: input.asyncQuestions } : {}),
         ...(input.turnId ? { turnId: input.turnId } : {}),
         createdAt: input.createdAt,
       });
@@ -2546,6 +2548,8 @@ const make = Effect.gen(function* () {
         event.type === "item.completed" && event.payload.itemType === "assistant_message"
           ? {
               fallbackText: event.payload.detail,
+              asyncQuestions:
+                thread.parentThreadId == null ? event.payload.asyncQuestions : undefined,
             }
           : undefined;
       const proposedPlanCompletion =
@@ -2559,11 +2563,14 @@ const make = Effect.gen(function* () {
 
       if (assistantCompletion) {
         const turnId = toTurnId(event.turnId);
-        const assistantMessageId = yield* resolveAssistantCompletionMessageId({
-          event,
-          thread,
-          ...(turnId ? { turnId } : {}),
-        });
+        const assistantMessageId =
+          assistantCompletion.asyncQuestions && event.itemId
+            ? MessageId.makeUnsafe(`assistant:${event.itemId}`)
+            : yield* resolveAssistantCompletionMessageId({
+                event,
+                thread,
+                ...(turnId ? { turnId } : {}),
+              });
         const existingAssistantMessage = thread.messages.find(
           (entry) => entry.id === assistantMessageId,
         );
@@ -2581,6 +2588,9 @@ const make = Effect.gen(function* () {
           createdAt: now,
           commandTag: "assistant-complete",
           finalDeltaCommandTag: "assistant-delta-finalize",
+          ...(assistantCompletion.asyncQuestions
+            ? { asyncQuestions: assistantCompletion.asyncQuestions }
+            : {}),
           ...(assistantCompletion.fallbackText !== undefined && shouldApplyFallbackCompletionText
             ? { fallbackText: assistantCompletion.fallbackText }
             : {}),

@@ -12,6 +12,7 @@ import {
   PiModelOptions,
 } from "./model";
 import { ProviderMentionReference, ProviderSkillReference } from "./providerDiscovery";
+import { AsyncUserInput, AsyncUserInputQuestions, AsyncUserInputResponse } from "./asyncUserInput";
 import { ProjectKind } from "./project";
 import {
   ApprovalRequestId,
@@ -545,6 +546,7 @@ export const OrchestrationMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   textSegments: Schema.optional(Schema.Array(OrchestrationMessageTextSegment)),
+  asyncUserInput: Schema.optional(AsyncUserInput),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   skills: Schema.optional(Schema.Array(ProviderSkillReference)),
   mentions: Schema.optional(Schema.Array(ProviderMentionReference)),
@@ -1323,6 +1325,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
+  asyncUserInputResponse: Schema.optional(AsyncUserInputResponse),
   commandId: CommandId,
   threadId: ThreadId,
   message: Schema.Struct({
@@ -1364,6 +1367,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
 
 const ClientThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
+  asyncUserInputResponse: Schema.optional(AsyncUserInputResponse),
   commandId: CommandId,
   threadId: ThreadId,
   message: Schema.Struct({
@@ -1614,6 +1618,7 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
 });
 
 const ThreadMessageAssistantCompleteCommand = Schema.Struct({
+  asyncQuestions: Schema.optional(AsyncUserInputQuestions),
   type: Schema.Literal("thread.message.assistant.complete"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1991,6 +1996,7 @@ export const ThreadInteractionModeSetPayload = Schema.Struct({
 });
 
 export const ThreadMessageSentPayload = Schema.Struct({
+  asyncUserInput: Schema.optional(AsyncUserInput),
   threadId: ThreadId,
   messageId: MessageId,
   role: OrchestrationMessageRole,
