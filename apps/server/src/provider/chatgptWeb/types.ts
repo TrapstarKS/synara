@@ -1,10 +1,10 @@
 // FILE: types.ts
-// Purpose: Shared types for driving a ChatGPT web conversation inside the
-//          Synara browser (provider "chatgpt").
+// Purpose: Shared types for driving a ChatGPT web conversation in the user's
+//          browser (provider "chatgpt").
 // Layer: Server provider / ChatGPT web driver
 //
 // The driver talks to the desktop-owned browser through the server's
-// `BrowserAutomationHost` RPC. Everything in this file is deliberately plain
+// browser bridge RPC. Everything in this file is deliberately plain
 // data so page scripts can be unit tested against jsdom fixtures and the
 // driver can be exercised with a fake RPC.
 
@@ -28,9 +28,7 @@ export interface ChatGptBrowserCallInput {
 }
 
 /**
- * Bound RPC to the visible Synara browser for one provider session. The
- * implementation injects `provider: "chatgpt"`, the owning `threadId` and a
- * session key; tests provide a fake.
+ * Bound RPC to one browser tab for one provider session. Tests provide a fake.
  */
 export interface ChatGptBrowserRpc {
   readonly call: (input: ChatGptBrowserCallInput) => Promise<unknown>;

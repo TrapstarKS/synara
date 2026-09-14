@@ -118,7 +118,7 @@ import { ServerRuntimeStartup } from "./serverRuntimeStartup";
 import { ServerSettingsService } from "./serverSettings";
 import { ChatGptConnector } from "./provider/chatgptConnector/Services/ChatGptConnector";
 import { openChatGptLogin } from "./provider/chatgptConnector/login";
-import { BrowserAutomationHost } from "./browserAutomation/Services/BrowserAutomationHost";
+import { ChatGptExternalBrowser } from "./provider/chatgptConnector/Services/ChatGptExternalBrowser";
 import { isLoopbackHost } from "./startupAccess";
 import { TerminalManager } from "./terminal/Services/Manager";
 import { TerminalThreadTitleTracker } from "./terminal/terminalThreadTitleTracker";
@@ -1725,9 +1725,13 @@ const makeWsRpcHandlersLayer = () =>
         [WS_METHODS.providerOpenChatGptLogin]: (input) =>
           rpcEffect(
             Effect.gen(function* () {
-              const browserHost = yield* BrowserAutomationHost;
+              const externalBrowser = yield* ChatGptExternalBrowser;
               return yield* Effect.promise(() =>
-                openChatGptLogin({ browserHost, threadId: input.threadId }),
+                openChatGptLogin({
+                  externalBrowser,
+                  openBrowser: (url) => Effect.runPromise(open.openBrowser(url)),
+                  threadId: input.threadId,
+                }),
               );
             }),
             "Failed to open the ChatGPT sign-in page",

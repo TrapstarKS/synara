@@ -27,7 +27,10 @@ import {
   ChatGptConnectorLive,
   type ChatGptConnectorLayer,
 } from "./chatgptConnector/Layers/ChatGptConnector";
-import { BrowserAutomationHostLive } from "../browserAutomation/Layers/BrowserAutomationHost";
+import {
+  ChatGptExternalBrowserLive,
+  type ChatGptExternalBrowserLayer,
+} from "./chatgptConnector/Layers/ChatGptExternalBrowser";
 import { CHATGPT_MAX_WORKERS_DEFAULT } from "@synara/contracts";
 import { ProviderSessionDirectoryLive } from "./Layers/ProviderSessionDirectory";
 import { ProviderSessionRuntimeRepositoryLive } from "../persistence/Layers/ProviderSessionRuntime";
@@ -42,6 +45,8 @@ export function makeServerProviderLayer(
      * (one decrypted secret, one tunnel process).
      */
     readonly chatGptConnectorLayer?: ChatGptConnectorLayer;
+    /** Shared default-browser bridge used by the ChatGPT adapter and login RPC. */
+    readonly chatGptExternalBrowserLayer?: ChatGptExternalBrowserLayer;
   } = {},
 ) {
   return Effect.gen(function* () {
@@ -104,6 +109,9 @@ export function makeServerProviderLayer(
     );
     const chatGptConnectorLayer: ChatGptConnectorLayer =
       options.chatGptConnectorLayer ?? fallbackChatGptConnectorLayer;
+    const chatGptExternalBrowserLayer: ChatGptExternalBrowserLayer =
+      options.chatGptExternalBrowserLayer ??
+      ChatGptExternalBrowserLive.pipe(Layer.provide(agentGatewayCredentialsLayer));
     const chatGptAdapterLayer = makeChatGptAdapterLive({
       resolveMaxWorkers: () =>
         serverSettings.getSettings.pipe(
@@ -114,7 +122,10 @@ export function makeServerProviderLayer(
           ),
           Effect.orDie,
         ),
-    }).pipe(Layer.provide(chatGptConnectorLayer), Layer.provide(BrowserAutomationHostLive));
+    }).pipe(
+      Layer.provide(chatGptConnectorLayer),
+      Layer.provide(chatGptExternalBrowserLayer),
+    );
     const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
       Layer.provide(codexAdapterLayer),
       Layer.provide(claudeAdapterLayer),

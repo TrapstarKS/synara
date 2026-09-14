@@ -1,12 +1,11 @@
 // FILE: driver.ts
-// Purpose: Drives one ChatGPT web conversation inside the Synara browser:
+// Purpose: Drives one ChatGPT web conversation in the user's browser:
 //          open/resume a chat, insert and send a prompt, stream the answer,
 //          stop a generation, and open fresh worker chats.
 // Layer: Server provider / ChatGPT web driver
 //
 // The driver never talks to chatgpt.com directly: every page action goes
-// through the desktop-owned browser host RPC (`BrowserAutomationHost`), which
-// requires the desktop app. The page observation script lives in
+// through the browser bridge RPC. The page observation script lives in
 // `pageScript.ts`; this file owns timing, acceptance and completion rules.
 //
 // Adapted from Chat On Steroids (MIT) — extension/content.js turn lifecycle
@@ -69,7 +68,7 @@ export interface ChatGptDriverOptions {
   readonly completionTimeoutMs?: number;
   /**
    * How long to keep polling after the sign-in page appears, giving the user
-   * time to log in (in the Synara browser) while the turn waits. Zero fails
+   * time to log in (in the user's browser) while the turn waits. Zero fails
    * immediately with `login-required`.
    */
   readonly loginWaitMs?: number;
@@ -164,7 +163,7 @@ export class ChatGptWebDriver {
         if (error.kind === "unavailable") {
           throw new ChatGptDriverFailure(
             "browser-unavailable",
-            "The Synara browser is only available in the desktop app. Open Synara desktop to run ChatGPT (Web) sessions.",
+            "The default-browser bridge is unavailable. Load the Synara ChatGPT extension and try again.",
           );
         }
         if (browserHostErrorCode(error) === "BrowserInterruptedByHuman") {
@@ -267,7 +266,7 @@ export class ChatGptWebDriver {
         if (this.loginWaitMs <= 0) {
           throw new ChatGptDriverFailure(
             "login-required",
-            `Sign in to ChatGPT in the Synara browser (${observation.url}). The conversation tab is open and waiting.`,
+            `Sign in to ChatGPT in your default browser (${observation.url}). The conversation tab is open and waiting.`,
           );
         }
         if (!loginSeen) {
@@ -298,12 +297,12 @@ export class ChatGptWebDriver {
     if (loginSeen) {
       throw new ChatGptDriverFailure(
         "login-required",
-        "ChatGPT is still showing the sign-in page. Finish signing in to chatgpt.com in the Synara browser, then start the turn again.",
+        "ChatGPT is still showing the sign-in page. Finish signing in to chatgpt.com in your default browser, then start the turn again.",
       );
     }
     throw new ChatGptDriverFailure(
       "timeout",
-      "The ChatGPT page did not show its composer in time. Open the conversation tab in Synara and check the page state.",
+      "The ChatGPT page did not show its composer in time. Check the ChatGPT tab in your default browser and try again.",
     );
   }
 
@@ -423,7 +422,7 @@ export class ChatGptWebDriver {
       if (!ready) {
         throw new ChatGptDriverFailure(
           "login-required",
-          "Sign in to ChatGPT in the Synara browser first.",
+          "Sign in to ChatGPT in your default browser first.",
         );
       }
       return this.sendPrompt(ref, text);

@@ -60,6 +60,10 @@ import {
   ChatGptConnectorLive,
   type ChatGptConnectorLayer,
 } from "./provider/chatgptConnector/Layers/ChatGptConnector";
+import {
+  ChatGptExternalBrowserLive,
+  type ChatGptExternalBrowserLayer,
+} from "./provider/chatgptConnector/Layers/ChatGptExternalBrowser";
 import { ProviderCredentialsLive } from "./providerCredentials";
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { ProviderDiscoveryService } from "./provider/Services/ProviderDiscoveryService";
@@ -95,6 +99,8 @@ export function makeServerRuntimeServicesLayer(
     readonly providerLayer?: Layer.Layer<ServerProviderServices, unknown, unknown>;
     /** Shared ChatGPT connector layer (built once in makeServerApplicationLayers). */
     readonly chatGptConnectorLayer?: ChatGptConnectorLayer;
+    /** Shared default-browser bridge (built once in makeServerApplicationLayers). */
+    readonly chatGptExternalBrowserLayer?: ChatGptExternalBrowserLayer;
   } = {},
 ) {
   const agentGatewayCredentialsLayer =
@@ -104,6 +110,9 @@ export function makeServerRuntimeServicesLayer(
   );
   const chatGptConnectorLayer: ChatGptConnectorLayer =
     options.chatGptConnectorLayer ?? fallbackChatGptConnectorLayer;
+  const chatGptExternalBrowserLayer: ChatGptExternalBrowserLayer =
+    options.chatGptExternalBrowserLayer ??
+    ChatGptExternalBrowserLive.pipe(Layer.provide(agentGatewayCredentialsLayer));
   const providerHealthLayer = ProviderHealthLive.pipe(
     Layer.provideMerge(ServerSettingsLive),
     Layer.provideMerge(chatGptConnectorLayer),
@@ -252,6 +261,7 @@ export function makeServerRuntimeServicesLayer(
   return Layer.mergeAll(
     agentGatewayCredentialsLayer,
     agentGatewayLayer,
+    chatGptExternalBrowserLayer,
     BrowserAutomationHostLive,
     automationServiceLayer,
     automationSchedulerLayer,
@@ -302,17 +312,21 @@ export function makeServerApplicationLayers() {
   const chatGptConnectorLayer: ChatGptConnectorLayer = ChatGptConnectorLive.pipe(
     Layer.provide(Layer.orDie(ProviderCredentialsLive)),
   );
+  const chatGptExternalBrowserLayer: ChatGptExternalBrowserLayer =
+    ChatGptExternalBrowserLive.pipe(Layer.provide(agentGatewayCredentialsLayer));
   // Provider start/discovery gates must observe the same settings instance as
   // the RPC layer. Reusing this layer in the final graph lets Effect memoize a
   // single ServerSettings service instead of capturing private defaults.
   const providerLayer = makeServerProviderLayer({
     agentGatewayCredentialsLayer,
     chatGptConnectorLayer,
+    chatGptExternalBrowserLayer,
   }).pipe(Layer.provideMerge(ServerSettingsLive));
   const runtimeServicesLayer = makeServerRuntimeServicesLayer({
     agentGatewayCredentialsLayer,
     providerLayer,
     chatGptConnectorLayer,
+    chatGptExternalBrowserLayer,
   });
   return {
     runtimeServicesLayer,

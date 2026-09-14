@@ -680,6 +680,14 @@ jobs:
           name: server-tarball
           path: release-assets
 
+      - name: Package ChatGPT browser extension
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          zip -qr "release-assets/synara-chatgpt-browser-extension-v${RELEASE_VERSION}.zip" \
+            extensions/chatgpt-browser
+
       - name: Merge macOS updater manifests
         run: |
           node scripts/merge-mac-update-manifests.ts \

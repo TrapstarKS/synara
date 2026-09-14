@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Synara ChatGPT Browser Bridge",
+  "version": "0.1.0",
+  "description": "Lets Synara drive an already signed-in ChatGPT tab without exporting cookies.",
+  "permissions": ["tabs", "debugger", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://chatgpt.com/*",
+    "https://www.chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://auth.openai.com/*",
+    "https://auth0.openai.com/*",
+    "https://auth.chatgpt.com/*",
+    "https://accounts.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Synara ChatGPT bridge",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "js": ["pairing.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

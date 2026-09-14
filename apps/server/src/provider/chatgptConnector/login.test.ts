@@ -1,13 +1,12 @@
 // FILE: login.test.ts
-// Purpose: Verify the on-demand ChatGPT sign-in flow: unavailable desktops,
-//          an already signed-in page, and the bounded wait for a manual login.
+// Purpose: Verify the default-browser ChatGPT sign-in flow: unavailable local
+//          bridges, an already signed-in page, and the bounded wait for login.
 // Layer: Server provider connector tests
 
-import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
-import type { BrowserAutomationHostShape } from "../../browserAutomation/Services/BrowserAutomationHost.ts";
 import { openChatGptLogin } from "./login.ts";
+import type { ChatGptExternalBrowserShape } from "./Services/ChatGptExternalBrowser.ts";
 
 const observation = (overrides: Record<string, unknown> = {}) => ({
   url: "https://chatgpt.com/",
@@ -25,56 +24,98 @@ const observation = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const makeHost = (options: {
+const makeBridge = (options: {
   readonly available?: boolean;
   readonly observations: ReadonlyArray<Record<string, unknown>>;
-}): BrowserAutomationHostShape => {
+  readonly connected?: boolean;
+}): ChatGptExternalBrowserShape => {
   let evaluateCount = 0;
   return {
     available: options.available ?? true,
-    execute: vi.fn((call) => {
+    createPairing: vi.fn(() => ({
+      pairingUrl: "http://127.0.0.1:3773/provider/chatgpt/browser/pair?token=test-token",
+      chatgptUrl: "https://chatgpt.com/",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })),
+    hasPairing: vi.fn(() => true),
+    renderPairingPage: vi.fn(() => "<html></html>"),
+    attachClient: vi.fn(() => ({ clientId: "client-1", threadId: "thread-1" as never })),
+    handleClientMessage: vi.fn(),
+    detachClient: vi.fn(),
+    waitForClient: vi.fn(async () => options.connected ?? true),
+    execute: vi.fn(async (call) => {
       switch (call.name) {
         case "browser_tabs":
-          return Effect.succeed({ tabs: [], activeTabId: null, assignedTabId: null });
+          return { tabs: [], activeTabId: null, assignedTabId: null };
         case "browser_open":
-          return Effect.succeed({ tabId: "t1", finalUrl: "https://chatgpt.com/" });
+          return { tabId: "t1", finalUrl: "https://chatgpt.com/" };
         case "browser_evaluate": {
-          const index = Math.min(evaluateCount, options.observations.length - 1);
+          const index = Math.max(0, Math.min(evaluateCount, options.observations.length - 1));
           evaluateCount += 1;
-          return Effect.succeed({ value: observation(options.observations[index]) });
+          return { value: observation(options.observations[index] ?? {}) };
         }
         default:
-          return Effect.succeed({});
+          return {};
       }
     }),
-  } as unknown as BrowserAutomationHostShape;
+  };
 };
 
 describe("openChatGptLogin", () => {
-  it("reports unavailable when the desktop browser host is absent", async () => {
-    const host = makeHost({ available: false, observations: [] });
-    const result = await openChatGptLogin({ browserHost: host, threadId: "thread-1" as never });
+  it("reports unavailable when the local bridge is absent", async () => {
+    const bridge = makeBridge({ available: false, observations: [] });
+    const result = await openChatGptLogin({
+      externalBrowser: bridge,
+      openBrowser: vi.fn(async () => undefined),
+      threadId: "thread-1" as never,
+    });
 
     expect(result.status).toBe("unavailable");
-    expect(result.message).toContain("desktop");
+    expect(result.message).toContain("locally");
   });
 
-  it("resolves as signed-in when the composer is already present", async () => {
-    const host = makeHost({ observations: [{}] });
-    const result = await openChatGptLogin({ browserHost: host, threadId: "thread-1" as never });
+  it("opens the default browser and resolves when the composer is already present", async () => {
+    const bridge = makeBridge({ observations: [{}] });
+    const openBrowser = vi.fn(async () => undefined);
+    const result = await openChatGptLogin({
+      externalBrowser: bridge,
+      openBrowser,
+      threadId: "thread-1" as never,
+    });
 
     expect(result.status).toBe("signed-in");
     expect(result.url).toBe("https://chatgpt.com/");
+    expect(openBrowser).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:3773/provider/chatgpt/browser/pair?token=test-token",
+    );
+    expect(openBrowser).toHaveBeenNthCalledWith(2, "https://chatgpt.com/");
+  });
+
+  it("reports a missing extension without waiting for the ChatGPT page", async () => {
+    const bridge = makeBridge({ connected: false, observations: [] });
+    const result = await openChatGptLogin({
+      externalBrowser: bridge,
+      openBrowser: vi.fn(async () => undefined),
+      threadId: "thread-1" as never,
+      connectWaitMs: 0,
+    });
+
+    expect(result.status).toBe("unavailable");
+    expect(result.message).toContain("extensions/chatgpt-browser");
+    expect(bridge.execute).not.toHaveBeenCalled();
   });
 
   it("waits for a manual sign-in and reports the bounded timeout", async () => {
-    const host = makeHost({
+    const bridge = makeBridge({
       observations: [{ composerPresent: false, loginRequired: true }],
     });
     const result = await openChatGptLogin({
-      browserHost: host,
+      externalBrowser: bridge,
+      openBrowser: vi.fn(async () => undefined),
       threadId: "thread-1" as never,
       waitMs: 60,
+      connectWaitMs: 0,
     });
 
     expect(result.status).toBe("sign-in-required");

@@ -1,6 +1,6 @@
 // FILE: Layers/ChatGptAdapter.ts
 // Purpose: Provider adapter that runs Synara turns on a ChatGPT (Web)
-//          conversation driven through the desktop-owned Synara browser.
+//          conversation driven through the user's default browser.
 // Layer: Server provider runtime
 //
 // The adapter owns three cooperating pieces already built around it:
@@ -28,7 +28,6 @@ import {
 } from "@synara/contracts";
 import { Effect, Fiber, Layer, Queue, Stream } from "effect";
 
-import { BrowserAutomationHost } from "../../browserAutomation/Services/BrowserAutomationHost.ts";
 import { ServerConfig } from "../../config.ts";
 import { makeBoundedCallbackIngress } from "../boundedCallbackIngress.ts";
 import {
@@ -52,6 +51,7 @@ import {
   ChatGptConnector,
   type ChatGptConnectorShape,
 } from "../chatgptConnector/Services/ChatGptConnector.ts";
+import { ChatGptExternalBrowser } from "../chatgptConnector/Services/ChatGptExternalBrowser.ts";
 import { ChatGptWorkerBroker } from "../chatgptConnector/workers.ts";
 import { ExecSessionManager } from "../chatgptConnector/tools/execSessions.ts";
 import { ChatGptWebDriver, ChatGptDriverFailure } from "../chatgptWeb/driver.ts";
@@ -167,7 +167,7 @@ const toAdapterError = (
 export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}) =>
   Effect.gen(function* () {
     const serverConfig = yield* ServerConfig;
-    const browserHost = yield* BrowserAutomationHost;
+    const externalBrowser = yield* ChatGptExternalBrowser;
     const connector: ChatGptConnectorShape = yield* ChatGptConnector;
     const resolveMaxWorkers =
       dependencies.resolveMaxWorkers ?? (() => Effect.succeed(DEFAULT_MAX_WORKERS));
@@ -212,19 +212,14 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
         : {}),
     });
 
-    const hostRpcFor = (threadId: ThreadId, workspaceRoot: string): ChatGptBrowserRpc => ({
+    const externalRpcFor = (threadId: ThreadId): ChatGptBrowserRpc => ({
       call: ({ name, args, timeoutMs }) =>
-        Effect.runPromise(
-          browserHost.execute({
-            sessionKey: `chatgpt-web:${threadId}`,
-            provider: PROVIDER,
-            threadId,
-            name,
-            arguments: args,
-            workspaceRoot,
-            timeoutMs: Math.max(100, Math.min(30_000, timeoutMs ?? 20_000)),
-          }),
-        ),
+        externalBrowser.execute({
+          threadId,
+          name,
+          args,
+          timeoutMs: Math.max(100, Math.min(30_000, timeoutMs ?? 20_000)),
+        }),
     });
 
     const requireSession = (
@@ -489,11 +484,11 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
         const driver =
           dependencies.createDriver?.({ threadId: input.threadId }) ??
           new ChatGptWebDriver({
-            rpc: hostRpcFor(input.threadId, workspaceRoot),
+            rpc: externalRpcFor(input.threadId),
             onLoginRequired: () =>
               emitRuntimeWarning(
                 contextRef,
-                "ChatGPT is showing its sign-in page. Sign in to chatgpt.com in the Synara browser; Synara is waiting and continues automatically once you are signed in.",
+                "ChatGPT is showing its sign-in page. Sign in to chatgpt.com in your default browser; Synara is waiting and continues automatically once you are signed in.",
               ),
           });
         const broker = new ChatGptWorkerBroker({
@@ -585,7 +580,7 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
           }),
           type: "session.started",
           payload: {
-            message: "ChatGPT (Web) session attached to the Synara browser.",
+            message: "ChatGPT (Web) session attached to your default browser.",
             ...(conversation.url ? { resume: conversation.url } : {}),
           },
         } satisfies ProviderRuntimeEvent);

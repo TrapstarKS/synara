@@ -6,7 +6,6 @@
 
 import type { ChatGptConnectorState, ChatGptTunnelMode, ThreadId } from "@synara/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useId, useState } from "react";
 
 import { copyTextToClipboard } from "~/hooks/useCopyToClipboard";
@@ -122,16 +121,14 @@ export function ChatGptConnectorSetup(props: {
 }) {
   const queryClient = useQueryClient();
   const connectorId = useId();
-  const navigate = useNavigate();
   const activeSpaceId = useSpacesUiStore((state) => state.activeSpaceId);
   const getLastThreadId = useSpacesUiStore((state) => state.getLastThreadId);
   const threadIds = useStore((state) => state.threadIds);
   const [signInPending, setSignInPending] = useState(false);
 
   /**
-   * Picks the thread whose browser hosts the sign-in tab: the last thread
-   * visited in the active space, else any known thread (cookies are shared
-   * across the whole Synara browser, so one sign-in covers every thread).
+   * Pair the extension to a real thread so browser actions and ChatGPT tool
+   * calls keep the same ownership boundary as the provider session.
    */
   const resolveLoginThreadId = (): ThreadId | null => {
     const remembered = getLastThreadId(activeSpaceId);
@@ -146,21 +143,18 @@ export function ChatGptConnectorSetup(props: {
         type: "warning",
         title: "Open a conversation once",
         description:
-          "The sign-in tab lives in a conversation's browser panel. Open any conversation, then try again.",
+          "Open any conversation once so Synara can associate the browser bridge with it, then try again.",
       });
       return;
     }
     setSignInPending(true);
-    // Navigate first so this thread's browser panel is mounted when the tab
-    // opens; the runtime reveals it for the focused thread only.
-    void navigate({ to: "/$threadId", params: { threadId } });
     try {
       const result = await ensureNativeApi().provider.openChatGptLogin({ threadId });
       if (result.status === "signed-in") {
         toastManager.add({
           type: "success",
           title: "Signed in to ChatGPT",
-          description: "The ChatGPT tab in the Synara browser is ready.",
+          description: "ChatGPT is ready in your default browser; Synara did not import cookies.",
         });
         void queryClient.invalidateQueries({ queryKey: CHATGPT_CONNECTOR_QUERY_KEY });
       } else if (result.status === "sign-in-required") {
@@ -174,7 +168,7 @@ export function ChatGptConnectorSetup(props: {
           type: "error",
           title:
             result.status === "unavailable"
-              ? "The Synara browser is unavailable"
+              ? "The default-browser bridge is unavailable"
               : "Could not open the ChatGPT sign-in",
           description: result.message,
         });
@@ -271,7 +265,7 @@ export function ChatGptConnectorSetup(props: {
             variant="outline"
             disabled={signInPending}
             onClick={() => void runSignIn()}
-            title="Open chatgpt.com in this conversation's browser panel and wait for sign-in"
+            title="Open ChatGPT in your default browser and wait for sign-in"
           >
             {signInPending ? <Loader2Icon className="size-3 animate-spin" /> : null}
             {signInPending ? "Waiting for sign-in…" : "Sign in to ChatGPT"}
@@ -391,11 +385,18 @@ export function ChatGptConnectorSetup(props: {
         </Step>
 
         <Step index={4} title="Sign in and send your first task" tone="idle">
-          <p>
-            Sign in to chatgpt.com inside the Synara browser (the tab opens automatically with your
-            first task in this provider), then send a message. Tool calls ChatGPT makes are
-            attributed to that thread.
-          </p>
+          <div className="space-y-2">
+            <p>
+              One time only: in Chrome, Brave, or Arc, open <code>chrome://extensions</code>, turn
+              on Developer mode, choose “Load unpacked”, and select{" "}
+              <code>extensions/chatgpt-browser</code>.
+            </p>
+            <p>
+              Then click “Sign in to ChatGPT”. Synara opens ChatGPT in your default browser, uses
+              the existing Google/ChatGPT session there, and never copies cookies or session tokens.
+              Tool calls ChatGPT makes are attributed to this thread.
+            </p>
+          </div>
         </Step>
       </ol>
 

@@ -1,19 +1,18 @@
 // FILE: login.ts
-// Purpose: Signs the ChatGPT web tab in on demand: opens (or reuses) the
-//          chatgpt.com tab in a thread's Synara browser and waits for the
-//          composer, so the user can log in from the connector panel instead
-//          of discovering the sign-in page through a failed turn.
+// Purpose: Starts ChatGPT sign-in in the user's default browser and waits for
+//          the local extension bridge to expose its existing browser session.
 // Layer: Server provider connector
 
 import type { ThreadId } from "@synara/contracts";
-import { Effect } from "effect";
 
-import type { BrowserAutomationHostShape } from "../../browserAutomation/Services/BrowserAutomationHost.ts";
 import { ChatGptDriverFailure, ChatGptWebDriver } from "../chatgptWeb/driver.ts";
 import type { ChatGptBrowserRpc } from "../chatgptWeb/types.ts";
+import type { ChatGptExternalBrowserShape } from "./Services/ChatGptExternalBrowser.ts";
 
 /** How long the login request waits for the user to finish signing in. */
 export const CHATGPT_LOGIN_WAIT_MS = 3 * 60_000;
+/** How long the default-browser extension has to connect after pairing. */
+export const CHATGPT_EXTERNAL_BROWSER_CONNECT_WAIT_MS = 15_000;
 
 export interface ChatGptLoginOutcome {
   readonly status: "signed-in" | "sign-in-required" | "unavailable" | "error";
@@ -26,30 +25,55 @@ export interface ChatGptLoginOutcome {
  * Never throws: every failure is reported as a status the UI can act on.
  */
 export async function openChatGptLogin(input: {
-  readonly browserHost: BrowserAutomationHostShape;
+  readonly externalBrowser: ChatGptExternalBrowserShape;
+  readonly openBrowser: (url: string) => Promise<void>;
   readonly threadId: ThreadId;
   readonly waitMs?: number;
+  readonly connectWaitMs?: number;
 }): Promise<ChatGptLoginOutcome> {
-  if (!input.browserHost.available) {
+  if (!input.externalBrowser.available) {
     return {
       status: "unavailable",
       message:
-        "The Synara browser is only available in the desktop app. Open Synara desktop to sign in to ChatGPT.",
+        "The default-browser bridge is only available when Synara runs locally. Open Synara on this Mac and try again.",
+    };
+  }
+
+  const pairing = input.externalBrowser.createPairing(input.threadId);
+  try {
+    // The first page gives the extension a one-time local pairing token. The
+    // second page is the real ChatGPT tab, which stays in the user's browser
+    // profile and therefore keeps its existing Google/ChatGPT session.
+    await input.openBrowser(pairing.pairingUrl);
+    await input.openBrowser(pairing.chatgptUrl);
+  } catch (error) {
+    return {
+      status: "error",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const connected = await input.externalBrowser.waitForClient(
+    input.threadId,
+    input.connectWaitMs ?? CHATGPT_EXTERNAL_BROWSER_CONNECT_WAIT_MS,
+  );
+  if (!connected) {
+    return {
+      status: "unavailable",
+      message:
+        "Synara opened your default browser, but the extension did not connect. Load extensions/chatgpt-browser in Chrome, Brave, or Arc, then click Sign in to ChatGPT again.",
+      url: pairing.chatgptUrl,
     };
   }
 
   const rpc: ChatGptBrowserRpc = {
     call: ({ name, args, timeoutMs }) =>
-      Effect.runPromise(
-        input.browserHost.execute({
-          sessionKey: `chatgpt-login:${input.threadId}`,
-          provider: "chatgpt",
-          threadId: input.threadId,
-          name,
-          arguments: args,
-          timeoutMs: Math.max(100, Math.min(30_000, timeoutMs ?? 20_000)),
-        }),
-      ),
+      input.externalBrowser.execute({
+        threadId: input.threadId,
+        name,
+        args,
+        timeoutMs: Math.max(100, Math.min(30_000, timeoutMs ?? 20_000)),
+      }),
   };
 
   const driver = new ChatGptWebDriver({
@@ -61,7 +85,7 @@ export async function openChatGptLogin(input: {
     const conversation = await driver.ensureConversation();
     return {
       status: "signed-in",
-      message: "Signed in to ChatGPT in the Synara browser.",
+      message: "ChatGPT is ready in your default browser. Synara did not import its cookies.",
       ...(conversation.url ? { url: conversation.url } : {}),
     };
   } catch (error) {

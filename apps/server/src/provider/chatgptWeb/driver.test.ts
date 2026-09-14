@@ -441,7 +441,7 @@ describe("ChatGptWebDriver", () => {
     );
   });
 
-  it("maps a browser host unavailable error to browser-unavailable", async () => {
+  it("maps an unavailable browser bridge to browser-unavailable", async () => {
     const call = vi.fn(async (): Promise<unknown> => {
       throw new BrowserHostRpcError("unavailable", "no browser");
     });
@@ -453,7 +453,7 @@ describe("ChatGptWebDriver", () => {
     });
 
     const failure = await expectFailure(() => driver.ensureConversation(), "browser-unavailable");
-    expect(failure.message).toContain("desktop app");
+    expect(failure.message).toContain("default-browser bridge");
   });
 
   it("fails a send with rate-limited when the access notice is showing", async () => {
