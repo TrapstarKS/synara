@@ -13,6 +13,7 @@ import type { McpToolCallResult } from "../../agentGateway/protocol.ts";
 import { mcpToolResultError } from "../../agentGateway/protocol.ts";
 import { buildWorkerBootstrap } from "./instructions.ts";
 import type { ConnectorCallContext } from "./runtime.ts";
+import { prependChatGptPromptContext } from "../chatgptWeb/userPrompt.ts";
 import type {
   ConnectorAgentBridge,
   ConnectorAgentFinishInput,
@@ -63,7 +64,11 @@ export interface ChatGptWorkerBrokerOptions {
     readonly model?: string;
     readonly reasoningEffort?: string;
   }) => Promise<ChatGptConversationRef>;
-  readonly sendPrompt: (ref: ChatGptConversationRef, text: string) => Promise<void>;
+  readonly sendPrompt: (
+    ref: ChatGptConversationRef,
+    text: string,
+    submittedText?: string,
+  ) => Promise<void>;
   readonly waitForWorkerTurn: (
     ref: ChatGptConversationRef,
     submittedText: string,
@@ -137,6 +142,15 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
     if (!run || run.inbox.length === 0) return "";
     const lines = run.inbox.splice(0, run.inbox.length);
     return lines.join("\n");
+  }
+
+  /** Restores a batch whose containing ChatGPT prompt was never accepted. */
+  restoreInbox(threadId: string, batch: string): void {
+    if (batch.length === 0) return;
+    const run = this.runFor(threadId);
+    // Reports that arrived while the failed send was in flight stay after the
+    // older restored batch, preserving delivery order on the next turn.
+    run.inbox.unshift(batch);
   }
 
   snapshot(threadId: string): ChatGptRunSnapshot {
@@ -238,8 +252,9 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
         task: worker.task,
         ...(input.context ? { sharedContext: input.context } : {}),
       });
+      const framedBootstrap = prependChatGptPromptContext(worker.task, bootstrap);
       try {
-        await this.options.sendPrompt(conversation, bootstrap);
+        await this.options.sendPrompt(conversation, framedBootstrap, worker.task);
       } catch (error) {
         worker.status = "failed";
         this.options.onNotice?.(
@@ -249,7 +264,7 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
           `agents: ${workerId} chat opened but the task could not be sent: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      this.watch(run, worker, bootstrap);
+      this.watch(run, worker, worker.task);
       spawned.push(workerId);
     }
 

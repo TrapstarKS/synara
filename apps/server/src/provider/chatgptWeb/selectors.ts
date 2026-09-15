@@ -16,8 +16,10 @@ export const CHATGPT_SELECTORS = {
   turnSection: 'section[data-testid^="conversation-turn"]',
   /** The message element that names its author role (user or assistant). */
   messageRoleAnchor: '[data-message-author-role="user"], [data-message-author-role="assistant"]',
-  /** Authored user text inside a user message. */
-  userText: ".whitespace-pre-wrap",
+  /** Authored user text across the plain-text and Markdown renderers. */
+  userText: ".whitespace-pre-wrap, .markdown",
+  /** Synara's presentation-only authored-text replacement for a framed prompt. */
+  userPromptDisplay: "[data-synara-user-text]",
   /** Authored assistant prose inside an assistant message. */
   assistantMarkdown: ".markdown",
   /** Legacy tool/connector row shape (older renderer). */
@@ -51,5 +53,9 @@ export const CHATGPT_SELECTORS = {
   attributes: {
     messageRole: "data-message-author-role",
     messageId: "data-message-id",
+    turnRole: "data-turn",
+    turnId: "data-turn-id",
+    userPromptHidden: "data-synara-prompt-hidden",
+    userPromptDisplay: "data-synara-user-text",
   },
 } as const;

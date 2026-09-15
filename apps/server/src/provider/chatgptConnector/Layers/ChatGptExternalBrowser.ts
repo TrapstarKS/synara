@@ -32,6 +32,8 @@ interface PairingState {
   readonly threadId: ThreadId;
   readonly threadKey: string;
   readonly expiresAtMs: number;
+  /** True after the one-time token completed its first authenticated attach. */
+  claimed: boolean;
   clientId: string | null;
 }
 
@@ -44,8 +46,8 @@ interface PendingRequest {
 interface ClientState {
   readonly clientId: string;
   readonly token: string;
-  threadId: ThreadId;
-  threadKey: string;
+  readonly pairedThreadId: ThreadId;
+  readonly threadKeys: Set<string>;
   readonly send: (payload: string) => Promise<void>;
   readonly pending: Map<number, PendingRequest>;
 }
@@ -94,10 +96,7 @@ export function makeChatGptExternalBrowser(input: {
   const randomToken = input.randomToken ?? (() => randomBytes(32).toString("base64url"));
   const randomClientId = input.randomClientId ?? randomUUID;
   const pairingTtlMs = Math.max(1_000, input.pairingTtlMs ?? DEFAULT_PAIRING_TTL_MS);
-  const requestTimeoutMs = Math.max(
-    100,
-    input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
-  );
+  const requestTimeoutMs = Math.max(100, input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const originForPairing = () =>
     normalizeOrigin(typeof input.origin === "function" ? input.origin() : input.origin);
   const pairings = new Map<string, PairingState>();
@@ -110,14 +109,13 @@ export function makeChatGptExternalBrowser(input: {
   const resolvePairing = (token: string): PairingState | null => {
     const pairing = pairings.get(token);
     if (!pairing) return null;
-    if (pairing.expiresAtMs > now()) return pairing;
+    // TTL protects the first claim. Once the extension proves possession, the
+    // same in-memory token may reconnect after a transient socket loss for the
+    // lifetime of this server process. A restart still forgets every token.
+    if (pairing.claimed || pairing.expiresAtMs > now()) return pairing;
     pairings.delete(pairing.token);
     if (pairingsByThread.get(pairing.threadKey) === pairing) {
       pairingsByThread.delete(pairing.threadKey);
-    }
-    if (pairing.clientId !== null) {
-      const client = clients.get(pairing.clientId);
-      if (client) detachClient(client.clientId);
     }
     return null;
   };
@@ -133,9 +131,12 @@ export function makeChatGptExternalBrowser(input: {
   const removeClient = (client: ClientState, reason: string): void => {
     if (clients.get(client.clientId) !== client) return;
     clients.delete(client.clientId);
-    if (clientsByThread.get(client.threadKey) === client) {
-      clientsByThread.delete(client.threadKey);
+    for (const threadKey of client.threadKeys) {
+      if (clientsByThread.get(threadKey) === client) {
+        clientsByThread.delete(threadKey);
+      }
     }
+    client.threadKeys.clear();
     const pairing = pairings.get(client.token);
     if (pairing?.clientId === client.clientId) pairing.clientId = null;
     rejectPending(client, new Error(reason));
@@ -168,6 +169,7 @@ export function makeChatGptExternalBrowser(input: {
       threadId,
       threadKey,
       expiresAtMs,
+      claimed: false,
       clientId: null,
     };
     pairings.set(token, pairing);
@@ -196,45 +198,55 @@ export function makeChatGptExternalBrowser(input: {
     const client: ClientState = {
       clientId: randomClientId(),
       token: pairing.token,
-      threadId: pairing.threadId,
-      threadKey: pairing.threadKey,
+      pairedThreadId: pairing.threadId,
+      threadKeys: new Set([pairing.threadKey]),
       send: attach.send,
       pending: new Map(),
     };
     clients.set(client.clientId, client);
-    clientsByThread.set(client.threadKey, client);
+    clientsByThread.set(pairing.threadKey, client);
+    pairing.claimed = true;
     pairing.clientId = client.clientId;
-    notifyConnected(client.threadKey);
+    notifyConnected(pairing.threadKey);
     void client
-      .send(JSON.stringify({ type: "connected", protocol: 1, threadId: String(client.threadId) }))
+      .send(
+        JSON.stringify({
+          type: "connected",
+          protocol: 1,
+          threadId: String(client.pairedThreadId),
+        }),
+      )
       .catch(() => detachClient(client.clientId));
-    return { clientId: client.clientId, threadId: client.threadId };
+    return { clientId: client.clientId, threadId: client.pairedThreadId };
   };
 
   /**
    * The extension keeps one local WebSocket alive while the user switches
    * Synara conversations. Pairing starts from whichever conversation was
-   * visible in Settings, so a later provider session can legitimately arrive
-   * with a different thread id. Rebind only an unambiguous, idle client; this
-   * keeps the fail-closed behavior when multiple browser bridges are present
-   * or an action from the previous thread is still in flight.
+   * visible in Settings, so later provider sessions can legitimately arrive
+   * with different thread ids. One extension socket multiplexes requests by
+   * request id and each browser action still names its own tab; sharing that
+   * single unambiguous client also lets multiple ChatGPT threads run at once.
+   * Multiple connected extensions remain fail-closed because there is no
+   * trustworthy way to elect one for an unseen thread.
    */
   const clientForThread = (threadId: ThreadId): ClientState | null => {
     const threadKey = threadKeyFor(threadId);
     const exact = clientsByThread.get(threadKey);
-    if (exact && resolvePairing(exact.token)) return exact;
-    if (exact) detachClient(exact.clientId);
+    // Pairing expiry limits how long an untrusted page can first claim the
+    // one-time token. Once the extension has attached, the live WebSocket is
+    // the capability: expiring that already-authenticated client here used to
+    // disconnect healthy browser sessions after 15 minutes, often in the
+    // middle of a long turn.
+    if (exact && clients.get(exact.clientId) === exact) return exact;
+    if (exact) clientsByThread.delete(threadKey);
 
-    const candidates = [...clients.values()].filter((client) => resolvePairing(client.token));
+    const candidates = [...clients.values()];
     if (candidates.length !== 1) return null;
     const candidate = candidates[0];
-    if (!candidate || candidate.pending.size > 0) return null;
+    if (!candidate) return null;
 
-    if (clientsByThread.get(candidate.threadKey) === candidate) {
-      clientsByThread.delete(candidate.threadKey);
-    }
-    candidate.threadId = threadId;
-    candidate.threadKey = threadKey;
+    candidate.threadKeys.add(threadKey);
     clientsByThread.set(threadKey, candidate);
     return candidate;
   };
@@ -309,8 +321,7 @@ export function makeChatGptExternalBrowser(input: {
     if (response.ok === true) {
       pending.resolve(response.result);
     } else {
-      const detail =
-        typeof response.error === "string" ? response.error : "Browser action failed.";
+      const detail = typeof response.error === "string" ? response.error : "Browser action failed.";
       pending.reject(new Error(detail));
     }
   };

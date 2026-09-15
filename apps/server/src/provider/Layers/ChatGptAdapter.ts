@@ -64,6 +64,7 @@ import {
 import { buildConversationPreamble } from "../chatgptConnector/instructions.ts";
 import { ChatGptWorkerRateLimitedError } from "../chatgptConnector/workers.ts";
 import type { ChatGptBrowserRpc, ChatGptConversationRef } from "../chatgptWeb/types.ts";
+import { prependChatGptPromptContext } from "../chatgptWeb/userPrompt.ts";
 
 const PROVIDER = "chatgpt" as const;
 const DEFAULT_MAX_WORKERS = 2;
@@ -286,6 +287,8 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
       context: ChatGptSessionContext,
       turn: ChatGptTurnState,
       promptText: string,
+      includesConversationPreamble: boolean,
+      undeliveredInbox: string,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const conversation = context.conversation;
@@ -306,6 +309,7 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
           catch: (error) => error,
         }).pipe(
           Effect.catch((error) => {
+            context.broker.restoreInbox(String(context.session.threadId), undeliveredInbox);
             if (error instanceof ChatGptDriverFailure && error.code === "rate-limited") {
               noteRateLimit(context);
             }
@@ -322,6 +326,7 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
         );
         if (sent === null) return;
         if (!sent.accepted) {
+          context.broker.restoreInbox(String(context.session.threadId), undeliveredInbox);
           emitTurnCompleted(context, turn, {
             state: "failed",
             stopReason: "error",
@@ -330,6 +335,9 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
           });
           return;
         }
+        // A failed first send must retry with the preamble. Mark it delivered
+        // only after ChatGPT has visibly accepted that user turn.
+        if (includesConversationPreamble) context.preambleSent = true;
 
         let itemId = RuntimeItemId.makeUnsafe(`chatgpt-${turn.turnId}-assistant`);
         let itemOpen = false;
@@ -419,6 +427,16 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
           } satisfies ProviderRuntimeEvent);
         }
 
+        if (completion.outcome === "stalled" || completion.outcome === "timeout") {
+          // Do not release the Synara session while ChatGPT still owns a live
+          // generation: the next turn would immediately fail as busy. This is
+          // best-effort because the terminal failure below must still be
+          // emitted if the page or bridge is already gone.
+          yield* Effect.promise(() => context.driver.interrupt(conversation)).pipe(
+            Effect.catchCause(() => Effect.void),
+          );
+        }
+
         switch (completion.outcome) {
           case "rate_limited":
             noteRateLimit(context);
@@ -436,8 +454,9 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
             break;
           case "stalled":
             emitTurnCompleted(context, turn, {
-              state: "completed",
+              state: "failed",
               stopReason: "stalled",
+              errorMessage: "The ChatGPT turn stopped making progress before it completed.",
             });
             break;
           case "failed":
@@ -498,9 +517,11 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
           workspaceRoot,
           maxWorkers,
           openWorkerConversation: (opts) => driver.openFreshConversation(opts),
-          sendPrompt: async (ref, text) => {
+          sendPrompt: async (ref, text, submittedText) => {
             try {
-              const result = await driver.sendPrompt(ref, text);
+              const result = await driver.sendPrompt(ref, text, {
+                submittedText: submittedText ?? text,
+              });
               if (!result.accepted) {
                 throw new Error("A worker prompt was not accepted by the ChatGPT page.");
               }
@@ -693,12 +714,18 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
             }
 
             const inbox = context.broker.drainInbox(String(input.threadId));
-            const preamble = context.preambleSent
-              ? ""
-              : `${buildConversationPreamble(context.workspaceRoot)}\n\n`;
-            const notes = inbox.length > 0 ? `Updates from your workers:\n${inbox}\n\n` : "";
-            const promptText = `${preamble}${notes}${text}`;
-            context.preambleSent = true;
+            const includesConversationPreamble = !context.preambleSent;
+            const contextParts: string[] = [];
+            if (includesConversationPreamble) {
+              contextParts.push(buildConversationPreamble(context.workspaceRoot));
+            }
+            if (inbox.length > 0) {
+              contextParts.push(`Updates from your workers:\n${inbox}`);
+            }
+            const promptText =
+              contextParts.length > 0
+                ? prependChatGptPromptContext(text, contextParts.join("\n\n"))
+                : text;
 
             const turn: ChatGptTurnState = {
               turnId,
@@ -719,9 +746,13 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
               },
             } satisfies ProviderRuntimeEvent);
 
-            const fiber = yield* runTurn(context, turn, promptText).pipe(
-              Effect.forkChild({ startImmediately: true }),
-            );
+            const fiber = yield* runTurn(
+              context,
+              turn,
+              promptText,
+              includesConversationPreamble,
+              inbox,
+            ).pipe(Effect.forkChild({ startImmediately: true }));
             turn.fiber = fiber;
 
             return {

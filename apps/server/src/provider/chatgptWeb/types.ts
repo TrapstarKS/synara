@@ -58,6 +58,14 @@ export interface ChatGptObservation {
   readonly sendEnabled: boolean;
   /** Last turns in page order, oldest first; only the tail is captured. */
   readonly turns: readonly ChatGptTurnObservation[];
+  /**
+   * ChatGPT's own message model says the newest assistant turn reached
+   * `end_turn: true` with a successful status. This is stronger completion
+   * evidence than the Stop control, which can remain mounted after a reply.
+   */
+  readonly latestAssistantCompleted: boolean;
+  /** Final public assistant text read from the same terminal model message. */
+  readonly terminalAssistantText: string | null;
   /** Count of tool/connector rows visible in the newest assistant turn. */
   readonly toolRowCount: number;
   /** Visible error banner text, when one is displayed. */

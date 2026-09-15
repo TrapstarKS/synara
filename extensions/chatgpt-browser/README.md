@@ -19,3 +19,12 @@ whose URL is ChatGPT or its sign-in flow.
 Synara opens a local pairing page and then `chatgpt.com` in the system-default
 browser. The pairing page connects the extension automatically. Sign in there
 if necessary; no login happens in Synara's embedded browser.
+
+## After updating or restarting
+
+- After pulling a newer Synara checkout, click **Reload** for this unpacked
+  extension on `chrome://extensions` so its service worker uses the new bridge
+  code.
+- If the popup says **Paired; waiting for local Synara** after Synara restarted
+  on a different local port, click **Sign in to ChatGPT** in Synara once to
+  issue a fresh one-time pairing. You do not need to sign in to ChatGPT again.

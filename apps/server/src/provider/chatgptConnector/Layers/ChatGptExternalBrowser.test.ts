@@ -68,6 +68,50 @@ describe("ChatGptExternalBrowser", () => {
     ).rejects.toThrow("not connected");
   });
 
+  it("keeps an already-authenticated bridge connected after pairing expiry", async () => {
+    let currentTime = 100;
+    const sent: string[] = [];
+    const browser = makeChatGptExternalBrowser({
+      available: true,
+      origin: "http://127.0.0.1:3773",
+      now: () => currentTime,
+      pairingTtlMs: 1_000,
+      randomToken: () => "pair-token",
+      randomClientId: () => "client-1",
+    });
+    browser.createPairing("thread-1" as never);
+    browser.attachClient({
+      token: "pair-token",
+      send: async (payload) => {
+        sent.push(payload);
+      },
+    });
+    currentTime += 1_001;
+
+    // TTL only limits the first claim. A token already proven by the extension
+    // remains reconnectable for this server process.
+    expect(browser.hasPairing("pair-token")).toBe(true);
+    const resultPromise = browser.execute({
+      threadId: "thread-1" as never,
+      name: "browser_tabs",
+      args: {},
+      timeoutMs: 1_000,
+    });
+    const request = JSON.parse(sent[1] ?? "{}");
+    browser.handleClientMessage(
+      "client-1",
+      JSON.stringify({ type: "response", id: request.id, ok: true, result: { tabs: [] } }),
+    );
+
+    await expect(resultPromise).resolves.toEqual({ tabs: [] });
+
+    browser.detachClient("client-1");
+    expect(browser.attachClient({ token: "pair-token", send: async () => undefined })).toEqual({
+      clientId: "client-1",
+      threadId: "thread-1",
+    });
+  });
+
   it("wakes a login wait as soon as the extension pairs", async () => {
     const browser = makeChatGptExternalBrowser({
       available: true,
@@ -82,7 +126,7 @@ describe("ChatGptExternalBrowser", () => {
     await expect(waiting).resolves.toBe(true);
   });
 
-  it("rebinds one idle connected bridge when a different thread starts", async () => {
+  it("binds one connected bridge when a different thread starts", async () => {
     const sent: string[] = [];
     const browser = makeChatGptExternalBrowser({
       available: true,
@@ -112,5 +156,58 @@ describe("ChatGptExternalBrowser", () => {
     );
 
     await expect(resultPromise).resolves.toEqual({ tabs: [] });
+  });
+
+  it("multiplexes concurrent requests from different threads on one bridge", async () => {
+    const sent: string[] = [];
+    const browser = makeChatGptExternalBrowser({
+      available: true,
+      origin: "http://127.0.0.1:3773",
+      randomToken: () => "pair-token",
+      randomClientId: () => "client-1",
+    });
+    browser.createPairing("thread-1" as never);
+    browser.attachClient({
+      token: "pair-token",
+      send: async (payload) => {
+        sent.push(payload);
+      },
+    });
+
+    const first = browser.execute({
+      threadId: "thread-1" as never,
+      name: "browser_tabs",
+      args: {},
+      timeoutMs: 1_000,
+    });
+    const second = browser.execute({
+      threadId: "thread-2" as never,
+      name: "browser_tabs",
+      args: {},
+      timeoutMs: 1_000,
+    });
+    const firstRequest = JSON.parse(sent[1] ?? "{}");
+    const secondRequest = JSON.parse(sent[2] ?? "{}");
+    browser.handleClientMessage(
+      "client-1",
+      JSON.stringify({
+        type: "response",
+        id: secondRequest.id,
+        ok: true,
+        result: { owner: "thread-2" },
+      }),
+    );
+    browser.handleClientMessage(
+      "client-1",
+      JSON.stringify({
+        type: "response",
+        id: firstRequest.id,
+        ok: true,
+        result: { owner: "thread-1" },
+      }),
+    );
+
+    await expect(first).resolves.toEqual({ owner: "thread-1" });
+    await expect(second).resolves.toEqual({ owner: "thread-2" });
   });
 });

@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { McpToolCallResult } from "../../agentGateway/protocol.ts";
 import type { ChatGptConversationRef } from "../chatgptWeb/types.ts";
+import { chatGptAuthoredPromptText } from "../chatgptWeb/userPrompt.ts";
 import type { ConnectorCallContext } from "./runtime.ts";
 import { ChatGptWorkerBroker, ChatGptWorkerRateLimitedError } from "./workers.ts";
 
@@ -36,7 +37,11 @@ const createHarness = () => {
   const pendingTurns: PendingTurn[] = [];
   const openWorkerConversation = vi.fn(async () => ref);
   const sendPrompt = vi.fn(
-    async (_ref: ChatGptConversationRef, _text: string): Promise<void> => {},
+    async (
+      _ref: ChatGptConversationRef,
+      _text: string,
+      _submittedText?: string,
+    ): Promise<void> => {},
   );
   const waitForWorkerTurn = vi.fn(
     (
@@ -96,6 +101,9 @@ describe("ChatGptWorkerBroker", () => {
     expect(harness.sendPrompt).toHaveBeenCalledTimes(2);
     const bootstrap = harness.sendPrompt.mock.calls[0]?.[1] ?? "";
     expect(bootstrap).toContain("worker-1");
+    expect(chatGptAuthoredPromptText(bootstrap)).toBe("task one");
+    expect(harness.sendPrompt.mock.calls[0]?.[2]).toBe("task one");
+    expect(harness.pendingTurn(0).submittedText).toBe("task one");
     expect(harness.onNotice).not.toHaveBeenCalled();
 
     const overflow = await harness.broker.spawn(harness.context, {
@@ -165,6 +173,15 @@ describe("ChatGptWorkerBroker", () => {
       status: "sleeping",
       lastResult: "done",
     });
+  });
+
+  it("restores a drained inbox batch before reports that arrived during a failed send", () => {
+    const harness = createHarness();
+    harness.broker.restoreInbox("thread-1", "older report");
+    harness.broker.restoreInbox("thread-1", "oldest report");
+
+    expect(harness.broker.takeInbox(harness.context)).toBe("oldest report\nolder report");
+    expect(harness.broker.takeInbox(harness.context)).toBe("");
   });
 
   it("reports worker lines and a structured snapshot after spawn", async () => {

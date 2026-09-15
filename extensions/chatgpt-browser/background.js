@@ -4,11 +4,7 @@
 // ChatGPT data. It only attaches Chrome DevTools Protocol to ChatGPT/auth tabs
 // and forwards the small browser actions requested by the local Synara server.
 
-const CHATGPT_HOSTS = new Set([
-  "chatgpt.com",
-  "www.chatgpt.com",
-  "chat.openai.com",
-]);
+const CHATGPT_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com"]);
 
 const LOGIN_HOSTS = new Set([
   "auth.openai.com",
@@ -20,30 +16,49 @@ const LOGIN_HOSTS = new Set([
 const BRIDGE_PATH = "/provider/chatgpt/browser";
 const PAIRING_STORAGE_KEY = "synaraChatGptPairing";
 const RECONNECT_DELAY_MS = 1_000;
+const RECONNECT_MAX_DELAY_MS = 30_000;
+// Chrome keeps an MV3 service worker alive while its WebSocket exchanges
+// traffic, but an idle socket can otherwise be suspended between Synara turns.
+const KEEPALIVE_INTERVAL_MS = 20_000;
+const TAB_NAVIGATION_WAIT_MS = 10_000;
 
 let pairing = null;
 let socket = null;
 let socketGeneration = 0;
 let reconnectTimer = null;
+let reconnectAttempt = 0;
+let keepaliveTimer = null;
 const attachedTabIds = new Set();
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isLocalOrigin(origin) {
+function normalizeLocalOrigin(origin) {
   try {
     const url = new URL(origin);
-    return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost");
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      (url.hostname !== "127.0.0.1" && url.hostname !== "localhost")
+    ) {
+      return null;
+    }
+    // Synara's loopback server is always plaintext. Chrome can retain or
+    // upgrade a pairing-page origin to https, but carrying that scheme into
+    // the socket produces wss:// against a ws:// server (Invalid frame header).
+    return `http://${url.host}`;
   } catch {
-    return false;
+    return null;
   }
 }
 
 function isBrowserActionUrl(value) {
   try {
     const url = new URL(String(value));
-    return url.protocol === "https:" && (CHATGPT_HOSTS.has(url.hostname) || LOGIN_HOSTS.has(url.hostname));
+    return (
+      url.protocol === "https:" &&
+      (CHATGPT_HOSTS.has(url.hostname) || LOGIN_HOSTS.has(url.hostname))
+    );
   } catch {
     return false;
   }
@@ -52,7 +67,10 @@ function isBrowserActionUrl(value) {
 function isAllowedTabUrl(value) {
   try {
     const url = new URL(String(value));
-    return url.protocol === "https:" && (CHATGPT_HOSTS.has(url.hostname) || LOGIN_HOSTS.has(url.hostname));
+    return (
+      url.protocol === "https:" &&
+      (CHATGPT_HOSTS.has(url.hostname) || LOGIN_HOSTS.has(url.hostname))
+    );
   } catch {
     return false;
   }
@@ -83,8 +101,28 @@ async function attachTab(tabId) {
   }
 }
 
+function allowedUrlFromTab(tab) {
+  const committed = typeof tab?.url === "string" ? tab.url : "";
+  if (isAllowedTabUrl(committed)) return committed;
+  const pending = typeof tab?.pendingUrl === "string" ? tab.pendingUrl : "";
+  return isAllowedTabUrl(pending) ? pending : "";
+}
+
 async function getAllowedTab(tabId, activate = false) {
-  const tab = await chrome.tabs.get(tabId);
+  const deadline = Date.now() + TAB_NAVIGATION_WAIT_MS;
+  let tab = await chrome.tabs.get(tabId);
+  // A freshly created Chrome tab commonly exposes the destination only as
+  // pendingUrl while tab.url is still chrome://newtab or blank. Wait for the
+  // allowed destination to commit before attaching the debugger; rejecting
+  // that transient state made session startup fail even though ChatGPT loaded
+  // successfully a moment later.
+  while (!isAllowedTabUrl(tab.url || "") && isAllowedTabUrl(tab.pendingUrl || "")) {
+    if (Date.now() >= deadline) {
+      throw new Error("The ChatGPT tab did not finish loading in time.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    tab = await chrome.tabs.get(tabId);
+  }
   if (!isAllowedTabUrl(tab.url || "")) {
     throw new Error("The bridge can only control ChatGPT and its sign-in tabs.");
   }
@@ -107,7 +145,8 @@ async function evaluate(tabId, expression) {
     userGesture: true,
   });
   if (response && response.exceptionDetails) {
-    const description = response.exceptionDetails.exception?.description || "page evaluation failed";
+    const description =
+      response.exceptionDetails.exception?.description || "page evaluation failed";
     throw new Error(description);
   }
   return { value: response?.result?.value ?? null };
@@ -199,20 +238,26 @@ async function press(tabId, args) {
       text: data.text,
       unmodifiedText: data.text,
     };
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", { type: "keyDown", ...base });
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...base,
+    });
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      ...base,
+    });
   }
   return { pressed: true };
 }
 
 async function browserTabs() {
   const tabs = await chrome.tabs.query({});
-  const allowed = tabs.filter((tab) => isAllowedTabUrl(tab.url || ""));
+  const allowed = tabs.filter((tab) => allowedUrlFromTab(tab));
   const activeTab = allowed.find((tab) => tab.active);
   return {
     tabs: allowed.map((tab) => ({
       tabId: String(tab.id),
-      url: tab.url || "",
+      url: allowedUrlFromTab(tab),
       active: tab.active === true,
     })),
     activeTabId: activeTab?.id === undefined ? null : String(activeTab.id),
@@ -226,7 +271,7 @@ async function browserOpen(args) {
     throw new Error("The bridge can only open chatgpt.com.");
   }
   const tab = await chrome.tabs.create({ url, active: true });
-  return { tabId: String(tab.id), finalUrl: tab.url || url };
+  return { tabId: String(tab.id), finalUrl: allowedUrlFromTab(tab) || url };
 }
 
 async function browserNavigate(tabId, args) {
@@ -236,7 +281,7 @@ async function browserNavigate(tabId, args) {
   }
   await getAllowedTab(tabId, true);
   const tab = await chrome.tabs.update(tabId, { url, active: true });
-  return { tabId: String(tab.id), finalUrl: tab.url || url };
+  return { tabId: String(tab.id), finalUrl: allowedUrlFromTab(tab) || url };
 }
 
 async function browserWait(args) {
@@ -310,35 +355,80 @@ async function handleRequest(request) {
 
 function scheduleReconnect(generation) {
   if (reconnectTimer !== null || !pairing) return;
+  const delay = Math.min(
+    RECONNECT_MAX_DELAY_MS,
+    RECONNECT_DELAY_MS * 2 ** Math.min(reconnectAttempt, 5),
+  );
+  reconnectAttempt++;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     if (generation === socketGeneration) void connect();
-  }, RECONNECT_DELAY_MS);
+  }, delay);
+}
+
+function stopKeepalive() {
+  if (keepaliveTimer === null) return;
+  clearInterval(keepaliveTimer);
+  keepaliveTimer = null;
+}
+
+function startKeepalive(generation, target) {
+  stopKeepalive();
+  keepaliveTimer = setInterval(() => {
+    if (
+      generation !== socketGeneration ||
+      socket !== target ||
+      target.readyState !== WebSocket.OPEN
+    ) {
+      stopKeepalive();
+      return;
+    }
+    try {
+      target.send(JSON.stringify({ type: "ping", protocol: 1 }));
+    } catch {
+      // The close/error path owns reconnection.
+    }
+  }, KEEPALIVE_INTERVAL_MS);
 }
 
 async function connect() {
-  if (!pairing || !isLocalOrigin(pairing.origin) || !pairing.token) return;
+  const localOrigin = pairing ? normalizeLocalOrigin(pairing.origin) : null;
+  if (!pairing || !localOrigin || !pairing.token) return;
   const generation = ++socketGeneration;
   if (socket) {
-    try { socket.close(); } catch {}
+    try {
+      socket.close();
+    } catch {}
     socket = null;
   }
-  const wsOrigin = pairing.origin.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
-  const next = new WebSocket(`${wsOrigin}${BRIDGE_PATH}?token=${encodeURIComponent(pairing.token)}`);
+  stopKeepalive();
+  const wsOrigin = localOrigin.replace(/^http:/, "ws:");
+  const next = new WebSocket(
+    `${wsOrigin}${BRIDGE_PATH}?token=${encodeURIComponent(pairing.token)}`,
+  );
   socket = next;
   next.addEventListener("open", () => {
     if (generation !== socketGeneration || socket !== next) return;
-    try { next.send(JSON.stringify({ type: "hello", protocol: 1 })); } catch {}
+    reconnectAttempt = 0;
+    try {
+      next.send(JSON.stringify({ type: "hello", protocol: 1 }));
+    } catch {}
+    startKeepalive(generation, next);
   });
   next.addEventListener("message", (event) => {
     if (generation !== socketGeneration || socket !== next) return;
     let request;
-    try { request = JSON.parse(String(event.data)); } catch { return; }
+    try {
+      request = JSON.parse(String(event.data));
+    } catch {
+      return;
+    }
     void handleRequest(request);
   });
   next.addEventListener("close", () => {
     if (generation !== socketGeneration || socket !== next) return;
     socket = null;
+    stopKeepalive();
     scheduleReconnect(generation);
   });
   next.addEventListener("error", () => {
@@ -351,21 +441,26 @@ async function connect() {
 async function loadPairing() {
   const stored = await chrome.storage.local.get(PAIRING_STORAGE_KEY);
   const value = stored[PAIRING_STORAGE_KEY];
-  pairing = value && isLocalOrigin(value.origin) && typeof value.token === "string"
-    ? { origin: value.origin, token: value.token }
-    : null;
+  const localOrigin = value ? normalizeLocalOrigin(value.origin) : null;
+  pairing =
+    value && localOrigin && typeof value.token === "string"
+      ? { origin: localOrigin, token: value.token }
+      : null;
   if (pairing) void connect();
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
   if (message.type === "pair") {
-    if (!isLocalOrigin(message.origin) || typeof message.token !== "string" || message.token.length < 20) {
+    const localOrigin = normalizeLocalOrigin(message.origin);
+    if (!localOrigin || typeof message.token !== "string" || message.token.length < 20) {
       sendResponse({ ok: false, error: "Pairing is only allowed with a local Synara server." });
       return false;
     }
-    pairing = { origin: message.origin, token: message.token };
-    void chrome.storage.local.set({ [PAIRING_STORAGE_KEY]: pairing })
+    reconnectAttempt = 0;
+    pairing = { origin: localOrigin, token: message.token };
+    void chrome.storage.local
+      .set({ [PAIRING_STORAGE_KEY]: pairing })
       .then(() => connect())
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
@@ -373,9 +468,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message.type === "clear") {
     pairing = null;
+    reconnectAttempt = 0;
     ++socketGeneration;
+    stopKeepalive();
     if (socket) {
-      try { socket.close(); } catch {}
+      try {
+        socket.close();
+      } catch {}
       socket = null;
     }
     void chrome.storage.local.remove(PAIRING_STORAGE_KEY).then(() => sendResponse({ ok: true }));

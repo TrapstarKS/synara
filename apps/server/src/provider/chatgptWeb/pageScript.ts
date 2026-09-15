@@ -7,6 +7,9 @@
 // Adapted from Chat On Steroids (MIT) — extension/chatgpt-dom.js for the safe
 // read style (every read answers with an empty value instead of throwing) and
 // the turn/message/selector strategy.
+// Terminal completion evidence is adapted from extension/fiber.js
+// `turnEndMessageId`: the page model's successful `end_turn: true` is
+// authoritative even if a stale Stop control remains.
 //
 // The expression is compiled and run by the desktop browser in the page's main
 // world, so it must stay fully self-contained (no imports, no closures) and its
@@ -50,6 +53,7 @@ export function buildChatGptObservationExpression(): string {
   var TURN_SECTION = S.turnSection;
   var MESSAGE_ANCHOR = S.messageRoleAnchor;
   var USER_TEXT = S.userText;
+  var USER_PROMPT_DISPLAY = S.userPromptDisplay;
   var ASSISTANT_MARKDOWN = S.assistantMarkdown;
   var TOOL_ROW = S.toolRow;
   var INTERRUPTED = S.interruptedMarker;
@@ -63,6 +67,10 @@ export function buildChatGptObservationExpression(): string {
   var MESSAGE_ID = S.messageId;
   var ATTRIBUTE_MESSAGE_ROLE = S.attributes.messageRole;
   var ATTRIBUTE_MESSAGE_ID = S.attributes.messageId;
+  var ATTRIBUTE_TURN_ROLE = S.attributes.turnRole;
+  var ATTRIBUTE_TURN_ID = S.attributes.turnId;
+  var ATTRIBUTE_USER_PROMPT_HIDDEN = S.attributes.userPromptHidden;
+  var ATTRIBUTE_USER_PROMPT_DISPLAY = S.attributes.userPromptDisplay;
 
   var MAX_TURNS = ${MAX_TURNS};
   var MESSAGE_TEXT_CAP = ${MESSAGE_TEXT_CAP};
@@ -70,6 +78,9 @@ export function buildChatGptObservationExpression(): string {
   var RATE_LIMIT_TEXT_CAP = ${RATE_LIMIT_TEXT_CAP};
   var COMPOSER_TEXT_CAP = ${COMPOSER_TEXT_CAP};
   var LOGIN_SCAN_CAP = ${LOGIN_SCAN_CAP};
+  // The hidden frame can be larger than the transcript observation cap. It is
+  // parsed inside the page and only its authored tail crosses the bridge.
+  var FRAMED_USER_TEXT_CAP = 100000;
 
   // Conversation identity comes from the pathname only: an optional /g/<gid>
   // project segment, then /c/<id>. The trailing separator is matched so a bare
@@ -93,6 +104,7 @@ export function buildChatGptObservationExpression(): string {
   var RATE_LIMIT_BODY_KO_B = "\uba87 \ubd84 \ud6c4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694";
   var RATE_LIMIT_ACK = /^got it$/i;
   var RATE_LIMIT_ACK_KO = "\uc54c\uaca0\uc2b5\ub2c8\ub2e4";
+  var TRANSPORT_FAILURE = /^(?:message delivery timed out(?:\. please try again\.?)?|connection interrupted\.? waiting for the complete answer\.?|unknown error occurred\.?|there was an error generating (?:a|the) response\.?|error in message stream\.?|network error\.?|something went wrong\.?|something went wrong while generating the response(?:\. if this issue persists please contact us through our help center at help\.openai\.com\.?)?\.?)(?: retry)?$/i;
 
   var safe = function (read, fallback) {
     try {
@@ -186,7 +198,20 @@ export function buildChatGptObservationExpression(): string {
     }, false);
   };
 
-  var readErrorText = function () {
+  var isTransportFailure = function (value) {
+    return TRANSPORT_FAILURE.test(String(value || "").replace(/\s+/g, " ").trim());
+  };
+
+  var newestAssistantContains = function (group, node) {
+    return safe(function () {
+      if (!group || !node) return false;
+      var section = node.closest(TURN_SECTION);
+      if (!section) return true;
+      return group.sections.indexOf(section) !== -1;
+    }, false);
+  };
+
+  var readErrorText = function (newestAssistantGroup) {
     return safe(function () {
       var alerts = document.querySelectorAll(ALERT_BANNER);
       for (var index = 0; index < alerts.length; index++) {
@@ -195,7 +220,41 @@ export function buildChatGptObservationExpression(): string {
         if (inside(alert, SCREEN_READER_ONLY)) continue;
         if (!isVisible(alert)) continue;
         var value = textOf(alert, ERROR_TEXT_CAP);
-        if (value) return value;
+        if (value && isTransportFailure(value)) return value;
+      }
+      // Current failure cards may have no alert role. Start from their exact
+      // Retry control and accept only the nearest complete known notice.
+      var buttons = document.querySelectorAll("button");
+      for (var buttonIndex = 0; buttonIndex < buttons.length; buttonIndex++) {
+        var button = buttons[buttonIndex];
+        if (!isVisible(button) || !/^retry$/i.test(textOf(button, 64))) continue;
+        if (!newestAssistantContains(newestAssistantGroup, button)) continue;
+        for (var node = button.parentElement, up = 0;
+          node && node !== document.body && up < 8;
+          up++, node = node.parentElement) {
+          var notice = textOf(node, ERROR_TEXT_CAP);
+          if (notice.length >= ERROR_TEXT_CAP) break;
+          if (isVisible(node) && isTransportFailure(notice)) return notice;
+        }
+      }
+      if (newestAssistantGroup) {
+        for (var sectionIndex = 0;
+          sectionIndex < newestAssistantGroup.sections.length;
+          sectionIndex++) {
+          var section = newestAssistantGroup.sections[sectionIndex];
+          var markdown = section.querySelectorAll(ASSISTANT_MARKDOWN);
+          for (var markdownIndex = 0; markdownIndex < markdown.length; markdownIndex++) {
+            var markdownText = textOf(markdown[markdownIndex], ERROR_TEXT_CAP);
+            if (markdownText && isTransportFailure(markdownText)) return markdownText;
+          }
+          var expanded = section.querySelectorAll('button[aria-expanded]');
+          for (var expandedIndex = 0; expandedIndex < expanded.length; expandedIndex++) {
+            if (isVisible(expanded[expandedIndex]) &&
+              textOf(expanded[expandedIndex], 64) === "Thinking failed") {
+              return "Thinking failed";
+            }
+          }
+        }
       }
       return null;
     }, null);
@@ -258,6 +317,24 @@ export function buildChatGptObservationExpression(): string {
     }, "");
   };
 
+  var readSectionRole = function (section, anchor) {
+    var messageRole = readRole(anchor);
+    if (messageRole === "user" || messageRole === "assistant") return messageRole;
+    return safe(function () {
+      if (!section || typeof section.getAttribute !== "function") return "";
+      var turnRole = String(section.getAttribute(ATTRIBUTE_TURN_ROLE) || "");
+      return turnRole === "user" || turnRole === "assistant" ? turnRole : "";
+    }, "");
+  };
+
+  var readTurnId = function (section) {
+    return safe(function () {
+      if (!section || typeof section.getAttribute !== "function") return null;
+      var value = String(section.getAttribute(ATTRIBUTE_TURN_ID) || "");
+      return value || null;
+    }, null);
+  };
+
   var readMessageId = function (anchor) {
     return safe(function () {
       if (!anchor || typeof anchor.closest !== "function") return null;
@@ -269,12 +346,17 @@ export function buildChatGptObservationExpression(): string {
   };
 
   var readUserText = function (anchor) {
+    var presented = safe(function () {
+      return anchor.querySelector(USER_PROMPT_DISPLAY);
+    }, null);
+    if (presented) return textOf(presented, MESSAGE_TEXT_CAP);
     var parts = [];
     var held = safe(function () {
       return anchor.querySelectorAll(USER_TEXT);
     }, []);
     for (var index = 0; index < held.length; index++) {
       var part = held[index];
+      if (safe(function () { return part.matches(USER_PROMPT_DISPLAY); }, false)) continue;
       // Nested wrappers with the same class would otherwise read twice.
       var outer = safe(function () {
         var parent = part.parentElement;
@@ -302,10 +384,165 @@ export function buildChatGptObservationExpression(): string {
       if (inside(block, TOOL_ROW)) continue;
       var value = textOf(block, MESSAGE_TEXT_CAP);
       if (!value) continue;
+      if (isTransportFailure(value)) continue;
       if (parts.length > 0 && parts[parts.length - 1] === value) continue;
       parts.push(value);
     }
     return parts.join("\n\n").slice(0, MESSAGE_TEXT_CAP);
+  };
+
+  // React exposes the page's turn model on an ancestor Fiber of the rendered
+  // conversation section. Read only the public terminal assistant message:
+  // no request arguments, account state or private analysis crosses the RPC.
+  var fiberOf = function (node) {
+    return safe(function () {
+      for (var key in node) {
+        if (key.indexOf("__reactFiber$") === 0) return node[key];
+      }
+      return null;
+    }, null);
+  };
+
+  var turnMessagesOf = function (fiber) {
+    return safe(function () {
+      for (var at = fiber, up = 0; at && up < 80; up++, at = at.return) {
+        var props = at.memoizedProps;
+        if (!props || typeof props !== "object") continue;
+        var turn = props.turn;
+        if (turn && typeof turn === "object" && Array.isArray(turn.messages)) {
+          return turn.messages;
+        }
+        if (Array.isArray(props.allMessages)) return props.allMessages;
+      }
+      return null;
+    }, null);
+  };
+
+  var modelMessageText = function (message, cap) {
+    return safe(function () {
+      var content = message && typeof message === "object" ? message.content : null;
+      if (!content || typeof content !== "object") return "";
+      if (Array.isArray(content.parts)) {
+        var parts = [];
+        for (var index = 0; index < content.parts.length; index++) {
+          if (typeof content.parts[index] === "string") parts.push(content.parts[index]);
+        }
+        return parts.join("\n").slice(0, cap);
+      }
+      return typeof content.text === "string"
+        ? content.text.slice(0, cap)
+        : "";
+    }, "");
+  };
+
+  var publicAssistantText = function (message) {
+    return modelMessageText(message, MESSAGE_TEXT_CAP);
+  };
+
+  // Wire framing matches chatgptWeb/userPrompt.ts and the MIT reference. The
+  // exact length means user-authored marker-like text stays literal.
+  var authoredPromptText = function (value) {
+    return safe(function () {
+      value = String(value || "").replace(/\r\n?/g, "\n").trimStart();
+      var header = /^\[\[COS_CONTEXT:(\d{1,6})\]\]\n/.exec(value);
+      if (!header) return null;
+      var contextEnd = header[0].length + Number(header[1]);
+      var boundary = "\n[[/COS_CONTEXT]]\n\n";
+      return value.indexOf(boundary, contextEnd) === contextEnd
+        ? value.slice(contextEnd + boundary.length)
+        : null;
+    }, null);
+  };
+
+  var readModelUserText = function (section, messageId) {
+    return safe(function () {
+      var messages = turnMessagesOf(fiberOf(section));
+      if (!Array.isArray(messages)) return null;
+      var candidates = [];
+      for (var index = 0; index < messages.length; index++) {
+        var message = messages[index];
+        if (!message || typeof message !== "object") continue;
+        if (!message.author || message.author.role !== "user") continue;
+        var content = message.content;
+        if (!content || typeof content !== "object") continue;
+        if (["text", "multimodal_text"].indexOf(content.content_type) === -1) continue;
+        var value = modelMessageText(message, FRAMED_USER_TEXT_CAP);
+        if (!value) continue;
+        if (messageId && message.id === messageId) return value;
+        candidates.push(value);
+      }
+      return candidates.length === 1 ? candidates[0] : null;
+    }, null);
+  };
+
+  // Presentation only. The native framed bytes remain in ChatGPT's message
+  // model for model context and receipts; the human sees exactly the authored
+  // tail, matching Chat On Steroids' prompt presentation contract.
+  var presentAuthoredUserText = function (anchor, authored) {
+    safe(function () {
+      var existing = anchor.querySelector(USER_PROMPT_DISPLAY);
+      var all = anchor.querySelectorAll(USER_TEXT);
+      var raw = [];
+      for (var index = 0; index < all.length; index++) {
+        var part = all[index];
+        if (part.matches(USER_PROMPT_DISPLAY)) continue;
+        var outer = part.parentElement && part.parentElement.closest
+          ? part.parentElement.closest(USER_TEXT)
+          : null;
+        if (outer && outer !== anchor && anchor.contains(outer)) continue;
+        raw.push(part);
+      }
+      if (raw.length === 0 && anchor.matches && anchor.matches(USER_TEXT) &&
+        !anchor.matches(USER_PROMPT_DISPLAY)) raw.push(anchor);
+      if (raw.length === 0) return;
+      if (!existing) {
+        existing = document.createElement("div");
+        existing.setAttribute(ATTRIBUTE_USER_PROMPT_DISPLAY, "");
+        existing.className = "whitespace-pre-wrap";
+        existing.dir = "auto";
+        existing.style.whiteSpace = "pre-wrap";
+        existing.style.overflowWrap = "anywhere";
+        var last = raw[raw.length - 1];
+        if (last.after) last.after(existing);
+        else anchor.appendChild(existing);
+      }
+      if (existing.textContent !== authored) existing.textContent = authored;
+      for (var rawIndex = 0; rawIndex < raw.length; rawIndex++) {
+        raw[rawIndex].setAttribute(ATTRIBUTE_USER_PROMPT_HIDDEN, "");
+        raw[rawIndex].style.setProperty("display", "none", "important");
+      }
+    }, null);
+  };
+
+  var readTerminalAssistant = function (section) {
+    return safe(function () {
+      var messages = turnMessagesOf(fiberOf(section));
+      if (!Array.isArray(messages)) return { found: false, completed: false, text: null };
+      // The newest public answer-capable message decides. A retry can leave an
+      // older completed attempt in the same model while the replacement runs.
+      for (var index = messages.length - 1; index >= 0; index--) {
+        var message = messages[index];
+        if (!message || typeof message !== "object") continue;
+        var author = message.author;
+        if (!author || author.role !== "assistant") continue;
+        var content = message.content;
+        if (!content || typeof content !== "object") continue;
+        if (["text", "multimodal_text", "image"].indexOf(content.content_type) === -1) {
+          continue;
+        }
+        if (message.channel === "analysis" || message.channel === "commentary") continue;
+        var metadata = message.metadata;
+        if (metadata && typeof metadata === "object" &&
+          (metadata.is_visually_hidden_from_conversation === true ||
+            metadata.is_visually_hidden === true)) continue;
+        if (message.end_turn === true && message.status === "finished_successfully") {
+          var value = publicAssistantText(message);
+          return { found: true, completed: true, text: value || null };
+        }
+        return { found: true, completed: false, text: null };
+      }
+      return { found: false, completed: false, text: null };
+    }, { found: false, completed: false, text: null });
   };
 
   var sections = safe(function () {
@@ -314,24 +551,91 @@ export function buildChatGptObservationExpression(): string {
     for (var index = 0; index < found.length; index++) list.push(found[index]);
     return list;
   }, []);
-  sections = sections.slice(Math.max(0, sections.length - MAX_TURNS));
+  // Current ChatGPT can split one logical turn across multiple adjacent
+  // sections carrying the same data-turn-id. Scan a bounded physical tail,
+  // then group before enforcing MAX_TURNS so a split answer is not truncated
+  // or mistaken for several independent assistant turns.
+  sections = sections.slice(Math.max(0, sections.length - MAX_TURNS * 4));
 
-  var turns = [];
-  var newestAssistant = null;
+  var groups = [];
   for (var index = 0; index < sections.length; index++) {
     var section = sections[index];
     var anchor = safe(function () {
-      return section.querySelector(MESSAGE_ANCHOR);
-    }, null);
-    var role = readRole(anchor);
+      if (typeof section.matches === "function" && section.matches(MESSAGE_ANCHOR)) return section;
+      return section.querySelector(MESSAGE_ANCHOR) || section;
+    }, section);
+    var role = readSectionRole(section, anchor);
     if (role !== "user" && role !== "assistant") continue;
+    var messageId = readMessageId(anchor);
+    var visibleText = role === "user" ? readUserText(anchor) : readAssistantText(anchor);
+    if (role === "user") {
+      var modelText = readModelUserText(section, messageId);
+      var authoredText = modelText === null ? null : authoredPromptText(modelText);
+      if (authoredText !== null) {
+        presentAuthoredUserText(anchor, authoredText);
+        visibleText = authoredText.slice(0, MESSAGE_TEXT_CAP);
+      }
+    }
+    var turnId = readTurnId(section);
+    var previousGroup = groups.length > 0 ? groups[groups.length - 1] : null;
+    var group = previousGroup && turnId && previousGroup.turnId === turnId &&
+      previousGroup.role === role
+      ? previousGroup
+      : null;
+    if (!group) {
+      group = {
+        role: role,
+        turnId: turnId,
+        textParts: [],
+        messageId: null,
+        interrupted: false,
+        sections: []
+      };
+      groups.push(group);
+    }
+    if (visibleText && group.textParts[group.textParts.length - 1] !== visibleText) {
+      group.textParts.push(visibleText);
+    }
+    if (!group.messageId && messageId) group.messageId = messageId;
+    group.interrupted = group.interrupted || contains(anchor, INTERRUPTED);
+    group.sections.push(section);
+  }
+  groups = groups.slice(Math.max(0, groups.length - MAX_TURNS));
+
+  var turns = [];
+  var newestAssistant = null;
+  var newestAssistantGroupIndex = -1;
+  var newestUserGroupIndex = -1;
+  for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+    var currentGroup = groups[groupIndex];
     turns.push({
-      role: role,
-      text: role === "user" ? readUserText(anchor) : readAssistantText(anchor),
-      messageId: readMessageId(anchor),
-      interrupted: contains(anchor, INTERRUPTED)
+      role: currentGroup.role,
+      text: currentGroup.textParts.join(currentGroup.role === "assistant" ? "\n\n" : "\n")
+        .slice(0, MESSAGE_TEXT_CAP),
+      messageId: currentGroup.messageId,
+      interrupted: currentGroup.interrupted
     });
-    if (role === "assistant") newestAssistant = section;
+    if (currentGroup.role === "assistant") {
+      newestAssistant = currentGroup;
+      newestAssistantGroupIndex = groupIndex;
+    } else {
+      newestUserGroupIndex = groupIndex;
+    }
+  }
+
+  // A terminal assistant from history cannot complete a newly submitted user
+  // turn. Only accept model evidence when that assistant follows the latest
+  // visible user section.
+  var terminalAssistant =
+    { found: false, completed: false, text: null };
+  if (newestAssistant && newestAssistantGroupIndex > newestUserGroupIndex) {
+    for (var terminalIndex = newestAssistant.sections.length - 1; terminalIndex >= 0; terminalIndex--) {
+      var terminalCandidate = readTerminalAssistant(newestAssistant.sections[terminalIndex]);
+      if (terminalCandidate.found) {
+        terminalAssistant = terminalCandidate;
+        break;
+      }
+    }
   }
 
   var toolRowCount = 0;
@@ -339,11 +643,13 @@ export function buildChatGptObservationExpression(): string {
     // A display-contents wrapper can hold a whole answer, so only rows with no
     // .markdown descendant count as tool rows (structural check).
     toolRowCount = safe(function () {
-      var rows = newestAssistant.querySelectorAll(TOOL_ROW);
       var count = 0;
-      for (var index = 0; index < rows.length; index++) {
-        if (contains(rows[index], ASSISTANT_MARKDOWN)) continue;
-        count++;
+      for (var sectionIndex = 0; sectionIndex < newestAssistant.sections.length; sectionIndex++) {
+        var rows = newestAssistant.sections[sectionIndex].querySelectorAll(TOOL_ROW);
+        for (var index = 0; index < rows.length; index++) {
+          if (contains(rows[index], ASSISTANT_MARKDOWN)) continue;
+          count++;
+        }
       }
       return count;
     }, 0);
@@ -374,8 +680,10 @@ export function buildChatGptObservationExpression(): string {
     generating: readGenerating(),
     sendEnabled: readSendEnabled(),
     turns: turns,
+    latestAssistantCompleted: terminalAssistant.completed,
+    terminalAssistantText: terminalAssistant.text,
     toolRowCount: toolRowCount,
-    errorText: readErrorText(),
+    errorText: readErrorText(newestAssistant),
     rateLimitText: rateLimit.text,
     rateLimitDismissible: rateLimit.dismissible
   };
@@ -436,6 +744,7 @@ export function parseChatGptObservation(value: unknown): ChatGptObservation | nu
   const conversationPath = asNullableString(record["conversationPath"]);
   const errorText = asNullableString(record["errorText"]);
   const rateLimitText = asNullableString(record["rateLimitText"]);
+  const terminalAssistantText = asNullableString(record["terminalAssistantText"]);
 
   return {
     url,
@@ -447,6 +756,10 @@ export function parseChatGptObservation(value: unknown): ChatGptObservation | nu
     generating: record["generating"] === true,
     sendEnabled: record["sendEnabled"] === true,
     turns: turns.slice(-MAX_TURNS),
+    latestAssistantCompleted: record["latestAssistantCompleted"] === true,
+    terminalAssistantText: terminalAssistantText
+      ? terminalAssistantText.slice(0, MESSAGE_TEXT_CAP)
+      : null,
     toolRowCount: asCount(record["toolRowCount"]),
     errorText: errorText ? errorText.slice(0, ERROR_TEXT_CAP) : null,
     rateLimitText: rateLimitText ? rateLimitText.slice(0, RATE_LIMIT_TEXT_CAP) : null,

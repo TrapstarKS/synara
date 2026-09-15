@@ -17,11 +17,13 @@ import {
   parseChatGptObservation,
 } from "./pageScript.ts";
 import type { ChatGptObservation } from "./types.ts";
+import { prependChatGptPromptContext } from "./userPrompt.ts";
 
 // The server tsconfig has no DOM lib, so declare only the happy-dom globals
 // this test touches. At runtime these come from the happy-dom environment.
 declare const document: {
   readonly body: { innerHTML: string; textContent: string | null };
+  readonly querySelector: (selector: string) => unknown;
 };
 declare const window: {
   readonly happyDOM?: { readonly setURL?: (url: string) => void };
@@ -30,9 +32,14 @@ declare const window: {
 const DEFAULT_URL = "https://chatgpt.com/";
 const urlApiAvailable = typeof window.happyDOM?.setURL === "function";
 
-const observe = (html: string, url: string = DEFAULT_URL): ChatGptObservation => {
+const observe = (
+  html: string,
+  url: string = DEFAULT_URL,
+  setup?: () => void,
+): ChatGptObservation => {
   if (urlApiAvailable) window.happyDOM?.setURL?.(url);
   document.body.innerHTML = html;
+  setup?.();
   const expression = buildChatGptObservationExpression();
   const evaluate = new Function(`return (${expression});`);
   const raw: unknown = evaluate();
@@ -74,6 +81,152 @@ describe("buildChatGptObservationExpression", () => {
         interrupted: false,
       },
     ]);
+    expect(observation.latestAssistantCompleted).toBe(false);
+    expect(observation.terminalAssistantText).toBeNull();
+  });
+
+  it("reads section-level roles and terminal assistant evidence from React Fiber", () => {
+    const observation = observe(
+      `
+        <section data-testid="conversation-turn-1" data-turn="user" data-turn-id="turn-1">
+          <div data-message-id="user-1"><div class="markdown">Hello there</div></div>
+        </section>
+        <section data-testid="conversation-turn-2" data-turn="assistant" data-turn-id="turn-2">
+          <div data-message-id="assistant-1"><div class="markdown">Rendered answer</div></div>
+        </section>
+        <form>
+          <div id="prompt-textarea" contenteditable="true"></div>
+          <button data-testid="stop-button">Stop</button>
+        </form>
+      `,
+      DEFAULT_URL,
+      () => {
+        const section = document.querySelector(
+          'section[data-testid="conversation-turn-2"]',
+        ) as Record<string, unknown> | null;
+        if (!section) throw new Error("assistant section missing");
+        section["__reactFiber$test"] = {
+          memoizedProps: {
+            turn: {
+              messages: [
+                {
+                  id: "assistant-1",
+                  author: { role: "assistant" },
+                  channel: "final",
+                  content: { content_type: "text", parts: ["Terminal answer"] },
+                  end_turn: true,
+                  status: "finished_successfully",
+                },
+                {
+                  id: "analysis-after-final",
+                  author: { role: "assistant" },
+                  channel: "analysis",
+                  content: { content_type: "text", parts: [""] },
+                  end_turn: false,
+                  status: "in_progress",
+                },
+              ],
+            },
+          },
+        };
+      },
+    );
+
+    expect(observation.generating).toBe(true);
+    expect(observation.turns).toEqual([
+      { role: "user", text: "Hello there", messageId: "user-1", interrupted: false },
+      {
+        role: "assistant",
+        text: "Rendered answer",
+        messageId: "assistant-1",
+        interrupted: false,
+      },
+    ]);
+    expect(observation.latestAssistantCompleted).toBe(true);
+    expect(observation.terminalAssistantText).toBe("Terminal answer");
+  });
+
+  it("returns and presents only authored user text from a framed model message", () => {
+    const observation = observe(
+      `
+        <section data-testid="conversation-turn-1" data-turn="user">
+          <div data-message-author-role="user" data-message-id="user-1">
+            <div class="markdown">[[COS_CONTEXT:16]] internal context [[/COS_CONTEXT]] oi</div>
+          </div>
+        </section>
+      `,
+      DEFAULT_URL,
+      () => {
+        const section = document.querySelector(
+          'section[data-testid="conversation-turn-1"]',
+        ) as Record<string, unknown> | null;
+        if (!section) throw new Error("user section missing");
+        section["__reactFiber$test"] = {
+          memoizedProps: {
+            turn: {
+              messages: [
+                {
+                  id: "user-1",
+                  author: { role: "user" },
+                  content: {
+                    content_type: "text",
+                    parts: ["[[COS_CONTEXT:16]]\ninternal\ncontext\n[[/COS_CONTEXT]]\n\noi"],
+                  },
+                },
+              ],
+            },
+          },
+        };
+      },
+    );
+
+    expect(observation.turns).toEqual([
+      { role: "user", text: "oi", messageId: "user-1", interrupted: false },
+    ]);
+    const display = document.querySelector("[data-synara-user-text]") as {
+      readonly textContent?: string | null;
+    } | null;
+    const hidden = document.querySelector("[data-synara-prompt-hidden]") as {
+      readonly textContent?: string | null;
+    } | null;
+    expect(display?.textContent).toBe("oi");
+    expect(hidden?.textContent).toContain("COS_CONTEXT");
+  });
+
+  it("parses hidden context beyond the transcript text cap without exposing it", () => {
+    const framed = prependChatGptPromptContext("authored tail", "x".repeat(15_000));
+    const observation = observe(
+      `
+        <section data-testid="conversation-turn-1" data-turn="user">
+          <div data-message-author-role="user" data-message-id="user-long">
+            <div class="markdown">rendered transport frame</div>
+          </div>
+        </section>
+      `,
+      DEFAULT_URL,
+      () => {
+        const section = document.querySelector(
+          'section[data-testid="conversation-turn-1"]',
+        ) as Record<string, unknown> | null;
+        if (!section) throw new Error("user section missing");
+        section["__reactFiber$test"] = {
+          memoizedProps: {
+            turn: {
+              messages: [
+                {
+                  id: "user-long",
+                  author: { role: "user" },
+                  content: { content_type: "text", parts: [framed] },
+                },
+              ],
+            },
+          },
+        };
+      },
+    );
+
+    expect(observation.turns[0]?.text).toBe("authored tail");
+    expect(observation.turns[0]?.text).not.toContain("xxxxxxxx");
   });
 
   it("excludes interrupted commentary from assistant text but flags the turn", () => {
@@ -124,6 +277,32 @@ describe("buildChatGptObservationExpression", () => {
     expect(observation.turns[2]?.text).toBe("Second answer");
     expect(observation.turns[2]?.text).not.toContain("Searched the web");
     expect(observation.turns[2]?.text).not.toContain("Expanded tool output");
+  });
+
+  it("groups adjacent sections that belong to one logical assistant turn", () => {
+    const observation = observe(`
+      <section data-testid="conversation-turn-1" data-turn="user" data-turn-id="turn-user">
+        <div class="whitespace-pre-wrap">Question</div>
+      </section>
+      <section data-testid="conversation-turn-2" data-turn="assistant" data-turn-id="turn-answer">
+        <div class="markdown">First part</div>
+      </section>
+      <section data-testid="conversation-turn-3" data-turn="assistant" data-turn-id="turn-answer">
+        <div class="pointer-events-none contents">Used a tool</div>
+        <div class="markdown">Second part</div>
+      </section>
+    `);
+
+    expect(observation.turns).toEqual([
+      { role: "user", text: "Question", messageId: null, interrupted: false },
+      {
+        role: "assistant",
+        text: "First part\n\nSecond part",
+        messageId: null,
+        interrupted: false,
+      },
+    ]);
+    expect(observation.toolRowCount).toBe(1);
   });
 
   it("keeps only the newest ten turn sections", () => {
@@ -235,7 +414,7 @@ describe("buildChatGptObservationExpression", () => {
     expect(root.conversationPath).toBeNull();
   });
 
-  it("reads the first visible alert banner and skips hidden announcements", () => {
+  it("reads a visible transport alert and skips hidden announcements", () => {
     const observation = observe(`
       <div class="sr-only" role="alert">Reasoning details opened</div>
       <div role="alert" aria-hidden="true">Hidden alert</div>
@@ -245,7 +424,45 @@ describe("buildChatGptObservationExpression", () => {
     expect(observation.errorText).toBe("Message delivery timed out. Please try again.");
   });
 
-  it("clamps oversized message and banner text", () => {
+  it("ignores visible non-failure alerts", () => {
+    const observation = observe(`
+      <div role="alert">Actions refreshed.</div>
+      <div role="alert">Dictation is active and in use</div>
+    `);
+
+    expect(observation.errorText).toBeNull();
+  });
+
+  it("detects a transport-failure card in the newest assistant turn", () => {
+    const observation = observe(`
+      <section data-testid="conversation-turn-1" data-turn="assistant">
+        <div class="markdown">Message delivery timed out. Please try again.</div>
+        <button>Retry</button>
+      </section>
+    `);
+
+    expect(observation.errorText).toContain("Message delivery timed out. Please try again.");
+    expect(observation.errorText).toContain("Retry");
+    expect(observation.turns[0]?.text).toBe("");
+  });
+
+  it("does not carry a historical assistant failure into the newest answer", () => {
+    const observation = observe(`
+      <section data-testid="conversation-turn-1" data-turn="assistant">
+        <div class="markdown">Network error.</div>
+      </section>
+      <section data-testid="conversation-turn-2" data-turn="user">
+        <div class="whitespace-pre-wrap">Try again</div>
+      </section>
+      <section data-testid="conversation-turn-3" data-turn="assistant">
+        <div class="markdown">Recovered answer</div>
+      </section>
+    `);
+
+    expect(observation.errorText).toBeNull();
+  });
+
+  it("clamps oversized message text and ignores an unknown oversized banner", () => {
     const message = "x".repeat(30_000);
     const banner = "y".repeat(1_000);
     const observation = observe(`
@@ -258,7 +475,7 @@ describe("buildChatGptObservationExpression", () => {
     `);
 
     expect(observation.turns[0]?.text.length).toBe(12_000);
-    expect(observation.errorText?.length).toBe(500);
+    expect(observation.errorText).toBeNull();
   });
 
   it("returns safe defaults on an empty DOM without throwing", () => {
@@ -272,6 +489,8 @@ describe("buildChatGptObservationExpression", () => {
     expect(observation.generating).toBe(false);
     expect(observation.sendEnabled).toBe(false);
     expect(observation.turns).toEqual([]);
+    expect(observation.latestAssistantCompleted).toBe(false);
+    expect(observation.terminalAssistantText).toBeNull();
     expect(observation.toolRowCount).toBe(0);
     expect(observation.errorText).toBeNull();
   });
@@ -300,6 +519,8 @@ describe("parseChatGptObservation", () => {
       sendEnabled: true,
       toolRowCount: -3.9,
       errorText: "e".repeat(1_000),
+      latestAssistantCompleted: true,
+      terminalAssistantText: "t".repeat(25_000),
       turns: [
         { role: "system", text: "ignored" },
         null,
@@ -316,6 +537,8 @@ describe("parseChatGptObservation", () => {
     expect(observation?.composerText.length).toBe(20_000);
     expect(observation?.toolRowCount).toBe(0);
     expect(observation?.errorText?.length).toBe(500);
+    expect(observation?.latestAssistantCompleted).toBe(true);
+    expect(observation?.terminalAssistantText?.length).toBe(12_000);
     expect(observation?.turns).toEqual([
       { role: "user", text: "u".repeat(12_000), messageId: null, interrupted: false },
       { role: "assistant", text: "answer", messageId: "assistant-1", interrupted: true },
@@ -344,6 +567,8 @@ describe("parseChatGptObservation", () => {
 
     expect(observation?.conversationPath).toBe("/g/abc/c/68f0a1b2");
     expect(observation?.turns).toEqual([]);
+    expect(observation?.latestAssistantCompleted).toBe(false);
+    expect(observation?.terminalAssistantText).toBeNull();
     expect(observation?.composerText).toBe("");
     expect(observation?.toolRowCount).toBe(0);
     expect(observation?.errorText).toBeNull();

@@ -174,10 +174,7 @@ export class ChatGptWebDriver {
     this.onLoginRequired = options.onLoginRequired;
   }
 
-  private async call(
-    input: ChatGptBrowserCallInput,
-    deadlineAtMs?: number,
-  ): Promise<unknown> {
+  private async call(input: ChatGptBrowserCallInput, deadlineAtMs?: number): Promise<unknown> {
     const boundedInput =
       deadlineAtMs === undefined
         ? input
@@ -241,6 +238,16 @@ export class ChatGptWebDriver {
     return parsed;
   }
 
+  private isRecoverableTabSelectionFailure(error: unknown): boolean {
+    return (
+      error instanceof ChatGptDriverFailure &&
+      error.code === "tool-error" &&
+      /only control ChatGPT|ChatGPT tab did not finish loading|No tab with id|tab (?:was )?closed/iu.test(
+        error.message,
+      )
+    );
+  }
+
   /** Finds (or opens) the engine's ChatGPT conversation for a thread. */
   async ensureConversation(input?: {
     readonly existingUrl?: string;
@@ -251,18 +258,26 @@ export class ChatGptWebDriver {
     if (wantedUrl && isChatGptUrl(wantedUrl)) {
       const existing = tabs.find((tab) => tab.url === wantedUrl);
       if (existing) {
-        return await this.waitReady(existing.tabId, existing.url, { navigateIfStale: false });
+        try {
+          return await this.waitReady(existing.tabId, existing.url, { navigateIfStale: false });
+        } catch (error) {
+          // The tab can navigate or close between browser_tabs and the first
+          // evaluation. Open the requested conversation again rather than
+          // failing session startup on that stale selection.
+          if (!this.isRecoverableTabSelectionFailure(error)) throw error;
+        }
       }
     }
     if (!wantedUrl) {
       const reusable =
-        tabs.find(
-          (tab) =>
-            tab.active && isChatGptUrl(tab.url) && !this.isLoginLikeUrl(tab.url),
-        ) ??
+        tabs.find((tab) => tab.active && isChatGptUrl(tab.url) && !this.isLoginLikeUrl(tab.url)) ??
         tabs.find((tab) => isChatGptUrl(tab.url) && !this.isLoginLikeUrl(tab.url));
       if (reusable) {
-        return await this.waitReady(reusable.tabId, reusable.url, { navigateIfStale: true });
+        try {
+          return await this.waitReady(reusable.tabId, reusable.url, { navigateIfStale: true });
+        } catch (error) {
+          if (!this.isRecoverableTabSelectionFailure(error)) throw error;
+        }
       }
     }
     const opened = await this.openTab(
@@ -481,11 +496,15 @@ export class ChatGptWebDriver {
     const visible = normalize(latestUser.text);
     if (visible.length === 0) return false;
     return (
-      visible.includes(fingerprint) ||
-      // Some ChatGPT renderers trim a long provider prompt. A short authored
-      // message still needs to match when the page keeps a little surrounding
-      // UI text, while the length guard avoids matching arbitrary one-letter
-      // leftovers.
+      visible === normalized ||
+      // A long message may be clipped by the page observer. Short messages
+      // must match exactly: accepting `oi` merely because those two letters
+      // occur inside the hidden provider preamble can bind this turn to an old
+      // user row and then complete it from an unrelated historical answer.
+      (fingerprint.length >= 8 && visible.includes(fingerprint)) ||
+      // Some ChatGPT renderers trim a long message. Its substantial visible
+      // fragment can still prove the send, while the length guard avoids
+      // matching arbitrary short leftovers.
       (visible.length >= 8 && fingerprint.includes(visible))
     );
   }
@@ -526,7 +545,7 @@ export class ChatGptWebDriver {
       }
       return this.sendPromptWithinDeadline(ref, text, submittedText, deadlineAtMs);
     }
-    if (before.generating) {
+    if (before.generating && !before.latestAssistantCompleted) {
       throw new ChatGptDriverFailure(
         "busy",
         "ChatGPT is still generating a reply in this conversation. Wait for it to finish or stop it first.",
@@ -652,7 +671,7 @@ export class ChatGptWebDriver {
         return { outcome: "rate_limited", text: lastText, observation };
       }
       const lastAssistant = observation.turns.findLast((turn) => turn.role === "assistant");
-      const text = lastAssistant?.text ?? "";
+      const text = observation.terminalAssistantText ?? lastAssistant?.text ?? "";
       if (text !== lastText) {
         lastText = text;
         lastChangeAt = Date.now();
@@ -665,11 +684,27 @@ export class ChatGptWebDriver {
       if (!submittedTurnSeen && Date.now() - startedAt > this.turnStartTimeoutMs) {
         return { outcome: "timeout", text: lastText, observation };
       }
+      // The page observer scopes transport failures to the newest assistant
+      // turn. They outrank a stale successful Fiber message left behind by a
+      // retry, otherwise a delivery-error card can be promoted to completion.
+      if (hasUserTurn && observation.errorText !== null && !observation.generating) {
+        return { outcome: "failed", text, observation };
+      }
+      // ChatGPT's model-level end_turn flag is exact completion evidence. The
+      // Stop control is only a busy hint and can remain mounted after the final
+      // message, which previously left Synara in "Thinking" indefinitely.
+      if (hasUserTurn && observation.latestAssistantCompleted) {
+        return {
+          outcome: lastAssistant?.interrupted === true ? "interrupted" : "completed",
+          text,
+          observation,
+        };
+      }
       const settledByQuiet = !observation.generating;
       if (settledByQuiet && hasUserTurn) {
         if (stableSince === null) stableSince = Date.now();
         if (Date.now() - stableSince >= this.settleMs) {
-          if (observation.errorText !== null && text.length === 0) {
+          if (observation.errorText !== null) {
             return { outcome: "failed", text, observation };
           }
           if (lastAssistant?.interrupted === true) {

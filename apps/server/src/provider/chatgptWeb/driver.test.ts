@@ -73,6 +73,8 @@ const observation = (overrides: Partial<ChatGptObservation> = {}): ChatGptObserv
     generating: false,
     sendEnabled: false,
     turns: [],
+    latestAssistantCompleted: false,
+    terminalAssistantText: null,
     toolRowCount: 0,
     errorText: null,
     rateLimitText: null,
@@ -167,6 +169,34 @@ describe("ChatGptWebDriver", () => {
     const conversation = await driver.ensureConversation();
 
     expect(conversation.tabId).toBe("active");
+  });
+
+  it("opens a fresh tab when a reusable tab navigates away before evaluation", async () => {
+    let evaluated = 0;
+    const call = vi.fn(async (input: ChatGptBrowserCallInput): Promise<unknown> => {
+      if (input.name === "browser_tabs") {
+        return {
+          tabs: [{ tabId: "stale", url: CONVERSATION_URL, active: true }],
+        };
+      }
+      if (input.name === "browser_evaluate") {
+        evaluated++;
+        if (evaluated === 1) {
+          throw new Error("The bridge can only control ChatGPT and its sign-in tabs.");
+        }
+        return observed({ composerPresent: true });
+      }
+      if (input.name === "browser_open") {
+        return { tabId: "fresh", finalUrl: "https://chatgpt.com/" };
+      }
+      throw new Error(`unexpected browser RPC call: ${input.name}`);
+    });
+    const driver = new ChatGptWebDriver({ rpc: { call }, sleep: fastSleep });
+
+    const conversation = await driver.ensureConversation();
+
+    expect(conversation.tabId).toBe("fresh");
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({ name: "browser_open" }));
   });
 
   it("rejects with login-required when the page shows a signed-out surface", async () => {
@@ -281,6 +311,36 @@ describe("ChatGptWebDriver", () => {
     );
   });
 
+  it("allows the next prompt when only a stale Stop control remains", async () => {
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({ generating: true, latestAssistantCompleted: true }),
+      },
+      { name: "browser_type", result: {} },
+      {
+        name: "browser_evaluate",
+        result: observed({ composerText: "next prompt", sendEnabled: true }),
+        times: 2,
+      },
+      { name: "browser_click", result: {} },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          generating: true,
+          latestAssistantCompleted: false,
+          turns: [turn("user", "next prompt")],
+        }),
+      },
+    ]);
+    const driver = new ChatGptWebDriver({ rpc: fake.rpc, sleep: fastSleep });
+
+    const result = await driver.sendPrompt(REF, "next prompt");
+
+    expect(result.accepted).toBe(true);
+    expect(fake.calls.some((call) => call.name === "browser_type")).toBe(true);
+  });
+
   it("accepts a visible user message when the browser prompt has an internal preamble", async () => {
     const fake = createFakeRpc([
       { name: "browser_evaluate", result: observed() },
@@ -309,11 +369,9 @@ describe("ChatGptWebDriver", () => {
       sendAcceptTimeoutMs: 200,
     });
 
-    const result = await driver.sendPrompt(
-      REF,
-      "internal context\n\nhello",
-      { submittedText: "hello" },
-    );
+    const result = await driver.sendPrompt(REF, "internal context\n\nhello", {
+      submittedText: "hello",
+    });
 
     expect(result.accepted).toBe(true);
   });
@@ -417,6 +475,79 @@ describe("ChatGptWebDriver", () => {
     expect(onText.mock.calls.map((call) => call[0])).toEqual(["Hel", "Hello", "Hello there"]);
   });
 
+  it("completes from ChatGPT end_turn evidence while a stale Stop control remains", async () => {
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({
+          generating: true,
+          turns: [turn("user", "say hello")],
+        }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          generating: true,
+          turns: [turn("user", "say hello"), turn("assistant", "rendered fallback")],
+          latestAssistantCompleted: true,
+          terminalAssistantText: "Hello from the terminal message",
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      stallMs: 5_000,
+      completionTimeoutMs: 5_000,
+    });
+    const onText = vi.fn();
+
+    const completion = await driver.waitForCompletion(REF, "say hello", { onText });
+
+    expect(completion.outcome).toBe("completed");
+    expect(completion.text).toBe("Hello from the terminal message");
+    expect(onText).toHaveBeenCalledWith(
+      "Hello from the terminal message",
+      expect.objectContaining({ latestAssistantCompleted: true }),
+    );
+  });
+
+  it("returns failed for a quiet transport error even when the card has text", async () => {
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello")],
+        }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [
+            turn("user", "say hello"),
+            turn("assistant", "Message delivery timed out. Please try again."),
+          ],
+          errorText: "Message delivery timed out. Please try again.",
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 5,
+      settleMs: 5,
+      completionTimeoutMs: 1_000,
+    });
+
+    const completion = await driver.waitForCompletion(REF, "say hello");
+
+    expect(completion.outcome).toBe("failed");
+    expect(completion.observation.errorText).toContain("delivery timed out");
+  });
+
   it("returns interrupted when the final assistant turn is flagged interrupted", async () => {
     const fake = createFakeRpc([
       {
@@ -500,6 +631,33 @@ describe("ChatGptWebDriver", () => {
     });
 
     const completion = await driver.waitForCompletion(REF, "missing prompt");
+
+    expect(completion.outcome).toBe("timeout");
+  });
+
+  it("does not match a short prompt inside an older internal preamble", async () => {
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({
+          generating: false,
+          turns: [
+            turn("user", "Internal instructions about doing work"),
+            turn("assistant", "An older answer"),
+          ],
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      turnStartTimeoutMs: 50,
+      completionTimeoutMs: 5_000,
+    });
+
+    const completion = await driver.waitForCompletion(REF, "oi");
 
     expect(completion.outcome).toBe("timeout");
   });
