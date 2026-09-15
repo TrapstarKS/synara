@@ -1430,6 +1430,23 @@ export default function ChatView({
         : deriveActiveBackgroundTasksState(threadActivities),
     [activeThread?.session?.status, threadActivities],
   );
+  const composerSubagentToolUseIds = useMemo(
+    () => new Set(composerSubagentStripItems.map((item) => item.providerThreadId)),
+    [composerSubagentStripItems],
+  );
+  const composerBackgroundTaskRows = useMemo(
+    () =>
+      deriveComposerBackgroundTaskRows({
+        activeBackgroundTasks,
+        workflowTaskIds: workflowRunState ? [workflowRunState.workflowTaskId] : [],
+        subagentToolUseIds: composerSubagentToolUseIds,
+      }),
+    [activeBackgroundTasks, composerSubagentToolUseIds, workflowRunState],
+  );
+  const composerBackgroundWorkSummary = useMemo(
+    () => summarizeComposerBackgroundTaskRows(composerBackgroundTaskRows),
+    [composerBackgroundTaskRows],
+  );
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
     interactionMode === "plan" &&
@@ -4012,7 +4029,7 @@ export default function ChatView({
   const forceFastModeBadge = isLunaFastSubagent({
     provider: selectedProvider,
     model: selectedModelForPickerWithCustomFallback,
-    parentThreadId: activeThread?.parentThreadId,
+    parentThreadId: activeThread?.parentThreadId ?? null,
   });
   const runtimeUsageContextWindow = useMemo(
     () =>

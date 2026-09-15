@@ -83,14 +83,14 @@ describe("runtime Codex model effort", () => {
     expect(
       resolveThreadModelSummary({
         provider: "codex",
-        model: "gpt-6-astra",
+        model: "gpt-9-astra",
         options: { reasoningEffort: "low" },
       })?.statusLabel,
     ).toBe("Low");
     expect(
       resolveThreadModelSummary({
         provider: "codex",
-        model: "gpt-6-astra",
+        model: "gpt-9-astra",
       })?.statusLabel,
     ).toBeNull();
   });

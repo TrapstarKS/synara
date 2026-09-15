@@ -286,6 +286,8 @@ export interface TraitsMenuContentProps {
   runtimeAgents?: ReadonlyArray<ProviderAgentDescriptor> | null | undefined;
   prompt: string;
   onPromptChange: (prompt: string) => void;
+  /** UI-only badge for provider-native models whose service tier is runtime-defined. */
+  forceFastModeBadge?: boolean;
   includeFastMode?: boolean;
   // Drop the Effort ladder and the Speed section; the slider card renders both
   // itself and only needs the remaining trait sections (thinking, context, agent).
@@ -490,6 +492,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   runtimeAgents,
   prompt,
   onPromptChange,
+  forceFastModeBadge,
   includeFastMode: includeFastModeProp,
   modelOptions,
   open,
@@ -567,6 +570,7 @@ export const TraitsPicker = memo(function TraitsPicker({
     modelOptions,
     runtimeModel,
     runtimeAgents,
+    forceFastModeBadge,
   });
 
   const isCodexStyle = provider === "codex";

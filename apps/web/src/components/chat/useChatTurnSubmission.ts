@@ -461,7 +461,12 @@ export function useChatTurnSubmission({
       if (hasPromptOnlySendableContent) {
         const handledSlashCommand =
           await lateSendHandlers.handleStandaloneSlashCommand(trimmedPromptForSend);
-        if (handledSlashCommand) {
+        if (typeof handledSlashCommand === "string") {
+          // A draft thread has no server aggregate yet. `/goal <text>` persists
+          // the staged goal and returns that text as the first real user turn.
+          promptForSend = handledSlashCommand;
+          trimmedPromptForSend = handledSlashCommand.trim();
+        } else if (handledSlashCommand) {
           // A slash command (e.g. /clear) consumes the composer, so abandon any in-progress
           // automation setup rather than leaving a stale banner/request behind.
           pendingAutomationConversationRef.current = null;

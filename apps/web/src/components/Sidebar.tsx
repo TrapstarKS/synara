@@ -4586,10 +4586,10 @@ export default function Sidebar() {
             }),
             {
               fastModeOverride: isLunaFastSubagent({
-                provider: thread.modelSelection.provider,
-                model: thread.modelSelection.model,
-                parentThreadId: thread.parentThreadId,
-              }),
+              provider: thread.modelSelection.provider,
+              model: thread.modelSelection.model,
+              parentThreadId: thread.parentThreadId ?? null,
+            }),
             },
           )}
           status={hoverStatus}

@@ -67,7 +67,9 @@ export interface LateComposerSendHandlers {
   readonly advanceActivePendingUserInput: (
     answerOverrides?: Record<string, PendingUserInputDraftAnswer>,
   ) => boolean;
-  readonly handleStandaloneSlashCommand: (trimmedPrompt: string) => Promise<boolean>;
+  // Draft-thread /goal uses the returned string as the first user turn after the
+  // draft has been promoted. Other slash commands return a handled boolean.
+  readonly handleStandaloneSlashCommand: (trimmedPrompt: string) => Promise<boolean | string>;
 }
 
 export interface ChatTurnSubmissionInput {

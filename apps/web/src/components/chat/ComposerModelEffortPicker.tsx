@@ -244,6 +244,9 @@ export function ComposerModelEffortPicker(props: ComposerModelEffortPickerProps)
     modelOptions: props.modelOptions,
     prompt: props.prompt,
     onPromptChange: props.onPromptChange,
+    ...(props.forceFastModeBadge !== undefined
+      ? { forceFastModeBadge: props.forceFastModeBadge }
+      : {}),
   };
 
   return (
