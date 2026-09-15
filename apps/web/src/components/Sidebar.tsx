@@ -36,6 +36,7 @@ import {
 import { createCentralIconComponent } from "~/lib/central-icons";
 import { ThreadPrStatusBadge } from "~/components/pullRequest/ThreadPrStatusBadge";
 import { PinStatusIcon, pinActionLabel } from "~/lib/pin";
+import { THREAD_CONTEXT_MENU_ICONS } from "~/lib/contextMenuIcons";
 import { ensureNativeApi } from "~/nativeApi";
 import { autoAnimate } from "@formkit/auto-animate";
 import { FiGitBranch } from "react-icons/fi";
@@ -84,6 +85,7 @@ import {
   MAX_PINNED_PROJECTS,
   type DesktopUpdateState,
   type OrchestrationShellSnapshot,
+  type OrchestrationThreadPullRequest,
   PROVIDER_DISPLAY_NAMES,
   ProjectId,
   SpaceId,
@@ -93,6 +95,7 @@ import {
   WS_GITHUB_PROJECT_PROVISIONING_CAPABILITY,
 } from "@synara/contracts";
 import { isGenericChatThreadTitle } from "@synara/shared/chatThreads";
+import { parseGitHubRepositoryNameWithOwnerFromPullRequestUrl } from "@synara/shared/githubRepository";
 import { getDefaultModel } from "@synara/shared/model";
 import { pluralize } from "@synara/shared/text";
 import { resolveThreadWorkspaceCwd } from "@synara/shared/threadEnvironment";
@@ -174,6 +177,7 @@ import {
   isStudioContainerProject,
   prewarmStudioProject,
 } from "../lib/studioProjects";
+import { useProjectEnvironmentStore } from "../projectEnvironmentStore";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useLatestProjectStore } from "../latestProjectStore";
 import { resolveThreadEnvironmentPresentation } from "../lib/threadEnvironment";
@@ -330,6 +334,7 @@ import {
   resolveSettingsBackTarget,
   type SettingsBackTarget,
   resolveSidebarNewThreadEnvMode,
+  resolveSidebarProjectRowLabel,
   resolveThreadHoverCardMetadata,
   resolveThreadProjectLabel,
   resolveThreadRowClassName,
@@ -2146,18 +2151,9 @@ export default function Sidebar() {
         return true;
       }
 
-      return (
-        (await handleNewThread(projectId, {
-          envMode: appSettings.defaultThreadEnvMode,
-        }).catch(() => null)) !== null
-      );
+      return (await handleNewThread(projectId).catch(() => null)) !== null;
     },
-    [
-      appSettings.defaultThreadEnvMode,
-      appSettings.sidebarThreadSortOrder,
-      handleNewThread,
-      navigate,
-    ],
+    [appSettings.sidebarThreadSortOrder, handleNewThread, navigate],
   );
 
   const openExistingProjectFromSnapshot = useCallback(
@@ -2190,19 +2186,9 @@ export default function Sidebar() {
       }
 
       setProjectExpanded(projectId, true);
-      return (
-        (await handleNewThread(projectId, {
-          envMode: appSettings.defaultThreadEnvMode,
-        }).catch(() => null)) !== null
-      );
+      return (await handleNewThread(projectId).catch(() => null)) !== null;
     },
-    [
-      appSettings.defaultThreadEnvMode,
-      appSettings.sidebarThreadSortOrder,
-      handleNewThread,
-      navigate,
-      setProjectExpanded,
-    ],
+    [appSettings.sidebarThreadSortOrder, handleNewThread, navigate, setProjectExpanded],
   );
 
   // Poll the server read model briefly after project.create so we only recover from fresh state.
@@ -2321,19 +2307,9 @@ export default function Sidebar() {
         return;
       }
 
-      void handleNewThread(typedProjectId, {
-        envMode: resolveSidebarNewThreadEnvMode({
-          defaultEnvMode: appSettings.defaultThreadEnvMode,
-        }),
-      });
+      void handleNewThread(typedProjectId);
     },
-    [
-      appSettings.defaultThreadEnvMode,
-      focusMostRecentThreadForProject,
-      handleNewThread,
-      hideAutomationRunThreads,
-      sidebarThreads,
-    ],
+    [focusMostRecentThreadForProject, handleNewThread, hideAutomationRunThreads, sidebarThreads],
   );
 
   // Shared resolver behind resolveBackToStudioTarget/resolveBackToThreadsTarget (and the
@@ -2634,9 +2610,7 @@ export default function Sidebar() {
         // snapshot is just slow to catch up, continue with the local new-thread flow
         // instead of surfacing a false-negative sidebar sync error.
         setProjectExpanded(creationResult.projectId, true);
-        const threadId = await handleNewThread(creationResult.projectId, {
-          envMode: appSettings.defaultThreadEnvMode,
-        }).catch(() => null);
+        const threadId = await handleNewThread(creationResult.projectId).catch(() => null);
         if (!threadId) {
           throw new Error("Project creation was superseded before its chat opened.");
         }
@@ -2646,7 +2620,6 @@ export default function Sidebar() {
     },
     [
       appSettings.defaultProvider,
-      appSettings.defaultThreadEnvMode,
       handleNewThread,
       projects,
       recoverExistingProjectFromServer,
@@ -2712,12 +2685,12 @@ export default function Sidebar() {
         projectCwd: project.cwd,
         draftWorktreePath: draftThread?.worktreePath ?? null,
         serverCwd,
-        // Hover-time warm must resolve the same envMode the click will pass so the
-        // warmed cwd keys match the thread ChatView actually mounts (local mode
-        // clears the draft worktree; worktree mode keeps it).
-        envMode: resolveSidebarNewThreadEnvMode({
-          defaultEnvMode: appSettings.defaultThreadEnvMode,
-        }),
+        // Match new-thread bootstrap: preserve existing drafts and apply project
+        // preferences only when creating a fresh one.
+        envMode:
+          draftThread?.envMode ??
+          useProjectEnvironmentStore.getState().envModeByProjectId[projectId] ??
+          appSettings.defaultThreadEnvMode,
         providerStatuses,
         statusesReconciled: hasReconciledServerProviderStatuses(queryClient),
         providerOrder: appSettings.providerOrder,
@@ -2746,11 +2719,7 @@ export default function Sidebar() {
   const handlePrimaryNewThread = useCallback(() => {
     if (primaryNewThreadTarget) {
       prefetchModelsForProjectNewThread(primaryNewThreadTarget.projectId, { includeDroid: true });
-      void handleNewThread(primaryNewThreadTarget.projectId, {
-        envMode: resolveSidebarNewThreadEnvMode({
-          defaultEnvMode: appSettings.defaultThreadEnvMode,
-        }),
-      });
+      void handleNewThread(primaryNewThreadTarget.projectId);
       return;
     }
 
@@ -2761,7 +2730,6 @@ export default function Sidebar() {
     }
     handleStartAddProject();
   }, [
-    appSettings.defaultThreadEnvMode,
     handleNewThread,
     handleStartAddProject,
     prefetchModelsForProjectNewThread,
@@ -3011,6 +2979,7 @@ export default function Sidebar() {
       const handoffItems = handoffTargets.map((provider, index) => ({
         id: `handoff:${provider}`,
         label: `Handoff to ${PROVIDER_DISPLAY_NAMES[provider]}`,
+        icon: THREAD_CONTEXT_MENU_ICONS.handoff,
         separatorBefore: index === 0,
       }));
       const threadWorkspacePath = resolveThreadWorkspaceCwd({
@@ -3020,28 +2989,57 @@ export default function Sidebar() {
       });
       const clicked = await api.contextMenu.show(
         [
-          { id: "rename", label: "Rename thread" },
-          { id: "toggle-pin", label: pinActionLabel("thread", isPinned) },
+          { id: "rename", label: "Rename thread", icon: THREAD_CONTEXT_MENU_ICONS.rename },
+          {
+            id: "toggle-pin",
+            label: pinActionLabel("thread", isPinned),
+            icon: THREAD_CONTEXT_MENU_ICONS.pin,
+          },
           ...(threadStatus?.dismissible
-            ? [{ id: "clear-notification", label: "Clear notification" }]
+            ? [
+                {
+                  id: "clear-notification",
+                  label: "Clear notification",
+                  icon: THREAD_CONTEXT_MENU_ICONS.clearNotification,
+                },
+              ]
             : []),
-          { id: "mark-unread", label: "Mark unread" },
+          { id: "mark-unread", label: "Mark unread", icon: THREAD_CONTEXT_MENU_ICONS.markUnread },
           ...handoffItems,
-          { id: "copy-path", label: "Copy Path", separatorBefore: true },
+          {
+            id: "copy-path",
+            label: "Copy Path",
+            icon: THREAD_CONTEXT_MENU_ICONS.copy,
+            separatorBefore: true,
+          },
           ...(threadWorkspacePath
-            ? [{ id: "open-path-in-terminal", label: "Open Path in Terminal" }]
+            ? [
+                {
+                  id: "open-path-in-terminal",
+                  label: "Open Path in Terminal",
+                  icon: THREAD_CONTEXT_MENU_ICONS.openInTerminal,
+                },
+              ]
             : []),
-          { id: "copy-thread-id", label: "Copy Thread ID" },
+          { id: "copy-thread-id", label: "Copy Thread ID", icon: THREAD_CONTEXT_MENU_ICONS.copy },
           ...(options?.extraItems ?? []),
           // Subagent threads are archived and restored through their parent
           // (thread.archive cascades); archiving one alone would strand it with
           // no sidebar or Archived-panel row to restore it from.
           ...(thread.parentThreadId
             ? []
-            : [{ id: "archive", label: "Archive", separatorBefore: true }]),
+            : [
+                {
+                  id: "archive",
+                  label: "Archive",
+                  icon: THREAD_CONTEXT_MENU_ICONS.archive,
+                  separatorBefore: true,
+                },
+              ]),
           {
             id: "delete",
             label: "Delete",
+            icon: THREAD_CONTEXT_MENU_ICONS.delete,
             destructive: true,
             ...(thread.parentThreadId ? { separatorBefore: true } : {}),
           },
@@ -3216,9 +3214,18 @@ export default function Sidebar() {
 
       const clicked = await api.contextMenu.show(
         [
-          { id: "mark-unread", label: `Mark unread (${count})` },
-          { id: "archive", label: `Archive (${count})` },
-          { id: "delete", label: `Delete (${count})`, destructive: true },
+          {
+            id: "mark-unread",
+            label: `Mark unread (${count})`,
+            icon: THREAD_CONTEXT_MENU_ICONS.markUnread,
+          },
+          { id: "archive", label: `Archive (${count})`, icon: THREAD_CONTEXT_MENU_ICONS.archive },
+          {
+            id: "delete",
+            label: `Delete (${count})`,
+            icon: THREAD_CONTEXT_MENU_ICONS.delete,
+            destructive: true,
+          },
         ],
         position,
       );
@@ -3353,6 +3360,34 @@ export default function Sidebar() {
       if (isMobile) setOpenMobile(false);
     },
     [activateThread, isMobile, setOpenMobile],
+  );
+
+  // PR chip on a thread row behaves like a link: a plain click opens the PR in the thread's
+  // right dock, while cmd/ctrl/middle-click (or a non-GitHub URL) opens it on GitHub.
+  const openThreadPullRequest = useCallback(
+    (
+      event: MouseEvent<HTMLElement>,
+      thread: SidebarThreadSummary,
+      pr: OrchestrationThreadPullRequest,
+    ) => {
+      const repository = parseGitHubRepositoryNameWithOwnerFromPullRequestUrl(pr.url);
+      if (event.metaKey || event.ctrlKey || event.button === 1 || !repository) {
+        openPrLink(event, pr.url);
+        return;
+      }
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      activateThreadFromSidebarIntent(thread.id);
+      openRightDockPane(thread.id, {
+        kind: "pullRequest",
+        pullRequestProjectId: thread.projectId,
+        pullRequestRepository: repository,
+        pullRequestNumber: pr.number,
+        pullRequestInitialTab: "summary",
+      });
+    },
+    [activateThreadFromSidebarIntent, openPrLink, openRightDockPane],
   );
 
   const handleCloseProjectContextMenu = useCallback(() => setProjectContextMenuState(null), []);
@@ -4600,7 +4635,7 @@ export default function Sidebar() {
             <ThreadPrStatusBadge
               pr={leadingPr}
               onOpen={openPrLink}
-              className="pointer-events-auto absolute left-1.5 top-1/2 z-30 h-5 w-6 -translate-y-1/2"
+              className="pointer-events-auto absolute left-1.5 top-1/2 z-30 size-5 -translate-y-1/2"
             />
           ) : null}
           <div
@@ -4759,7 +4794,7 @@ export default function Sidebar() {
           <ThreadPrStatusBadge
             pr={leadingPr}
             onOpen={openPrLink}
-            className="pointer-events-auto absolute left-1.5 top-1/2 z-30 h-5 w-6 -translate-y-1/2"
+            className="pointer-events-auto absolute left-1.5 top-1/2 z-30 size-5 -translate-y-1/2"
           />
         ) : null}
         <Tooltip>
@@ -4927,7 +4962,9 @@ export default function Sidebar() {
     // in place instead of sliding left. Focus is read from the group because the
     // name container itself is not focusable — the row's button is.
     const projectToolbarReserveClassName =
-      "max-md:pr-[7.25rem] md:group-hover/project-header:pr-[4.75rem] md:group-has-[:focus-visible]/project-header:pr-[4.75rem]";
+      "max-md:pr-[7.25rem] group-hover/project-header:pr-[4.75rem] group-has-[:focus-visible]/project-header:pr-[4.75rem]";
+    // Configured display name only — folder identity lives in the hover card (#1000).
+    const projectRowLabel = resolveSidebarProjectRowLabel(project);
 
     return (
       <div className="group/collapsible">
@@ -4992,17 +5029,12 @@ export default function Sidebar() {
               >
                 <span
                   className={cn(
-                    "truncate font-system-ui text-[length:var(--app-font-size-ui,12px)] font-normal",
+                    "min-w-0 flex-1 truncate font-system-ui text-[length:var(--app-font-size-ui,12px)] font-normal",
                     SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME,
                   )}
                 >
-                  {project.name}
+                  {projectRowLabel}
                 </span>
-                {project.localName ? (
-                  <span className="shrink-0 truncate text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/40">
-                    {project.folderName}
-                  </span>
-                ) : null}
               </div>
               {/* Closed folders surface child-chat status on the project row; open
                   folders leave that signal to their visible child thread rows. */}
@@ -5080,12 +5112,7 @@ export default function Sidebar() {
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
-                  void handleNewThread(project.id, {
-                    envMode: resolveSidebarNewThreadEnvMode({
-                      defaultEnvMode: appSettings.defaultThreadEnvMode,
-                    }),
-                    entryPoint: "terminal",
-                  });
+                  void handleNewThread(project.id, { entryPoint: "terminal" });
                 }}
               />
               <SidebarIconButton
@@ -5106,11 +5133,7 @@ export default function Sidebar() {
                   event.preventDefault();
                   event.stopPropagation();
                   prefetchModelsForProjectNewThread(project.id, { includeDroid: true });
-                  void handleNewThread(project.id, {
-                    envMode: resolveSidebarNewThreadEnvMode({
-                      defaultEnvMode: appSettings.defaultThreadEnvMode,
-                    }),
-                  });
+                  void handleNewThread(project.id);
                 }}
               />
             </SidebarSectionToolbar>
@@ -6176,6 +6199,7 @@ export default function Sidebar() {
                     threadsHydrated={threadsHydrated}
                     resolveThreadStatus={resolveThreadStatusForSidebar}
                     onOpenThread={activateThreadFromSidebarIntent}
+                    onOpenThreadPullRequest={openThreadPullRequest}
                     onSetThreadSettled={setThreadSettledWithToast}
                     onToggleThreadPinned={toggleThreadPinned}
                     onArchiveThread={(threadId) => void archiveThreadWithUndo(threadId)}

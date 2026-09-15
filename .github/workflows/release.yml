@@ -286,9 +286,9 @@ jobs:
             electron-builder-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Install dependencies
-        # Verify runs the full lifecycle-script install plus lint, typecheck,
-        # and tests in parallel. Artifact jobs only need dependencies available.
-        run: bun install --frozen-lockfile --ignore-scripts
+        # Preflight validates the entire workspace. Native artifacts retain all
+        # runtime/build dependencies but do not install the unrelated marketing site.
+        run: bun install --frozen-lockfile --ignore-scripts --filter '!@synara/marketing'
 
       - id: prepare_mac_signing
         name: Import persistent TrapRAM-compatible macOS signing certificate

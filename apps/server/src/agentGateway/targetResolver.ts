@@ -685,6 +685,19 @@ export function resolveAgentGatewayTarget(input: {
       );
     }
     const descriptor = catalog.models.find((model) => model.slug === input.target.model);
+    // Capability claims come from discovery, never the agent's target input. Keep
+    // unknown distinct from false so Auto-mode validation can still fail closed.
+    const target: ModelSelection =
+      input.target.provider === "claudeAgent"
+        ? {
+            provider: input.target.provider,
+            model: input.target.model,
+            ...(input.target.options !== undefined ? { options: input.target.options } : {}),
+            ...(descriptor?.supportsAutoMode !== undefined
+              ? { supportsAutoMode: descriptor.supportsAutoMode }
+              : {}),
+          }
+        : input.target;
 
     if (catalog.models.length > 0 && descriptor === undefined) {
       return yield* Effect.fail(
@@ -725,7 +738,7 @@ export function resolveAgentGatewayTarget(input: {
         if (error instanceof AgentGatewayTargetError) return yield* Effect.fail(error);
         throw error;
       }
-      return input.target;
+      return target;
     }
 
     try {
@@ -747,8 +760,8 @@ export function resolveAgentGatewayTarget(input: {
         getClaudeContextWindowSuffix(descriptor.resolvedModel) === null
           ? "[1m]"
           : "";
-      return { ...input.target, model: `${descriptor.resolvedModel}${suffix}` };
+      return { ...target, model: `${descriptor.resolvedModel}${suffix}` };
     }
-    return input.target;
+    return target;
   });
 }

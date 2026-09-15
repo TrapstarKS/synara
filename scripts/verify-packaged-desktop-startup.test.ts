@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createPackagedDesktopSmokeEnvironment,
   parsePackagedDesktopStartupArgs,
+  readPackagedStartupLogTails,
   readPackagedStartupDiagnostics,
   resolveNativePackagedDesktopPlatform,
   verifyPackagedRuntimeDependencies,
@@ -34,6 +35,18 @@ describe("packaged desktop startup verification", () => {
     expect(diagnostics).toContain("Error: packaged backend could not start");
     expect(diagnostics).not.toContain("old-prefix");
     expect(diagnostics.length).toBeLessThan(17_000);
+  });
+
+  it("retains bounded failure diagnostics even when a startup log is missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "synara-startup-diagnostics-test-"));
+    temporaryRoots.push(root);
+    writeFileSync(join(root, "desktop-main.log"), "old entry" + "x".repeat(20_000) + "app ready");
+
+    const diagnostics = readPackagedStartupLogTails(root);
+    expect(diagnostics).toContain("app ready");
+    expect(diagnostics).not.toContain("old entry");
+    expect(diagnostics).toContain("server-child.log: unavailable");
+    expect(diagnostics.length).toBeLessThan(16_500);
   });
 
   it("parses a bounded native payload request", () => {

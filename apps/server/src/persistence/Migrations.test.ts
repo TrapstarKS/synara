@@ -301,11 +301,15 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [97, "ProjectionThreadsSidechatLifecycle"],
         [98, "MigrateKiloToOpenCode"],
         [99, "InvalidateProjectionThreadsCursor"],
-        [100, "RecoverCodexThreadProfiles"],
+        [100, "MessageTextChunks"],
+        [101, "RemoveTranscriptMarkers"],
+        [102, "ProjectionThreadMessagesTurnBoundary"],
+        [103, "ClaudeTokenAccounting"],
+        [104, "RecoverCodexThreadProfiles"],
       ]);
 
       const tracker = yield* trackerRows(sql);
-      assert.deepStrictEqual(tracker.slice(-46), [
+      assert.deepStrictEqual(tracker.slice(-50), [
         { migration_id: 55, name: "ManagedAttachments" },
         { migration_id: 56, name: "CommandReceiptFingerprints" },
         { migration_id: 57, name: "ThreadScopedProjectionMessageIdentity" },
@@ -351,7 +355,11 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         { migration_id: 97, name: "ProjectionThreadsSidechatLifecycle" },
         { migration_id: 98, name: "MigrateKiloToOpenCode" },
         { migration_id: 99, name: "InvalidateProjectionThreadsCursor" },
-        { migration_id: 100, name: "RecoverCodexThreadProfiles" },
+        { migration_id: 100, name: "MessageTextChunks" },
+        { migration_id: 101, name: "RemoveTranscriptMarkers" },
+        { migration_id: 102, name: "ProjectionThreadMessagesTurnBoundary" },
+        { migration_id: 103, name: "ClaudeTokenAccounting" },
+        { migration_id: 104, name: "RecoverCodexThreadProfiles" },
       ]);
       const preserved = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_consumer_state
@@ -443,7 +451,11 @@ agentGatewayRetentionLegacyLayer(
           [97, "ProjectionThreadsSidechatLifecycle"],
           [98, "MigrateKiloToOpenCode"],
           [99, "InvalidateProjectionThreadsCursor"],
-          [100, "RecoverCodexThreadProfiles"],
+          [100, "MessageTextChunks"],
+          [101, "RemoveTranscriptMarkers"],
+          [102, "ProjectionThreadMessagesTurnBoundary"],
+          [103, "ClaudeTokenAccounting"],
+          [104, "RecoverCodexThreadProfiles"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -538,12 +550,16 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [97, "ProjectionThreadsSidechatLifecycle"],
         [98, "MigrateKiloToOpenCode"],
         [99, "InvalidateProjectionThreadsCursor"],
-        [100, "RecoverCodexThreadProfiles"],
+        [100, "MessageTextChunks"],
+        [101, "RemoveTranscriptMarkers"],
+        [102, "ProjectionThreadMessagesTurnBoundary"],
+        [103, "ClaudeTokenAccounting"],
+        [104, "RecoverCodexThreadProfiles"],
       ]);
 
       const tracker = yield* trackerRows(sql);
       assert.deepStrictEqual(
-        tracker.slice(-30).map((row) => [row.migration_id, row.name]),
+        tracker.filter((row) => row.migration_id >= 71).map((row) => [row.migration_id, row.name]),
         [
           [71, "ProjectionThreadsGatewayProvenance"],
           [72, "AgentGatewayOperationRetention"],
@@ -574,7 +590,11 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [97, "ProjectionThreadsSidechatLifecycle"],
           [98, "MigrateKiloToOpenCode"],
           [99, "InvalidateProjectionThreadsCursor"],
-          [100, "RecoverCodexThreadProfiles"],
+          [100, "MessageTextChunks"],
+          [101, "RemoveTranscriptMarkers"],
+          [102, "ProjectionThreadMessagesTurnBoundary"],
+          [103, "ClaudeTokenAccounting"],
+          [104, "RecoverCodexThreadProfiles"],
         ],
       );
 
@@ -664,12 +684,16 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [97, "ProjectionThreadsSidechatLifecycle"],
         [98, "MigrateKiloToOpenCode"],
         [99, "InvalidateProjectionThreadsCursor"],
-        [100, "RecoverCodexThreadProfiles"],
+        [100, "MessageTextChunks"],
+        [101, "RemoveTranscriptMarkers"],
+        [102, "ProjectionThreadMessagesTurnBoundary"],
+        [103, "ClaudeTokenAccounting"],
+        [104, "RecoverCodexThreadProfiles"],
       ]);
 
       const tracker = yield* trackerRows(sql);
       assert.deepStrictEqual(
-        tracker.slice(-26).map((row) => [row.migration_id, row.name]),
+        tracker.filter((row) => row.migration_id >= 75).map((row) => [row.migration_id, row.name]),
         [
           [75, "ExternalMcpActiveCapacity"],
           [76, "ExternalMcpHardening"],
@@ -696,7 +720,11 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [97, "ProjectionThreadsSidechatLifecycle"],
           [98, "MigrateKiloToOpenCode"],
           [99, "InvalidateProjectionThreadsCursor"],
-          [100, "RecoverCodexThreadProfiles"],
+          [100, "MessageTextChunks"],
+          [101, "RemoveTranscriptMarkers"],
+          [102, "ProjectionThreadMessagesTurnBoundary"],
+          [103, "ClaudeTokenAccounting"],
+          [104, "RecoverCodexThreadProfiles"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -897,6 +925,15 @@ describe("migration lineage aliases", () => {
 
     assert.deepStrictEqual(planMigrationLineageAliasRepairs(recorded), [
       { kind: "rename", migrationId: 54, name: "DurableProviderCommandDelivery" },
+    ]);
+  });
+
+  it("replays the released Codex-profile repair after the upstream migration slots", () => {
+    const recorded = canonicalTrackerThrough(99);
+    recorded.set(100, "RecoverCodexThreadProfiles");
+
+    assert.deepStrictEqual(planMigrationLineageAliasRepairs(recorded), [
+      { kind: "remove", migrationId: 100 },
     ]);
   });
 

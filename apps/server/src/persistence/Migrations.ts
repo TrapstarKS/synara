@@ -115,7 +115,11 @@ import Migration0096 from "./Migrations/096_ProjectionThreadsGoalAchievements.ts
 import Migration0097 from "./Migrations/097_ProjectionThreadsSidechatLifecycle.ts";
 import Migration0098 from "./Migrations/098_MigrateKiloToOpenCode.ts";
 import Migration0099 from "./Migrations/099_InvalidateProjectionThreadsCursor.ts";
-import Migration0100 from "./Migrations/100_RecoverCodexThreadProfiles.ts";
+import Migration0100 from "./Migrations/100_MessageTextChunks.ts";
+import Migration0101 from "./Migrations/101_RemoveTranscriptMarkers.ts";
+import Migration0102 from "./Migrations/102_ProjectionThreadMessagesTurnBoundary.ts";
+import ClaudeTokenAccountingMigration from "./Migrations/103_ClaudeTokenAccounting.ts";
+import Migration0104 from "./Migrations/104_RecoverCodexThreadProfiles.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -230,7 +234,12 @@ export const migrationEntries = [
   [97, "ProjectionThreadsSidechatLifecycle", Migration0097],
   [98, "MigrateKiloToOpenCode", Migration0098],
   [99, "InvalidateProjectionThreadsCursor", Migration0099],
-  [100, "RecoverCodexThreadProfiles", Migration0100],
+  [100, "MessageTextChunks", Migration0100],
+  [101, "RemoveTranscriptMarkers", Migration0101],
+  [102, "ProjectionThreadMessagesTurnBoundary", Migration0102],
+  // Keep this ID literal: scripts/check-migration-lineage.ts parses this list.
+  [103, "ClaudeTokenAccounting", ClaudeTokenAccountingMigration],
+  [104, "RecoverCodexThreadProfiles", Migration0104],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
@@ -334,6 +343,15 @@ export const MIGRATION_LINEAGE_ALIASES: readonly MigrationLineageAlias[] = [
     historicalName: "ProjectPullRequestPins",
     currentId: 69,
     historicalSlotRequiresRerun: false,
+  },
+  {
+    // v0.8.17 through v0.8.41 shipped the Codex-profile repair at migration 100.
+    // The upstream lineage now owns 100-103, so remove the old tracker row and
+    // replay the idempotent repair at its new append-only slot.
+    historicalId: 100,
+    historicalName: "RecoverCodexThreadProfiles",
+    currentId: 104,
+    historicalSlotRequiresRerun: true,
   },
 ];
 

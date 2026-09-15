@@ -342,17 +342,24 @@ function hasStartupProof(logPath: string): boolean {
   }
 }
 
-export function readPackagedStartupDiagnostics(logDirectory: string): string {
+const STARTUP_DIAGNOSTIC_TAIL_LENGTH = 16_384;
+
+export function readPackagedStartupLogTails(logDirectory: string): string {
   return ["desktop-main.log", "server-child.log"]
     .map((name) => {
       try {
-        return `${name}:\n${readFileSync(join(logDirectory, name), "utf8").slice(-16_384)}`;
+        const tail = readFileSync(join(logDirectory, name), "utf8").slice(
+          -STARTUP_DIAGNOSTIC_TAIL_LENGTH,
+        );
+        return `${name}:\n${tail}`;
       } catch {
-        return `${name}: not written`;
+        return `${name}: unavailable`;
       }
     })
     .join("\n");
 }
+
+export const readPackagedStartupDiagnostics = readPackagedStartupLogTails;
 
 export function resolveNativePackagedDesktopPlatform(
   platform: NodeJS.Platform,
@@ -376,8 +383,8 @@ export async function verifyPackagedDesktopStartup(
   mkdirSync(extractionRoot, { recursive: true });
 
   let child: ChildProcess | null = null;
-  let outputTail = "";
   let logDirectory: string | null = null;
+  let outputTail = "";
   try {
     const launch = prepareLaunch(options, extractionRoot);
     const env = createPackagedDesktopSmokeEnvironment(join(temporaryRoot, "state"), options);
@@ -402,11 +409,11 @@ export async function verifyPackagedDesktopStartup(
     child.once("error", (error) => {
       childOutcome.launchError = error;
     });
-    const captureOutput = (chunk: Buffer) => {
-      outputTail = `${outputTail}${chunk.toString("utf8")}`.slice(-16_384);
+    const retainOutputTail = (chunk: Buffer) => {
+      outputTail = (outputTail + chunk.toString("utf8")).slice(-STARTUP_DIAGNOSTIC_TAIL_LENGTH);
     };
-    child.stdout?.on("data", captureOutput);
-    child.stderr?.on("data", captureOutput);
+    child.stdout?.on("data", retainOutputTail);
+    child.stderr?.on("data", retainOutputTail);
 
     const deadline = Date.now() + options.timeoutMs;
     while (Date.now() < deadline) {
@@ -428,8 +435,10 @@ export async function verifyPackagedDesktopStartup(
     }
     throw new Error(`Packaged startup proof timed out after ${options.timeoutMs}ms.`);
   } catch (error) {
+    if (logDirectory) {
+      console.error(readPackagedStartupLogTails(logDirectory));
+    }
     console.error(`Packaged startup process output:\n${outputTail || "(no output)"}`);
-    if (logDirectory) console.error(readPackagedStartupDiagnostics(logDirectory));
     throw error;
   } finally {
     if (child) {
