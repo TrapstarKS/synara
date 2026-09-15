@@ -1748,7 +1748,8 @@ const make = Effect.gen(function* () {
       currentModelSelection: thread.modelSelection,
       requestedModelSelection,
       canAdoptRequestedProvider:
-        thread.latestTurn === null && activeSession === undefined && thread.messages.length <= 1,
+        providerHandoffAuthorized ||
+        (thread.latestTurn === null && activeSession === undefined && thread.messages.length <= 1),
     });
     const requestChangesCodexProfile =
       desiredModelSelection.provider === "codex" &&

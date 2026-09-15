@@ -1848,6 +1848,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             thread_id,
             activity_id,
             turn_id,
+            kind,
+            payload_json,
             ROW_NUMBER() OVER (
               PARTITION BY thread_id
               ORDER BY
@@ -1883,12 +1885,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           FROM cutoff_turn
         )
         SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
+          ranked.activity_id AS "activityId",
+          ranked.thread_id AS "threadId",
           ranked.turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
+          activity.tone,
+          activity.kind,
+          activity.summary,
           COALESCE((
             SELECT CASE WHEN json_type(totals, '$.inputTokens') = 'integer'
               AND json_type(totals, '$.outputTokens') = 'integer'
@@ -1912,13 +1914,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 AND json_extract(event_json, '$.provider') = 'codex'
             )
           ), activity.payload_json) AS "payload",
-          sequence,
-          created_at AS "createdAt"
+          activity.sequence,
+          activity.created_at AS "createdAt"
         FROM ranked
         JOIN projection_thread_activities AS activity USING (thread_id, activity_id)
-        WHERE thread_id = ${threadId}
+        WHERE ranked.thread_id = ${threadId}
           AND (
-            activity_id IN (SELECT activity_id FROM retained_task_activity_ids)
+            ranked.activity_id IN (SELECT activity_id FROM retained_task_activity_ids)
             OR (
               activity_rank <= ${MAX_THREAD_DETAIL_ACTIVITIES}
               -- Drop a split oldest turn instead of extending the query beyond
@@ -1933,10 +1935,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 AND (SELECT has_newer_turn FROM cutoff_turn_state)
               )
             )
-            OR kind IN ('provider.handoff.requested', 'provider.handoff.completed', 'provider.handoff.failed')
+            OR activity.kind IN ('provider.handoff.requested', 'provider.handoff.completed', 'provider.handoff.failed')
             OR (
-              kind IN ('approval.requested', 'user-input.requested')
-              AND json_extract(payload_json, '$.requestId') IS NOT NULL
+              activity.kind IN ('approval.requested', 'user-input.requested')
+              AND json_extract(activity.payload_json, '$.requestId') IS NOT NULL
               AND NOT EXISTS (
                 SELECT 1
                 FROM projection_thread_activities AS later
@@ -1995,10 +1997,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             )
           )
         ORDER BY
-          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
-          sequence ASC,
-          created_at ASC,
-          activity_id ASC
+          CASE WHEN activity.sequence IS NULL THEN 0 ELSE 1 END ASC,
+          activity.sequence ASC,
+          activity.created_at ASC,
+          activity.activity_id ASC
       `,
   });
 

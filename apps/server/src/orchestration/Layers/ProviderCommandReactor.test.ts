@@ -37,7 +37,6 @@ import {
 } from "@synara/shared/providerDeliveryBlock";
 import type { DeepPartial } from "@synara/shared/Struct";
 import {
-  Deferred,
   Duration,
   Deferred,
   Effect,
