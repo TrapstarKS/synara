@@ -245,6 +245,10 @@ export function makeAgentGatewayMcpTransport(input: {
         callerThreadId,
         callerSessionKey: callerSession.sessionKey,
         callerProvider: callerSession.provider,
+        ...(callerThread.value.modelSelection.provider === "codex" &&
+        callerThread.value.modelSelection.profileId
+          ? { callerProfileId: callerThread.value.modelSelection.profileId }
+          : {}),
         callerCapabilities: callerSession.capabilities,
         callerTurnId: callerWriteAuthority?.turnId ?? null,
         assertCallerTurnActive,

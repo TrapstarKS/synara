@@ -54,6 +54,7 @@ export function useChatWorkLog({
     () =>
       deriveWorkLogEntries(threadActivities, activeLatestTurnId ?? undefined, {
         visibleTurnIds: workLogVisibleTurnIds,
+        session: activeThread?.session ?? null,
         activeTurnId: latestTurnLive ? activeLatestTurnId : null,
         activeTurnStartedAt: activeLatestTurnStartedAt,
         latestTurnState: activeLatestTurnState,
@@ -65,6 +66,7 @@ export function useChatWorkLog({
       activeLatestTurnStartedAt,
       activeLatestTurnState,
       latestTurnLive,
+      activeThread?.session,
       threadActivities,
       workLogVisibleTurnIds,
     ],
@@ -195,6 +197,7 @@ export function useChatWorkLog({
         deriveParentWorkLogEntries: () =>
           deriveWorkLogEntries(stripSourceActivities, stripSourceLatestTurnId ?? undefined, {
             visibleTurnIds: stripVisibleTurnIds,
+            session: stripParentThread?.session ?? null,
             activeTurnId: stripLiveTurnId,
             activeTurnStartedAt: stripSourceLatestTurnStartedAt,
             latestTurnState: stripSourceLatestTurnState,

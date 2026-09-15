@@ -81,6 +81,22 @@ describe("makeAgentGatewayUsageTools", () => {
     expect(resultJson(result).usage).toEqual(usage);
   });
 
+  it("forwards the caller's selected Codex profile instead of guessing", async () => {
+    let requestedProfile: string | undefined;
+    const [tool] = makeAgentGatewayUsageTools({
+      loadProviderUsage: (_provider, profileId) => {
+        requestedProfile = profileId;
+        return Effect.succeed([usage]);
+      },
+    });
+
+    await Effect.runPromise(
+      tool!.handler({}, { ...context, callerProfileId: "codex-profile-b" }),
+    );
+
+    expect(requestedProfile).toBe("codex-profile-b");
+  });
+
   it("lists enabled provider results without a caller-selected provider", async () => {
     let requestedProvider: string | undefined = "not-called";
     const tools = makeAgentGatewayUsageTools({

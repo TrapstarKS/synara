@@ -73,6 +73,7 @@ export interface ThreadReadToolsInput {
   readonly workspacePaths: SpaceAssignmentWorkspacePaths;
   readonly loadProviderUsage: (
     provider: ProviderKind,
+    profileId?: string,
   ) => Effect.Effect<ReadonlyArray<ServerAgentProviderUsage>, unknown, never>;
 }
 
@@ -109,7 +110,12 @@ export function makeThreadReadTools(input: ThreadReadToolsInput): ReadonlyArray<
         const turnId = caller.latestTurn?.state === "running" ? caller.latestTurn.turnId : null;
         const usageRead = context.callerCapabilities.has("usage:read");
         const usage = usageRead
-          ? yield* loadProviderUsage(context.callerProvider).pipe(
+          ? yield* loadProviderUsage(
+              context.callerProvider,
+              caller.modelSelection.provider === "codex"
+                ? caller.modelSelection.profileId
+                : undefined,
+            ).pipe(
               Effect.match({
                 onFailure: () =>
                   summarizeProviderUsageForAgent({

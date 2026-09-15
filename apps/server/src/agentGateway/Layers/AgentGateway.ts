@@ -55,7 +55,7 @@ import {
   summarizeProviderUsageListForAgent,
 } from "../../providerUsage/agent.ts";
 import { readProviderUsageForAgents } from "../../providerUsage/agentReader.ts";
-import { collectProviderUsageSnapshots } from "../../providerUsage/index.ts";
+import { collectProviderUsageSnapshots, listProviderUsage } from "../../providerUsage/index.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION,
@@ -173,7 +173,7 @@ export const makeAgentGateway = Effect.gen(function* () {
       }),
     );
   });
-  const loadProviderUsage = (provider?: ProviderKind) =>
+  const loadProviderUsage = (provider?: ProviderKind, profileId?: string) =>
     Effect.gen(function* () {
       const settings = yield* serverSettings.getSettings.pipe(Effect.timeout("3 seconds"));
       const enabledProviders = new Set(
@@ -183,18 +183,22 @@ export const makeAgentGateway = Effect.gen(function* () {
         providers: provider ? [provider] : [...enabledProviders],
         enabledProviders,
         loadSnapshot: (kind) =>
-          Effect.promise(() =>
-            collectProviderUsageSnapshots(
-              {
-                homeDir: serverConfig.homeDir,
-                env: process.env,
-                platform: process.platform,
-                nowMs: Date.now(),
-                claudeBinaryPath: settings.providers.claudeAgent.binaryPath,
-              },
-              { providers: [kind] },
-            ),
-          ).pipe(Effect.map((snapshots) => snapshots[0] ?? null)),
+          kind === "codex" && profileId
+            ? listProviderUsage({ provider: "codex", profileId }).pipe(
+                Effect.map((snapshots) => snapshots[0] ?? null),
+              )
+            : Effect.promise(() =>
+                collectProviderUsageSnapshots(
+                  {
+                    homeDir: serverConfig.homeDir,
+                    env: process.env,
+                    platform: process.platform,
+                    nowMs: Date.now(),
+                    claudeBinaryPath: settings.providers.claudeAgent.binaryPath,
+                  },
+                  { providers: [kind] },
+                ),
+              ).pipe(Effect.map((snapshots) => snapshots[0] ?? null)),
       });
     });
 
