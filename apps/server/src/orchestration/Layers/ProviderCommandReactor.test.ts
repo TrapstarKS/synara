@@ -1259,7 +1259,8 @@ describe("ProviderCommandReactor", () => {
     await waitFor(async () => {
       const current = await readHarnessThread(harness);
       return (
-        current?.modelSelection.profileId === targetProfileId &&
+        current?.modelSelection.provider === "codex" &&
+        current.modelSelection.profileId === targetProfileId &&
         current.activities.some((activity) => activity.kind === "provider.handoff.completed")
       );
     });
