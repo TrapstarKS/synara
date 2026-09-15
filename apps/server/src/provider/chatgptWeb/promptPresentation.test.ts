@@ -23,6 +23,7 @@ declare const document: {
   readonly body: { innerHTML: string };
   readonly querySelector: (selector: string) => unknown;
 };
+declare const window: Record<string, unknown>;
 
 beforeEach(() => {
   delete (window as Record<string, unknown>)["__synaraPromptPresentationV1"];

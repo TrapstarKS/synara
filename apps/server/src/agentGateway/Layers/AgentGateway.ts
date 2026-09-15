@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   CommandId,
+  CodexProfileId,
   SYNARA_GATEWAY_MAX_THREADS_PER_OPERATION,
   MessageId,
   THREAD_GOAL_MAX_CHARS,
@@ -51,10 +52,6 @@ import { AgentGatewayOperationRepository } from "../Services/AgentGatewayOperati
 import { ProviderDiscoveryService } from "../../provider/Services/ProviderDiscoveryService.ts";
 import { ProviderHealth } from "../../provider/Services/ProviderHealth.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
-import {
-  summarizeProviderUsageForAgent,
-  summarizeProviderUsageListForAgent,
-} from "../../providerUsage/agent.ts";
 import { readProviderUsageForAgents } from "../../providerUsage/agentReader.ts";
 import { collectProviderUsageSnapshots, listProviderUsage } from "../../providerUsage/index.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -187,7 +184,12 @@ export const makeAgentGateway = Effect.gen(function* () {
         enabledProviders,
         loadSnapshot: (kind) =>
           kind === "codex" && profileId
-            ? listProviderUsage({ provider: "codex", profileId }).pipe(
+            ? listProviderUsage({
+                provider: "codex",
+                profileId: CodexProfileId.makeUnsafe(profileId),
+              }).pipe(
+                Effect.provideService(ServerConfig, serverConfig),
+                Effect.provideService(ServerSettingsService, serverSettings),
                 Effect.map((snapshots) => snapshots[0] ?? null),
               )
             : Effect.promise(() =>

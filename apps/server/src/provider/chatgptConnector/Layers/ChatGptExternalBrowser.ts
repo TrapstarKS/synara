@@ -389,10 +389,11 @@ export const ChatGptExternalBrowserLive = Layer.effect(
   Effect.gen(function* () {
     const config = yield* ServerConfig;
     const credentials = yield* AgentGatewayCredentials;
+    const restoreToken = process.env.SYNARA_CHATGPT_DEBUG_PAIRING_TOKEN;
     return makeChatGptExternalBrowser({
       available: isLoopbackHost(config.host) && config.publicUrl === undefined,
       origin: () => new URL(credentials.mcpEndpointUrl).origin,
-      restoreToken: process.env.SYNARA_CHATGPT_DEBUG_PAIRING_TOKEN,
+      ...(restoreToken ? { restoreToken } : {}),
     });
   }),
 );
