@@ -5526,7 +5526,7 @@ export default function ChatView({
           handoffDisabled={handoffDisabled}
           handoffActionTargetProviders={handoffTargetProviders}
           handoffActionTargetCodexProfiles={handoffTargetCodexProfiles}
-          ...(activeThread.modelSelection.provider === "codex" &&
+          {...(activeThread.modelSelection.provider === "codex" &&
           activeThread.modelSelection.profileId !== undefined
             ? { activeCodexProfileId: activeThread.modelSelection.profileId }
             : {})}
