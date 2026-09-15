@@ -1,5 +1,5 @@
 import http from "node:http";
-import { readFileSync, openSync, closeSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { readFileSync, unlinkSync, chmodSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -17,6 +17,7 @@ import { createPush } from "./lib/push.mjs";
 import { watchSynara } from "./lib/synara-events.mjs";
 import { createUpstreamResolver } from "./lib/desktop-upstream.mjs";
 import { adminAddress } from "./lib/admin.mjs";
+import { acquireProcessLock } from "./lib/process-lock.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicUrl = new URL(process.env.SYNARA_MOBILE_ORIGIN ?? "https://localhost:8443");
@@ -38,29 +39,8 @@ if (
 const directory = resolve(process.env.SYNARA_MOBILE_HOME ?? join(homedir(), ".synara-mobile"));
 const store = openStore(directory);
 const lock = join(directory, "server.lock");
-try {
-  const fd = openSync(lock, "wx", 0o600);
-  writeFileSync(fd, String(process.pid));
-  closeSync(fd);
-} catch (error) {
-  if (error.code !== "EEXIST") throw error;
-  const pid = Number(readFileSync(lock, "utf8"));
-  try {
-    process.kill(pid, 0);
-    throw new Error(`Mobile service already running (PID ${pid})`);
-  } catch (probe) {
-    if (probe.code !== "ESRCH") throw probe;
-  }
-  unlinkSync(lock);
-  const fd = openSync(lock, "wx", 0o600);
-  writeFileSync(fd, String(process.pid));
-  closeSync(fd);
-}
-process.on("exit", () => {
-  try {
-    unlinkSync(lock);
-  } catch {}
-});
+const processLock = acquireProcessLock(lock, { entryPath: fileURLToPath(import.meta.url) });
+process.on("exit", processLock.release);
 const { state, save } = store;
 if (process.platform === "win32") state.adminToken ??= secret();
 function newPairing() {

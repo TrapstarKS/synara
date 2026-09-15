@@ -1207,8 +1207,9 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
             modelSelection: { provider: "opencode", model: "openai/gpt-5" },
           })
           .pipe(Effect.forkChild);
-        yield* Effect.sleep(20);
-        expect(runtime.promptCalls).toHaveLength(2);
+        yield* Effect.promise(() =>
+          vi.waitFor(() => expect(runtime.promptCalls).toHaveLength(2), { timeout: 1_000 }),
+        );
         expect(
           runtime.mcpAddCalls.filter(
             (call) => (call.config as { enabled?: boolean } | undefined)?.enabled !== false,
