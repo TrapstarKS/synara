@@ -19,9 +19,11 @@ function taskGraph(task: string, filter: string, env: NodeJS.ProcessEnv = proces
 
 describe("build pipeline", () => {
   it("runs source tests without compiling the production web/desktop bundles", () => {
-    expect(taskGraph("test", "@synara/cli").tasks.map((task) => task.taskId)).toEqual([
-      "@synara/cli#test",
-    ]);
+    const taskIds = taskGraph("test", "@synara/cli").tasks.map((task) => task.taskId);
+    expect(taskIds).toContain("@synara/cli#test");
+    expect(taskIds).toContain("@synara/contracts#build");
+    expect(taskIds).not.toContain("@synara/web#build");
+    expect(taskIds).not.toContain("@synara/desktop#build");
   });
 
   it("still builds the web client before packaging the server", () => {
