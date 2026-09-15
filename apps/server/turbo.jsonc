@@ -2,6 +2,14 @@
   "$schema": "https://turbo.build/schema.json",
   "extends": ["//"],
   "tasks": {
+    "build": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/scripts/lib/brand-assets.ts",
+        "$TURBO_ROOT$/scripts/lib/resolve-catalog.ts",
+        "$TURBO_ROOT$/assets/dev/**",
+      ],
+    },
     "start": {
       "dependsOn": ["build"],
       "cache": false,

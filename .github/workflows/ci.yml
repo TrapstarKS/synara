@@ -1,5 +1,5 @@
 # Lane rule: static-fast is fast checks with no special runtime, static-typecheck is tsc,
-# unit is bun test per package, browser owns Playwright (stable only, sharded) and is the long pole,
+# unit is Vitest per package, browser owns Playwright (stable only, sharded) and is the long pole,
 # build owns Electron and desktop output. Geometry quarantine lives in ci-nightly.yml.
 # Gate (quality) aggregates only: add no run steps there. A new fast check with no runtime goes to static-fast.
 # Setup-workspace runs once per lane, not once for all: never put checks in the shared action.
@@ -103,10 +103,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-  # Phase 2f: one shard per workspace package via --filter. Going through turbo
-  # keeps the ^build contract (test dependsOn ^build) working per shard. The
-  # server package script keeps its serial flags (--maxWorkers=1
-  # --no-file-parallelism) inside its own shard.
+  # Unit tests import source directly: no production build is needed. Split the
+  # slow server suite across runners, keeping its process tests serial within
+  # each shard (--maxWorkers=1 --no-file-parallelism).
   unit:
     name: Unit Tests (${{ matrix.pkg }})
     runs-on: ubuntu-24.04
@@ -130,8 +129,18 @@ jobs:
           - pkg: web
             filter: "@synara/web"
           # Server lane tests the CLI package (package name @synara/cli).
-          - pkg: server
+          - pkg: server 1/4
             filter: "@synara/cli"
+            shard: 1/4
+          - pkg: server 2/4
+            filter: "@synara/cli"
+            shard: 2/4
+          - pkg: server 3/4
+            filter: "@synara/cli"
+            shard: 3/4
+          - pkg: server 4/4
+            filter: "@synara/cli"
+            shard: 4/4
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -140,11 +149,11 @@ jobs:
         uses: ./.github/actions/setup-workspace
 
       - name: Verify Linux terminal PTY native dependency
-        if: matrix.pkg == 'server'
+        if: matrix.filter == '@synara/cli'
         run: node scripts/node-pty-smoke.mjs
 
       - name: Test (${{ matrix.pkg }})
-        run: bunx turbo run test --filter=${{ matrix.filter }}
+        run: bunx turbo run test --filter=${{ matrix.filter }} -- --shard=${{ matrix.shard || '1/1' }}
 
   # Phase 2e: stable browser suite split 3 ways. fileParallelism:false stays in
   # vitest.browser.stable.config.ts (untouched); --shard splits test FILES
@@ -204,8 +213,6 @@ jobs:
 
       - name: Setup workspace
         uses: ./.github/actions/setup-workspace
-        with:
-          electron: "true"
 
       - name: Build desktop pipeline
         run: bun run build:desktop
@@ -292,20 +299,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: package.json
-
-      - name: Install dependencies
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-        run: bun install --frozen-lockfile
+      - name: Setup workspace
+        uses: ./.github/actions/setup-workspace
 
       - name: Verify Windows terminal PTY native dependency under Bun
         run: bun scripts/node-pty-smoke.mjs

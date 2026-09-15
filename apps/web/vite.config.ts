@@ -13,6 +13,7 @@ import babel from "@rolldown/plugin-babel";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import { defineConfig, type Plugin } from "vite";
 import pkg from "./package.json" with { type: "json" };
+import { createReactCompilerCache } from "./scripts/reactCompilerCache";
 
 const port = Number(process.env.PORT ?? 5733);
 const sourcemapEnv = process.env.SYNARA_WEB_SOURCEMAP?.trim().toLowerCase();
@@ -153,10 +154,9 @@ function precompressPlugin(): Plugin {
             await Promise.all([removeStale(`${file}.gz`), removeStale(`${file}.br`)]);
             return;
           }
-          // Max-quality brotli on thousands of small files dominates plugin
-          // wall-clock; below 16 KiB quality 9 is byte-for-byte competitive.
-          const brotliQuality =
-            source.byteLength < 16 * 1024 ? 9 : zlib.constants.BROTLI_MAX_QUALITY;
+          // Level 5 keeps precompressed responses without spending seconds on
+          // maximum-quality compression for every build (including test builds).
+          const brotliQuality = 5;
           const [gzipped, brotlied] = await Promise.all([
             gzip(source, { level: zlib.constants.Z_BEST_COMPRESSION }),
             brotliCompress(source, {
@@ -182,6 +182,42 @@ function precompressPlugin(): Plugin {
   };
 }
 
+async function cachedReactCompilerPlugin(): Promise<Plugin> {
+  const plugin = (await babel({
+    // Workspace packages are outside the app's CWD, so select their parsers
+    // explicitly instead of relying on Babel's relative-path defaults.
+    parserOpts: { plugins: ["typescript", "jsx"] },
+    presets: [reactCompilerPreset()],
+  })) as Plugin;
+  const transform = plugin.transform;
+  // Keep working if a future Babel plugin changes its hook representation.
+  if (!transform || typeof transform === "function") return plugin;
+
+  const cached = createReactCompilerCache("build", [new URL(import.meta.url)]);
+  const originalTransform = transform.handler;
+  // Mutate the existing hook: Babel's config hooks update its filter in place.
+  // Its transform is file-local and emits no files or watch dependencies.
+  transform.handler = function (code, id, options) {
+    const environment = this.environment;
+    const compile = () => originalTransform.call(this, code, id, options);
+    if (
+      environment?.config.command !== "build" ||
+      this.meta.watchMode ||
+      environment.config.consumer !== "client" ||
+      id.startsWith("\0")
+    ) {
+      return compile();
+    }
+    return cached(
+      id,
+      code,
+      [environment.config.mode, environment.name, environment.config.build.sourcemap, options],
+      compile,
+    );
+  };
+  return plugin;
+}
+
 export default defineConfig({
   plugins: [
     tanstackRouter({
@@ -189,14 +225,7 @@ export default defineConfig({
       autoCodeSplitting: true,
     }),
     react(),
-    babel({
-      // We need to be explicit about the parser options after moving to @vitejs/plugin-react v6.0.0
-      // This is because the babel plugin only automatically parses typescript and jsx based on relative paths (e.g. "**/*.ts")
-      // whereas the previous version of the plugin parsed all files with a .ts extension.
-      // This is causing our packages/ directory to fail to parse, as they are not relative to the CWD.
-      parserOpts: { plugins: ["typescript", "jsx"] },
-      presets: [reactCompilerPreset()],
-    }),
+    cachedReactCompilerPlugin(),
     tailwindcss(),
     centralIconPrunePlugin(),
     precompressPlugin(),
@@ -232,6 +261,9 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: buildSourcemap,
+    // Sidecars already compress the outputs; a second gzip pass just for the
+    // console's size report adds work without changing any shipped bytes.
+    reportCompressedSize: false,
     // The largest chunks are intentionally lazy-loaded editor grammars,
     // terminal runtime code, and the chat route—not initial-load bundles.
     chunkSizeWarningLimit: 850,

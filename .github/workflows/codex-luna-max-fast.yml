@@ -75,6 +75,9 @@ jobs:
       contents: write
     env:
       CODEX_VERSION: ${{ needs.resolve.outputs.version }}
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - uses: actions/checkout@v6
 
@@ -92,14 +95,38 @@ jobs:
             "$GITHUB_WORKSPACE/tools/codex-luna-max-fast/luna-max-fast.patch"
           git -C "$RUNNER_TEMP/codex" diff --check
 
+      - name: Select the pinned Codex toolchain
+        working-directory: ${{ runner.temp }}/codex/codex-rs
+        shell: bash
+        run: |
+          # Activate the checkout's rust-toolchain before rust-cache fingerprints rustc.
+          toolchain="$(rustup show active-toolchain | cut -d ' ' -f 1)"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+      # A fresh clone changes file timestamps. sccache can still reuse identical
+      # library compilations by content when Cargo considers those files dirty.
+      - name: Setup Rust compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache Rust dependencies and compiled workspace
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ runner.temp }}/codex/codex-rs
+          # rust-cache adds compiler/host/lockfile fingerprints; a stable prefix
+          # lets new Codex versions reuse compatible dependencies. Cargo still
+          # checks the patched sources before reusing any workspace artifacts.
+          key: codex-luna-max-fast
+          cache-workspace-crates: true
+          cache-on-failure: true
+
       - name: Test and build patched Codex
         working-directory: ${{ runner.temp }}/codex/codex-rs
         env:
           RUST_MIN_STACK: "8388608"
         run: |
-          cargo test --release -p codex-core spawn_agent_service_tier_forces_fast_for_luna_at_any_effort
-          cargo test --release -p codex-core luna_subagent_uses_priority_service_tier
-          cargo build -p codex-cli --release
+          cargo test --release --locked -p codex-core --lib spawn_agent_service_tier_forces_fast_for_luna_at_any_effort
+          cargo test --release --locked -p codex-core --test all luna_subagent_uses_priority_service_tier
+          cargo build --release --locked -p codex-cli --bin codex
 
       - name: Download matching official runtime files
         working-directory: ${{ runner.temp }}

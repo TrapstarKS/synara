@@ -6,44 +6,13 @@
 //          for the whole component, which renders every chat message.
 // Layer: Web build-integrity test
 
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { transformSync } from "@babel/core";
 import { describe, expect, it } from "vitest";
-
-interface CompilerEvent {
-  kind: string;
-  fnName?: string | null;
-  detail?: { reason?: string; description?: string };
-}
-
-function compileEvents(filePath: string): CompilerEvent[] {
-  const events: CompilerEvent[] = [];
-  transformSync(readFileSync(filePath, "utf8"), {
-    filename: filePath,
-    configFile: false,
-    babelrc: false,
-    parserOpts: { plugins: ["typescript", "jsx"] },
-    plugins: [
-      [
-        "babel-plugin-react-compiler",
-        {
-          panicThreshold: "none",
-          logger: {
-            logEvent: (_fn: unknown, event: CompilerEvent) => {
-              events.push(event);
-            },
-          },
-        },
-      ],
-    ],
-  });
-  return events;
-}
+import { compileEvents } from "../../scripts/reactCompilerCoverage";
 
 describe("ChatMarkdown React Compiler coverage", () => {
-  it("compiles every function in ChatMarkdown.tsx without bailouts", () => {
-    const events = compileEvents(join(import.meta.dirname, "ChatMarkdown.tsx"));
+  it("compiles every function in ChatMarkdown.tsx without bailouts", async () => {
+    const events = await compileEvents(join(import.meta.dirname, "ChatMarkdown.tsx"));
     const errors = events
       .filter((event) => event.kind === "CompileError")
       .map(

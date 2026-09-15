@@ -42,6 +42,7 @@
     "typecheck:legacy": "turbo run typecheck:legacy",
     "lint": "oxlint --report-unused-disable-directives",
     "test": "turbo run test",
+    "test:changed": "turbo run test -- --changed",
     "test:web:focused": "bun run --cwd apps/web test",
     "brand:check": "node scripts/check-brand-identity.ts",
     "windows-runtime:check": "node scripts/check-windows-runtime-boundary.ts",

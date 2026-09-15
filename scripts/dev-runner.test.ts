@@ -18,8 +18,14 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
   it("allows every generated runtime setting through Turbo", () => {
     const turboConfig = JSON.parse(
       readFileSync(new URL("../turbo.json", import.meta.url), "utf8"),
-    ) as { globalEnv?: ReadonlyArray<string> };
-    const globalEnv = new Set(turboConfig.globalEnv ?? []);
+    ) as {
+      globalEnv?: ReadonlyArray<string>;
+      globalPassThroughEnv?: ReadonlyArray<string>;
+    };
+    const allowedEnv = new Set([
+      ...(turboConfig.globalEnv ?? []),
+      ...(turboConfig.globalPassThroughEnv ?? []),
+    ]);
 
     for (const name of [
       "SYNARA_MODE",
@@ -35,7 +41,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       "VITE_WS_URL",
       "VITE_DEV_SERVER_URL",
     ]) {
-      assert.ok(globalEnv.has(name), `${name} must be declared in turbo.json globalEnv`);
+      assert.ok(allowedEnv.has(name), `${name} must be allowed through turbo.json`);
     }
   });
 

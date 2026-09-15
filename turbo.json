@@ -1,9 +1,17 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["tsconfig.base.json", "patches/**"],
   "globalEnv": [
-    "PORT",
     "VITE_WS_URL",
     "VITE_DEV_SERVER_URL",
+    "SYNARA_WEB_SOURCEMAP",
+    "SYNARA_SERVER_SOURCEMAP",
+    "SYNARA_DESKTOP_SOURCEMAP",
+    "AZURE_TRUSTED_SIGNING_SUBJECT_DN"
+  ],
+  "globalPassThroughEnv": [
+    "SYNARA_COMPILER_CACHE",
+    "PORT",
     "ELECTRON_RENDERER_PORT",
     "SYNARA_HOME",
     "SYNARA_DESKTOP_WS_URL",
@@ -12,9 +20,6 @@
     "SYNARA_BROWSER_PERF",
     "SYNARA_PROVIDER_RUNTIME_IDLE_STOP_MS",
     "SYNARA_GROK_ACP_DEBUG",
-    "SYNARA_WEB_SOURCEMAP",
-    "SYNARA_SERVER_SOURCEMAP",
-    "SYNARA_DESKTOP_SOURCEMAP",
     "SYNARA_MODE",
     "SYNARA_PORT",
     "SYNARA_NO_BROWSER",
@@ -50,7 +55,6 @@
       "cache": false
     },
     "test": {
-      "dependsOn": ["^build"],
       "cache": false,
       "outputs": []
     }

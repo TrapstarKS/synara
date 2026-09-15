@@ -22,42 +22,9 @@
 // Layer: Web build-integrity test
 // Depends on: babel-plugin-react-compiler (same plugin the Vite build uses).
 
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { transformSync } from "@babel/core";
 import { describe, expect, it } from "vitest";
-
-interface CompilerEvent {
-  readonly kind: string;
-  readonly fnName?: string | null | undefined;
-  readonly detail?: { readonly reason?: string; readonly description?: string } | undefined;
-}
-
-// Mirrors ChatMarkdown.compiler.test.ts. Both harnesses should move to a shared
-// helper module once one can be added alongside these tests.
-function compileEvents(filePath: string): CompilerEvent[] {
-  const events: CompilerEvent[] = [];
-  transformSync(readFileSync(filePath, "utf8"), {
-    filename: filePath,
-    configFile: false,
-    babelrc: false,
-    parserOpts: { plugins: ["typescript", "jsx"] },
-    plugins: [
-      [
-        "babel-plugin-react-compiler",
-        {
-          panicThreshold: "none",
-          logger: {
-            logEvent: (_fn: unknown, event: CompilerEvent) => {
-              events.push(event);
-            },
-          },
-        },
-      ],
-    ],
-  });
-  return events;
-}
+import { compileEvents } from "../../scripts/reactCompilerCoverage";
 
 interface HotPathModule {
   readonly relativePath: string;
@@ -109,8 +76,8 @@ describe("chat hot-path React Compiler coverage", () => {
   for (const module of HOT_PATH_MODULES) {
     it(
       `compiles ${module.relativePath} without unexpected bailouts`,
-      () => {
-        const events = compileEvents(join(import.meta.dirname, module.relativePath));
+      async () => {
+        const events = await compileEvents(join(import.meta.dirname, module.relativePath));
         const bailoutReasons = events
           .filter((event) => event.kind === "CompileError")
           .map((event) => event.detail?.reason ?? event.detail?.description ?? "unknown")

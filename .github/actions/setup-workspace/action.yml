@@ -23,9 +23,9 @@ runs:
       uses: actions/cache@v5
       with:
         path: ~/.bun/install/cache
-        key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
         restore-keys: |
-          ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}-
+          ${{ runner.os }}-${{ runner.arch }}-bun-
     # Phase 1c/3: node_modules survives across jobs keyed on the lockfile.
     # bun install --frozen-lockfile still runs below (correctness), but a warm
     # cache turns resolve + download into link. The key is scoped by the
@@ -40,9 +40,7 @@ runs:
           apps/*/node_modules
           packages/*/node_modules
           scripts/node_modules
-        key: ${{ runner.os }}-bun-node-modules-electron-${{ inputs.electron }}-${{ hashFiles('bun.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-bun-node-modules-electron-${{ inputs.electron }}-
+        key: ${{ runner.os }}-${{ runner.arch }}-bun-node-modules-electron-${{ inputs.electron }}-${{ hashFiles('package.json', 'bun.lock', 'patches/**') }}
 
     # Phase 3h: persist Turbo's local cache store so cacheable build outputs
     # survive across jobs. Turbo verifies its own fingerprints on hit, so a
@@ -56,18 +54,19 @@ runs:
         path: |
           .turbo
           node_modules/.cache/turbo
-        key: ${{ runner.os }}-turbo-${{ hashFiles('bun.lock') }}-${{ hashFiles('.github/workflows/ci.yml') }}-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.sha }}
+          apps/web/node_modules/.cache/react-compiler
+        key: ${{ runner.os }}-${{ runner.arch }}-turbo-${{ hashFiles('bun.lock') }}-${{ hashFiles('.github/workflows/ci.yml') }}-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.sha }}
         restore-keys: |
-          ${{ runner.os }}-turbo-${{ hashFiles('bun.lock') }}-${{ hashFiles('.github/workflows/ci.yml') }}-${{ github.job }}-${{ strategy.job-index || 0 }}-
-          ${{ runner.os }}-turbo-${{ hashFiles('bun.lock') }}-
-          ${{ runner.os }}-turbo-
+          ${{ runner.os }}-${{ runner.arch }}-turbo-${{ hashFiles('bun.lock') }}-${{ hashFiles('.github/workflows/ci.yml') }}-${{ github.job }}-${{ strategy.job-index || 0 }}-
+          ${{ runner.os }}-${{ runner.arch }}-turbo-${{ hashFiles('bun.lock') }}-
+          ${{ runner.os }}-${{ runner.arch }}-turbo-
 
     - name: Cache Electron runtime
       if: ${{ inputs.electron == 'true' }}
       uses: actions/cache@v5
       with:
         path: ~/.cache/electron
-        key: ${{ runner.os }}-electron-${{ hashFiles('bun.lock') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-electron-${{ hashFiles('bun.lock') }}
 
     - name: Install dependencies
       shell: bash
