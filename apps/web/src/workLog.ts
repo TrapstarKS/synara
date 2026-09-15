@@ -2701,6 +2701,16 @@ export function deriveTimelineEntries(
     messageOrder.set(message.id, order);
     if (message.turnId && !turnOrder.has(message.turnId)) turnOrder.set(message.turnId, order);
   }
+  const sequencedMessageOrders = messageRows
+    .flatMap((entry) => {
+      if (entry.kind !== "message" && entry.kind !== "message-segment") {
+        return [];
+      }
+      const sequence = entry.sequence;
+      const order = messageOrder.get(entry.message.id);
+      return sequence !== undefined && order !== undefined ? [{ sequence, order }] : [];
+    })
+    .toSorted((left, right) => left.sequence - right.sequence);
   // Unattributed legacy activity keeps its chronological position.
   const chronologicalOrder = (createdAt: string): number => {
     let low = 0;
@@ -2729,10 +2739,20 @@ export function deriveTimelineEntries(
     const turnBlock = turnId === undefined ? undefined : turnOrder.get(turnId);
     const chronological = chronologicalOrder(entry.createdAt);
     if (entry.kind === "work" && entry.sequence !== undefined && turnBlock !== undefined) {
-      // A sequenced activity belongs to its causal turn even when the provider
-      // reports a clock value earlier than the optimistic user message.
-      orderByEntry.set(entry, turnBlock);
-      continue;
+      // Prefer the last sequenced message before this activity. This keeps a
+      // clock-skewed tool after its user message while preserving the older
+      // turn-block fallback for background-tool replays whose effective turnId
+      // changes during activity coalescing.
+      for (let index = sequencedMessageOrders.length - 1; index >= 0; index -= 1) {
+        const messageOrderEntry = sequencedMessageOrders[index]!;
+        if (messageOrderEntry.sequence <= entry.sequence) {
+          orderByEntry.set(entry, messageOrderEntry.order);
+          break;
+        }
+      }
+      if (orderByEntry.has(entry)) {
+        continue;
+      }
     }
     orderByEntry.set(
       entry,
