@@ -2390,11 +2390,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' is currently assigned to '${thread.modelSelection.provider}', not expected source '${command.expectedSourceProvider}'.`,
         });
       }
+      const currentCodexProfileId =
+        thread.modelSelection.provider === "codex" ? thread.modelSelection.profileId : undefined;
+      const targetCodexProfileId =
+        command.targetModelSelection.provider === "codex"
+          ? command.targetModelSelection.profileId
+          : undefined;
       const isCodexProfileHandoff =
         thread.modelSelection.provider === "codex" &&
         command.expectedSourceProvider === "codex" &&
         command.targetModelSelection.provider === "codex" &&
-        thread.modelSelection.profileId !== command.targetModelSelection.profileId;
+        currentCodexProfileId !== targetCodexProfileId;
       if (
         command.targetModelSelection.provider === command.expectedSourceProvider &&
         !isCodexProfileHandoff

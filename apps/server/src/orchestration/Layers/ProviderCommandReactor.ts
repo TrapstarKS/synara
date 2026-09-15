@@ -1697,10 +1697,16 @@ const make = Effect.gen(function* () {
       ? thread.session.providerName
       : undefined;
     const requestedModelSelection = options?.modelSelection;
+    const requestedCodexProfileId =
+      requestedModelSelection?.provider === "codex"
+        ? requestedModelSelection.profileId
+        : undefined;
+    const currentCodexProfileId =
+      thread.modelSelection.provider === "codex" ? thread.modelSelection.profileId : undefined;
     const requestedChangesCodexProfile =
       requestedModelSelection?.provider === "codex" &&
       thread.modelSelection.provider === "codex" &&
-      requestedModelSelection.profileId !== thread.modelSelection.profileId;
+      requestedCodexProfileId !== currentCodexProfileId;
     const resolveActiveSession = (threadId: ThreadId) =>
       providerService
         .listSessions()
@@ -1756,10 +1762,12 @@ const make = Effect.gen(function* () {
         providerHandoffAuthorized ||
         (thread.latestTurn === null && activeSession === undefined && thread.messages.length <= 1),
     });
+    const desiredCodexProfileId =
+      desiredModelSelection.provider === "codex" ? desiredModelSelection.profileId : undefined;
     const requestChangesCodexProfile =
       desiredModelSelection.provider === "codex" &&
       thread.modelSelection.provider === "codex" &&
-      desiredModelSelection.profileId !== thread.modelSelection.profileId;
+      desiredCodexProfileId !== currentCodexProfileId;
     const settings = yield* serverSettings.getSettings;
     if (!settings.providers[preferredProvider].enabled) {
       return yield* new ProviderAdapterValidationError({
@@ -4972,11 +4980,18 @@ const make = Effect.gen(function* () {
 
           const sourceProvider = event.payload.sourceModelSelection.provider;
           const targetProvider = event.payload.targetModelSelection.provider;
+          const sourceCodexProfileId =
+            event.payload.sourceModelSelection.provider === "codex"
+              ? event.payload.sourceModelSelection.profileId
+              : undefined;
+          const targetCodexProfileId =
+            event.payload.targetModelSelection.provider === "codex"
+              ? event.payload.targetModelSelection.profileId
+              : undefined;
           const isCodexProfileHandoff =
             sourceProvider === "codex" &&
             targetProvider === "codex" &&
-            event.payload.sourceModelSelection.profileId !==
-              event.payload.targetModelSelection.profileId;
+            sourceCodexProfileId !== targetCodexProfileId;
           if (
             thread.modelSelection.provider !== sourceProvider &&
             thread.modelSelection.provider !== targetProvider
