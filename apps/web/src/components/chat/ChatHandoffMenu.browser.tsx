@@ -1,5 +1,6 @@
 import "../../index.css";
 
+import { CodexProfileId } from "@synara/contracts";
 import { page, userEvent } from "vitest/browser";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -37,13 +38,14 @@ async function renderMenu(enabled: boolean) {
 
 describe("provider handoff menu", () => {
   it("offers configured Codex profiles as same-provider targets", async () => {
+    const profileId = CodexProfileId.makeUnsafe("8fd3e58d-f8ee-4cd4-a20a-7a30709c128c");
     const onCreateHandoff = vi.fn();
     await render(
       <TooltipProvider>
         <ChatHandoffMenu
           {...defaults}
           handoffActionTargetCodexProfiles={[
-            { id: "8fd3e58d-f8ee-4cd4-a20a-7a30709c128c", name: "Personal Codex" },
+            { id: profileId, name: "Personal Codex" },
           ]}
           continuousHandoffEnabled
           onCreateHandoff={onCreateHandoff}
@@ -58,7 +60,7 @@ describe("provider handoff menu", () => {
     expect(onCreateHandoff).toHaveBeenCalledWith(
       "codex",
       "continue",
-      "8fd3e58d-f8ee-4cd4-a20a-7a30709c128c",
+      profileId,
     );
   });
 

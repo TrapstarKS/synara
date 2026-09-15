@@ -5526,11 +5526,10 @@ export default function ChatView({
           handoffDisabled={handoffDisabled}
           handoffActionTargetProviders={handoffTargetProviders}
           handoffActionTargetCodexProfiles={handoffTargetCodexProfiles}
-          activeCodexProfileId={
-            activeThread.modelSelection.provider === "codex"
-              ? activeThread.modelSelection.profileId
-              : undefined
-          }
+          ...(activeThread.modelSelection.provider === "codex" &&
+          activeThread.modelSelection.profileId !== undefined
+            ? { activeCodexProfileId: activeThread.modelSelection.profileId }
+            : {})}
           handoffBadgeSourceProvider={handoffBadgeSourceProvider}
           handoffBadgeTargetProvider={handoffBadgeTargetProvider}
           providerHandoffTrail={providerHandoffTrail}
