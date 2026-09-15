@@ -136,6 +136,7 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     kind: "chatgpt",
     displayName: PROVIDER_DISPLAY_NAMES.chatgpt,
     available: true,
+    setupDocsHref: "https://chatgpt.com",
     // Turns are steered by typing into the ChatGPT composer only between
     // turns; a live turn cannot accept injected input.
     supportsNativeTurnSteering: false,
