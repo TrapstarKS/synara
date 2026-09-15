@@ -1431,7 +1431,12 @@ export default function ChatView({
     [activeThread?.session?.status, threadActivities],
   );
   const composerSubagentToolUseIds = useMemo(
-    () => new Set(composerSubagentStripItems.map((item) => item.providerThreadId)),
+    () =>
+      new Set(
+        composerSubagentStripItems
+          .filter((item): item is ComposerSubagentStripItem => item.kind === "subagent")
+          .map((item) => item.providerThreadId),
+      ),
     [composerSubagentStripItems],
   );
   const composerBackgroundTaskRows = useMemo(

@@ -570,7 +570,7 @@ export const TraitsPicker = memo(function TraitsPicker({
     modelOptions,
     runtimeModel,
     runtimeAgents,
-    forceFastModeBadge,
+    ...(forceFastModeBadge !== undefined ? { forceFastModeBadge } : {}),
   });
 
   const isCodexStyle = provider === "codex";
