@@ -78,7 +78,7 @@ export function ChatComposerFooter({
           voice.recording || voice.transcribing
             ? "min-w-0 shrink-0 gap-1"
             : isComposerFooterCompact
-              ? "min-w-0 flex-1 gap-1 overflow-hidden"
+              ? "min-w-7 flex-1 gap-1 overflow-hidden"
               : "min-w-0 flex-1 gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:min-w-max sm:overflow-visible",
         )}
       >

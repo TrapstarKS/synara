@@ -1147,6 +1147,7 @@ mindDecouplingLayer("Mind projection decoupling migration", (it) => {
       // Simulate a database migrated by an earlier head of this branch, where
       // both tables still reference projection_projects ON DELETE CASCADE.
       yield* sql`DROP TABLE mind_operation_receipts`;
+      yield* sql`DROP TABLE mind_profiles`;
       yield* sql`CREATE TABLE mind_operation_receipts (
         project_id TEXT NOT NULL REFERENCES projection_projects(project_id) ON DELETE CASCADE,
         operation_id TEXT NOT NULL,

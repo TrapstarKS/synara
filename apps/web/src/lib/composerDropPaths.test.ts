@@ -77,6 +77,7 @@ describe("composerDropPaths", () => {
     expect(split.pathMentions).toEqual(["/Users/me/Happy Dropbox/Mac (2)/project-space"]);
     expect(split.imageFiles).toEqual([image]);
     expect(split.genericFiles).toEqual([doc]);
+    expect(split.unresolvedDirectories).toBe(0);
   });
 
   it("keeps genuine empty files when directory metadata is absent", () => {
@@ -90,7 +91,71 @@ describe("composerDropPaths", () => {
         files: [emptyFile],
         items: [makeItem(emptyFile, { entryUnavailable: true })],
       }),
-    ).toEqual({ pathMentions: [], imageFiles: [], genericFiles: [emptyFile] });
+    ).toEqual({
+      pathMentions: [],
+      imageFiles: [],
+      genericFiles: [emptyFile],
+      unresolvedDirectories: 0,
+    });
+  });
+
+  it("uses the matching FileList slot when a folder item has no File object", () => {
+    vi.stubGlobal("window", {
+      desktopBridge: {
+        getPathForFile: (file: File) => `/Users/me/${file.name}`,
+      },
+    });
+    const folder = makeFile("project-space");
+    const item = {
+      kind: "file",
+      getAsFile: () => null,
+      webkitGetAsEntry: () => ({ isDirectory: true }),
+    } satisfies ComposerDroppedFileItem;
+
+    expect(splitDroppedComposerFiles({ files: [folder], items: [item] })).toEqual({
+      pathMentions: ["/Users/me/project-space"],
+      imageFiles: [],
+      genericFiles: [],
+      unresolvedDirectories: 0,
+    });
+  });
+
+  it("does not pair a folder with a neighboring file when the FileList omits it", () => {
+    const image = makeFile("shot.png", { type: "image/png" });
+    const folderItem = {
+      kind: "file",
+      getAsFile: () => null,
+      webkitGetAsEntry: () => ({ isDirectory: true }),
+    } satisfies ComposerDroppedFileItem;
+
+    expect(
+      splitDroppedComposerFiles({
+        files: [image],
+        items: [folderItem, makeItem(image)],
+      }),
+    ).toEqual({
+      pathMentions: [],
+      imageFiles: [image],
+      genericFiles: [],
+      unresolvedDirectories: 1,
+    });
+  });
+
+  it("turns an oversized desktop file into a path mention", () => {
+    vi.stubGlobal("window", {
+      desktopBridge: {
+        getPathForFile: () => "/Users/me/archive.tar",
+      },
+    });
+    const large = makeFile("archive.tar", { type: "application/x-tar" });
+    Object.defineProperty(large, "size", { configurable: true, value: 26 * 1024 * 1024 });
+
+    expect(splitDroppedComposerFiles({ files: [large] })).toEqual({
+      pathMentions: ["/Users/me/archive.tar"],
+      imageFiles: [],
+      genericFiles: [],
+      unresolvedDirectories: 0,
+    });
   });
 
   it("falls back to the FileList when drag items are unavailable", () => {
@@ -100,6 +165,7 @@ describe("composerDropPaths", () => {
       pathMentions: [],
       imageFiles: [],
       genericFiles: [emptyFile],
+      unresolvedDirectories: 0,
     });
   });
 });

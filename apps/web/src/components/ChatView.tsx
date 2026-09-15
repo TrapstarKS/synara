@@ -3545,6 +3545,7 @@ export default function ChatView({
         appendComposerPromptText(threadId, formatComposerMentionToken(absolutePath));
       }
     },
+    onDropError: (message) => setThreadError(activeThreadId, message),
     dragDepthRef,
     focusComposer,
     setIsDragOverComposer,
@@ -4688,22 +4689,27 @@ export default function ChatView({
     pendingContextWindowLabel: contextWindowSelectionStatus.pendingSelectedLabel,
   };
   // The composer's leading controls (extras "+" menu, access-rules/runtime
-  // indicator). At the narrowest footer tier they relocate from the footer to
-  // the branch-toolbar row below the input instead of getting clipped; the
-  // relocated variant is icon-only since relocation means space is minimal.
+  // indicator). Keep the extras trigger anchored in the footer on compact
+  // layouts so it remains reachable while the editor grows; only the runtime
+  // indicator relocates when the measured footer tier is exhausted.
   const relocateComposerLeadingControls = composerFooterControlsPlan.relocateLeadingControls;
-  const renderComposerLeadingControls = (options: { iconOnly: boolean }) => (
+  const renderComposerLeadingControls = (options: {
+    iconOnly: boolean;
+    includeExtras?: boolean;
+  }) => (
     <>
-      <ComposerExtrasTrigger
-        open={isComposerExtrasPanelOpen}
-        panelId={COMPOSER_EXTRAS_PANEL_ID}
-        onToggle={() => {
-          setIsComposerExtrasPanelOpen((open) => !open);
-          // The panel is keyboard-driven from the editor: keep the caret where the
-          // user left it so typing (and Escape) keep working while it is open.
-          scheduleComposerFocus();
-        }}
-      />
+      {options.includeExtras !== false ? (
+        <ComposerExtrasTrigger
+          open={isComposerExtrasPanelOpen}
+          panelId={COMPOSER_EXTRAS_PANEL_ID}
+          onToggle={() => {
+            setIsComposerExtrasPanelOpen((open) => !open);
+            // The panel is keyboard-driven from the editor: keep the caret where the
+            // user left it so typing (and Escape) keep working while it is open.
+            scheduleComposerFocus();
+          }}
+        />
+      ) : null}
       {!isVoiceRecording && !isVoiceTranscribing ? (
         <RuntimeUsageControls
           {...runtimeUsageControlsProps}
@@ -5328,11 +5334,7 @@ export default function ChatView({
                 {activePendingApproval ? null : (
                   <ChatComposerFooter
                     isComposerFooterCompact={isComposerFooterCompact}
-                    leadingControls={
-                      relocateComposerLeadingControls
-                        ? null
-                        : renderComposerLeadingControls({ iconOnly: false })
-                    }
+                    leadingControls={renderComposerLeadingControls({ iconOnly: false })}
                     composerPickerControls={composerPickerControls}
                     contextMeter={
                       !isVoiceRecording &&
@@ -5692,7 +5694,10 @@ export default function ChatView({
                     <div className={COMPOSER_COLUMN_FRAME_CLASS_NAME}>
                       <div className="flex w-full items-center gap-1">
                         <div className="flex shrink-0 items-center gap-1 pl-1">
-                          {renderComposerLeadingControls({ iconOnly: true })}
+                          {renderComposerLeadingControls({
+                            iconOnly: true,
+                            includeExtras: false,
+                          })}
                         </div>
                       </div>
                     </div>
@@ -5828,7 +5833,10 @@ export default function ChatView({
                         <div className="flex w-full items-center gap-1">
                           {relocateComposerLeadingControls ? (
                             <div className="flex shrink-0 items-center gap-1 pl-1">
-                              {renderComposerLeadingControls({ iconOnly: true })}
+                              {renderComposerLeadingControls({
+                                iconOnly: true,
+                                includeExtras: false,
+                              })}
                             </div>
                           ) : null}
                           {isGitRepo && !environmentEnabled ? (

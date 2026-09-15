@@ -154,6 +154,8 @@ export function useComposerDropzone(input: {
   readonly appendReferenceText?: ((text: string) => void) | undefined;
   /** Absolute paths from desktop OS drops that should become @mentions (folders). */
   readonly appendPathMentions?: ((paths: readonly string[]) => void) | undefined;
+  /** Reports a desktop drop that cannot be resolved to a local path. */
+  readonly onDropError?: ((message: string) => void) | undefined;
   readonly focusComposer?: (() => void) | undefined;
   readonly dragDepthRef?: { current: number } | undefined;
   readonly setIsDragOverComposer: (dragging: boolean) => void;
@@ -163,6 +165,7 @@ export function useComposerDropzone(input: {
     fileSupport,
     appendReferenceText,
     appendPathMentions,
+    onDropError,
     disabled = false,
     focusComposer,
     setIsDragOverComposer,
@@ -272,8 +275,14 @@ export function useComposerDropzone(input: {
       genericFiles: dropped.genericFiles,
     };
     const hasPathMentions = dropped.pathMentions.length > 0;
+    if (dropped.unresolvedDirectories > 0) {
+      onDropError?.(
+        "Could not read the folder path from this drop. Use the folder picker or type the path instead.",
+      );
+    }
     if (
       !hasPathMentions &&
+      dropped.unresolvedDirectories === 0 &&
       shouldResetComposerDropzoneAfterUnhandledFileDrop(splitFiles, fileSupport.genericFiles)
     ) {
       if (shouldPreventDefaultForUnhandledFileDrop(splitFiles, fileSupport.genericFiles)) {
