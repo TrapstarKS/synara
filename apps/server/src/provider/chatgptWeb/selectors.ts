@@ -12,8 +12,12 @@
 // thrown error. Hashed CSS-module class names are deliberately never matched.
 
 export const CHATGPT_SELECTORS = {
-  /** One rendered conversation turn: `<section data-testid="conversation-turn-N">`. */
-  turnSection: 'section[data-testid^="conversation-turn"]',
+  /**
+   * One rendered conversation turn. ChatGPT has used both `<section>` and
+   * `<article>` roots across renderer variants; accept both.
+   */
+  turnSection:
+    'section[data-testid^="conversation-turn"], article[data-testid^="conversation-turn"]',
   /** The message element that names its author role (user or assistant). */
   messageRoleAnchor: '[data-message-author-role="user"], [data-message-author-role="assistant"]',
   /** Authored user text across the plain-text and Markdown renderers. */

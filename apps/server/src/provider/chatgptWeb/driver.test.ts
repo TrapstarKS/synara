@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { BrowserHostRpcError } from "../../browserAutomation/browserHostRpcClient.ts";
 import { ChatGptDriverFailure, ChatGptWebDriver, type ChatGptDriverFailureCode } from "./driver.ts";
+import { prependChatGptPromptContext } from "./userPrompt.ts";
 import type {
   ChatGptBrowserCallInput,
   ChatGptBrowserRpc,
@@ -376,6 +377,43 @@ describe("ChatGptWebDriver", () => {
     expect(result.accepted).toBe(true);
   });
 
+  it("confirms insertion when the editor renders prompt newlines as paragraph breaks", async () => {
+    // Native input lets the editor re-render the inserted prompt into separate
+    // paragraphs, so the composer's textContent loses newlines and the frame
+    // header directly abuts the context ("]]\ncontext" becomes "]]context").
+    // The insert confirmation must ignore that whitespace difference.
+    const prompt = prependChatGptPromptContext("hello", "internal context");
+    const renderedComposerText = prompt.replace(/\n/gu, "");
+    const fake = createFakeRpc([
+      { name: "browser_evaluate", result: observed() },
+      { name: "browser_type", result: {} },
+      {
+        name: "browser_evaluate",
+        result: observed({ composerText: renderedComposerText, sendEnabled: true }),
+        times: 2,
+      },
+      { name: "browser_click", result: {} },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          composerText: "",
+          sendEnabled: false,
+          turns: [turn("user", "hello")],
+        }),
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      sendAcceptTimeoutMs: 200,
+    });
+
+    const result = await driver.sendPrompt(REF, prompt, { submittedText: "hello" });
+
+    expect(result.accepted).toBe(true);
+    expect(fake.calls.some((call) => call.name === "browser_click")).toBe(true);
+  });
+
   it("rejects with busy when ChatGPT is already generating", async () => {
     const fake = createFakeRpc([
       { name: "browser_evaluate", result: observed({ generating: true }) },
@@ -660,6 +698,33 @@ describe("ChatGptWebDriver", () => {
     const completion = await driver.waitForCompletion(REF, "oi");
 
     expect(completion.outcome).toBe("timeout");
+  });
+
+  it("matches a short prompt in a valid Synara context frame", async () => {
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [
+            turn("user", prependChatGptPromptContext("Oii", "internal context")),
+            turn("assistant", "Oii, Trapstar."),
+          ],
+          latestAssistantCompleted: true,
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      turnStartTimeoutMs: 50,
+      completionTimeoutMs: 5_000,
+    });
+
+    const completion = await driver.waitForCompletion(REF, "Oii");
+
+    expect(completion).toMatchObject({ outcome: "completed", text: "Oii, Trapstar." });
   });
 
   it("interrupt clicks the first visible stop selector", async () => {

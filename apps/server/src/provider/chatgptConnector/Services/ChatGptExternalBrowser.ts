@@ -9,6 +9,8 @@ import type { ChatGptBrowserToolName } from "../../chatgptWeb/types.ts";
 
 export const CHATGPT_EXTERNAL_BROWSER_PAIR_PATH = "/provider/chatgpt/browser/pair";
 export const CHATGPT_EXTERNAL_BROWSER_WS_PATH = "/provider/chatgpt/browser";
+/** Loopback-only diagnostic route used by the debug companion extension. */
+export const CHATGPT_EXTERNAL_BROWSER_DEBUG_PATH = "/provider/chatgpt/browser/debug";
 
 export interface ChatGptExternalBrowserPairing {
   /** Local-only URL that the extension content script uses to pair. */

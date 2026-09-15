@@ -249,7 +249,13 @@ describe("collectCompletedThreadCandidates", () => {
     expect(
       collectCompletedThreadCandidates(
         [makeThread({})],
-        [makeThread({ session: completedSession, latestTurn: completedTurn, activities: [startedTask] })],
+        [
+          makeThread({
+            session: completedSession,
+            latestTurn: completedTurn,
+            activities: [startedTask],
+          }),
+        ],
       ),
     ).toEqual([]);
 

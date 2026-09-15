@@ -6,10 +6,7 @@ import * as Path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  ensureBundledCodexRuntime,
-  settingsUseManagedCodexRuntime,
-} from "./managedCodexRuntime";
+import { ensureBundledCodexRuntime, settingsUseManagedCodexRuntime } from "./managedCodexRuntime";
 import type { ManagedCodexRuntimeManifest } from "@synara/shared/managedCodexRuntime";
 
 const temporaryRoots: string[] = [];
@@ -74,9 +71,7 @@ describe("ensureBundledCodexRuntime", () => {
       binaryPath: Path.join(fixture.baseDir, "bin", "codex"),
     });
 
-    expect(FS.readlinkSync(Path.join(fixture.baseDir, "bin", "codex"))).toBe(
-      "codex-luna-max-fast",
-    );
+    expect(FS.readlinkSync(Path.join(fixture.baseDir, "bin", "codex"))).toBe("codex-luna-max-fast");
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: Path.join(Path.dirname(fixture.baseDir), "unrelated-home"),
@@ -89,8 +84,9 @@ describe("ensureBundledCodexRuntime", () => {
         env,
       }),
     ).toBe("codex-cli 1.2.3\n");
-    expect(FS.readFileSync(Path.join(fixture.baseDir, "codex-luna-max-fast", "version"), "utf8"))
-      .toBe("1.2.3\n");
+    expect(
+      FS.readFileSync(Path.join(fixture.baseDir, "codex-luna-max-fast", "version"), "utf8"),
+    ).toBe("1.2.3\n");
     expect(
       FS.readFileSync(
         Path.join(fixture.baseDir, "codex-luna-max-fast", "OPENAI_CODEX_LICENSE"),

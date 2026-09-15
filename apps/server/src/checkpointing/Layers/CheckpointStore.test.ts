@@ -296,9 +296,7 @@ describe("CheckpointStoreLive", () => {
       }),
     );
 
-    expect(execute.mock.calls.some(([call]) => call.args.join(" ") === "add -A -- .")).toBe(
-      false,
-    );
+    expect(execute.mock.calls.some(([call]) => call.args.join(" ") === "add -A -- .")).toBe(false);
   });
 
   it("skips the capture when skipIfExists is set and the ref already exists", async () => {

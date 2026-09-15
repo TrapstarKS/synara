@@ -188,9 +188,9 @@ export function McpServersDialog(props: {
             ? await api.provider.reloadMcpServers({ provider, threadId })
             : action === "restart"
               ? await api.provider.restartMcpServer({ provider, threadId, name: name! })
-            : action === "connect"
-              ? await api.provider.connectMcpServer({ provider, threadId, name: name! })
-              : await api.provider.disconnectMcpServer({ provider, threadId, name: name! });
+              : action === "connect"
+                ? await api.provider.connectMcpServer({ provider, threadId, name: name! })
+                : await api.provider.disconnectMcpServer({ provider, threadId, name: name! });
         setServers(result.servers);
       } catch (actionError) {
         setError(errorMessage(actionError));
@@ -280,8 +280,8 @@ export function McpServersDialog(props: {
             MCP servers
           </DialogTitle>
           <DialogDescription>
-            See what this Codex session has loaded, enable or disable individual servers, or
-            restart one to renegotiate its tools without restarting the whole session.
+            See what this Codex session has loaded, enable or disable individual servers, or restart
+            one to renegotiate its tools without restarting the whole session.
           </DialogDescription>
         </DialogHeader>
 
@@ -307,10 +307,7 @@ export function McpServersDialog(props: {
               onClick={() => void runAction("reload")}
             >
               <RefreshCwIcon
-                className={cn(
-                  "size-3.5",
-                  (loading || busyAction === "reload") && "animate-spin",
-                )}
+                className={cn("size-3.5", (loading || busyAction === "reload") && "animate-spin")}
               />
               Reload all
             </Button>
@@ -350,8 +347,7 @@ export function McpServersDialog(props: {
                         ) : null}
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {server.toolNames.length}{" "}
-                        {server.toolNames.length === 1 ? "tool" : "tools"}
+                        {server.toolNames.length} {server.toolNames.length === 1 ? "tool" : "tools"}
                         {server.resourceCount > 0
                           ? ` · ${server.resourceCount} resource${server.resourceCount === 1 ? "" : "s"}`
                           : ""}

@@ -94,9 +94,13 @@ describe("release update policy", () => {
       expect(readFileSync(resolve(root, "synara.yml"), "utf8")).toBe("windows-updater");
       expect(existsSync(resolve(root, "synara-linux.yml"))).toBe(false);
       expect(() =>
-        prepareReleaseUpdateManifests(root, { ...cleanConfig, lane: "bridge" }, {
-          includeLinux: false,
-        }),
+        prepareReleaseUpdateManifests(
+          root,
+          { ...cleanConfig, lane: "bridge" },
+          {
+            includeLinux: false,
+          },
+        ),
       ).toThrow("Compatibility releases require all platform manifests");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -107,9 +111,9 @@ describe("release update policy", () => {
     const root = mkdtempSync(join(tmpdir(), "synara-release-policy-"));
     try {
       writeFileSync(resolve(root, "latest-mac.yml"), "mac-updater");
-      expect(() => prepareReleaseUpdateManifests(root, cleanConfig, { includeLinux: false })).toThrow(
-        "Latest release is missing update manifests: latest.yml",
-      );
+      expect(() =>
+        prepareReleaseUpdateManifests(root, cleanConfig, { includeLinux: false }),
+      ).toThrow("Latest release is missing update manifests: latest.yml");
       expect(existsSync(resolve(root, "synara-mac.yml"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });

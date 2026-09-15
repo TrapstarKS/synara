@@ -6138,7 +6138,8 @@ describe("ProviderCommandReactor", () => {
           (await readHarnessThread(harness))?.activities.some(
             (activity) =>
               activity.kind === "provider.turn.start.failed" &&
-              (activity.payload as Record<string, unknown> | null)?.settlementStatus === "uncertain",
+              (activity.payload as Record<string, unknown> | null)?.settlementStatus ===
+                "uncertain",
           ),
         ),
       );

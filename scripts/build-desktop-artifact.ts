@@ -827,10 +827,7 @@ const stageManagedCodexRuntime = Effect.fn("stageManagedCodexRuntime")(function*
   if (arch !== "arm64" && arch !== "universal") return;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
-  const archivePath = path.join(
-    stageResourcesDir,
-    MANAGED_CODEX_RUNTIME_MANIFEST.assetFileName,
-  );
+  const archivePath = path.join(stageResourcesDir, MANAGED_CODEX_RUNTIME_MANIFEST.assetFileName);
   yield* Effect.log(
     `[desktop-artifact] Staging Codex Luna Max Fast ${MANAGED_CODEX_RUNTIME_MANIFEST.version}...`,
   );

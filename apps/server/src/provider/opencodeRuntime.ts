@@ -1326,9 +1326,9 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
       );
 
     const loadAgents = (client: OpencodeClient) =>
-      runOpenCodeSdkWithTimeout("app.agents", (signal) => client.app.agents(undefined, { signal })).pipe(
-        Effect.map((result) => result.data ?? []),
-      );
+      runOpenCodeSdkWithTimeout("app.agents", (signal) =>
+        client.app.agents(undefined, { signal }),
+      ).pipe(Effect.map((result) => result.data ?? []));
 
     const loadOptionalAgents = (client: OpencodeClient) =>
       loadAgents(client).pipe(
@@ -1362,7 +1362,9 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
       );
 
     const loadOpenCodePaths = (client: OpencodeClient) =>
-      runOpenCodeSdkWithTimeout("path.get", (signal) => client.path.get(undefined, { signal })).pipe(
+      runOpenCodeSdkWithTimeout("path.get", (signal) =>
+        client.path.get(undefined, { signal }),
+      ).pipe(
         Effect.filterMapOrFail(
           (response) =>
             response.data

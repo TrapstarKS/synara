@@ -112,34 +112,51 @@ export async function discoverRuntimeUpstream({
         throw new Error("Synara runtime must be private to the current user");
     }
     const state = JSON.parse(readFileSync(path, "utf8"));
-    if (state.version !== 1 || !Number.isSafeInteger(state.pid) || state.pid <= 0 ||
-        !Number.isInteger(state.port) || state.port < 1024 || state.port > 65535 ||
-        typeof state.externalMcpRuntimeSecret !== "string" || state.externalMcpRuntimeSecret.length < 32)
+    if (
+      state.version !== 1 ||
+      !Number.isSafeInteger(state.pid) ||
+      state.pid <= 0 ||
+      !Number.isInteger(state.port) ||
+      state.port < 1024 ||
+      state.port > 65535 ||
+      typeof state.externalMcpRuntimeSecret !== "string" ||
+      state.externalMcpRuntimeSecret.length < 32
+    )
       throw new Error("Invalid Synara runtime state");
     if (!/^[a-f0-9]{48}$/i.test(state.desktopAuthToken ?? "")) return [];
-    try { process.kill(state.pid, 0); }
-    catch (error) {
+    try {
+      process.kill(state.pid, 0);
+    } catch (error) {
       if (error.code === "ESRCH") return [];
       if (error.code !== "EPERM") throw error;
     }
     return [state];
   });
   if (!candidates.length) throw new Error("Open an updated Synara desktop to enable mobile access");
-  if (candidates.length > 1) throw new Error("Multiple Synara desktops found; use a separate desktop home");
+  if (candidates.length > 1)
+    throw new Error("Multiple Synara desktops found; use a separate desktop home");
   const state = candidates[0];
   const target = fixedTarget(state.origin, state.desktopAuthToken);
   if (Number(new URL(target.origin).port) !== state.port) throw new Error("Invalid runtime port");
   // A recycled PID or port must not receive the desktop credential.
   const nonce = randomBytes(24).toString("base64url");
   const response = await fetchImpl(new URL("/api/mcp/external/runtime-challenge", target.origin), {
-    method: "POST", headers: { "x-synara-runtime-challenge": nonce },
-    signal: AbortSignal.timeout(2000), redirect: "error",
+    method: "POST",
+    headers: { "x-synara-runtime-challenge": nonce },
+    signal: AbortSignal.timeout(2000),
+    redirect: "error",
   });
   const body = await response.json();
   const expected = createHmac("sha256", state.externalMcpRuntimeSecret)
-    .update("synara.external-mcp.runtime\0").update(nonce).digest("base64url");
-  if (!response.ok || typeof body.proof !== "string" || body.proof.length !== expected.length ||
-      !timingSafeEqual(Buffer.from(body.proof), Buffer.from(expected)))
+    .update("synara.external-mcp.runtime\0")
+    .update(nonce)
+    .digest("base64url");
+  if (
+    !response.ok ||
+    typeof body.proof !== "string" ||
+    body.proof.length !== expected.length ||
+    !timingSafeEqual(Buffer.from(body.proof), Buffer.from(expected))
+  )
     throw new Error("Cannot verify the running Synara instance");
   return { ...target, scope: `desktop:${resolve(desktopHome)}` };
 }
@@ -175,7 +192,11 @@ export function createUpstreamResolver({
       if (!fresh && cached && now() < expiresAt) return cached;
       cached = discover();
       // Keep sync macOS callers compatible while invalidating failed async discovery.
-      if (cached?.then) cached = cached.catch((error) => { expiresAt = 0; throw error; });
+      if (cached?.then)
+        cached = cached.catch((error) => {
+          expiresAt = 0;
+          throw error;
+        });
       expiresAt = now() + cacheMs;
       return cached;
     },

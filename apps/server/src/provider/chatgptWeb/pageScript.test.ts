@@ -85,6 +85,33 @@ describe("buildChatGptObservationExpression", () => {
     expect(observation.terminalAssistantText).toBeNull();
   });
 
+  it("reads streamed turns from ChatGPT's article-based renderer", () => {
+    const observation = observe(`
+      <article data-testid="conversation-turn-1" data-turn="user" data-turn-id="turn-1">
+        <div data-message-author-role="user" data-message-id="user-1">
+          <div class="whitespace-pre-wrap">Oi</div>
+        </div>
+      </article>
+      <article data-testid="conversation-turn-2" data-turn="assistant" data-turn-id="turn-2">
+        <div data-message-id="assistant-1">
+          <div data-message-author-role="assistant">
+            <div class="markdown"><p>Resposta aparecendo enquanto gera.</p></div>
+          </div>
+        </div>
+      </article>
+    `);
+
+    expect(observation.turns).toEqual([
+      { role: "user", text: "Oi", messageId: "user-1", interrupted: false },
+      {
+        role: "assistant",
+        text: "Resposta aparecendo enquanto gera.",
+        messageId: "assistant-1",
+        interrupted: false,
+      },
+    ]);
+  });
+
   it("reads section-level roles and terminal assistant evidence from React Fiber", () => {
     const observation = observe(
       `
@@ -144,6 +171,50 @@ describe("buildChatGptObservationExpression", () => {
     ]);
     expect(observation.latestAssistantCompleted).toBe(true);
     expect(observation.terminalAssistantText).toBe("Terminal answer");
+  });
+
+  it("finds terminal Fiber evidence attached to a message descendant", () => {
+    const observation = observe(
+      `
+        <section data-testid="conversation-turn-1" data-turn="user" data-turn-id="turn-1">
+          <div data-message-id="user-1"><div class="markdown">Hello there</div></div>
+        </section>
+        <section data-testid="conversation-turn-2" data-turn="assistant" data-turn-id="turn-2">
+          <div data-message-id="assistant-1"><div class="markdown">Rendered answer</div></div>
+        </section>
+        <form>
+          <div id="prompt-textarea" contenteditable="true"></div>
+          <button data-testid="stop-button">Stop</button>
+        </form>
+      `,
+      DEFAULT_URL,
+      () => {
+        const markdown = document.querySelector(
+          'section[data-testid="conversation-turn-2"] .markdown',
+        ) as Record<string, unknown> | null;
+        if (!markdown) throw new Error("assistant markdown missing");
+        markdown["__reactFiber$test"] = {
+          memoizedProps: {
+            turn: {
+              messages: [
+                {
+                  id: "assistant-1",
+                  author: { role: "assistant" },
+                  channel: "final",
+                  content: { content_type: "text", parts: ["Terminal descendant answer"] },
+                  end_turn: true,
+                  status: "finished_successfully",
+                },
+              ],
+            },
+          },
+        };
+      },
+    );
+
+    expect(observation.generating).toBe(true);
+    expect(observation.latestAssistantCompleted).toBe(true);
+    expect(observation.terminalAssistantText).toBe("Terminal descendant answer");
   });
 
   it("returns and presents only authored user text from a framed model message", () => {

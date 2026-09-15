@@ -44,7 +44,12 @@ test("desktop discovery verifies that the candidate owns its advertised listener
     throw new Error("unexpected command");
   };
   assert.deepEqual(
-    discoverDesktopUpstream({ desktopExecutable: executable, desktopHome: home, exec, platform: "darwin" }),
+    discoverDesktopUpstream({
+      desktopExecutable: executable,
+      desktopHome: home,
+      exec,
+      platform: "darwin",
+    }),
     {
       origin: "http://127.0.0.1:56673",
       token,

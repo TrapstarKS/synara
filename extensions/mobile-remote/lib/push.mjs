@@ -150,7 +150,9 @@ export function createPush(store, publicOrigin, dependencies = {}) {
         nextAttempt: 0,
         expiresAt: now() + 3600_000,
         payload: {
-          title: event.title, body: event.body, url: event.url,
+          title: event.title,
+          body: event.body,
+          url: event.url,
           actionTitle: event.actionTitle,
           tag: event.threadId ? `synara:${event.threadId}:${event.kind}` : event.id,
         },

@@ -89,14 +89,14 @@ To remove the login services, run `node extensions/mobile-remote/service.mjs uni
 
 ## Configuration
 
-| Environment variable     | Default                  | Meaning                                                              |
-| ------------------------ | ------------------------ | -------------------------------------------------------------------- |
-| `SYNARA_MOBILE_ORIGIN`   | `https://localhost:8443` | Exact HTTPS origin used by the phone.                                |
-| `SYNARA_MOBILE_UPSTREAM` | auto-discovered          | Explicit loopback origin override for development and tests.         |
-| `SYNARA_MOBILE_DESKTOP_HOME` | `~/.synara` | Desktop data home used for discovery. |
-| `SYNARA_MOBILE_UPSTREAM_TOKEN` | unset | Token for an explicit development upstream. |
-| `SYNARA_MOBILE_PORT`     | `58091`                  | Companion loopback port.                                             |
-| `SYNARA_MOBILE_HOME`     | `~/.synara-mobile`       | Private keys, sessions, preferences, checkpoint, and pending pushes. |
+| Environment variable           | Default                  | Meaning                                                              |
+| ------------------------------ | ------------------------ | -------------------------------------------------------------------- |
+| `SYNARA_MOBILE_ORIGIN`         | `https://localhost:8443` | Exact HTTPS origin used by the phone.                                |
+| `SYNARA_MOBILE_UPSTREAM`       | auto-discovered          | Explicit loopback origin override for development and tests.         |
+| `SYNARA_MOBILE_DESKTOP_HOME`   | `~/.synara`              | Desktop data home used for discovery.                                |
+| `SYNARA_MOBILE_UPSTREAM_TOKEN` | unset                    | Token for an explicit development upstream.                          |
+| `SYNARA_MOBILE_PORT`           | `58091`                  | Companion loopback port.                                             |
+| `SYNARA_MOBILE_HOME`           | `~/.synara-mobile`       | Private keys, sessions, preferences, checkpoint, and pending pushes. |
 
 Automatic discovery supports macOS and Windows. An explicit upstream override must accept the read-only companion connection from loopback; use it only for development or tests. The browser proxy preserves Synara's authentication policy and never sends the desktop credential to the phone.
 

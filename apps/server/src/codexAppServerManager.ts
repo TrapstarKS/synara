@@ -1,6 +1,7 @@
 import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 
 import {
   ApprovalRequestId,
@@ -63,7 +64,7 @@ import {
   type AgentGatewaySessionLease,
 } from "./agentGateway/sessionLease.ts";
 import { isNonFatalCodexErrorMessage } from "./codexErrorClassification.ts";
-import { buildCodexProcessEnv } from "./codexProcessEnv.ts";
+import { buildCodexProcessEnv, serializeCodexConfigAccess } from "./codexProcessEnv.ts";
 import { assertCodexWorkingDirectoryExists } from "./codexWorkingDirectory.ts";
 import { executableIdentity, resolveExecutable } from "./executableLookup.ts";
 import {
@@ -168,6 +169,8 @@ type CodexSessionApprovalOverride = {
 
 interface CodexSessionContext {
   readonly gatewaySessionLease?: AgentGatewaySessionLease;
+  /** The only process-environment value needed to serialize MCP config writes. */
+  readonly codexHomePath?: string;
   /** Set once this runtime's bearer is permanently fenced to a terminal turn. */
   gatewayCredentialRetired?: boolean;
   session: ProviderSession;
@@ -746,6 +749,24 @@ function spawnCodexAppServer(input: {
   });
 }
 
+// Codex `config/value/write` persists into the app-server process CODEX_HOME.
+// Overlay refreshes run through the same queue so a refresh can never overwrite
+// an in-flight MCP edit (and vice versa). Use the effective path directly: it
+// also covers profile-specific overlays, whose profile id is not stored on the
+// runtime session object.
+function resolveMcpConfigHomePath(context: CodexSessionContext): string | undefined {
+  const effectiveHomePath = context.codexHomePath?.trim();
+  return effectiveHomePath ? path.resolve(effectiveHomePath) : undefined;
+}
+
+async function runOnMcpConfigOverlay<A>(
+  context: CodexSessionContext,
+  run: () => Promise<A>,
+): Promise<A> {
+  const overlayHomePath = resolveMcpConfigHomePath(context);
+  return overlayHomePath === undefined ? run() : serializeCodexConfigAccess(overlayHomePath, run);
+}
+
 export function normalizeCodexModelSlug(
   model: string | undefined | null,
   preferredId?: string,
@@ -1118,18 +1139,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(codexProfileId ? { profileId: codexProfileId } : {}),
       });
       gatewaySessionLease = this.agentGatewayMcp?.acquireSessionLease(threadId);
+      const processEnv = await this.buildSessionProcessEnv(
+        codexHomePath,
+        codexProfileId,
+        gatewaySessionLease?.connection.bearerToken,
+      );
       const child = spawnCodexAppServer({
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
-        env: await this.buildSessionProcessEnv(
-          codexHomePath,
-          codexProfileId,
-          gatewaySessionLease?.connection.bearerToken,
-        ),
+        env: processEnv,
       });
 
       context = {
         ...(gatewaySessionLease ? { gatewaySessionLease } : {}),
+        ...(processEnv.CODEX_HOME?.trim() ? { codexHomePath: processEnv.CODEX_HOME.trim() } : {}),
         session,
         ...(input.lifecycleGeneration !== undefined
           ? { lifecycleGeneration: input.lifecycleGeneration }
@@ -1923,18 +1946,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(codexProfileId ? { profileId: codexProfileId } : {}),
       });
       gatewaySessionLease = this.agentGatewayMcp?.acquireSessionLease(threadId);
+      const processEnv = await this.buildSessionProcessEnv(
+        codexHomePath,
+        codexProfileId,
+        gatewaySessionLease?.connection.bearerToken,
+      );
       const child = spawnCodexAppServer({
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
-        env: await this.buildSessionProcessEnv(
-          codexHomePath,
-          codexProfileId,
-          gatewaySessionLease?.connection.bearerToken,
-        ),
+        env: processEnv,
       });
 
       context = {
         ...(gatewaySessionLease ? { gatewaySessionLease } : {}),
+        ...(processEnv.CODEX_HOME?.trim() ? { codexHomePath: processEnv.CODEX_HOME.trim() } : {}),
         session,
         account: {
           type: "unknown",
@@ -2605,12 +2630,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   async addMcpServer(input: ProviderAddMcpServerInput): Promise<ProviderMcpServerActionResult> {
     const context = await this.resolveContextForDiscovery(input.threadId);
     const name = validateMcpServerName(input.name);
-    await this.sendRequest<Record<string, unknown>>(context, "config/value/write", {
-      keyPath: `mcp_servers.${name}`,
-      mergeStrategy: "upsert",
-      value: buildCodexMcpServerConfig(input),
+    await runOnMcpConfigOverlay(context, async () => {
+      await this.sendRequest<Record<string, unknown>>(context, "config/value/write", {
+        keyPath: `mcp_servers.${name}`,
+        mergeStrategy: "upsert",
+        value: buildCodexMcpServerConfig(input),
+      });
+      await this.sendRequest<Record<string, unknown>>(context, "config/mcpServer/reload", null);
     });
-    await this.sendRequest<Record<string, unknown>>(context, "config/mcpServer/reload", null);
     return {
       action: "connected",
       ...(await this.listMcpServersFromContext(context)),
@@ -2636,12 +2663,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     name: string,
     enabled: boolean,
   ): Promise<void> {
-    await this.sendRequest<Record<string, unknown>>(context, "config/value/write", {
-      keyPath: `mcp_servers.${name}.enabled`,
-      mergeStrategy: "upsert",
-      value: enabled,
+    await runOnMcpConfigOverlay(context, async () => {
+      await this.sendRequest<Record<string, unknown>>(context, "config/value/write", {
+        keyPath: `mcp_servers.${name}.enabled`,
+        mergeStrategy: "upsert",
+        value: enabled,
+      });
+      await this.sendRequest<Record<string, unknown>>(context, "config/mcpServer/reload", null);
     });
-    await this.sendRequest<Record<string, unknown>>(context, "config/mcpServer/reload", null);
   }
 
   private async listMcpServersFromContext(
@@ -2915,12 +2944,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       binaryPath: "codex",
       cwd: normalizedCwd,
     });
+    const processEnv = await buildCodexProcessEnv();
     const child = spawnCodexAppServer({
       binaryPath: "codex",
       cwd: normalizedCwd,
-      env: await buildCodexProcessEnv(),
+      env: processEnv,
     });
     const context: CodexSessionContext = {
+      ...(processEnv.CODEX_HOME?.trim() ? { codexHomePath: processEnv.CODEX_HOME.trim() } : {}),
       session: {
         provider: "codex",
         status: "connecting",

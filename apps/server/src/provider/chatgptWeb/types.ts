@@ -15,6 +15,7 @@ export type ChatGptBrowserToolName =
   | "browser_tabs"
   | "browser_wait"
   | "browser_evaluate"
+  | "browser_debug"
   | "browser_click"
   | "browser_press"
   | "browser_type"

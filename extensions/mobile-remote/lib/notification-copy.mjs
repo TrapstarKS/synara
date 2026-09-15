@@ -2,7 +2,8 @@ import WebSocket from "ws";
 
 export function preview(value, limit = 200) {
   if (typeof value !== "string") return "";
-  const clean = value.slice(0, 4000)
+  const clean = value
+    .slice(0, 4000)
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/!?\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/(?:Bearer\s+)[\w.+/-]+/gi, "Bearer [oculto]")
@@ -11,12 +12,16 @@ export function preview(value, limit = 200) {
     .replace(/^\s*(?:#{1,6}|>)\s+/gm, "")
     .replace(/`+/g, "")
     .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ").trim();
+    .replace(/\s+/g, " ")
+    .trim();
   return clean.length > limit ? clean.slice(0, limit - 1).trimEnd() + "…" : clean;
 }
 
 const labels = {
-  completed: "Concluída", failed: "Falhou", approval: "Aprovação", input: "Resposta necessária",
+  completed: "Concluída",
+  failed: "Falhou",
+  approval: "Aprovação",
+  input: "Resposta necessária",
 };
 const fallback = {
   completed: "O agente terminou esta tarefa. Toque para ver o resultado.",
@@ -24,27 +29,34 @@ const fallback = {
   approval: "O agente aguarda sua autorização para continuar. Toque para revisar a ação.",
   input: "Há uma pergunta aguardando sua resposta. Toque para responder.",
 };
-const backgroundTaskKinds = new Set(["task.started", "task.progress", "task.updated", "task.completed"]);
+const backgroundTaskKinds = new Set([
+  "task.started",
+  "task.progress",
+  "task.updated",
+  "task.completed",
+]);
 const terminalTaskStatuses = new Set(["completed", "failed", "killed", "paused"]);
 
 export function hasLiveBackgroundTasks(thread, turnId) {
   const activeTasks = new Map();
   const activities = Array.isArray(thread?.activities) ? thread.activities : [];
   for (const activity of activities) {
-    if (!activity || typeof activity !== "object" || !backgroundTaskKinds.has(activity.kind)) continue;
+    if (!activity || typeof activity !== "object" || !backgroundTaskKinds.has(activity.kind))
+      continue;
     if (
       turnId &&
       activity.turnId &&
       activity.turnId !== turnId &&
       activity.kind !== "task.completed" &&
       activity.kind !== "task.updated"
-    ) continue;
-    const payload = activity.payload && typeof activity.payload === "object" && !Array.isArray(activity.payload)
-      ? activity.payload
-      : null;
-    const taskId = typeof payload?.taskId === "string" && payload.taskId.length > 0
-      ? payload.taskId
-      : null;
+    )
+      continue;
+    const payload =
+      activity.payload && typeof activity.payload === "object" && !Array.isArray(activity.payload)
+        ? activity.payload
+        : null;
+    const taskId =
+      typeof payload?.taskId === "string" && payload.taskId.length > 0 ? payload.taskId : null;
     if (!taskId) continue;
     if (activity.kind === "task.completed") {
       activeTasks.delete(taskId);
@@ -67,29 +79,46 @@ export function notificationCopy(event, thread) {
   let detail = "";
   if (event.kind === "completed") {
     const messages = Array.isArray(thread?.messages) ? thread.messages : [];
-    const matches = (message) => message.role === "assistant" &&
-      message.turnId === event.turnId && message.streaming !== true && preview(message.text);
+    const matches = (message) =>
+      message.role === "assistant" &&
+      message.turnId === event.turnId &&
+      message.streaming !== true &&
+      preview(message.text);
     const finalId = thread?.latestTurn?.assistantMessageId;
-    const last = (finalId && messages.find((message) => message.id === finalId && matches(message))) ||
+    const last =
+      (finalId && messages.find((message) => message.id === finalId && matches(message))) ||
       messages.findLast(matches);
     detail = preview(last?.text);
   } else if (event.kind === "failed") {
     detail = preview(thread?.session?.lastError);
   } else {
     const kind = event.kind === "approval" ? "approval.requested" : "user-input.requested";
-    const interactions = Array.isArray(thread?.pendingInteractions) ? thread.pendingInteractions : null;
+    const interactions = Array.isArray(thread?.pendingInteractions)
+      ? thread.pendingInteractions
+      : null;
     const activities = Array.isArray(thread?.activities) ? thread.activities : [];
-    const activity = activities.findLast((entry) => entry.kind === kind &&
-      (entry.turnId === event.turnId || entry.turnId == null) && (!interactions || interactions.some((pending) =>
-        pending.requestId === entry.payload?.requestId &&
-        pending.interactionKind === (event.kind === "approval" ? "approval" : "userInput") &&
-        ["pending", "retryable", "uncertain"].includes(pending.status))));
+    const activity = activities.findLast(
+      (entry) =>
+        entry.kind === kind &&
+        (entry.turnId === event.turnId || entry.turnId == null) &&
+        (!interactions ||
+          interactions.some(
+            (pending) =>
+              pending.requestId === entry.payload?.requestId &&
+              pending.interactionKind === (event.kind === "approval" ? "approval" : "userInput") &&
+              ["pending", "retryable", "uncertain"].includes(pending.status),
+          )),
+    );
     if (event.kind === "input") {
       detail = preview(activity?.payload?.questions?.[0]?.question);
     } else if (activity) {
       const request = activity.payload;
-      const action = { command: "Executar comando", "file-read": "Ler arquivos",
-        "file-change": "Alterar arquivos", permissions: "Conceder permissão" }[request?.requestKind];
+      const action = {
+        command: "Executar comando",
+        "file-read": "Ler arquivos",
+        "file-change": "Alterar arquivos",
+        permissions: "Conceder permissão",
+      }[request?.requestKind];
       const description = preview(request?.detail, 150);
       detail = description ? `${action || "Revisar ação"}: ${description}` : action || "";
     }
@@ -97,7 +126,12 @@ export function notificationCopy(event, thread) {
   return {
     title: title ? `${labels[event.kind]} · ${title}` : labels[event.kind],
     body: detail || fallback[event.kind],
-    actionTitle: event.kind === "input" ? "Responder" : event.kind === "approval" ? "Revisar ação" : "Ver conversa",
+    actionTitle:
+      event.kind === "input"
+        ? "Responder"
+        : event.kind === "approval"
+          ? "Revisar ação"
+          : "Ver conversa",
   };
 }
 
@@ -114,11 +148,21 @@ export function readNotificationThread(url, threadId, { timeoutMs = 2000 } = {})
     };
     const timer = setTimeout(finish, timeoutMs);
     socket.on("error", () => finish());
-    socket.on("close", () => { clearTimeout(timer); resolve(null); });
-    socket.on("open", () => socket.send(JSON.stringify({
-      _tag: "Request", id: "1", tag: "orchestration.getThreadDetailSnapshot",
-      payload: { threadId }, headers: [],
-    })));
+    socket.on("close", () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    socket.on("open", () =>
+      socket.send(
+        JSON.stringify({
+          _tag: "Request",
+          id: "1",
+          tag: "orchestration.getThreadDetailSnapshot",
+          payload: { threadId },
+          headers: [],
+        }),
+      ),
+    );
     socket.on("message", (raw) => {
       try {
         const frame = JSON.parse(raw.toString());
@@ -126,7 +170,9 @@ export function readNotificationThread(url, threadId, { timeoutMs = 2000 } = {})
           const thread = frame.exit?._tag === "Success" ? frame.exit.value?.thread : null;
           finish(thread?.id === threadId ? thread : null);
         }
-      } catch { finish(); }
+      } catch {
+        finish();
+      }
     });
   });
 }

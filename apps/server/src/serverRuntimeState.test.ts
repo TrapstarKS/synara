@@ -22,7 +22,8 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 describe("serverRuntimeState", () => {
   it("publishes the local companion credential only for a private desktop listener", () => {
     const config = { host: "127.0.0.1", mode: "desktop" as const, authToken: "desktop-secret" };
-    const make = (overrides = {}) => makePersistedServerRuntimeState({ config: { ...config, ...overrides }, port: 4123 });
+    const make = (overrides = {}) =>
+      makePersistedServerRuntimeState({ config: { ...config, ...overrides }, port: 4123 });
     expect(make().desktopAuthToken).toBe("desktop-secret");
     expect(make({ mode: "web" }).desktopAuthToken).toBeUndefined();
     expect(make({ host: "0.0.0.0" }).desktopAuthToken).toBeUndefined();

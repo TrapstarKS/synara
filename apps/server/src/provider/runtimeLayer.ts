@@ -122,10 +122,7 @@ export function makeServerProviderLayer(
           ),
           Effect.orDie,
         ),
-    }).pipe(
-      Layer.provide(chatGptConnectorLayer),
-      Layer.provide(chatGptExternalBrowserLayer),
-    );
+    }).pipe(Layer.provide(chatGptConnectorLayer), Layer.provide(chatGptExternalBrowserLayer));
     const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
       Layer.provide(codexAdapterLayer),
       Layer.provide(claudeAdapterLayer),

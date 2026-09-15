@@ -259,8 +259,7 @@ export function TaskCompletionNotifications() {
     }
 
     const shouldAttemptSystemNotification = shouldAttemptSystemTaskNotification({
-      enabled:
-        settings.enableSystemTaskCompletionNotifications && !isMobileRemoteShell(),
+      enabled: settings.enableSystemTaskCompletionNotifications && !isMobileRemoteShell(),
       isWindowForeground: isWindowForeground(),
     });
 

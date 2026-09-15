@@ -15,7 +15,10 @@ test("does not mistake a live unrelated process for the mobile companion", () =>
   assert.equal(
     isLockOwnerAlive(
       { pid: 762 },
-      { ...inspect, getProcessCommand: () => "/usr/local/bin/node /repo/extensions/mobile-remote/server.mjs" },
+      {
+        ...inspect,
+        getProcessCommand: () => "/usr/local/bin/node /repo/extensions/mobile-remote/server.mjs",
+      },
     ),
     true,
   );

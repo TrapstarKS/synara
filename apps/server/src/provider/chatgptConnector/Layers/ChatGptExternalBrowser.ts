@@ -86,6 +86,8 @@ function pairingPage(): string {
 export function makeChatGptExternalBrowser(input: {
   readonly available: boolean;
   readonly origin: string | (() => string);
+  /** Optional local-only token used to reconnect a loaded debug extension after a restart. */
+  readonly restoreToken?: string;
   readonly now?: () => number;
   readonly randomToken?: () => string;
   readonly randomClientId?: () => string;
@@ -105,6 +107,26 @@ export function makeChatGptExternalBrowser(input: {
   const clientsByThread = new Map<string, ClientState>();
   const waitersByThread = new Map<string, Set<(connected: boolean) => void>>();
   let nextRequestId = 1;
+
+  // The normal pairing is intentionally one-time and in-memory. A developer
+  // can opt into restoring the exact token already held by the unpacked debug
+  // extension so restarting an isolated server does not require a person at
+  // the keyboard to pair it again. The token is supplied through the local
+  // process environment, never through a browser request.
+  const restoredToken = input.restoreToken?.trim();
+  if (restoredToken) {
+    const restoredThreadId = "debug-browser" as ThreadId;
+    const restored: PairingState = {
+      token: restoredToken,
+      threadId: restoredThreadId,
+      threadKey: threadKeyFor(restoredThreadId),
+      expiresAtMs: Number.POSITIVE_INFINITY,
+      claimed: true,
+      clientId: null,
+    };
+    pairings.set(restored.token, restored);
+    pairingsByThread.set(restored.threadKey, restored);
+  }
 
   const resolvePairing = (token: string): PairingState | null => {
     const pairing = pairings.get(token);
@@ -370,6 +392,7 @@ export const ChatGptExternalBrowserLive = Layer.effect(
     return makeChatGptExternalBrowser({
       available: isLoopbackHost(config.host) && config.publicUrl === undefined,
       origin: () => new URL(credentials.mcpEndpointUrl).origin,
+      restoreToken: process.env.SYNARA_CHATGPT_DEBUG_PAIRING_TOKEN,
     });
   }),
 );

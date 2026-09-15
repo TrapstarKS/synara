@@ -32,7 +32,9 @@ function currentSessionInput(context: ToolContext): {
 
 function assertCodexSession(context: ToolContext): void {
   if (context.callerProvider !== MCP_PROVIDER) {
-    throw new ToolInputError("MCP runtime management is currently available for Codex sessions only.");
+    throw new ToolInputError(
+      "MCP runtime management is currently available for Codex sessions only.",
+    );
   }
 }
 
@@ -93,7 +95,9 @@ export function makeAgentGatewayMcpTools(input: {
       withMcpErrorHandling(
         Effect.gen(function* () {
           assertCodexSession(context);
-          const result = yield* input.providerService.reloadMcpServers(currentSessionInput(context));
+          const result = yield* input.providerService.reloadMcpServers(
+            currentSessionInput(context),
+          );
           return mcpToolResultJson(result);
         }),
       ),

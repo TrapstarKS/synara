@@ -25,7 +25,9 @@ import {
 import {
   buildCodexProcessEnv,
   disableCodexConfigSections,
+  serializeCodexConfigAccess,
   SYNARA_COMPETING_BROWSER_PLUGIN_SECTION_HEADERS,
+  waitForCodexConfigAccess,
 } from "./codexProcessEnv";
 import {
   buildCodexInitializeParams,
@@ -2395,19 +2397,161 @@ describe("CodexAppServerManager discovery", () => {
     });
 
     expect(sendRequest.mock.calls.map(([, method, params]) => [method, params])).toEqual([
-      ["config/value/write", {
-        keyPath: "mcp_servers.roblox.enabled",
-        mergeStrategy: "upsert",
-        value: false,
-      }],
+      [
+        "config/value/write",
+        {
+          keyPath: "mcp_servers.roblox.enabled",
+          mergeStrategy: "upsert",
+          value: false,
+        },
+      ],
       ["config/mcpServer/reload", null],
-      ["config/value/write", {
-        keyPath: "mcp_servers.roblox.enabled",
-        mergeStrategy: "upsert",
-        value: true,
-      }],
+      [
+        "config/value/write",
+        {
+          keyPath: "mcp_servers.roblox.enabled",
+          mergeStrategy: "upsert",
+          value: true,
+        },
+      ],
       ["config/mcpServer/reload", null],
     ]);
+  });
+
+  it("serializes a new MCP server write behind an in-flight overlay refresh", async () => {
+    const manager = new CodexAppServerManager();
+    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-mcp-queue-runtime-"));
+    const overlayHome = path.join(runtimeHome, "codex-home-overlay");
+    mkdirSync(overlayHome, { recursive: true });
+    const previousSynaraHome = process.env.SYNARA_HOME;
+    process.env.SYNARA_HOME = runtimeHome;
+
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const refresh = serializeCodexConfigAccess(overlayHome, () => refreshGate);
+
+    try {
+      const context = {
+        codexHomePath: overlayHome,
+      } as never;
+      vi.spyOn(
+        manager as unknown as {
+          resolveContextForDiscovery: (threadId?: string) => Promise<unknown>;
+        },
+        "resolveContextForDiscovery",
+      ).mockResolvedValue(context);
+      const sendRequest = vi
+        .spyOn(
+          manager as unknown as {
+            sendRequest: (...args: unknown[]) => Promise<unknown>;
+          },
+          "sendRequest",
+        )
+        .mockResolvedValue({});
+      vi.spyOn(
+        manager as unknown as {
+          listMcpServersFromContext: (context: unknown) => Promise<unknown>;
+        },
+        "listMcpServersFromContext",
+      ).mockResolvedValue({ servers: [] });
+
+      const addMcpServer = manager.addMcpServer({
+        provider: "codex",
+        threadId: ThreadId.makeUnsafe("thread_1"),
+        name: "roblox",
+        transport: "stdio",
+        command: "roblox-studio-mcp",
+      });
+
+      // The overlay refresh is still in flight, so the write must wait.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(sendRequest).not.toHaveBeenCalled();
+
+      releaseRefresh();
+      await expect(addMcpServer).resolves.toEqual({ action: "connected", servers: [] });
+      expect(sendRequest.mock.calls.map(([, method]) => method)).toEqual([
+        "config/value/write",
+        "config/mcpServer/reload",
+      ]);
+      await refresh;
+      await waitForCodexConfigAccess(overlayHome);
+    } finally {
+      releaseRefresh();
+      await refresh.catch(() => undefined);
+      if (previousSynaraHome === undefined) delete process.env.SYNARA_HOME;
+      else process.env.SYNARA_HOME = previousSynaraHome;
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes writes for a profile-specific Codex overlay", async () => {
+    const manager = new CodexAppServerManager();
+    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-mcp-profile-queue-runtime-"));
+    const profileOverlayHome = path.join(
+      runtimeHome,
+      "codex-home-overlays",
+      "profile-1",
+    );
+    mkdirSync(profileOverlayHome, { recursive: true });
+
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const refresh = serializeCodexConfigAccess(profileOverlayHome, () => refreshGate);
+
+    try {
+      const context = {
+        codexHomePath: profileOverlayHome,
+      } as never;
+      vi.spyOn(
+        manager as unknown as {
+          resolveContextForDiscovery: (threadId?: string) => Promise<unknown>;
+        },
+        "resolveContextForDiscovery",
+      ).mockResolvedValue(context);
+      const sendRequest = vi
+        .spyOn(
+          manager as unknown as {
+            sendRequest: (...args: unknown[]) => Promise<unknown>;
+          },
+          "sendRequest",
+        )
+        .mockResolvedValue({});
+      vi.spyOn(
+        manager as unknown as {
+          listMcpServersFromContext: (context: unknown) => Promise<unknown>;
+        },
+        "listMcpServersFromContext",
+      ).mockResolvedValue({ servers: [] });
+
+      const addMcpServer = manager.addMcpServer({
+        provider: "codex",
+        threadId: ThreadId.makeUnsafe("thread_profile"),
+        name: "roblox",
+        transport: "stdio",
+        command: "roblox-studio-mcp",
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(sendRequest).not.toHaveBeenCalled();
+
+      releaseRefresh();
+      await expect(addMcpServer).resolves.toEqual({ action: "connected", servers: [] });
+      expect(sendRequest.mock.calls.map(([, method]) => method)).toEqual([
+        "config/value/write",
+        "config/mcpServer/reload",
+      ]);
+      await refresh;
+    } finally {
+      releaseRefresh();
+      await refresh.catch(() => undefined);
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
   });
 
   it("uses a cwd-scoped discovery session instead of an unrelated active session", async () => {

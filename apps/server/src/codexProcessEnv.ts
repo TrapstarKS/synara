@@ -7,6 +7,7 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { CodexProfileId } from "@synara/contracts";
+import { Effect } from "effect";
 
 import { readActiveCodexProviderEnvKey } from "@synara/shared/codexConfig";
 import { SYNARA_MANAGED_CODEX_BIN_DIR_ENV } from "@synara/shared/managedCodexRuntime";
@@ -19,6 +20,8 @@ import {
 } from "@synara/shared/shell";
 
 import { resolveBaseCodexHomePath, resolveSynaraCodexHomeOverlayPath } from "./codexHomePaths.ts";
+import { writeFileStringAtomically } from "./atomicWrite.ts";
+import { CODEX_MCP_CONFIG_STATE_FILE, reconcileCodexMcpConfig } from "./codexMcpConfig.ts";
 import {
   buildProviderChildEnvironment,
   registerProviderCredentialKey,
@@ -598,10 +601,12 @@ function appendManagedCodexConfigSection(config: string, section: string): strin
   );
 }
 
-async function serializeCodexOverlayPreparation<A>(
+// MCP config/value/write requests and overlay refreshes share this queue.
+export async function serializeCodexConfigAccess<A>(
   overlayHomePath: string,
   prepare: () => Promise<A>,
 ): Promise<A> {
+  overlayHomePath = path.resolve(overlayHomePath);
   const previous = codexOverlayPreparationQueues.get(overlayHomePath) ?? Promise.resolve();
   const current = previous.catch(() => undefined).then(prepare);
   const queued = current.then(
@@ -616,6 +621,11 @@ async function serializeCodexOverlayPreparation<A>(
       codexOverlayPreparationQueues.delete(overlayHomePath);
     }
   }
+}
+
+/** Test seam: resolves once the queued config access for one overlay has settled. */
+export function waitForCodexConfigAccess(overlayHomePath: string): Promise<void> {
+  return codexOverlayPreparationQueues.get(path.resolve(overlayHomePath)) ?? Promise.resolve();
 }
 
 async function prepareSynaraCodexHomeOverlayUnlocked(input: {
@@ -644,7 +654,7 @@ async function prepareSynaraCodexHomeOverlayUnlocked(input: {
     // Auth must get a best-effort link/copy before optional entries whose
     // symlinks may fail on restricted Windows installs.
     for (const entry of prioritizeCodexOverlayEntries(await fs.readdir(sourceHomePath))) {
-      if (entry === "config.toml") {
+      if (entry === "config.toml" || entry === CODEX_MCP_CONFIG_STATE_FILE) {
         continue;
       }
       const sourcePath = path.join(sourceHomePath, entry);
@@ -678,18 +688,21 @@ async function prepareSynaraCodexHomeOverlayUnlocked(input: {
     ]),
   ].slice(0, MAX_CONFIG_SUPPRESSION_SECTIONS);
   const overlayConfigPath = path.join(overlayHomePath, "config.toml");
-  let overlayConfig = disableCodexConfigSections(sourceConfig, suppressedSections, true);
+  const previousOverlayConfig = await readOptionalConfigFile(overlayConfigPath);
+  const mcpStatePath = path.join(overlayHomePath, CODEX_MCP_CONFIG_STATE_FILE);
+  const previousMcpState = await readOptionalConfigFile(mcpStatePath);
   const managedSection =
-    input.appendConfigToml ??
-    (await fs
-      .readFile(overlayConfigPath, "utf8")
-      .then(extractManagedCodexConfigSection)
-      .catch((cause: unknown) => {
-        if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
-          return undefined;
-        }
-        throw cause;
-      }));
+    input.appendConfigToml ?? extractManagedCodexConfigSection(previousOverlayConfig ?? "");
+  const reconciled = reconcileCodexMcpConfig({
+    sourceConfig,
+    ...(previousOverlayConfig !== undefined ? { overlayConfig: previousOverlayConfig } : {}),
+    ...(previousMcpState !== undefined ? { stateText: previousMcpState } : {}),
+    managedServerNames:
+      managedSection && configHasTomlTableHeader(managedSection, SYNARA_MANAGED_MCP_TABLE_HEADER)
+        ? ["synara"]
+        : [],
+  });
+  let overlayConfig = disableCodexConfigSections(reconciled.config, suppressedSections, true);
   if (managedSection) {
     overlayConfig = appendManagedCodexConfigSection(overlayConfig, managedSection);
     const tokenEnvVar = /bearer_token_env_var\s*=\s*"([^"]+)"/.exec(managedSection)?.[1];
@@ -697,11 +710,28 @@ async function prepareSynaraCodexHomeOverlayUnlocked(input: {
       overlayConfig = mergeShellEnvPolicyExclude(overlayConfig, tokenEnvVar);
     }
   }
-  await fs.writeFile(overlayConfigPath, overlayConfig, {
-    encoding: "utf8",
-    ...(input.profileId ? { mode: 0o600 } : {}),
-  });
+  // Avoid touching a live config unnecessarily. Atomic replacement also keeps
+  // concurrent Codex readers from observing an empty/partially written file and
+  // re-applies the private file mode to the replacement.
+  if (overlayConfig !== previousOverlayConfig) {
+    await Effect.runPromise(
+      writeFileStringAtomically({
+        filePath: overlayConfigPath,
+        contents: overlayConfig,
+      }),
+    );
+  }
   if (input.profileId) await fs.chmod(overlayConfigPath, 0o600);
+  // Config first: if interrupted before bookkeeping commits, the next refresh
+  // conservatively treats the surviving values as user edits instead of losing them.
+  if (reconciled.stateText !== previousMcpState) {
+    await Effect.runPromise(
+      writeFileStringAtomically({
+        filePath: mcpStatePath,
+        contents: reconciled.stateText,
+      }),
+    );
+  }
   await writeSynaraConfigSuppressions(suppressionMarkerPath, suppressedSections);
 
   return overlayHomePath;
@@ -722,9 +752,16 @@ async function prepareSynaraCodexHomeOverlay(input: {
   if (path.resolve(sourceHomePath) === path.resolve(overlayHomePath)) {
     return undefined;
   }
-  return serializeCodexOverlayPreparation(overlayHomePath, () =>
+  return serializeCodexConfigAccess(overlayHomePath, () =>
     prepareSynaraCodexHomeOverlayUnlocked(input),
   );
+}
+
+async function readOptionalConfigFile(filePath: string): Promise<string | undefined> {
+  return fs.readFile(filePath, "utf8").catch((cause: unknown) => {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw cause;
+  });
 }
 
 export async function buildCodexProcessEnv(

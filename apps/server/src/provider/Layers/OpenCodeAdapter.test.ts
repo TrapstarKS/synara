@@ -5042,12 +5042,12 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
     ]);
   });
 
-  it("fails a turn when OpenCode stays busy without provider activity", async () => {
+  it("fails a turn when OpenCode stays idle without provider activity", async () => {
     const runtime = createMockOpenCodeRuntime({
       promptAsync: async () => ({ data: null }),
       status: async () => ({
         data: {
-          "opencode-session-1": { type: "busy" },
+          "opencode-session-1": { type: "idle" },
         },
       }),
     });
@@ -5121,6 +5121,55 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
       lastError: expect.stringContaining("stopped responding"),
     });
     expect(runtime.abortCalls).toContainEqual({ sessionID: "opencode-session-1" });
+  });
+
+  it("does not abort a busy OpenCode turn while the provider is still processing", async () => {
+    const runtime = createMockOpenCodeRuntime({
+      promptAsync: async () => ({ data: null }),
+      status: async () => ({
+        data: {
+          "opencode-session-1": { type: "busy" },
+        },
+      }),
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        yield* adapter.startSession({
+          provider: "opencode",
+          threadId: asThreadId("thread-opencode-busy-no-activity"),
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: asThreadId("thread-opencode-busy-no-activity"),
+          input: "hello",
+          attachments: [],
+          modelSelection: {
+            provider: "opencode",
+            model: "opencode/deepseek-chat",
+          },
+        });
+        yield* Effect.sleep(80);
+        return [...runtime.abortCalls];
+      }).pipe(
+        Effect.provide(
+          makeOpenCodeAdapterLive({
+            runtime: runtime.runtime,
+            promptSubmissionInlineWaitMs: 1,
+            snapshotWatchdogPollMs: 5,
+            turnNoActivityTimeoutMs: 30,
+          }).pipe(
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-test-" }),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+
+    expect(result).toEqual([]);
   });
 
   it("keeps immediate OpenCode prompt failures on the sendTurn failure path", async () => {

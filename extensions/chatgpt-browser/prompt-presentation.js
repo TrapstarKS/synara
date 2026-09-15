@@ -9,7 +9,9 @@
   if (window[ACTIVE]) return;
   window[ACTIVE] = true;
 
-  const TURN = 'section[data-testid^="conversation-turn"]';
+  // ChatGPT has used both section and article roots for turns.
+  const TURN =
+    'section[data-testid^="conversation-turn"], article[data-testid^="conversation-turn"]';
   const ROLE = '[data-message-author-role="user"]';
   const USER_TEXT = ".whitespace-pre-wrap, .markdown";
   const DISPLAY = "[data-synara-user-text]";
@@ -120,16 +122,21 @@
     const holder =
       anchor.closest?.("[data-message-id]") || anchor.querySelector?.("[data-message-id]");
     const messageId = holder?.getAttribute?.("data-message-id") || null;
-    const source = modelUserText(section, messageId);
-    if (source === null) return;
-    const authored = source === null ? null : authoredPromptText(source);
+    const raw = rawBlocks(anchor);
+    if (raw.length === 0) return;
+    // React's Fiber is useful when available because it is the untruncated
+    // native message model. It is not a requirement: ChatGPT can omit that
+    // private field in a live renderer, while the exact framed text is still
+    // present in the visible message DOM. The strict length-prefixed frame
+    // parser makes that fallback safe for ordinary user messages.
+    const source =
+      modelUserText(section, messageId) ?? raw.map((block) => block.textContent || "").join("\n");
+    const authored = authoredPromptText(source);
     if (authored === null) {
       settledSections.add(section);
       return;
     }
 
-    const raw = rawBlocks(anchor);
-    if (raw.length === 0) return;
     let display = anchor.querySelector(DISPLAY);
     if (!display) {
       display = document.createElement("div");

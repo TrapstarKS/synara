@@ -27,9 +27,30 @@ export interface ThreadModelSummary {
   fastMode: boolean;
 }
 
+const LUNA_SUBAGENT_MODEL = "gpt-5.6-luna";
+
+/**
+ * The managed Codex runtime assigns Luna child agents to the Fast service tier
+ * outside of ModelSelection, so the persisted selection cannot carry this bit.
+ */
+export function isLunaFastSubagent(input: {
+  provider: ProviderKind;
+  model: string;
+  parentThreadId?: string | null;
+}): boolean {
+  return (
+    input.provider === "codex" &&
+    input.parentThreadId != null &&
+    input.model.trim().toLowerCase() === LUNA_SUBAGENT_MODEL
+  );
+}
+
 export function resolveThreadModelSummary(
   modelSelection: ModelSelection | null | undefined,
   runtimeModel?: ProviderModelDescriptor,
+  options?: {
+    fastModeOverride?: boolean;
+  },
 ): ThreadModelSummary | null {
   if (!modelSelection) {
     return null;
@@ -61,6 +82,6 @@ export function resolveThreadModelSummary(
     statusLabel:
       resolveComposerTraitStatusLabel(traits) ??
       (storedCodexEffort ? runtimeEffortLabel(storedCodexEffort) : null),
-    fastMode: showsComposerFastModeBadge(traits),
+    fastMode: options?.fastModeOverride === true || showsComposerFastModeBadge(traits),
   };
 }

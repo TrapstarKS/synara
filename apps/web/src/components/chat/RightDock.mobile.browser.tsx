@@ -102,11 +102,10 @@ it("restores a custom desktop width after the dock remounts", async () => {
     try {
       await expect.element(page.getByText("Desktop image gallery")).toBeVisible();
       await expect
-        .poll(
-          () =>
-            document
-              .querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")
-              ?.style.getPropertyValue("--sidebar-width"),
+        .poll(() =>
+          document
+            .querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")
+            ?.style.getPropertyValue("--sidebar-width"),
         )
         .toBe("432px");
     } finally {
@@ -116,11 +115,10 @@ it("restores a custom desktop width after the dock remounts", async () => {
     const secondScreen = await renderDock();
     try {
       await expect
-        .poll(
-          () =>
-            document
-              .querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")
-              ?.style.getPropertyValue("--sidebar-width"),
+        .poll(() =>
+          document
+            .querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")
+            ?.style.getPropertyValue("--sidebar-width"),
         )
         .toBe("432px");
     } finally {

@@ -27,6 +27,9 @@ const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "calc(100vw - var(--spacing(3)))";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
+const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28;
+const MOBILE_SIDEBAR_SWIPE_TRIGGER_PX = 56;
+const MOBILE_SIDEBAR_SWIPE_AXIS_LOCK_PX = 8;
 
 /**
  * Soft "drawer" easing for the offcanvas open/close slide, overriding the shell's
@@ -107,6 +110,7 @@ function SidebarProvider({
   onOpenChange: setOpenProp,
   mobileOpen: mobileOpenProp,
   onMobileOpenChange: setMobileOpenProp,
+  mobileSwipeSide: mobileSwipeSideProp,
   className,
   style,
   children,
@@ -117,18 +121,22 @@ function SidebarProvider({
   onOpenChange?: (open: boolean) => void;
   mobileOpen?: boolean;
   onMobileOpenChange?: (open: boolean) => void;
+  mobileSwipeSide?: "left" | "right";
 }) {
   const defaultOpen = defaultOpenProp ?? true;
   const isMobile = useIsMobile();
+  const mobileSwipeSide = mobileSwipeSideProp ?? "left";
   const [_openMobile, _setOpenMobile] = React.useState(false);
   const openMobile = mobileOpenProp ?? _openMobile;
+  const openMobileRef = React.useRef(openMobile);
+  openMobileRef.current = openMobile;
   const setOpenMobile = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
-      const next = typeof value === "function" ? value(openMobile) : value;
+      const next = typeof value === "function" ? value(openMobileRef.current) : value;
       setMobileOpenProp?.(next);
       if (mobileOpenProp === undefined) _setOpenMobile(next);
     },
-    [mobileOpenProp, openMobile, setMobileOpenProp],
+    [mobileOpenProp, setMobileOpenProp],
   );
 
   // This is the internal state of the sidebar.
@@ -154,6 +162,158 @@ function SidebarProvider({
     },
     [setOpenProp, open],
   );
+
+  const mobileSwipeRef = React.useRef<{
+    action: "open" | "close";
+    pointerId: number;
+    startX: number;
+    startY: number;
+    horizontal: boolean;
+    cancelled: boolean;
+  } | null>(null);
+  const suppressSwipeClickRef = React.useRef(false);
+  const suppressSwipeClickTimeoutRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    if (!isMobile || typeof document === "undefined") {
+      return;
+    }
+
+    const clearSwipe = () => {
+      mobileSwipeRef.current = null;
+    };
+
+    const isInteractiveElement = (target: EventTarget | null): boolean => {
+      return (
+        target instanceof Element &&
+        target.closest("input, textarea, select, [contenteditable='true']") !== null
+      );
+    };
+
+    const resolveSwipeProgress = (
+      event: PointerEvent,
+      swipe: NonNullable<typeof mobileSwipeRef.current>,
+    ) => {
+      const deltaX = event.clientX - swipe.startX;
+      const direction = mobileSwipeSide === "left" ? 1 : -1;
+      const directionalDelta = deltaX * direction;
+      return swipe.action === "open" ? directionalDelta : -directionalDelta;
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!event.isPrimary || (event.pointerType !== "touch" && event.pointerType !== "pen")) {
+        return;
+      }
+
+      const target = event.target;
+      const targetElement = target instanceof Element ? target : null;
+      const sidebarPopup = targetElement?.closest<HTMLElement>(
+        `[data-mobile="true"][data-sidebar-side="${mobileSwipeSide}"]`,
+      );
+      const edgeDistance =
+        mobileSwipeSide === "left" ? event.clientX : window.innerWidth - event.clientX;
+      const isMobileOpen = openMobileRef.current;
+      const isOpening = !isMobileOpen && edgeDistance <= MOBILE_SIDEBAR_SWIPE_EDGE_PX;
+      const isClosing = isMobileOpen && sidebarPopup !== null && !isInteractiveElement(target);
+
+      if (!isOpening && !isClosing) {
+        return;
+      }
+
+      mobileSwipeRef.current = {
+        action: isOpening ? "open" : "close",
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        horizontal: false,
+        cancelled: false,
+      };
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const swipe = mobileSwipeRef.current;
+      if (!swipe || swipe.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const deltaX = event.clientX - swipe.startX;
+      const deltaY = event.clientY - swipe.startY;
+      if (!swipe.horizontal) {
+        if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < MOBILE_SIDEBAR_SWIPE_AXIS_LOCK_PX) {
+          return;
+        }
+        if (Math.abs(deltaY) > Math.abs(deltaX) || resolveSwipeProgress(event, swipe) <= 0) {
+          swipe.cancelled = true;
+          return;
+        }
+        swipe.horizontal = true;
+      }
+
+      if (
+        !swipe.cancelled &&
+        resolveSwipeProgress(event, swipe) >= MOBILE_SIDEBAR_SWIPE_TRIGGER_PX
+      ) {
+        event.preventDefault();
+      }
+    };
+
+    const handlePointerEnd = (event: PointerEvent) => {
+      const swipe = mobileSwipeRef.current;
+      if (!swipe || swipe.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const shouldCommit =
+        !swipe.cancelled &&
+        swipe.horizontal &&
+        resolveSwipeProgress(event, swipe) >= MOBILE_SIDEBAR_SWIPE_TRIGGER_PX;
+      if (shouldCommit) {
+        event.preventDefault();
+        suppressSwipeClickRef.current = true;
+        if (suppressSwipeClickTimeoutRef.current !== null) {
+          window.clearTimeout(suppressSwipeClickTimeoutRef.current);
+        }
+        suppressSwipeClickTimeoutRef.current = window.setTimeout(() => {
+          suppressSwipeClickRef.current = false;
+          suppressSwipeClickTimeoutRef.current = null;
+        }, 400);
+        setOpenMobile(swipe.action === "open");
+      }
+      clearSwipe();
+    };
+
+    const handleClickCapture = (event: MouseEvent) => {
+      if (!suppressSwipeClickRef.current) {
+        return;
+      }
+      suppressSwipeClickRef.current = false;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("pointermove", handlePointerMove, {
+      capture: true,
+      passive: false,
+    });
+    document.addEventListener("pointerup", handlePointerEnd, true);
+    document.addEventListener("pointercancel", handlePointerEnd, true);
+    document.addEventListener("click", handleClickCapture, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("pointermove", handlePointerMove, true);
+      document.removeEventListener("pointerup", handlePointerEnd, true);
+      document.removeEventListener("pointercancel", handlePointerEnd, true);
+      document.removeEventListener("click", handleClickCapture, true);
+      clearSwipe();
+      if (suppressSwipeClickTimeoutRef.current !== null) {
+        window.clearTimeout(suppressSwipeClickTimeoutRef.current);
+        suppressSwipeClickTimeoutRef.current = null;
+      }
+      suppressSwipeClickRef.current = false;
+    };
+  }, [isMobile, mobileSwipeSide, setOpenMobile]);
 
   // Helper to toggle the sidebar.
   const toggleSidebar = React.useCallback(() => {
@@ -315,12 +475,14 @@ function Sidebar({
             )}
             data-mobile="true"
             data-sidebar="sidebar"
+            data-sidebar-side={side}
             data-slot="sidebar"
             showCloseButton={false}
             side={side}
             style={
               {
                 "--sidebar-width": SIDEBAR_WIDTH_MOBILE,
+                paddingBlock: "env(safe-area-inset-top) env(safe-area-inset-bottom)",
               } as React.CSSProperties
             }
           >
@@ -402,11 +564,13 @@ function Sidebar({
 }
 
 function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar();
+  const { isMobile, open, openMobile, toggleSidebar } = useSidebar();
+  const expanded = isMobile ? openMobile : open;
 
   return (
     <Button
       className={cn("size-7", className)}
+      aria-expanded={expanded}
       data-sidebar="trigger"
       data-slot="sidebar-trigger"
       onClick={(event) => {

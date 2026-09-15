@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, it } from "vitest";
+import { beforeEach, expect, it } from "vitest";
 
 const SOURCE = readFileSync(
   resolve(
@@ -23,6 +23,10 @@ declare const document: {
   readonly body: { innerHTML: string };
   readonly querySelector: (selector: string) => unknown;
 };
+
+beforeEach(() => {
+  delete (window as Record<string, unknown>)["__synaraPromptPresentationV1"];
+});
 
 it("presents the authored tail while retaining the native framed message", () => {
   document.body.innerHTML = `
@@ -90,4 +94,30 @@ it("presents the authored tail while retaining the native framed message", () =>
   expect(display?.textContent).toBe("oi");
   expect(hidden?.style?.display).toBe("none");
   expect(ordinaryText?.textContent).toBe("ordinary message");
+});
+
+it("presents a framed prompt from the live DOM when React Fiber is unavailable", () => {
+  document.body.innerHTML = `
+    <article data-testid="conversation-turn-1" data-turn="user">
+      <div data-message-author-role="user" data-message-id="user-1">
+        <div class="whitespace-pre-wrap">[[COS_CONTEXT:16]]
+internal
+context
+[[/COS_CONTEXT]]
+
+oi</div>
+      </div>
+    </article>
+  `;
+
+  new Function(SOURCE)();
+
+  const display = document.querySelector("[data-synara-user-text]") as {
+    readonly textContent?: string | null;
+  } | null;
+  const hidden = document.querySelector("[data-synara-prompt-hidden]") as {
+    readonly style?: { readonly display?: string };
+  } | null;
+  expect(display?.textContent).toBe("oi");
+  expect(hidden?.style?.display).toBe("none");
 });

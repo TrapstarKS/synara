@@ -45,7 +45,9 @@ it.runIf(process.platform === "win32")(
         platform: "win32",
         env,
       });
-      expect(command).toMatchObject({ options: { windowsHide: true, windowsVerbatimArguments: true } });
+      expect(command).toMatchObject({
+        options: { windowsHide: true, windowsVerbatimArguments: true },
+      });
 
       const exitCode = await Effect.runPromise(
         Effect.gen(function* () {

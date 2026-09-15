@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { parse } from "smol-toml";
 import { describe, expect, it, vi } from "vitest";
 
 import { CodexProfileId } from "@synara/contracts";
@@ -13,7 +14,41 @@ import {
   linkOrCopyCodexOverlayEntry,
   prioritizeCodexOverlayEntries,
 } from "./codexProcessEnv";
+import { CODEX_MCP_CONFIG_STATE_FILE } from "./codexMcpConfig";
 import { isProviderCredentialKey } from "./providerChildEnvironment.ts";
+
+// Mirrors how the Synara MCP server block is appended per session: it must
+// never count as user content when the overlay config is reconciled.
+function codexMcpServerBlock(): string {
+  return [
+    "[mcp_servers.roblox]",
+    'command = "roblox-studio-mcp"',
+    'args = ["--port", "44755"]',
+  ].join("\n");
+}
+
+function readMcpState(overlayHome: string): { applied: Record<string, string>; owned: string[] } {
+  return JSON.parse(readFileSync(path.join(overlayHome, CODEX_MCP_CONFIG_STATE_FILE), "utf8")) as {
+    applied: Record<string, string>;
+    owned: string[];
+  };
+}
+
+function readOverlayConfig(overlayHome: string): string {
+  return readFileSync(path.join(overlayHome, "config.toml"), "utf8");
+}
+
+/** Overlay config re-serialized by the reconciler: assert values, not formatting. */
+function readOverlayConfigToml(overlayHome: string): Record<string, unknown> {
+  return parse(readOverlayConfig(overlayHome), { integersAsBigInt: true }) as Record<
+    string,
+    unknown
+  >;
+}
+
+function readMcpServers(overlayHome: string): Record<string, unknown> {
+  return (readOverlayConfigToml(overlayHome).mcp_servers ?? {}) as Record<string, unknown>;
+}
 
 describe("linkOrCopyCodexOverlayEntry", () => {
   it("hard-links auth.json when symlinks are unavailable", async () => {
@@ -129,9 +164,7 @@ describe("buildCodexProcessEnv", () => {
     const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-path-runtime-"));
     writeFileSync(
       path.join(sourceHome, "config.toml"),
-      ['model_provider = "acme"', "", "[model_providers.acme]", 'env_key = "ACME_KEY"'].join(
-        "\n",
-      ),
+      ['model_provider = "acme"', "", "[model_providers.acme]", 'env_key = "ACME_KEY"'].join("\n"),
     );
 
     try {
@@ -275,8 +308,162 @@ describe("buildCodexProcessEnv", () => {
         '[mcp_servers.user-tool]\nurl = "http://127.0.0.1:2222/user-tool"',
       );
       expect(overlayConfig).toContain('inherit = "core"');
-      expect(overlayConfig).toContain('exclude = ["SYNARA_AGENT_GATEWAY_TOKEN", "USER_SECRET"]');
+      expect(
+        (readOverlayConfigToml(overlayHome).shell_environment_policy as { exclude: string[] })
+          .exclude,
+      ).toEqual(["SYNARA_AGENT_GATEWAY_TOKEN", "USER_SECRET"]);
       expect(readFileSync(sourceConfigPath, "utf8")).toBe(sourceConfig);
+
+      const state = readMcpState(overlayHome);
+      expect(Object.keys(state.applied).sort()).toEqual(["synara-other", "user-tool"]);
+      expect(state.applied).not.toHaveProperty("synara");
+      expect(state.owned).toEqual([]);
+    } finally {
+      rmSync(sourceHome, { recursive: true, force: true });
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an MCP server added through a session across thread switches and restarts", async () => {
+    const sourceHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-mcp-source-"));
+    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-mcp-runtime-"));
+    const sourceConfig = [
+      'model = "gpt-5.5"',
+      "",
+      "[mcp_servers.user-tool]",
+      'url = "http://127.0.0.1:2222/user-tool"',
+    ].join("\n");
+    const sourceConfigPath = path.join(sourceHome, "config.toml");
+    writeFileSync(sourceConfigPath, sourceConfig, "utf8");
+    const managedConfig = [
+      "[mcp_servers.synara]",
+      'url = "http://127.0.0.1:3773/mcp"',
+      'bearer_token_env_var = "SYNARA_AGENT_GATEWAY_TOKEN"',
+    ].join("\n");
+
+    try {
+      // Thread 1: the first session seeds the overlay and its bookkeeping.
+      const firstEnv = await buildCodexProcessEnv({
+        env: { SYNARA_HOME: runtimeHome },
+        homePath: sourceHome,
+        platform: "darwin",
+        appendConfigToml: managedConfig,
+      });
+      const overlayHome = firstEnv.CODEX_HOME;
+      if (!overlayHome) {
+        throw new Error("Expected a Synara Codex home overlay.");
+      }
+
+      // The user (or the agent, through `synara_mcp_add`) writes the server
+      // into the overlay only: this is what codex `config/value/write` does.
+      writeFileSync(
+        path.join(overlayHome, "config.toml"),
+        `${readOverlayConfig(overlayHome)}\n\n${codexMcpServerBlock()}\n`,
+        "utf8",
+      );
+
+      // Thread 2: opening another thread refreshes the overlay from source.
+      await buildCodexProcessEnv({
+        env: { SYNARA_HOME: runtimeHome },
+        homePath: sourceHome,
+        platform: "darwin",
+        appendConfigToml: managedConfig,
+      });
+
+      const afterSecondThread = readOverlayConfig(overlayHome);
+      expect(afterSecondThread.match(/^\[mcp_servers\.synara\]$/gm)).toHaveLength(1);
+      expect(readMcpServers(overlayHome).roblox).toEqual({
+        command: "roblox-studio-mcp",
+        args: ["--port", "44755"],
+      });
+      expect(readMcpState(overlayHome).owned).toContain("roblox");
+
+      // Application restart: the next session refreshes the same overlay again.
+      await buildCodexProcessEnv({
+        env: { SYNARA_HOME: runtimeHome },
+        homePath: sourceHome,
+        platform: "darwin",
+        appendConfigToml: managedConfig,
+      });
+
+      expect(readMcpServers(overlayHome)).toEqual({
+        "user-tool": { url: "http://127.0.0.1:2222/user-tool" },
+        roblox: { command: "roblox-studio-mcp", args: ["--port", "44755"] },
+        synara: {
+          url: "http://127.0.0.1:3773/mcp",
+          bearer_token_env_var: "SYNARA_AGENT_GATEWAY_TOKEN",
+        },
+      });
+      expect(readFileSync(sourceConfigPath, "utf8")).toBe(sourceConfig);
+    } finally {
+      rmSync(sourceHome, { recursive: true, force: true });
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("adopts MCP servers from an overlay written by a build without bookkeeping", async () => {
+    const sourceHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-mcp-upgrade-source-"));
+    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-mcp-upgrade-runtime-"));
+    const sourceConfig = 'model = "gpt-5.5"';
+    writeFileSync(path.join(sourceHome, "config.toml"), sourceConfig, "utf8");
+
+    try {
+      const overlayHome = path.join(runtimeHome, "codex-home-overlay");
+      mkdirSync(overlayHome, { recursive: true });
+      writeFileSync(
+        path.join(overlayHome, "config.toml"),
+        [`${sourceConfig}\n`, codexMcpServerBlock()].join("\n"),
+        "utf8",
+      );
+
+      const env = await buildCodexProcessEnv({
+        env: { SYNARA_HOME: runtimeHome },
+        homePath: sourceHome,
+        platform: "darwin",
+      });
+      if (!env.CODEX_HOME) {
+        throw new Error("Expected a Synara Codex home overlay.");
+      }
+
+      expect(readOverlayConfig(overlayHome)).toContain("[mcp_servers.roblox]");
+      expect(readMcpState(overlayHome).owned).toContain("roblox");
+      expect(readFileSync(path.join(sourceHome, "config.toml"), "utf8")).toBe(sourceConfig);
+    } finally {
+      rmSync(sourceHome, { recursive: true, force: true });
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes concurrent overlay refreshes for the same Codex home", async () => {
+    const sourceHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-mcp-race-source-"));
+    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-mcp-race-runtime-"));
+    writeFileSync(
+      path.join(sourceHome, "config.toml"),
+      ['model = "gpt-5.5"', "", "[mcp_servers.user-tool]", 'command = "user-tool"'].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const envs = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          buildCodexProcessEnv({
+            env: { SYNARA_HOME: runtimeHome },
+            homePath: sourceHome,
+            platform: "darwin",
+          }),
+        ),
+      );
+      const overlayHome = envs[0]?.CODEX_HOME;
+      if (!overlayHome) {
+        throw new Error("Expected a Synara Codex home overlay.");
+      }
+      for (const env of envs) {
+        expect(env.CODEX_HOME).toBe(overlayHome);
+      }
+
+      const overlayConfig = readOverlayConfig(overlayHome);
+      expect(overlayConfig.match(/^\[mcp_servers\.user-tool\]$/gm)).toHaveLength(1);
+      expect(readMcpState(overlayHome).owned).toEqual([]);
     } finally {
       rmSync(sourceHome, { recursive: true, force: true });
       rmSync(runtimeHome, { recursive: true, force: true });

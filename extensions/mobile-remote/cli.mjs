@@ -23,7 +23,10 @@ const request = http.request(
     socketPath: adminAddress(directory),
     path: "/" + command,
     method: command === "devices" ? "GET" : "POST",
-    headers: { "Content-Type": "application/json", ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}),
+    },
   },
   (response) => {
     let raw = "";

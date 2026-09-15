@@ -144,10 +144,7 @@ import {
   isReplaySafeClaimedProviderIntent,
   type ProviderIntentEvent,
 } from "../providerIntentClassification.ts";
-import {
-  deriveTurnStartModelSelection,
-  deriveTurnStartSession,
-} from "../turnStartSession.ts";
+import { deriveTurnStartModelSelection, deriveTurnStartSession } from "../turnStartSession.ts";
 import { TurnCheckpointCoordinator } from "../Services/TurnCheckpointCoordinator.ts";
 import {
   resolveProviderSessionThread as resolveProviderSessionThreadFromProjection,
@@ -228,9 +225,7 @@ const runBoundedProviderCall = <E, R>(input: {
     Effect.forkDetach(input.call),
     (fiber) =>
       Effect.raceFirst(
-        Fiber.await(fiber).pipe(
-          Effect.map((exit) => ({ _tag: "completed" as const, exit })),
-        ),
+        Fiber.await(fiber).pipe(Effect.map((exit) => ({ _tag: "completed" as const, exit }))),
         Effect.sleep(input.timeout).pipe(Effect.as({ _tag: "timeout" as const })),
       ).pipe(
         Effect.flatMap((result): Effect.Effect<BoundedProviderCallResult<E>, E> => {
@@ -5196,9 +5191,7 @@ const make = Effect.gen(function* () {
       }
     });
 
-    const retireStaleUnclaimedTurnStart = Effect.fnUntraced(function* (
-      event: ProviderIntentEvent,
-    ) {
+    const retireStaleUnclaimedTurnStart = Effect.fnUntraced(function* (event: ProviderIntentEvent) {
       if (event.type !== "thread.turn-start-requested") return false;
       const occurredAt = Date.parse(event.occurredAt);
       if (

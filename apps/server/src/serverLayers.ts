@@ -312,8 +312,9 @@ export function makeServerApplicationLayers() {
   const chatGptConnectorLayer: ChatGptConnectorLayer = ChatGptConnectorLive.pipe(
     Layer.provide(Layer.orDie(ProviderCredentialsLive)),
   );
-  const chatGptExternalBrowserLayer: ChatGptExternalBrowserLayer =
-    ChatGptExternalBrowserLive.pipe(Layer.provide(agentGatewayCredentialsLayer));
+  const chatGptExternalBrowserLayer: ChatGptExternalBrowserLayer = ChatGptExternalBrowserLive.pipe(
+    Layer.provide(agentGatewayCredentialsLayer),
+  );
   // Provider start/discovery gates must observe the same settings instance as
   // the RPC layer. Reusing this layer in the final graph lets Effect memoize a
   // single ServerSettings service instead of capturing private defaults.

@@ -214,17 +214,15 @@ const installOpenCodeGatewayMcp = Effect.fn("installOpenCodeGatewayMcp")(functio
   readonly displayName: string;
   readonly connection: AgentGatewaySessionLease["connection"];
 }) {
-  const result = yield* runOpenCodeSdkWithTimeout(
-    "mcp.add",
-    (signal) =>
-      input.client.mcp.add(
-        {
-          directory: input.directory,
-          name: SYNARA_MCP_SERVER_NAME,
-          config: buildOpenCodeMcpServer(input.connection),
-        },
-        { signal },
-      ),
+  const result = yield* runOpenCodeSdkWithTimeout("mcp.add", (signal) =>
+    input.client.mcp.add(
+      {
+        directory: input.directory,
+        name: SYNARA_MCP_SERVER_NAME,
+        config: buildOpenCodeMcpServer(input.connection),
+      },
+      { signal },
+    ),
   );
   const status = result.data?.[SYNARA_MCP_SERVER_NAME];
   if (status?.status === "connected") {
@@ -1266,11 +1264,7 @@ const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
 
   yield* runOpenCodeSdkWithTimeout(
     "session.abort",
-    (signal) =>
-      context.client.session.abort(
-        { sessionID: context.openCodeSessionId },
-        { signal },
-      ),
+    (signal) => context.client.session.abort({ sessionID: context.openCodeSessionId }, { signal }),
     OPENCODE_CONTROL_REQUEST_TIMEOUT_MS,
   ).pipe(Effect.ignore({ log: true }));
 
@@ -1308,7 +1302,8 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
       const promptSubmissionInlineWaitMs =
         options?.promptSubmissionInlineWaitMs ?? OPENCODE_PROMPT_SUBMISSION_INLINE_WAIT_MS;
       const promptSubmissionTimeoutMs =
-        positiveInteger(options?.promptSubmissionTimeoutMs) ?? OPENCODE_PROMPT_SUBMISSION_TIMEOUT_MS;
+        positiveInteger(options?.promptSubmissionTimeoutMs) ??
+        OPENCODE_PROMPT_SUBMISSION_TIMEOUT_MS;
       const turnNoActivityTimeoutMs =
         positiveInteger(options?.turnNoActivityTimeoutMs) ?? OPENCODE_TURN_NO_ACTIVITY_TIMEOUT_MS;
       const permissionReplyAckDelaysMs =
@@ -1316,8 +1311,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
           (delayMs) => Number.isFinite(delayMs) && delayMs > 0,
         ) ?? OPENCODE_PERMISSION_REPLY_ACK_DELAYS_MS;
       const prematureIdleCompletionGraceMs = options?.prematureIdleCompletionGraceMs ?? 10_000;
-      const snapshotWatchdogPollMs =
-        positiveInteger(options?.snapshotWatchdogPollMs) ?? 500;
+      const snapshotWatchdogPollMs = positiveInteger(options?.snapshotWatchdogPollMs) ?? 500;
       const nativeEventLogger =
         options?.nativeEventLogger ??
         (options?.nativeEventLogPath !== undefined
@@ -1451,10 +1445,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         yield* runOpenCodeSdkWithTimeout(
           "session.abort",
           (signal) =>
-            context.client.session.abort(
-              { sessionID: context.openCodeSessionId },
-              { signal },
-            ),
+            context.client.session.abort({ sessionID: context.openCodeSessionId }, { signal }),
           OPENCODE_CONTROL_REQUEST_TIMEOUT_MS,
         ).pipe(Effect.ignore({ log: true }));
         yield* releaseOpenCodeSessionResources(context);
@@ -1946,13 +1937,8 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             readonly raw: unknown;
           },
         ) {
-          const messagesResponse = yield* runOpenCodeSdkWithTimeout(
-            "session.messages",
-            (signal) =>
-              context.client.session.messages(
-                { sessionID: context.openCodeSessionId },
-                { signal },
-              ),
+          const messagesResponse = yield* runOpenCodeSdkWithTimeout("session.messages", (signal) =>
+            context.client.session.messages({ sessionID: context.openCodeSessionId }, { signal }),
           ).pipe(
             Effect.catchCause(() =>
               Effect.succeed(
@@ -2050,13 +2036,8 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
           if (!parentSessionId) {
             break;
           }
-          const response = yield* runOpenCodeSdkWithTimeout(
-            "session.children",
-            (signal) =>
-              context.client.session.children(
-                { sessionID: parentSessionId },
-                { signal },
-              ),
+          const response = yield* runOpenCodeSdkWithTimeout("session.children", (signal) =>
+            context.client.session.children({ sessionID: parentSessionId }, { signal }),
           );
           for (const child of response.data ?? []) {
             if (
@@ -3150,13 +3131,8 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
       const loadCurrentMessageSnapshots = Effect.fn("loadCurrentMessageSnapshots")(function* (
         context: OpenCodeSessionContext,
       ) {
-        const messages = yield* runOpenCodeSdkWithTimeout(
-          "session.messages",
-          (signal) =>
-            context.client.session.messages(
-              { sessionID: context.openCodeSessionId },
-              { signal },
-            ),
+        const messages = yield* runOpenCodeSdkWithTimeout("session.messages", (signal) =>
+          context.client.session.messages({ sessionID: context.openCodeSessionId }, { signal }),
         );
         return openCodeMessageSnapshotsFromResponse(messages.data ?? []);
       });
@@ -3215,62 +3191,60 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         },
       );
 
-      const failOpenCodeTurnForNoActivity = Effect.fn("failOpenCodeTurnForNoActivity")(
-        function* (context: OpenCodeSessionContext, turnId: TurnId) {
-          if (context.activeTurnId !== turnId) {
-            return;
-          }
+      const failOpenCodeTurnForNoActivity = Effect.fn("failOpenCodeTurnForNoActivity")(function* (
+        context: OpenCodeSessionContext,
+        turnId: TurnId,
+      ) {
+        if (context.activeTurnId !== turnId) {
+          return;
+        }
 
-          const timeoutSeconds = Math.ceil(turnNoActivityTimeoutMs / 1_000);
-          const message =
-            `${adapterConfig.displayName} stopped responding for ${timeoutSeconds}s without provider activity. ` +
-            "The selected model may be unavailable after the OpenCode update; retry or choose another model.";
+        const timeoutSeconds = Math.ceil(turnNoActivityTimeoutMs / 1_000);
+        const message =
+          `${adapterConfig.displayName} stopped responding for ${timeoutSeconds}s without provider activity. ` +
+          "The selected model may be unavailable after the OpenCode update; retry or choose another model.";
 
-          // Ask OpenCode to stop the in-flight provider request, but never let a
-          // broken control endpoint keep Synara in the same running state.
-          yield* runOpenCodeSdkWithTimeout(
-            "session.abort",
-            (signal) =>
-              context.client.session.abort(
-                { sessionID: context.openCodeSessionId },
-                { signal },
-              ),
-            OPENCODE_CONTROL_REQUEST_TIMEOUT_MS,
-          ).pipe(Effect.ignore({ log: true }));
+        // Ask OpenCode to stop the in-flight provider request, but never let a
+        // broken control endpoint keep Synara in the same running state.
+        yield* runOpenCodeSdkWithTimeout(
+          "session.abort",
+          (signal) =>
+            context.client.session.abort({ sessionID: context.openCodeSessionId }, { signal }),
+          OPENCODE_CONTROL_REQUEST_TIMEOUT_MS,
+        ).pipe(Effect.ignore({ log: true }));
 
-          const completed = yield* completeOpenCodeTurn(context, {
+        const completed = yield* completeOpenCodeTurn(context, {
+          turnId,
+          raw: {
+            source: "synara.opencode.no-provider-activity",
+            timeoutMs: turnNoActivityTimeoutMs,
+          },
+          errorMessage: message,
+        });
+        if (!completed) {
+          return;
+        }
+
+        yield* emit(context, {
+          ...buildEventBase({
+            threadId: context.session.threadId,
             turnId,
             raw: {
               source: "synara.opencode.no-provider-activity",
               timeoutMs: turnNoActivityTimeoutMs,
             },
-            errorMessage: message,
-          });
-          if (!completed) {
-            return;
-          }
-
-          yield* emit(context, {
-            ...buildEventBase({
-              threadId: context.session.threadId,
-              turnId,
-              raw: {
-                source: "synara.opencode.no-provider-activity",
-                timeoutMs: turnNoActivityTimeoutMs,
-              },
-            }),
-            type: "runtime.error",
-            payload: {
-              message,
-              class: "provider_error",
-              detail: {
-                timeoutMs: turnNoActivityTimeoutMs,
-                model: context.session.model ?? null,
-              },
+          }),
+          type: "runtime.error",
+          payload: {
+            message,
+            class: "provider_error",
+            detail: {
+              timeoutMs: turnNoActivityTimeoutMs,
+              model: context.session.model ?? null,
             },
-          });
-        },
-      );
+          },
+        });
+      });
 
       const replayOpenCodeMessageSnapshots = Effect.fn("replayOpenCodeMessageSnapshots")(function* (
         context: OpenCodeSessionContext,
@@ -3337,7 +3311,27 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               observedProviderActivitySerial = currentProviderActivitySerial;
               noActivityStartedAt = Date.now();
             }
-            if (Date.now() - noActivityStartedAt >= turnNoActivityTimeoutMs) {
+
+            const statusExit = yield* Effect.exit(
+              runOpenCodeSdkWithTimeout(
+                "session.status",
+                (signal) =>
+                  context.client.session.status({ directory: context.directory }, { signal }),
+                OPENCODE_CONTROL_REQUEST_TIMEOUT_MS,
+              ),
+            );
+            const statusKnown = Exit.isSuccess(statusExit);
+            const status = statusKnown
+              ? statusExit.value.data?.[context.openCodeSessionId]
+              : undefined;
+            const sessionBusy = status?.type === "busy" || status?.type === "retry";
+
+            // OpenCode can remain quiet on SSE while a model is still reasoning.
+            // A busy/retrying session is authoritative provider activity, so do not
+            // abort it just because no stream event arrived during the watchdog window.
+            if (sessionBusy) {
+              noActivityStartedAt = Date.now();
+            } else if (Date.now() - noActivityStartedAt >= turnNoActivityTimeoutMs) {
               yield* failOpenCodeTurnForNoActivity(context, turnId);
               return;
             }
@@ -3354,23 +3348,6 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             if (!canRecoverCompletion) {
               continue;
             }
-
-            const statusExit = yield* Effect.exit(
-              runOpenCodeSdkWithTimeout(
-                "session.status",
-                (signal) =>
-                  context.client.session.status(
-                    { directory: context.directory },
-                    { signal },
-                  ),
-                OPENCODE_CONTROL_REQUEST_TIMEOUT_MS,
-              ),
-            );
-            const statusKnown = Exit.isSuccess(statusExit);
-            const status = statusKnown
-              ? statusExit.value.data?.[context.openCodeSessionId]
-              : undefined;
-            const sessionBusy = status?.type === "busy" || status?.type === "retry";
 
             let hasFinalAssistantMessage = false;
             if (statusKnown && !sessionBusy) {
@@ -3516,19 +3493,17 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         if (context.appliedPermissionInteractionMode === interactionMode) {
           return;
         }
-        yield* runOpenCodeSdkWithTimeout(
-          "session.update",
-          (signal) =>
-            context.client.session.update(
-              {
-                sessionID: context.openCodeSessionId,
-                permission: buildOpenCodePermissionRules(
-                  context.session.runtimeMode,
-                  interactionMode,
-                ),
-              },
-              { signal },
-            ),
+        yield* runOpenCodeSdkWithTimeout("session.update", (signal) =>
+          context.client.session.update(
+            {
+              sessionID: context.openCodeSessionId,
+              permission: buildOpenCodePermissionRules(
+                context.session.runtimeMode,
+                interactionMode,
+              ),
+            },
+            { signal },
+          ),
         ).pipe(Effect.mapError(toAdapterRequestError));
         context.appliedPermissionInteractionMode = interactionMode;
       });
@@ -3622,25 +3597,20 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                         // known interaction mode. This must succeed before the event pump starts:
                         // otherwise an already-running Full Access session could mutate state
                         // without ever emitting a permission request for Synara to reject.
-                        runOpenCodeSdkWithTimeout(
-                          "session.update",
-                          (signal) =>
-                            client.session.update(
-                              {
-                                sessionID: resumedSessionId,
-                                permission: buildOpenCodePermissionRules(input.runtimeMode, "plan"),
-                              },
-                              { signal },
-                            ),
+                        runOpenCodeSdkWithTimeout("session.update", (signal) =>
+                          client.session.update(
+                            {
+                              sessionID: resumedSessionId,
+                              permission: buildOpenCodePermissionRules(input.runtimeMode, "plan"),
+                            },
+                            { signal },
+                          ),
                         ).pipe(
                           Effect.tapError(() =>
                             runOpenCodeSdkWithTimeout(
                               "session.abort",
                               (signal) =>
-                                client.session.abort(
-                                  { sessionID: resumedSessionId },
-                                  { signal },
-                                ),
+                                client.session.abort({ sessionID: resumedSessionId }, { signal }),
                               OPENCODE_CONTROL_REQUEST_TIMEOUT_MS,
                             ).pipe(Effect.ignore({ log: true })),
                           ),

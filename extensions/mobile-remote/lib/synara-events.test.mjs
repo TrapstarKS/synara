@@ -27,7 +27,10 @@ const wait = async (predicate) => {
 
 test("subagent lifecycle stays silent while main and forked conversations still notify", async (t) => {
   const events = [];
-  const monitor = createShellMonitor({ completionDelayMs: 0, onEvent: (event) => events.push(event) });
+  const monitor = createShellMonitor({
+    completionDelayMs: 0,
+    onEvent: (event) => events.push(event),
+  });
   t.after(() => monitor.stop());
   const children = [
     { id: "child", parentThreadId: "thread-a" },
@@ -37,21 +40,35 @@ test("subagent lifecycle stays silent while main and forked conversations still 
     { id: "subagent:parent:legacy" },
   ];
   const fork = { id: "fork", forkSourceThreadId: "thread-a", parentThreadId: null };
-  await monitor.accept(snapshot(thread(), thread("running", fork), ...children.map((extra) => thread("running", extra))));
+  await monitor.accept(
+    snapshot(
+      thread(),
+      thread("running", fork),
+      ...children.map((extra) => thread("running", extra)),
+    ),
+  );
   for (const state of ["completed", "interrupted", "error"])
     for (const extra of children) await monitor.accept(upsert(thread(state, extra)));
   await monitor.accept(upsert(thread("completed")));
   await monitor.accept(upsert(thread("completed", fork)));
   await wait(() => events.some((event) => event.threadId === "fork"));
-  assert.deepEqual(events.map((event) => [event.threadId, event.kind]), [
-    ["thread-a", "completed"], ["fork", "completed"],
-  ]);
+  assert.deepEqual(
+    events.map((event) => [event.threadId, event.kind]),
+    [
+      ["thread-a", "completed"],
+      ["fork", "completed"],
+    ],
+  );
 });
 
 test("subagents in old checkpoints do not spam or consume main-task recovery slots", async (t) => {
   const events = [];
-  const options = { completionDelayMs: 0, scope: "test", now: () => Date.parse(time),
-    onEvent: (event) => events.push(event) };
+  const options = {
+    completionDelayMs: 0,
+    scope: "test",
+    now: () => Date.parse(time),
+    onEvent: (event) => events.push(event),
+  };
   const before = createShellMonitor(options);
   const children = Array.from({ length: 30 }, (_, index) => ({ id: `subagent:parent:${index}` }));
   await before.accept(snapshot(...children.map((extra) => thread("running", extra)), thread()));
@@ -60,25 +77,42 @@ test("subagents in old checkpoints do not spam or consume main-task recovery slo
   before.stop();
   const resumed = createShellMonitor({ ...options, checkpoint });
   t.after(() => resumed.stop());
-  await resumed.accept(snapshot(...children.map((extra) => thread("completed", extra)), thread("completed")));
+  await resumed.accept(
+    snapshot(...children.map((extra) => thread("completed", extra)), thread("completed")),
+  );
   await wait(() => events.some((event) => event.threadId === "thread-a"));
-  assert.deepEqual(events.map((event) => event.threadId), ["thread-a"]);
+  assert.deepEqual(
+    events.map((event) => event.threadId),
+    ["thread-a"],
+  );
   assert.equal(resumed.checkpoint().threads.filter((entry) => entry.isSubagent).length, 30);
 });
 
 test("late child metadata cancels a pending completion but preserves actionable alerts", async (t) => {
   const events = [];
-  const monitor = createShellMonitor({ completionDelayMs: 20, onEvent: (event) => events.push(event) });
+  const monitor = createShellMonitor({
+    completionDelayMs: 20,
+    onEvent: (event) => events.push(event),
+  });
   t.after(() => monitor.stop());
   await monitor.accept(snapshot(thread()));
   await monitor.accept(upsert(thread("completed")));
   await monitor.accept(upsert(thread("completed", { parentThreadId: "parent" })));
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.deepEqual(events, []);
-  await monitor.accept(upsert(thread("error", {
-    parentThreadId: "parent", hasPendingApprovals: true, hasPendingUserInput: true,
-  })));
-  assert.deepEqual(events.map((event) => event.kind), ["approval", "input"]);
+  await monitor.accept(
+    upsert(
+      thread("error", {
+        parentThreadId: "parent",
+        hasPendingApprovals: true,
+        hasPendingUserInput: true,
+      }),
+    ),
+  );
+  assert.deepEqual(
+    events.map((event) => event.kind),
+    ["approval", "input"],
+  );
 });
 
 test("initial history is silent, transitions and prompt-free completion are durable and deduplicated", async () => {
@@ -230,12 +264,27 @@ test("negotiated Effect socket acknowledges chunks, reconnects, recovers latest 
       const frame = JSON.parse(raw);
       if (frame._tag === "Request") {
         if (frame.tag === "orchestration.getThreadDetailSnapshot") {
-          ws.send(JSON.stringify({ _tag: "Exit", requestId: frame.id, exit: {
-            _tag: "Success", value: { thread: thread("completed", {
-              messages: [{ role: "assistant", turnId: "turn-a", streaming: false,
-                text: "Corrigi o filtro dos subagentes. Os testes passaram." }],
-            }) },
-          } }));
+          ws.send(
+            JSON.stringify({
+              _tag: "Exit",
+              requestId: frame.id,
+              exit: {
+                _tag: "Success",
+                value: {
+                  thread: thread("completed", {
+                    messages: [
+                      {
+                        role: "assistant",
+                        turnId: "turn-a",
+                        streaming: false,
+                        text: "Corrigi o filtro dos subagentes. Os testes passaram.",
+                      },
+                    ],
+                  }),
+                },
+              },
+            }),
+          );
           return;
         }
         assert.equal(frame.tag, "orchestration.subscribeShell");

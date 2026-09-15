@@ -517,6 +517,7 @@ import {
 import { ComposerModelEffortPicker } from "./chat/ComposerModelEffortPicker";
 import { CodexProfilePicker } from "./chat/CodexProfilePicker";
 import { resolveTraitsTriggerSummary, TraitsPicker } from "./chat/TraitsPicker";
+import { isLunaFastSubagent } from "../lib/threadModelSummary";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
 import {
   ComposerLocalDirectoryMenu,
@@ -10035,6 +10036,11 @@ export default function ChatView({
     selectedProviderModelOptions,
     selectedRuntimeModel,
   );
+  const forceFastModeBadge = isLunaFastSubagent({
+    provider: selectedProvider,
+    model: selectedModelForPickerWithCustomFallback,
+    parentThreadId: activeThread?.parentThreadId,
+  });
   const runtimeUsageContextWindow = useMemo(
     () =>
       activeContextWindowState.invalidatedByCompaction
@@ -10080,6 +10086,7 @@ export default function ChatView({
     modelOptions: selectedProviderModelOptions,
     ...(selectedRuntimeModel ? { runtimeModel: selectedRuntimeModel } : {}),
     runtimeAgents: dynamicAgents,
+    forceFastModeBadge,
   });
   const composerFooterPlanInputsKey = [
     composerFooterModelLabel,
@@ -10188,6 +10195,7 @@ export default function ChatView({
       onPromptChange={setPromptFromTraits}
       onProviderModelChange={onProviderModelSelect}
       onSelectionCommitted={scheduleComposerFocus}
+      forceFastModeBadge={forceFastModeBadge}
       open={isComposerModelEffortPickerOpen}
       onOpenChange={handleComposerModelEffortPickerOpenChange}
       shortcutLabel={modelPickerShortcutLabel}
@@ -12688,7 +12696,7 @@ export default function ChatView({
                     </h2>
                   </div>
                 </div>
-                <div className="w-full shrink-0 pb-3 sm:pb-4">
+                <div className="w-full shrink-0 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-4">
                   {composerSection}
                   {relocateComposerLeadingControls ? (
                     <div className={COMPOSER_COLUMN_FRAME_CLASS_NAME}>
@@ -12816,7 +12824,10 @@ export default function ChatView({
                   {/* A trailing BranchToolbar only renders for legacy git threads; otherwise the
                       composer is the last element, so give it a comfortable bottom margin. */}
                   <div
-                    className={cn(isGitRepo && !environmentEnabled ? "pt-0.5" : "pt-3 sm:pt-4")}
+                    className={cn(
+                      "pb-[env(safe-area-inset-bottom)]",
+                      isGitRepo && !environmentEnabled ? "pt-0.5" : "pt-3 sm:pt-4",
+                    )}
                   />
                   {secondaryChromeReady &&
                   ((isGitRepo && !environmentEnabled) || relocateComposerLeadingControls) ? (

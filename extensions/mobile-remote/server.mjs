@@ -455,12 +455,18 @@ server.listen(port, "127.0.0.1", () => {
 // Windows named pipes additionally require a credential held in the private store.
 const adminPath = adminAddress(directory);
 if (process.platform !== "win32") {
-  try { unlinkSync(adminPath); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
+  try {
+    unlinkSync(adminPath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
 }
 const admin = http.createServer(async (req, res) => {
   try {
-    if (process.platform === "win32" && hash(req.headers.authorization ?? "") !== hash(`Bearer ${state.adminToken}`))
+    if (
+      process.platform === "win32" &&
+      hash(req.headers.authorization ?? "") !== hash(`Bearer ${state.adminToken}`)
+    )
       return json(res, 403, { error: "Local administration credential required" });
     if (req.method === "POST" && req.url === "/pair")
       return json(res, 200, { url: newPairing(), expiresInMinutes: 15 });
@@ -486,7 +492,9 @@ const admin = http.createServer(async (req, res) => {
     return json(res, 400, { error: error.message });
   }
 });
-admin.listen(adminPath, () => { if (process.platform !== "win32") chmodSync(adminPath, 0o600); });
+admin.listen(adminPath, () => {
+  if (process.platform !== "win32") chmodSync(adminPath, 0o600);
+});
 function shutdown() {
   clearInterval(expiryTimer);
   stopMonitor();

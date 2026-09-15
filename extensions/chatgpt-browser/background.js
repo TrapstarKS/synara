@@ -152,6 +152,65 @@ async function evaluate(tabId, expression) {
   return { value: response?.result?.value ?? null };
 }
 
+function debugRemoteValue(value) {
+  if (!value || typeof value !== "object") return null;
+  if (Object.prototype.hasOwnProperty.call(value, "value")) return value.value;
+  if (typeof value.unserializableValue === "string") return value.unserializableValue;
+  if (typeof value.description === "string") return value.description.slice(0, 4_000);
+  return typeof value.type === "string" ? value.type : null;
+}
+
+function debugConsoleEntry(params) {
+  const args = Array.isArray(params?.args) ? params.args : [];
+  return {
+    type: typeof params?.type === "string" ? params.type : "log",
+    text:
+      typeof params?.type === "string" && params.type === "error"
+        ? String(params?.stackTrace?.description || "").slice(0, 4_000)
+        : args
+            .map(debugRemoteValue)
+            .map((value) => String(value ?? ""))
+            .join(" ")
+            .slice(0, 4_000),
+    args: args.slice(0, 20).map(debugRemoteValue),
+  };
+}
+
+/**
+ * Development-only superset of browser_evaluate. It captures console.* calls
+ * emitted while the expression runs and can attach a screenshot to the same
+ * response, so a live ChatGPT diagnosis needs no DevTools handoff.
+ */
+async function debugEvaluate(tabId, args) {
+  const expression = typeof args?.expression === "string" ? args.expression : "";
+  if (!expression || expression.length > 200_000) {
+    throw new Error("A bounded JavaScript expression is required.");
+  }
+  const events = [];
+  const listener = (source, method, params) => {
+    if (source?.tabId !== tabId || method !== "Runtime.consoleAPICalled") return;
+    if (events.length < 100) events.push(debugConsoleEntry(params));
+  };
+  chrome.debugger.onEvent.addListener(listener);
+  try {
+    await sendCommand(tabId, "Runtime.enable");
+    const result = await evaluate(tabId, expression);
+    const screenshot = args?.screenshot === true ? await browserScreenshot(tabId) : null;
+    return {
+      ...result,
+      console: events,
+      ...(screenshot ? { screenshot } : {}),
+    };
+  } finally {
+    chrome.debugger.onEvent.removeListener(listener);
+    try {
+      await sendCommand(tabId, "Runtime.disable");
+    } catch {
+      // A tab can close immediately after evaluation; the result is still useful.
+    }
+  }
+}
+
 function selectorFromArgs(args) {
   const target = args && args.target;
   const selector = target && target.selector;
@@ -163,15 +222,93 @@ function selectorFromArgs(args) {
 
 async function click(tabId, args) {
   const selector = selectorFromArgs(args);
+  if (isSendControlSelector(selector)) {
+    // ChatGPT's current composer is a real submit button. requestSubmit()
+    // reaches the form's React onSubmit path without depending on a viewport
+    // coordinate or an untrusted element.click() callback.
+    const result = await evaluate(
+      tabId,
+      `(() => {
+        const element = document.querySelector(${JSON.stringify(selector)});
+        if (!element || element.disabled || element.getAttribute("aria-disabled") === "true") return false;
+        const form = element.form || element.closest("form");
+        if (!form) return false;
+        if (typeof form.requestSubmit === "function") form.requestSubmit(element);
+        else element.click();
+        return true;
+      })()`,
+    );
+    if (result.value !== true) throw new Error("The ChatGPT send form was not found.");
+    return { clicked: true };
+  }
+  const point = await interactionPoint(tabId, selector);
+  await dispatchMouseClick(tabId, point);
+  return { clicked: true };
+}
+
+function isSendControlSelector(selector) {
+  return selector.includes("send-button") || selector.includes('aria-label^="Send"');
+}
+
+async function interactionPoint(tabId, selector) {
   const expression = `(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
-    if (!element) return false;
-    element.click();
-    return true;
+    if (!element) return null;
+    element.scrollIntoView({ block: "center", inline: "center" });
+    const rect = element.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    const style = getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") {
+      return null;
+    }
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
   })()`;
   const result = await evaluate(tabId, expression);
-  if (result.value !== true) throw new Error("The requested ChatGPT control was not found.");
-  return { clicked: true };
+  const point = result.value;
+  if (
+    !point ||
+    typeof point !== "object" ||
+    !Number.isFinite(point.x) ||
+    !Number.isFinite(point.y)
+  ) {
+    throw new Error("The requested visible ChatGPT control was not found.");
+  }
+  return point;
+}
+
+async function dispatchMouseClick(tabId, point) {
+  // Native CDP input is deliberate. Calling `element.click()` makes React
+  // handlers run, but it does not reproduce the trusted user-input path that
+  // keeps an already-open ChatGPT tab's live conversation state in sync.
+  await getAllowedTab(tabId, true);
+  const target = { tabId };
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y,
+    button: "none",
+    buttons: 0,
+  });
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: point.x,
+    y: point.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    force: 1,
+  });
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: point.x,
+    y: point.y,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
 }
 
 async function typeText(tabId, args) {
@@ -179,36 +316,28 @@ async function typeText(tabId, args) {
   const text = typeof args?.text === "string" ? args.text : "";
   if (text.length > 100_000) throw new Error("The prompt is too large.");
   const append = args?.append === true;
+  const point = await interactionPoint(tabId, selector);
+  await dispatchMouseClick(tabId, point);
   const expression = `(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
     if (!element) return false;
     element.focus();
-    const hasValue = "value" in element;
-    const previous = hasValue ? String(element.value || "") : String(element.textContent || "");
-    const next = ${JSON.stringify(text)};
-    const value = ${append ? "previous + next" : "next"};
-    if (!${append ? "true" : "false"}) {
-      try { document.execCommand("selectAll", false); } catch {}
-      try { document.execCommand("delete", false); } catch {}
-    }
-    if (hasValue) {
-      const prototype = Object.getPrototypeOf(element);
-      const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-      if (setter) setter.call(element, value);
-      else element.value = value;
-    } else {
-      try { document.execCommand("insertText", false, next); } catch {}
-      if (String(element.textContent || "") !== value) element.textContent = value;
-    }
-    element.dispatchEvent(new InputEvent("input", {
-      bubbles: true,
-      inputType: "insertText",
-      data: next,
-    }));
+    const selection = window.getSelection();
+    if (!selection) return false;
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    if (${append ? "true" : "false"}) range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
     return true;
   })()`;
   const result = await evaluate(tabId, expression);
-  if (result.value !== true) throw new Error("The ChatGPT composer was not found.");
+  if (result.value !== true) throw new Error("The visible ChatGPT composer was not found.");
+  // `Input.insertText` is the browser's real text-entry path. In particular,
+  // Lexical's controlled contenteditable ignores enough synthetic input that
+  // a programmatic send can create a conversation server-side without
+  // updating the tab's live UI or stream.
+  await chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text });
   return { typed: true };
 }
 
@@ -316,6 +445,8 @@ async function executeRequest(request) {
       return await browserWait(args);
     case "browser_evaluate":
       return await evaluate(tabIdFromArgs(args), String(args.expression || ""));
+    case "browser_debug":
+      return await debugEvaluate(tabIdFromArgs(args), args);
     case "browser_click":
       return await click(tabIdFromArgs(args), args);
     case "browser_type":

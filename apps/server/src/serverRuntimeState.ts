@@ -65,7 +65,9 @@ export const persistServerRuntimeState = (input: {
       if (!privateDirectory) {
         const { desktopAuthToken: _token, ...withoutCredential } = state;
         state = withoutCredential;
-        yield* Effect.logWarning("Mobile discovery disabled: Windows runtime directory ACL is not private.");
+        yield* Effect.logWarning(
+          "Mobile discovery disabled: Windows runtime directory ACL is not private.",
+        );
       }
     }
     yield* writeFileStringAtomically({

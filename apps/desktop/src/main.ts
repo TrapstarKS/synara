@@ -65,10 +65,7 @@ import {
   synaraDesktopIdentity,
 } from "@synara/shared/desktopIdentity";
 import { NetService } from "@synara/shared/Net";
-import {
-  applyShellEnvironmentHydrationMarker,
-  mergePathEntries,
-} from "@synara/shared/shell";
+import { applyShellEnvironmentHydrationMarker, mergePathEntries } from "@synara/shared/shell";
 import { RotatingFileSink } from "@synara/shared/logging";
 import {
   MIGRATION_DIVERGENCE_CONSENT_ENV,
@@ -272,10 +269,7 @@ import {
 } from "./desktopStorageMigration";
 import { DESKTOP_IPC_CHANNELS } from "./ipcChannels";
 import { DesktopAppSnapManager } from "./appSnapManager";
-import {
-  ensureBundledCodexRuntime,
-  settingsUseManagedCodexRuntime,
-} from "./managedCodexRuntime";
+import { ensureBundledCodexRuntime, settingsUseManagedCodexRuntime } from "./managedCodexRuntime";
 import { hardenBrowserAnnotationWebviewPreferences } from "./browserAnnotations/webviewSecurity";
 import { LOCAL_HTML_PREVIEW_SCHEME } from "./localHtmlPreviewProtocol";
 import {

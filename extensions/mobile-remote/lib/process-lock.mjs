@@ -1,11 +1,5 @@
 import { execFileSync } from "node:child_process";
-import {
-  closeSync,
-  openSync,
-  readFileSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
@@ -41,9 +35,7 @@ export function parseLockOwner(value) {
     ...(typeof parsed.entryPath === "string" && parsed.entryPath.length > 0
       ? { entryPath: parsed.entryPath }
       : {}),
-    ...(typeof parsed.token === "string" && parsed.token.length > 0
-      ? { token: parsed.token }
-      : {}),
+    ...(typeof parsed.token === "string" && parsed.token.length > 0 ? { token: parsed.token } : {}),
   };
 }
 

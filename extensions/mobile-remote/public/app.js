@@ -4,7 +4,11 @@ let standalone = matchMedia("(display-mode: standalone)").matches || navigator.s
 const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
 $("install-ios").hidden = !ios;
 $("install-android").hidden = ios;
-$("name").value = ios ? "Meu iPhone" : /Android/.test(navigator.userAgent) ? "Meu Android" : "Meu aparelho";
+$("name").value = ios
+  ? "Meu iPhone"
+  : /Android/.test(navigator.userAgent)
+    ? "Meu Android"
+    : "Meu aparelho";
 let installPrompt;
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -109,7 +113,8 @@ action(
     let pairingCode = $("code").value.trim();
     if (pairingCode.startsWith("https://")) {
       const link = new URL(pairingCode);
-      if (link.origin !== location.origin) throw new Error("Use o link de conexão deste computador.");
+      if (link.origin !== location.origin)
+        throw new Error("Use o link de conexão deste computador.");
       pairingCode = new URLSearchParams(link.hash.slice(1)).get("pair") ?? "";
     }
     await api("pair", { code: pairingCode, name: $("name").value.trim() });
@@ -143,7 +148,9 @@ action("enable", async () => {
   // Request directly from the user's tap; iOS requires this gesture.
   const permission = await Notification.requestPermission();
   if (permission !== "granted")
-    throw new Error("Permita notificações do Synara nas configurações do aparelho ou navegador e tente novamente.");
+    throw new Error(
+      "Permita notificações do Synara nas configurações do aparelho ou navegador e tente novamente.",
+    );
   await navigator.serviceWorker.register("/mobile/sw.js", { scope: "/" });
   const registration = await navigator.serviceWorker.ready;
   const raw = atob(status.publicKey.replace(/-/g, "+").replace(/_/g, "/"));

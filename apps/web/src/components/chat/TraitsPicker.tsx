@@ -85,6 +85,7 @@ export function resolveTraitsTriggerSummary(options: {
   modelOptions: ProviderOptions | null | undefined;
   runtimeModel?: ProviderModelDescriptor | undefined;
   runtimeAgents: ReadonlyArray<ProviderAgentDescriptor> | null | undefined;
+  forceFastModeBadge?: boolean;
 }): {
   contextWindowLabel: string | null;
   primaryLabel: string | null;
@@ -129,7 +130,9 @@ export function resolveTraitsTriggerSummary(options: {
   // Agent name stands in as the primary label for agent-driven providers
   // (opencode) that expose no effort/thinking controls.
   const resolvedPrimaryLabel = primaryLabel ?? agentLabel;
-  const showsFastBadge = showsComposerFastModeBadge(selection) && !isFastOnlyControl;
+  const showsFastBadge =
+    (options.forceFastModeBadge === true || showsComposerFastModeBadge(selection)) &&
+    !isFastOnlyControl;
   const summaryText = [resolvedPrimaryLabel, showsFastBadge ? "Fast" : null, contextWindowLabel]
     .filter((value): value is string => Boolean(value))
     .join(" · ");

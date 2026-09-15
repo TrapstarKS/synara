@@ -1,19 +1,28 @@
 import { execFileSync } from "node:child_process";
 
 export function powershell(script, environment = {}) {
-  return execFileSync("powershell.exe", [
-    "-NoProfile", "-NonInteractive", "-EncodedCommand",
-    Buffer.from(`$ErrorActionPreference = 'Stop'; ${script}`, "utf16le").toString("base64"),
-  ], {
-    encoding: "utf8", windowsHide: true, timeout: 10_000,
-    env: { ...process.env, ...environment },
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
+  return execFileSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(`$ErrorActionPreference = 'Stop'; ${script}`, "utf16le").toString("base64"),
+    ],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+      env: { ...process.env, ...environment },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  ).trim();
 }
 
 // chmod does not restrict Windows ACLs. Check before reading or writing credentials.
 export function assertPrivateWindowsPath(path) {
-  powershell(`
+  powershell(
+    `
     $item = Get-Item -LiteralPath $env:SYNARA_MOBILE_PRIVATE_PATH -Force
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Private path is a reparse point' }
     $acl = Get-Acl -LiteralPath $item.FullName
@@ -27,5 +36,7 @@ export function assertPrivateWindowsPath(path) {
         throw 'Private path is accessible by other users; use a private directory under your user profile'
       }
     }
-  `, { SYNARA_MOBILE_PRIVATE_PATH: path });
+  `,
+    { SYNARA_MOBILE_PRIVATE_PATH: path },
+  );
 }

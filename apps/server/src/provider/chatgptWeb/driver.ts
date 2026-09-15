@@ -18,6 +18,7 @@ import {
   buildDismissRateLimitExpression,
   parseChatGptObservation,
 } from "./pageScript.ts";
+import { chatGptAuthoredPromptText } from "./userPrompt.ts";
 import type {
   ChatGptBrowserCallInput,
   ChatGptBrowserRpc,
@@ -125,6 +126,15 @@ const normalize = (value: string): string => value.replace(/\s+/gu, " ").trim();
 
 /** First N normalized characters; enough to recognize a submitted message. */
 const promptFingerprint = (value: string): string => normalize(value).slice(0, 160);
+
+/**
+ * Whitespace-insensitive identity for prompt confirmation. The native input
+ * path lets ChatGPT's editor re-render an inserted prompt into separate
+ * paragraphs, so a newline the prompt string contains can vanish from the
+ * DOM's `textContent` between block elements. Comparing compacted text keeps
+ * the confirmation stable across both DOM shapes without weakening it.
+ */
+const compactPromptText = (value: string): string => value.replace(/\s+/gu, "");
 
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -495,6 +505,13 @@ export class ChatGptWebDriver {
     if (!latestUser) return false;
     const visible = normalize(latestUser.text);
     if (visible.length === 0) return false;
+    // Synara prefixes its internal context to the native ChatGPT user turn.
+    // The current renderer can expose that raw frame instead of the
+    // presentation-only authored tail, especially while a turn is live. A
+    // short authored prompt ("oi", "Oii", ...) must still prove this exact
+    // turn; substring matching it against the context would be unsafe.
+    const authored = chatGptAuthoredPromptText(latestUser.text);
+    if (authored !== null) return normalize(authored) === normalized;
     return (
       visible === normalized ||
       // A long message may be clipped by the page observer. Short messages
@@ -566,12 +583,15 @@ export class ChatGptWebDriver {
       timeoutMs: 20_000,
     });
 
-    // Confirm the editor holds the text before spending a click on it.
+    // Confirm the editor holds the text before spending a click on it. The
+    // editor can still be re-rendering the native insertion, so the comparison
+    // ignores whitespace and keeps polling while the DOM settles.
     const insertDeadline = Math.min(Date.now() + 5_000, deadlineAtMs);
+    const fingerprint = compactPromptText(text).slice(0, 160);
     let inserted = false;
     while (Date.now() < insertDeadline) {
       const current = await this.observe(ref, insertDeadline);
-      if (normalize(current.composerText).includes(promptFingerprint(text))) {
+      if (compactPromptText(current.composerText).includes(fingerprint)) {
         inserted = true;
         break;
       }

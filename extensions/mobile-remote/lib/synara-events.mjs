@@ -23,8 +23,10 @@ const date = (v) => typeof v === "string" && Number.isFinite(Date.parse(v));
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 class Incompatible extends Error {}
 const isSubagentThread = (thread) =>
-  thread.parentThreadId != null || thread.subagentAgentId != null ||
-  thread.creationSource === "provider_native" || thread.id.startsWith("subagent:");
+  thread.parentThreadId != null ||
+  thread.subagentAgentId != null ||
+  thread.creationSource === "provider_native" ||
+  thread.id.startsWith("subagent:");
 
 function summary(thread) {
   if (
@@ -371,14 +373,21 @@ export function watchSynara({
     checkpoint,
     scope: scope ?? (upstream ? new URL(upstream).origin : "desktop"),
     onEvent: async (event) => {
-      const detail = await readNotificationThread(notificationUrl, event.threadId).catch(() => null);
+      const detail = await readNotificationThread(notificationUrl, event.threadId).catch(
+        () => null,
+      );
       if (stopped) return;
-      if (detail && isSubagentThread(detail) && ["completed", "failed"].includes(event.kind)) return;
+      if (detail && isSubagentThread(detail) && ["completed", "failed"].includes(event.kind))
+        return;
       // Don't describe a later turn or notify about work that already resumed.
-      if (detail && (detail.latestTurn?.turnId !== event.turnId ||
+      if (
+        detail &&
+        (detail.latestTurn?.turnId !== event.turnId ||
           (event.kind === "completed" && detail.latestTurn?.state !== "completed") ||
           (event.kind === "approval" && detail.hasPendingApprovals === false) ||
-          (event.kind === "input" && detail.hasPendingUserInput === false))) return;
+          (event.kind === "input" && detail.hasPendingUserInput === false))
+      )
+        return;
       if (event.kind === "completed" && detail && hasLiveBackgroundTasks(detail, event.turnId)) {
         return false;
       }

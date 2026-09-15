@@ -1781,7 +1781,9 @@ describe("CheckpointReactor", () => {
       (entry) => entry.id === threadId,
     );
     expect(thread?.checkpoints).toEqual([]);
-    expect(gitRefExists(harness.cwd, checkpointRefForThreadTurnStart(threadId, turnId))).toBe(false);
+    expect(gitRefExists(harness.cwd, checkpointRefForThreadTurnStart(threadId, turnId))).toBe(
+      false,
+    );
     expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 1))).toBe(false);
   });
 

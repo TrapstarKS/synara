@@ -418,6 +418,27 @@ export function buildChatGptObservationExpression(): string {
     }, null);
   };
 
+  // React does not attach the Fiber marker to one stable DOM node. The older
+  // renderer put it on the turn section itself; the current renderer can put
+  // it on the message anchor (or one of its markdown descendants). Prefer a
+  // Fiber whose ancestor actually exposes the turn model, rather than stopping
+  // at the first marker that happens to be present on a layout wrapper.
+  var turnMessagesFromSection = function (section) {
+    return safe(function () {
+      if (!section) return null;
+      var direct = turnMessagesOf(fiberOf(section));
+      if (Array.isArray(direct)) return direct;
+      var nodes = section.querySelectorAll(
+        MESSAGE_ANCHOR + "," + MESSAGE_ID + "," + ASSISTANT_MARKDOWN
+      );
+      for (var index = 0; index < nodes.length; index++) {
+        var messages = turnMessagesOf(fiberOf(nodes[index]));
+        if (Array.isArray(messages)) return messages;
+      }
+      return null;
+    }, null);
+  };
+
   var modelMessageText = function (message, cap) {
     return safe(function () {
       var content = message && typeof message === "object" ? message.content : null;
@@ -456,7 +477,7 @@ export function buildChatGptObservationExpression(): string {
 
   var readModelUserText = function (section, messageId) {
     return safe(function () {
-      var messages = turnMessagesOf(fiberOf(section));
+      var messages = turnMessagesFromSection(section);
       if (!Array.isArray(messages)) return null;
       var candidates = [];
       for (var index = 0; index < messages.length; index++) {
@@ -516,7 +537,7 @@ export function buildChatGptObservationExpression(): string {
 
   var readTerminalAssistant = function (section) {
     return safe(function () {
-      var messages = turnMessagesOf(fiberOf(section));
+      var messages = turnMessagesFromSection(section);
       if (!Array.isArray(messages)) return { found: false, completed: false, text: null };
       // The newest public answer-capable message decides. A retry can leave an
       // older completed attempt in the same model while the replacement runs.

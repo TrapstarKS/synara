@@ -4,7 +4,13 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
-async function uiScenario({ subscribed, subscription, permission = "granted", userAgent = "iPhone", standalone = true }) {
+async function uiScenario({
+  subscribed,
+  subscription,
+  permission = "granted",
+  userAgent = "iPhone",
+  standalone = true,
+}) {
   const elements = new Map();
   const writes = [];
   let permissionRequests = 0;
@@ -20,13 +26,19 @@ async function uiScenario({ subscribed, subscription, permission = "granted", us
         elements: Object.fromEntries(
           ["completed", "failed", "approval", "input"].map((key) => [key, { checked: false }]),
         ),
-        addEventListener(event, handler) { clicks[`${id}:${event}`] = handler; },
+        addEventListener(event, handler) {
+          clicks[`${id}:${event}`] = handler;
+        },
       });
     return elements.get(id);
   };
   const context = vm.createContext({
     document: { getElementById: element },
-    window: { addEventListener(name, handler) { handlers[name] = handler; } },
+    window: {
+      addEventListener(name, handler) {
+        handlers[name] = handler;
+      },
+    },
     URLSearchParams,
     URL,
     Uint8Array,
@@ -77,9 +89,17 @@ test("Samsung Android offers installation only on a tap and hides it after insta
   assert.equal(result.elements.get("install-ios").hidden, true);
   assert.equal(result.elements.get("install-android").hidden, false);
   assert.equal(result.elements.get("name").value, "Meu Android");
-  let prompts = 0, prevented = 0;
-  result.handlers.beforeinstallprompt({ preventDefault() { prevented++; },
-    async prompt() { prompts++; }, userChoice: Promise.resolve({ outcome: "accepted" }) });
+  let prompts = 0,
+    prevented = 0;
+  result.handlers.beforeinstallprompt({
+    preventDefault() {
+      prevented++;
+    },
+    async prompt() {
+      prompts++;
+    },
+    userChoice: Promise.resolve({ outcome: "accepted" }),
+  });
   assert.equal(prevented, 1);
   assert.equal(prompts, 0);
   assert.equal(result.elements.get("install-app").hidden, false);
@@ -136,7 +156,9 @@ test("notification click follows only same-origin links and focuses an existing 
     URL,
     self: {
       location: { origin: "https://mobile.test" },
-      registration: { showNotification: async (title, options) => notifications.push({ title, ...options }) },
+      registration: {
+        showNotification: async (title, options) => notifications.push({ title, ...options }),
+      },
       addEventListener: (name, handler) => {
         handlers[name] = handler;
       },
@@ -153,9 +175,20 @@ test("notification click follows only same-origin links and focuses an existing 
   });
   vm.runInContext(readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"), context);
   let delivery;
-  handlers.push({ data: { json: () => ({ title: "Resposta necessária · Login", body: "Qual conta?",
-    url: "/task-123", actionTitle: "Responder", tag: "synara:task-123:input" }) },
-    waitUntil: (promise) => { delivery = promise; } });
+  handlers.push({
+    data: {
+      json: () => ({
+        title: "Resposta necessária · Login",
+        body: "Qual conta?",
+        url: "/task-123",
+        actionTitle: "Responder",
+        tag: "synara:task-123:input",
+      }),
+    },
+    waitUntil: (promise) => {
+      delivery = promise;
+    },
+  });
   await delivery;
   assert.equal(notifications[0].title, "Resposta necessária · Login");
   assert.equal(notifications[0].body, "Qual conta?");

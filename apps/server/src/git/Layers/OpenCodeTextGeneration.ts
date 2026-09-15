@@ -403,13 +403,16 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
               throw new Error("OpenCode session.create returned no session payload.");
             }
 
-            const result = await client.session.prompt({
-              sessionID: session.data.id,
-              model: parsedModel,
-              ...(agent ? { agent } : {}),
-              ...(variant ? { variant } : {}),
-              parts: [{ type: "text", text: promptText }, ...fileParts],
-            }, { signal });
+            const result = await client.session.prompt(
+              {
+                sessionID: session.data.id,
+                model: parsedModel,
+                ...(agent ? { agent } : {}),
+                ...(variant ? { variant } : {}),
+                parts: [{ type: "text", text: promptText }, ...fileParts],
+              },
+              { signal },
+            );
             const info = result.data?.info;
             const errorMessage = getOpenCodePromptErrorMessage(info?.error);
             if (errorMessage) {

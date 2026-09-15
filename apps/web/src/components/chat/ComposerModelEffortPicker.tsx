@@ -58,6 +58,8 @@ type ComposerModelEffortPickerProps = {
   // and/or the effort/status label; both remain available to assistive tech.
   hideModelLabel?: boolean;
   hideStatusLabel?: boolean;
+  /** UI-only badge for provider-native models whose service tier is runtime-defined. */
+  forceFastModeBadge?: boolean;
   disabled?: boolean;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
   onSelectionCommitted?: () => void;
@@ -113,7 +115,8 @@ export function ComposerModelEffortPicker(props: ComposerModelEffortPickerProps)
   const hasTraitsTopSection = hasVisibleComposerTraitControls(traitSelection);
 
   const triggerStatusLabel = resolveComposerTraitStatusLabel(traitSelection);
-  const showsFastBadge = showsComposerFastModeBadge(traitSelection);
+  const showsFastBadge =
+    props.forceFastModeBadge === true || showsComposerFastModeBadge(traitSelection);
 
   const handleAfterModelSelection = () => {
     setMenuOpen(false);

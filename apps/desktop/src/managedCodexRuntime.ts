@@ -47,10 +47,7 @@ export interface ManagedCodexRuntimeResult {
   readonly binaryPath?: string;
 }
 
-export function settingsUseManagedCodexRuntime(
-  raw: unknown,
-  managedBinaryPath: string,
-): boolean {
+export function settingsUseManagedCodexRuntime(raw: unknown, managedBinaryPath: string): boolean {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return true;
   const envelope = raw as Record<string, unknown>;
   const settings =
@@ -185,7 +182,11 @@ async function writeAtomically(filePath: string, contents: string, mode: number)
   }
 }
 
-async function installFile(sourcePath: string, destinationPath: string, mode: number): Promise<void> {
+async function installFile(
+  sourcePath: string,
+  destinationPath: string,
+  mode: number,
+): Promise<void> {
   const pendingPath = `${destinationPath}.next-${process.pid}-${randomBytes(4).toString("hex")}`;
   await FS.mkdir(Path.dirname(destinationPath), { recursive: true, mode: 0o700 });
   try {
@@ -263,7 +264,9 @@ export async function ensureBundledCodexRuntime(input: {
       })
     ).trim();
     if (reportedVersion !== `codex-cli ${manifest.version}`) {
-      throw new Error(`Bundled Codex runtime version check returned: ${reportedVersion || "empty"}.`);
+      throw new Error(
+        `Bundled Codex runtime version check returned: ${reportedVersion || "empty"}.`,
+      );
     }
 
     for (const { sourcePath, destinationPath, mode } of INSTALL_FILES) {

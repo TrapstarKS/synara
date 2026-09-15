@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveThreadModelSummary } from "./threadModelSummary";
+import { isLunaFastSubagent, resolveThreadModelSummary } from "./threadModelSummary";
 
 describe("resolveThreadModelSummary", () => {
   it("returns null without a selection", () => {
@@ -46,6 +46,35 @@ describe("resolveThreadModelSummary", () => {
     expect(summary?.provider).toBe("claudeAgent");
     expect(summary?.modelLabel.length).toBeGreaterThan(0);
     expect(summary?.fastMode).toBe(false);
+  });
+
+  it("marks a provider-native Luna child as Fast even without a persisted fast flag", () => {
+    expect(
+      isLunaFastSubagent({
+        provider: "codex",
+        model: "GPT-5.6-Luna",
+        parentThreadId: "parent-thread",
+      }),
+    ).toBe(true);
+    expect(
+      isLunaFastSubagent({
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        parentThreadId: null,
+      }),
+    ).toBe(false);
+
+    const summary = resolveThreadModelSummary(
+      {
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        options: { reasoningEffort: "max" },
+      },
+      undefined,
+      { fastModeOverride: true },
+    );
+    expect(summary?.fastMode).toBe(true);
+    expect(summary?.statusLabel).toBe("Max");
   });
 });
 

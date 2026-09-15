@@ -131,10 +131,13 @@ test(
     const adminToken = JSON.parse(await readFile(join(directory, "state.json"), "utf8")).adminToken;
     if (process.platform === "win32") {
       const rejected = await new Promise((resolve, reject) => {
-        const request = http.request({ socketPath: adminAddress(directory), path: "/pair", method: "POST" }, (response) => {
-          response.resume();
-          resolve(response.statusCode);
-        });
+        const request = http.request(
+          { socketPath: adminAddress(directory), path: "/pair", method: "POST" },
+          (response) => {
+            response.resume();
+            resolve(response.statusCode);
+          },
+        );
         request.on("error", reject);
         request.end("{}");
       });
@@ -143,8 +146,12 @@ test(
     function admin(path, method = "POST", data = {}) {
       return new Promise((resolve, reject) => {
         const req = http.request(
-          { socketPath: adminAddress(directory), path, method,
-            headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {} },
+          {
+            socketPath: adminAddress(directory),
+            path,
+            method,
+            headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {},
+          },
           (res) => {
             let body = "";
             res.on("data", (chunk) => (body += chunk));
