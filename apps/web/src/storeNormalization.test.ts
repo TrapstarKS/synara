@@ -465,6 +465,28 @@ describe("asynchronous question hydration", () => {
 });
 
 describe("provider transition retention", () => {
+  it("keeps the active turn whole when its command activity exceeds the cap", () => {
+    const activeTurn = TurnId.makeUnsafe("active-long-turn");
+    const activities = [
+      ...Array.from({ length: 100 }, (_, index) =>
+        makeActivity({ id: `old-${index}`, sequence: index, turnId: TurnId.makeUnsafe("old") }),
+      ),
+      ...Array.from({ length: 2_100 }, (_, index) =>
+        makeActivity({
+          id: `active-${index}`,
+          sequence: 100 + index,
+          turnId: activeTurn,
+        }),
+      ),
+    ];
+
+    const retained = capThreadActivities(activities, { preserveTurnId: activeTurn });
+
+    expect(retained).toHaveLength(2_100);
+    expect(retained[0]?.id).toBe("active-0");
+    expect(retained.at(-1)?.id).toBe("active-2099");
+  });
+
   it("keeps the provider path and pending transition outside the work-log cap", () => {
     const transitions = [
       "provider.handoff.requested",

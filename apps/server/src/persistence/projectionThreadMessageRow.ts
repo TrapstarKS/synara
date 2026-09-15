@@ -39,8 +39,13 @@ export type ProjectionThreadMessageDbRow = Schema.Schema.Type<
 export function orchestrationMessageFromStoredMessage(
   row: ProjectionThreadMessageRecord,
 ): OrchestrationMessage {
-  const { messageId, isStreaming, sequence: _sequence, ...fields } = row;
-  return { ...fields, id: messageId, streaming: isStreaming };
+  const { messageId, isStreaming, sequence, ...fields } = row;
+  return {
+    ...fields,
+    id: messageId,
+    streaming: isStreaming,
+    ...(sequence !== undefined ? { sequence } : {}),
+  };
 }
 
 export function projectionThreadMessageFromRow(
@@ -73,6 +78,7 @@ export function orchestrationMessageFromProjectionRow(
 ): OrchestrationMessage {
   return {
     id: row.messageId,
+    ...(row.sequence !== null ? { sequence: row.sequence } : {}),
     role: row.role,
     text: joinMessageTextChunks(row),
     ...(row.textSegments !== undefined ? { textSegments: row.textSegments } : {}),

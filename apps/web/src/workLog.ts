@@ -214,6 +214,7 @@ export type TimelineEntry =
       id: string;
       kind: "message";
       createdAt: string;
+      sequence?: number;
       message: ChatMessage;
     }
   | {
@@ -2457,6 +2458,15 @@ function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): numb
   return left.createdAt.localeCompare(right.createdAt);
 }
 
+function compareMessagesByCausalOrder(left: ChatMessage, right: ChatMessage): number {
+  if (left.sequence !== undefined && right.sequence !== undefined) {
+    return left.sequence - right.sequence;
+  }
+  if (left.sequence !== undefined) return -1;
+  if (right.sequence !== undefined) return 1;
+  return left.createdAt.localeCompare(right.createdAt);
+}
+
 type TimelineComparator = (left: TimelineEntry, right: TimelineEntry) => number;
 
 function areTimelineEntriesOrdered(
@@ -2647,6 +2657,7 @@ export function deriveTimelineEntries(
         id: displayMessage.id,
         kind: "message",
         createdAt: displayMessage.createdAt,
+        ...(displayMessage.sequence !== undefined ? { sequence: displayMessage.sequence } : {}),
         message: displayMessage,
       },
     ];
@@ -2672,11 +2683,9 @@ export function deriveTimelineEntries(
   const turnOrder = new Map<string, number>();
   const messagesOrdered = messages.every(
     (message, index) =>
-      index === 0 || messages[index - 1]!.createdAt.localeCompare(message.createdAt) <= 0,
+      index === 0 || compareMessagesByCausalOrder(messages[index - 1]!, message) <= 0,
   );
-  const orderedMessages = messagesOrdered
-    ? messages
-    : messages.toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const orderedMessages = messagesOrdered ? messages : messages.toSorted(compareMessagesByCausalOrder);
   for (const message of orderedMessages) {
     // Effective dispatch semantics are recorded before an emulated steer waits
     // for interruption/promotion. Fall back to turn binding for events written
@@ -2719,6 +2728,12 @@ export function deriveTimelineEntries(
       (entry.kind === "work" ? entry.entry.turnId : entry.proposedPlan.turnId) ?? undefined;
     const turnBlock = turnId === undefined ? undefined : turnOrder.get(turnId);
     const chronological = chronologicalOrder(entry.createdAt);
+    if (entry.kind === "work" && entry.sequence !== undefined && turnBlock !== undefined) {
+      // A sequenced activity belongs to its causal turn even when the provider
+      // reports a clock value earlier than the optimistic user message.
+      orderByEntry.set(entry, turnBlock);
+      continue;
+    }
     orderByEntry.set(
       entry,
       turnBlock === undefined ? chronological : Math.min(turnBlock, chronological),

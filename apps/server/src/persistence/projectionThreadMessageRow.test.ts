@@ -83,8 +83,8 @@ describe("projection thread message row codec", () => {
       dispatchMode: "steer",
       dispatchOrigin: "automation",
       startsNewTurn: true,
+      sequence: 42,
     });
-    expect("sequence" in projected).toBe(false);
 
     const nullRow = decodeRow({
       ...baseRow,

@@ -758,6 +758,9 @@ function writeThreadState(state: AppState, nextThread: Thread, previousThread?: 
         previousThread?.activities,
         previousById,
       ),
+      {
+        preserveTurnId: nextThread.latestTurn?.state === "running" ? nextThread.latestTurn.turnId : null,
+      },
     );
     const slice = buildNormalizedSlice(
       activities,

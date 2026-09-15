@@ -17,6 +17,7 @@ const defaults = {
   handoffPending: false,
   handoffDisabled: false,
   handoffActionTargetProviders: ["claudeAgent", "grok"] as const,
+  handoffActionTargetCodexProfiles: [],
 };
 
 async function renderMenu(enabled: boolean) {
@@ -35,6 +36,32 @@ async function renderMenu(enabled: boolean) {
 }
 
 describe("provider handoff menu", () => {
+  it("offers configured Codex profiles as same-provider targets", async () => {
+    const onCreateHandoff = vi.fn();
+    await render(
+      <TooltipProvider>
+        <ChatHandoffMenu
+          {...defaults}
+          handoffActionTargetCodexProfiles={[
+            { id: "8fd3e58d-f8ee-4cd4-a20a-7a30709c128c", name: "Personal Codex" },
+          ]}
+          continuousHandoffEnabled
+          onCreateHandoff={onCreateHandoff}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: "Hand off", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Continue here", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Codex profile", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Personal Codex", exact: true }).click();
+
+    expect(onCreateHandoff).toHaveBeenCalledWith(
+      "codex",
+      "continue",
+      "8fd3e58d-f8ee-4cd4-a20a-7a30709c128c",
+    );
+  });
+
   it("keeps direct new-conversation handoffs when the setting is off", async () => {
     const onCreateHandoff = await renderMenu(false);
     await expect.element(page.getByRole("menuitem", { name: "Claude", exact: true })).toBeVisible();

@@ -1,5 +1,6 @@
 import {
   CommandId,
+  CodexProfileId,
   EventId,
   MessageId,
   ProjectId,
@@ -95,6 +96,41 @@ function command(expectedSourceProvider: "claudeAgent" | "codex" = "claudeAgent"
 }
 
 describe("decider continuous provider handoff", () => {
+  it("allows a Codex profile handoff without treating it as the same target", async () => {
+    const sourceProfileId = CodexProfileId.makeUnsafe("8fd3e58d-f8ee-4cd4-a20a-7a30709c128c");
+    const targetProfileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const events = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          ...command("codex"),
+          targetModelSelection: {
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            profileId: targetProfileId,
+          },
+        },
+        readModel: makeReadModel({
+          modelSelection: {
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            profileId: sourceProfileId,
+          },
+        }),
+      }),
+    );
+
+    expect(Array.isArray(events)).toBe(true);
+    if (!Array.isArray(events)) return;
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.activity-appended",
+      "thread.provider-handoff-requested",
+    ]);
+    expect(events[1]?.payload).toMatchObject({
+      sourceModelSelection: { provider: "codex", profileId: sourceProfileId },
+      targetModelSelection: { provider: "codex", profileId: targetProfileId },
+    });
+  });
+
   it("records a durable pending activity before the provider handoff intent", async () => {
     const events = await Effect.runPromise(
       decideOrchestrationCommand({ command: command(), readModel: makeReadModel() }),

@@ -1861,6 +1861,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           FROM projection_thread_activities
           WHERE thread_id = ${threadId}
         ),
+        active_turn AS (
+          SELECT turn_id AS active_turn_id
+          FROM projection_turns
+          WHERE thread_id = ${threadId} AND state = 'running' AND turn_id IS NOT NULL
+          LIMIT 1
+        ),
         ${activeTaskActivityCtes},
         cutoff_turn AS (
           SELECT turn_id AS cutoff_turn_id
@@ -1934,6 +1940,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 AND (SELECT is_split FROM cutoff_turn_state)
                 AND (SELECT has_newer_turn FROM cutoff_turn_state)
               )
+            )
+            -- A long-running turn can emit more than the normal detail
+            -- window. Keep that active turn whole so commands do not vanish
+            -- while the assistant text continues streaming.
+            OR (
+              (SELECT active_turn_id FROM active_turn) IS NOT NULL
+              AND ranked.turn_id = (SELECT active_turn_id FROM active_turn)
             )
             OR activity.kind IN ('provider.handoff.requested', 'provider.handoff.completed', 'provider.handoff.failed')
             OR (

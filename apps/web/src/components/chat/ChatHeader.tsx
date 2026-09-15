@@ -5,6 +5,7 @@
 
 import {
   type CodexProfileId,
+  type CodexProfile,
   type EditorId,
   type ProjectId,
   type ProjectScript,
@@ -101,6 +102,7 @@ interface ChatHeaderProps {
   handoffPending?: boolean;
   handoffDisabled: boolean;
   handoffActionTargetProviders: ReadonlyArray<ProviderKind>;
+  handoffActionTargetCodexProfiles: ReadonlyArray<CodexProfile>;
   handoffBadgeSourceProvider: ProviderKind | null;
   handoffBadgeTargetProvider: ProviderKind | null;
   providerHandoffTrail: ReadonlyArray<{
@@ -151,7 +153,11 @@ interface ChatHeaderProps {
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onToggleDiff: () => void;
   onRegisterCommitAndPushTrigger?: (trigger: (() => void) | null) => void;
-  onCreateHandoff: (targetProvider: ProviderKind, mode: ProviderHandoffMode) => void;
+  onCreateHandoff: (
+    targetProvider: ProviderKind,
+    mode: ProviderHandoffMode,
+    codexProfileId?: CodexProfileId,
+  ) => void;
   onNavigateToThread: (threadId: ThreadId) => void;
   onRenameThread: () => void;
   onCloseThreadPane?: () => void;
@@ -533,6 +539,7 @@ export function ChatHeader({
   handoffPending = false,
   handoffDisabled,
   handoffActionTargetProviders,
+  handoffActionTargetCodexProfiles,
   handoffBadgeSourceProvider,
   handoffBadgeTargetProvider,
   providerHandoffTrail,
@@ -811,6 +818,7 @@ export function ChatHeader({
             handoffPending={handoffPending}
             handoffDisabled={handoffDisabled}
             handoffActionTargetProviders={handoffActionTargetProviders}
+            handoffActionTargetCodexProfiles={handoffActionTargetCodexProfiles}
             continuousHandoffEnabled={continuousHandoffEnabled}
             onCreateHandoff={onCreateHandoff}
           />

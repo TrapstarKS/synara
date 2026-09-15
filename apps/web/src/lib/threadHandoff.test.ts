@@ -1,6 +1,7 @@
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS_VIEW,
+  CodexProfileId,
   EventId,
   MessageId,
   type ModelSelection,
@@ -13,6 +14,7 @@ import { DEFAULT_PROVIDER_ORDER } from "../providerOrdering";
 import {
   buildThreadHandoffImportedActivities,
   buildThreadHandoffImportedMessages,
+  isEligibleHandoffTargetSelection,
   resolveAvailableHandoffTargetProviders,
   resolvePendingProviderHandoff,
   resolveProviderHandoffTrail,
@@ -243,6 +245,43 @@ describe("threadHandoff", () => {
         },
       }),
     ).toEqual(stickySelection);
+  });
+
+  it("builds and validates a same-provider Codex profile handoff", () => {
+    const sourceProfileId = CodexProfileId.makeUnsafe("8fd3e58d-f8ee-4cd4-a20a-7a30709c128c");
+    const targetProfileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const sourceModelSelection = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      profileId: sourceProfileId,
+    } as const;
+    const targetModelSelection = resolveThreadHandoffModelSelection({
+      sourceThread: { modelSelection: sourceModelSelection },
+      targetProvider: "codex",
+      targetCodexProfileId: targetProfileId,
+      projectDefaultModelSelection: null,
+      stickyModelSelectionByProvider: {},
+    });
+
+    expect(targetModelSelection).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      profileId: targetProfileId,
+    });
+    expect(
+      isEligibleHandoffTargetSelection({
+        sourceModelSelection,
+        targetModelSelection,
+        targetProviderEnabled: true,
+        targetProviderStatus: {
+          provider: "codex",
+          status: "ready",
+          available: true,
+          authStatus: "authenticated",
+          checkedAt: "2026-09-10T10:00:00.000Z",
+        },
+      }),
+    ).toBe(true);
   });
 
   it("falls back to the resolved provider default model when no sticky or project default exists", () => {

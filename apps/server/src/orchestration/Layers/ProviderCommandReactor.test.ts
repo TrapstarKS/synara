@@ -1187,6 +1187,106 @@ describe("ProviderCommandReactor", () => {
     },
   );
 
+  it("restarts the active Codex session when handing off to another profile", async () => {
+    const sourceProfileId = CodexProfileId.makeUnsafe("8fd3e58d-f8ee-4cd4-a20a-7a30709c128c");
+    const targetProfileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const harness = await createHarness({
+      serverSettings: {
+        enableContinuousProviderHandoff: true,
+        providers: {
+          codex: {
+            profiles: [
+              { id: sourceProfileId, name: "Work" },
+              { id: targetProfileId, name: "Personal" },
+            ],
+            defaultProfileId: sourceProfileId,
+          },
+        },
+      },
+      threadModelSelection: {
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        profileId: sourceProfileId,
+        options: { reasoningEffort: "max" },
+      },
+      confirmNativeResume: () => false,
+    });
+    const createdAt = new Date().toISOString();
+
+    await dispatchHarnessUserTurn(harness, {
+      messageId: "codex-profile-handoff-context",
+      text: "The private rollout is ready.",
+      createdAt,
+    });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    harness.setRuntimeSessionTurnState({ threadId, status: "ready" });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-codex-profile-handoff-source-ready"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: new Date().toISOString(),
+        },
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    await waitFor(async () => (await readHarnessThread(harness))?.session?.status === "ready");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.provider.handoff",
+        commandId: CommandId.makeUnsafe("cmd-codex-profile-handoff-to-personal"),
+        threadId,
+        expectedSourceProvider: "codex",
+        targetModelSelection: {
+          provider: "codex",
+          model: "gpt-5.6-luna",
+          profileId: targetProfileId,
+          options: { reasoningEffort: "max" },
+        },
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    await waitFor(async () => {
+      const current = await readHarnessThread(harness);
+      return (
+        current?.modelSelection.profileId === targetProfileId &&
+        current.activities.some((activity) => activity.kind === "provider.handoff.completed")
+      );
+    });
+
+    expect(harness.startSessionWithOutcome).toHaveBeenLastCalledWith(
+      threadId,
+      expect.objectContaining({
+        provider: "codex",
+        modelSelection: expect.objectContaining({
+          provider: "codex",
+          model: "gpt-5.6-luna",
+          profileId: targetProfileId,
+        }),
+        providerOptions: expect.objectContaining({
+          codex: expect.objectContaining({
+            profileId: targetProfileId,
+            homePath: expect.stringContaining(`codex-profiles/${targetProfileId}`),
+          }),
+        }),
+      }),
+      { registerPriorTranscriptBootstrapOnFreshStart: true },
+    );
+    expect(harness.startSessionWithOutcome.mock.calls.at(-1)?.[1]).not.toHaveProperty(
+      "resumeCursor",
+    );
+  });
+
   it("starts a fresh target session when handing off a stopped fork", async () => {
     const threadId = ThreadId.makeUnsafe("handoff-stopped-fork");
     const harness = await createHarness({

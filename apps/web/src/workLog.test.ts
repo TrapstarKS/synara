@@ -4047,6 +4047,49 @@ describe("deriveWorkLogEntries", () => {
 });
 
 describe("deriveTimelineEntries", () => {
+  it("uses causal message sequence when device timestamps are skewed", () => {
+    const turnId = TurnId.makeUnsafe("skewed-turn");
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.makeUnsafe("user-message"),
+          role: "user",
+          text: "organiza pelos mais foda",
+          sequence: 10,
+          // The user's device clock is ahead of the provider clock.
+          createdAt: "2026-09-15T15:52:04.000Z",
+          streaming: false,
+        },
+        {
+          id: MessageId.makeUnsafe("assistant-message"),
+          role: "assistant",
+          text: "Vou separar em categorias",
+          sequence: 11,
+          turnId,
+          createdAt: "2026-09-15T15:52:00.000Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [
+        {
+          id: "skewed-tool",
+          turnId,
+          sequence: 12,
+          createdAt: "2026-09-15T15:52:01.000Z",
+          tone: "tool",
+          label: "Web search",
+        },
+      ],
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "user-message",
+      "assistant-message",
+      "skewed-tool",
+    ]);
+  });
+
   it.each([false, true])(
     "keeps tools and plans after repeated steering messages (later narration: %s)",
     (hasLaterNarration) => {

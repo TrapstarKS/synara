@@ -653,9 +653,14 @@ function mergeStreamingMessage(
       ? incomingMessage.startsNewTurn
       : existingMessage.startsNewTurn;
   const nextSource = incomingMessage.source ?? existingMessage.source;
+  // Streaming deltas advance the event sequence, but a message's causal
+  // position is the first event that created it. Never move the row forward to
+  // the last delta sequence.
+  const nextSequence = existingMessage.sequence ?? incomingMessage.sequence;
 
   if (
     existingMessage.text === nextText &&
+    existingMessage.sequence === nextSequence &&
     existingMessage.asyncUserInput === nextAsyncUserInput &&
     existingMessage.streaming === incomingMessage.streaming &&
     existingMessage.attachments === nextAttachments &&
@@ -673,6 +678,7 @@ function mergeStreamingMessage(
 
   return {
     ...existingMessage,
+    ...(nextSequence !== undefined ? { sequence: nextSequence } : {}),
     text: nextText,
     ...(nextAsyncUserInput ? { asyncUserInput: nextAsyncUserInput } : {}),
     streaming: incomingMessage.streaming,
@@ -704,6 +710,7 @@ function applyThreadMessageSentEvent(thread: Thread, event: ThreadMessageSentEve
   const incomingMessage = normalizeChatMessage(
     {
       id: payload.messageId,
+      sequence: event.sequence,
       role: payload.role,
       text: payload.text,
       ...(payload.asyncUserInput ? { asyncUserInput: payload.asyncUserInput } : {}),
@@ -1651,7 +1658,10 @@ function applyThreadActivityEventBatch(
     (thread) => {
       // One accumulator for the whole batch: appending N activities used to re-normalize the
       // full activity list N times (O(batch x activities)); it is now O(batch) amortised.
-      const activityAccumulator = createThreadActivityAccumulator(thread.activities);
+      const activityAccumulator = createThreadActivityAccumulator(thread.activities, {
+        preserveTurnId:
+          thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : null,
+      });
       let nextPendingInteractions = thread.pendingInteractions;
       let updatedAt = thread.updatedAt ?? thread.createdAt;
       for (const event of events) {

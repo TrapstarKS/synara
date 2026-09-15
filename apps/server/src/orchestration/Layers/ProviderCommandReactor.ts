@@ -1727,6 +1727,11 @@ const make = Effect.gen(function* () {
       requestedModelSelection !== undefined &&
       requestedModelSelection.provider !== establishedProvider &&
       options?.providerHandoffSource === establishedProvider;
+    const codexProfileHandoffAuthorized =
+      establishedProvider === "codex" &&
+      requestedModelSelection?.provider === "codex" &&
+      requestedChangesCodexProfile &&
+      options?.providerHandoffSource === "codex";
     if (
       establishedProvider !== undefined &&
       requestedModelSelection !== undefined &&
@@ -1763,7 +1768,11 @@ const make = Effect.gen(function* () {
         issue: `${providerDisabledSettingsMessage(preferredProvider)} Re-enable it to continue this thread.`,
       });
     }
-    if ((activeSession !== undefined || thread.latestTurn !== null) && requestChangesCodexProfile) {
+    if (
+      (activeSession !== undefined || thread.latestTurn !== null) &&
+      requestChangesCodexProfile &&
+      !codexProfileHandoffAuthorized
+    ) {
       return yield* new ProviderAdapterValidationError({
         provider: "codex",
         operation: "thread.turn.start",
@@ -1888,12 +1897,15 @@ const make = Effect.gen(function* () {
               currentProvider === "grok" ||
               currentProvider === "devin") &&
             !Equal.equals(previousModelSelection, requestedModelSelection));
+      const shouldRestartForCodexProfileChange =
+        currentProvider === "codex" && requestedChangesCodexProfile;
 
       if (
         !runtimeModeChanged &&
         !providerChanged &&
         !shouldRestartForModelChange &&
-        !shouldRestartForModelSelectionChange
+        !shouldRestartForModelSelectionChange &&
+        !shouldRestartForCodexProfileChange
       ) {
         return {
           activeSessionBeforeEnsure,
@@ -1906,7 +1918,10 @@ const make = Effect.gen(function* () {
       }
 
       const resumeCursor =
-        providerChanged || shouldRestartForModelChange || runtimeModeChanged
+        providerChanged ||
+        shouldRestartForModelChange ||
+        shouldRestartForCodexProfileChange ||
+        runtimeModeChanged
           ? undefined
           : (activeSessionBeforeEnsure?.resumeCursor ?? undefined);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
@@ -4957,6 +4972,11 @@ const make = Effect.gen(function* () {
 
           const sourceProvider = event.payload.sourceModelSelection.provider;
           const targetProvider = event.payload.targetModelSelection.provider;
+          const isCodexProfileHandoff =
+            sourceProvider === "codex" &&
+            targetProvider === "codex" &&
+            event.payload.sourceModelSelection.profileId !==
+              event.payload.targetModelSelection.profileId;
           if (
             thread.modelSelection.provider !== sourceProvider &&
             thread.modelSelection.provider !== targetProvider
@@ -4967,7 +4987,7 @@ const make = Effect.gen(function* () {
             });
             return;
           }
-          if (thread.modelSelection.provider === targetProvider) {
+          if (thread.modelSelection.provider === targetProvider && !isCodexProfileHandoff) {
             if (thread.activities.some((activity) => activity.id === completionActivityId)) {
               return;
             }

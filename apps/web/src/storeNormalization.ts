@@ -549,6 +549,10 @@ export function normalizeChatMessage(
   const previousSkills = previous?.skills ?? [];
   const previousMentions = previous?.mentions ?? [];
   const completedAt = incoming.streaming ? undefined : incoming.updatedAt;
+  // Older snapshots and optimistic rows may not carry a sequence. Preserve a
+  // sequence already learned from the live event stream instead of regressing
+  // back to timestamp ordering during a snapshot merge.
+  const sequence = incoming.sequence ?? previous?.sequence;
   // Answers are immutable; a lagging snapshot must not reopen a submitted card.
   const asyncUserInput = previous?.asyncUserInput?.response
     ? previous.asyncUserInput
@@ -556,6 +560,7 @@ export function normalizeChatMessage(
   if (
     previous &&
     previous.role === incoming.role &&
+    previous.sequence === sequence &&
     previous.text === incoming.text &&
     previous.asyncUserInput === asyncUserInput &&
     previous.dispatchMode === incoming.dispatchMode &&
@@ -576,6 +581,7 @@ export function normalizeChatMessage(
 
   return {
     id: incoming.id,
+    ...(sequence !== undefined ? { sequence } : {}),
     role: incoming.role,
     text: incoming.text,
     ...(asyncUserInput ? { asyncUserInput } : {}),
@@ -642,6 +648,7 @@ function readModelMessageFromChatMessage(
 ): ReadModelThread["messages"][number] {
   return {
     id: message.id,
+    ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
     role: message.role,
     text: message.text,
     ...(message.asyncUserInput ? { asyncUserInput: message.asyncUserInput } : {}),
@@ -766,6 +773,9 @@ function mergeReadModelMessagesWithLiveHotPath(
       }
       mergedById.set(incomingMessage.id, {
         ...incomingMessage,
+        ...(incomingMessage.sequence !== undefined || previousMessage.sequence !== undefined
+          ? { sequence: incomingMessage.sequence ?? previousMessage.sequence }
+          : {}),
         ...(!incomingMessage.mentions || incomingMessage.mentions.length === 0
           ? previousMessage.mentions && previousMessage.mentions.length > 0
             ? { mentions: previousMessage.mentions }
@@ -783,6 +793,9 @@ function mergeReadModelMessagesWithLiveHotPath(
     changed = true;
     mergedById.set(incomingMessage.id, {
       ...incomingMessage,
+      ...(incomingMessage.sequence !== undefined || previousMessage.sequence !== undefined
+        ? { sequence: incomingMessage.sequence ?? previousMessage.sequence }
+        : {}),
       text: previousMessage.text,
       dispatchMode: previousMessage.dispatchMode ?? incomingMessage.dispatchMode,
       dispatchOrigin: incomingMessage.dispatchOrigin ?? previousMessage.dispatchOrigin,
@@ -819,12 +832,17 @@ function mergeReadModelMessagesWithLiveHotPath(
     return incomingMessages;
   }
 
-  // `toSorted` is stable, so equal `createdAt` values keep insertion order
-  // (incoming order first, then retained local rows). Tie-breaking on the random
-  // message id instead would reshuffle same-millisecond rows on every merge.
-  return [...mergedById.values()].toSorted((left, right) =>
-    left.createdAt.localeCompare(right.createdAt),
-  );
+  // Causal rows must win over device-clock timestamps. Rows without a sequence
+  // are optimistic/legacy and stay after sequenced rows until the server echo
+  // supplies their durable position; among those rows, retain timestamp order.
+  return [...mergedById.values()].toSorted((left, right) => {
+    if (left.sequence !== undefined && right.sequence !== undefined) {
+      return left.sequence - right.sequence;
+    }
+    if (left.sequence !== undefined) return -1;
+    if (right.sequence !== undefined) return 1;
+    return left.createdAt.localeCompare(right.createdAt);
+  });
 }
 
 function hasLiveAssistantIntro(previousThread: Thread | undefined): boolean {
@@ -1169,6 +1187,7 @@ function normalizeTurnDiffSummaries(
 export function normalizeActivities(
   incoming: ReadModelThread["activities"],
   previous: Thread["activities"] | undefined,
+  options?: { readonly preserveTurnId?: TurnId | null },
 ): Thread["activities"] {
   const previousActivities = previous ? dedupeActivitiesById(previous) : undefined;
   const incomingActivities = dedupeActivitiesById(incoming);
@@ -1186,7 +1205,7 @@ export function normalizeActivities(
     }
     return activity;
   });
-  const cappedActivities = capThreadActivities(nextActivities);
+  const cappedActivities = capThreadActivities(nextActivities, options);
   return arraysShallowEqual(previous, cappedActivities) ? previous : cappedActivities;
 }
 
@@ -1215,6 +1234,7 @@ export interface ThreadActivityAccumulator {
 
 export function createThreadActivityAccumulator(
   previous: Thread["activities"],
+  options?: { readonly preserveTurnId?: TurnId | null },
 ): ThreadActivityAccumulator {
   const deduped = dedupeActivitiesById(previous);
   // `dedupeActivitiesById` only returns a new array when it actually removed a duplicate, so a
@@ -1263,7 +1283,7 @@ export function createThreadActivityAccumulator(
         }
       }
       if (working.length > MAX_THREAD_ACTIVITIES) {
-        const capped = capThreadActivities(working);
+        const capped = capThreadActivities(working, options);
         // `capThreadActivities` only filters, so an unchanged length means unchanged contents.
         if (capped.length !== working.length) {
           working = capped;
@@ -1316,6 +1336,7 @@ function resolveTurnAlignedDropCount(
 
 export function capThreadActivities<TActivity extends Thread["activities"][number]>(
   activities: readonly TActivity[],
+  options?: { readonly preserveTurnId?: TurnId | null },
 ): TActivity[] {
   if (activities.length <= MAX_THREAD_ACTIVITIES) {
     return activities as TActivity[];
@@ -1325,6 +1346,14 @@ export function capThreadActivities<TActivity extends Thread["activities"][numbe
     activities.length - MAX_THREAD_ACTIVITIES,
   );
   const retainedIds = new Set(activities.slice(dropCount).map((activity) => activity.id));
+  const preserveTurnId = options?.preserveTurnId ?? null;
+  if (preserveTurnId !== null) {
+    for (const activity of activities) {
+      if (activity.turnId === preserveTurnId) {
+        retainedIds.add(activity.id);
+      }
+    }
+  }
   const pendingRequestIds = pendingInteractionRequestIds(activities);
   for (const activity of activities) {
     const requestId = activityRequestId(activity);
@@ -1610,7 +1639,9 @@ export function normalizeThreadFromReadModel(
     incoming.checkpoints,
     previous?.turnDiffSummaries,
   );
-  const activities = normalizeActivities(incoming.activities, previous?.activities);
+  const activities = normalizeActivities(incoming.activities, previous?.activities, {
+    preserveTurnId: latestTurn?.state === "running" ? latestTurn.turnId : null,
+  });
   const incomingPendingInteractions = Object.hasOwn(incoming, "pendingInteractions")
     ? (incoming.pendingInteractions ?? [])
     : previous?.pendingInteractions;

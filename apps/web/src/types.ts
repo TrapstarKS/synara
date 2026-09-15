@@ -107,6 +107,8 @@ export type OrchestrationMessageTextSegment =
 
 export interface ChatMessage {
   id: MessageId;
+  /** Durable orchestration order. Falls back to createdAt for legacy/optimistic rows. */
+  sequence?: number;
   role: "user" | "assistant" | "system";
   text: string;
   /** Slices of streamed assistant text between row-making provider events. */

@@ -5,7 +5,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { type ProviderKind } from "@synara/contracts";
+import { type CodexProfileId, type ProviderKind } from "@synara/contracts";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useAppSettings } from "../appSettings";
 import { useProviderStatusesForLocalConfig } from "./useProviderStatusesForLocalConfig";
@@ -14,7 +14,7 @@ import {
   buildThreadHandoffImportedActivities,
   buildThreadHandoffImportedMessages,
   canCreateThreadHandoff,
-  isEligibleHandoffTargetProvider,
+  isEligibleHandoffTargetSelection,
   resolveThreadHandoffModelSelection,
   resolveThreadHandoffTitle,
 } from "../lib/threadHandoff";
@@ -43,7 +43,16 @@ export function useThreadHandoff() {
     targetProvider: ProviderKind,
     projectDefaultModelSelection: Thread["modelSelection"] | null | undefined,
     stickyModelSelectionByProvider: Partial<Record<ProviderKind, Thread["modelSelection"]>>,
+    targetCodexProfileId?: CodexProfileId,
   ): Promise<Thread["modelSelection"]> => {
+    if (
+      targetCodexProfileId !== undefined &&
+      !serverSettingsQuery.data?.providers.codex.profiles.some(
+        (profile) => profile.id === targetCodexProfileId,
+      )
+    ) {
+      throw new Error("The selected Codex profile is no longer configured.");
+    }
     const hasKnownPiSelection =
       targetProvider !== "pi" ||
       stickyModelSelectionByProvider.pi?.provider === "pi" ||
@@ -74,12 +83,14 @@ export function useThreadHandoff() {
       projectDefaultModelSelection,
       stickyModelSelectionByProvider,
       discoveredFallbackModel,
+      ...(targetCodexProfileId !== undefined ? { targetCodexProfileId } : {}),
     });
   };
 
   const createThreadHandoff = async (
     thread: Thread,
     targetProvider: ProviderKind,
+    targetCodexProfileId?: CodexProfileId,
   ): Promise<Thread["id"]> => {
     const api = readNativeApi();
     if (!api) {
@@ -94,15 +105,24 @@ export function useThreadHandoff() {
     if (!canCreateThreadHandoff({ thread })) {
       throw new Error("This thread cannot be handed off yet.");
     }
+    const { copyTransferableComposerState, stickyModelSelectionByProvider } =
+      useComposerDraftStore.getState();
     const targetAvailability = await resolveProviderSendAvailabilityWithRefresh({
       provider: targetProvider,
       statuses: providerStatuses,
       refreshStatuses: () => refreshProviderStatuses({ silent: true }),
     });
+    const targetModelSelection = await resolveTargetModelSelection(
+      thread,
+      targetProvider,
+      project.defaultModelSelection,
+      stickyModelSelectionByProvider,
+      targetCodexProfileId,
+    );
     if (
-      !isEligibleHandoffTargetProvider({
-        sourceProvider: thread.modelSelection.provider,
-        targetProvider,
+      !isEligibleHandoffTargetSelection({
+        sourceModelSelection: thread.modelSelection,
+        targetModelSelection,
         targetProviderEnabled: serverSettingsQuery.data?.providers[targetProvider].enabled,
         targetProviderStatus: targetAvailability.status,
       })
@@ -118,8 +138,6 @@ export function useThreadHandoff() {
     const createdAt = new Date().toISOString();
     const importedMessages = buildThreadHandoffImportedMessages(thread);
     const importedActivities = buildThreadHandoffImportedActivities(thread);
-    const { copyTransferableComposerState, stickyModelSelectionByProvider } =
-      useComposerDraftStore.getState();
 
     await api.orchestration.dispatchCommand({
       type: "thread.handoff.create",
@@ -128,12 +146,7 @@ export function useThreadHandoff() {
       sourceThreadId: thread.id,
       projectId: thread.projectId,
       title: resolveThreadHandoffTitle(thread),
-      modelSelection: await resolveTargetModelSelection(
-        thread,
-        targetProvider,
-        project.defaultModelSelection,
-        stickyModelSelectionByProvider,
-      ),
+      modelSelection: targetModelSelection,
       runtimeMode: thread.runtimeMode,
       interactionMode: thread.interactionMode,
       envMode: thread.envMode ?? (thread.worktreePath ? "worktree" : "local"),
@@ -174,6 +187,7 @@ export function useThreadHandoff() {
   const continueThreadWithProvider = async (
     thread: Thread,
     targetProvider: ProviderKind,
+    targetCodexProfileId?: CodexProfileId,
   ): Promise<Thread["id"]> => {
     const api = readNativeApi();
     if (!api) {
@@ -193,33 +207,34 @@ export function useThreadHandoff() {
       statuses: providerStatuses,
       refreshStatuses: () => refreshProviderStatuses({ silent: true }),
     });
+    const { stickyModelSelectionByProvider } = useComposerDraftStore.getState();
+    const targetModelSelection = await resolveTargetModelSelection(
+      thread,
+      targetProvider,
+      project.defaultModelSelection,
+      stickyModelSelectionByProvider,
+      targetCodexProfileId,
+    );
     if (
-      !isEligibleHandoffTargetProvider({
-        sourceProvider: thread.modelSelection.provider,
-        targetProvider,
+      !isEligibleHandoffTargetSelection({
+        sourceModelSelection: thread.modelSelection,
+        targetModelSelection,
         targetProviderEnabled: serverSettingsQuery.data?.providers[targetProvider].enabled,
         targetProviderStatus: targetAvailability.status,
       })
     ) {
       throw new Error(
         targetAvailability.usable
-          ? "This provider is not available for the current thread."
+          ? "This handoff target is not available for the current thread."
           : targetAvailability.unavailableReason,
       );
     }
-
-    const { stickyModelSelectionByProvider } = useComposerDraftStore.getState();
     await api.orchestration.dispatchCommand({
       type: "thread.provider.handoff",
       commandId: newCommandId(),
       threadId: thread.id,
       expectedSourceProvider: thread.modelSelection.provider,
-      targetModelSelection: await resolveTargetModelSelection(
-        thread,
-        targetProvider,
-        project.defaultModelSelection,
-        stickyModelSelectionByProvider,
-      ),
+      targetModelSelection,
       createdAt: new Date().toISOString(),
     });
 

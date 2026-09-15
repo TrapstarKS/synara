@@ -6,6 +6,7 @@
 import {
   EventId,
   MessageId,
+  type CodexProfileId,
   type OrchestrationThreadActivity,
   PROVIDER_DISPLAY_NAMES,
   type ModelSelection,
@@ -99,6 +100,36 @@ export function isEligibleHandoffTargetProvider(input: {
     input.targetProviderEnabled === true &&
     input.targetProviderStatus?.provider === input.targetProvider &&
     isProviderUsable(input.targetProviderStatus)
+  );
+}
+
+export function isEligibleHandoffTargetSelection(input: {
+  readonly sourceModelSelection: ModelSelection;
+  readonly targetModelSelection: ModelSelection;
+  readonly targetProviderEnabled: boolean | null | undefined;
+  readonly targetProviderStatus: ServerProviderStatus | null | undefined;
+}): boolean {
+  const targetProvider = input.targetModelSelection.provider;
+  if (
+    !input.targetProviderEnabled ||
+    input.targetProviderStatus?.provider !== targetProvider ||
+    !isProviderUsable(input.targetProviderStatus)
+  ) {
+    return false;
+  }
+
+  if (input.sourceModelSelection.provider !== targetProvider) {
+    return true;
+  }
+
+  // Same-provider handoff is intentionally narrow: it changes only the
+  // configured Codex account, which the server can restart safely with a new
+  // managed home. Other same-provider model changes remain normal composer
+  // behavior and are not handoffs.
+  return (
+    targetProvider === "codex" &&
+    input.sourceModelSelection.provider === "codex" &&
+    input.sourceModelSelection.profileId !== input.targetModelSelection.profileId
   );
 }
 
@@ -256,7 +287,22 @@ export function resolveThreadHandoffModelSelection(input: {
   readonly projectDefaultModelSelection: ModelSelection | null | undefined;
   readonly stickyModelSelectionByProvider: Partial<Record<ProviderKind, ModelSelection>>;
   readonly discoveredFallbackModel?: string | null;
+  readonly targetCodexProfileId?: CodexProfileId;
 }): ModelSelection {
+  if (input.targetCodexProfileId !== undefined) {
+    if (input.targetProvider !== "codex" || input.sourceThread.modelSelection.provider !== "codex") {
+      throw new Error("A Codex profile handoff requires a Codex source thread.");
+    }
+    return {
+      provider: "codex",
+      model: input.sourceThread.modelSelection.model,
+      profileId: input.targetCodexProfileId,
+      ...(input.sourceThread.modelSelection.options
+        ? { options: input.sourceThread.modelSelection.options }
+        : {}),
+    };
+  }
+
   const isCompatibleSelection = (
     selection: ModelSelection | null | undefined,
   ): selection is ModelSelection => {

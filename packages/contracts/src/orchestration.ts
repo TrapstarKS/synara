@@ -543,6 +543,8 @@ export type OrchestrationMessageTextSegment = typeof OrchestrationMessageTextSeg
 // instead of one block above every tool call.
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
+  /** Causal orchestration-event order; timestamps are not a reliable ordering key across clients. */
+  sequence: Schema.optional(NonNegativeInt),
   role: OrchestrationMessageRole,
   text: Schema.String,
   textSegments: Schema.optional(Schema.Array(OrchestrationMessageTextSegment)),

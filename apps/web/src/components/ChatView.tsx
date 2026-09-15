@@ -1,6 +1,7 @@
 import { type LegendListRef } from "@legendapp/list/react";
 import {
   MessageId,
+  type CodexProfileId,
   OrchestrationThreadActivity,
   PROVIDER_DISPLAY_NAMES,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -2122,6 +2123,15 @@ export default function ChatView({
         : [],
     [activeThread, providerStatuses, serverSettingsQuery.data?.providers],
   );
+  const handoffTargetCodexProfiles = useMemo(() => {
+    if (activeThread?.modelSelection.provider !== "codex") {
+      return [];
+    }
+    const currentProfileId = activeThread.modelSelection.profileId;
+    return (serverSettingsQuery.data?.providers.codex.profiles ?? []).filter(
+      (profile) => profile.id !== currentProfileId,
+    );
+  }, [activeThread, serverSettingsQuery.data?.providers.codex.profiles]);
   const handoffActionLabel = pendingProviderHandoff
     ? `Switching to ${PROVIDER_DISPLAY_NAMES[pendingProviderHandoff.targetModelSelection.provider]}`
     : settings.enableContinuousProviderHandoff
@@ -3690,7 +3700,11 @@ export default function ChatView({
   );
 
   const onCreateHandoffThread = useCallback(
-    async (targetProvider: ProviderKind, mode: ProviderHandoffMode) => {
+    async (
+      targetProvider: ProviderKind,
+      mode: ProviderHandoffMode,
+      codexProfileId?: CodexProfileId,
+    ) => {
       if (!activeThread || handoffDisabled) {
         return;
       }
@@ -3698,8 +3712,8 @@ export default function ChatView({
       const shouldContinueInThread =
         mode === "continue" && settings.enableContinuousProviderHandoff;
       const handoffPromise = shouldContinueInThread
-        ? continueThreadWithProvider(activeThread, targetProvider)
-        : createThreadHandoff(activeThread, targetProvider);
+        ? continueThreadWithProvider(activeThread, targetProvider, codexProfileId)
+        : createThreadHandoff(activeThread, targetProvider, codexProfileId);
       const errorTitle = shouldContinueInThread
         ? "Could not switch providers"
         : "Could not create handoff thread";
@@ -5511,6 +5525,12 @@ export default function ChatView({
           handoffPending={pendingProviderHandoff !== null}
           handoffDisabled={handoffDisabled}
           handoffActionTargetProviders={handoffTargetProviders}
+          handoffActionTargetCodexProfiles={handoffTargetCodexProfiles}
+          activeCodexProfileId={
+            activeThread.modelSelection.provider === "codex"
+              ? activeThread.modelSelection.profileId
+              : undefined
+          }
           handoffBadgeSourceProvider={handoffBadgeSourceProvider}
           handoffBadgeTargetProvider={handoffBadgeTargetProvider}
           providerHandoffTrail={providerHandoffTrail}

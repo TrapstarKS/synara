@@ -979,6 +979,26 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(activities.length, 2_000);
       assert.equal(activities[0]?.id, asEventId("oversized-activity-151"));
       assert.equal(activities.at(-1)?.id, asEventId("oversized-activity-2150"));
+
+      // The active turn is allowed to exceed the normal detail window so a
+      // long-running stream keeps its earlier command rows visible.
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, state, requested_at, started_at, checkpoint_files_json
+        ) VALUES (
+          'thread-oversized-turn', 'turn-oversized', 'running',
+          '2026-02-24T00:00:00.000Z', '2026-02-24T00:00:00.000Z', '[]'
+        )
+      `;
+      const activeDetail = yield* snapshotQuery.getThreadDetailById(
+        asThreadId("thread-oversized-turn"),
+      );
+      const activeActivities = Option.getOrThrow(activeDetail).activities;
+      assert.equal(activeActivities.length, 2_150);
+      assert.equal(activeActivities[0]?.id, asEventId("oversized-activity-1"));
+      assert.equal(activeActivities.at(-1)?.id, asEventId("oversized-activity-2150"));
+      yield* sql`DELETE FROM projection_turns WHERE thread_id = 'thread-oversized-turn'`;
+
       // Enrich retained legacy usage without exempting accounting from the caps.
       yield* sql`UPDATE projection_thread_activities SET kind = 'context-window.updated'
         WHERE activity_id IN ('oversized-activity-1', 'oversized-activity-2000')`;
