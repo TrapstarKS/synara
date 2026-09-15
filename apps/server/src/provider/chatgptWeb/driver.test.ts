@@ -147,6 +147,28 @@ describe("ChatGptWebDriver", () => {
     );
   });
 
+  it("reuses the active ChatGPT tab before an older background tab", async () => {
+    const fake = createFakeRpc([
+      {
+        name: "browser_tabs",
+        result: {
+          tabs: [
+            { tabId: "old", url: CONVERSATION_URL, active: false },
+            { tabId: "active", url: CONVERSATION_URL, active: true },
+          ],
+          activeTabId: "active",
+          assignedTabId: null,
+        },
+      },
+      { name: "browser_evaluate", result: observed(), times: Number.POSITIVE_INFINITY },
+    ]);
+    const driver = new ChatGptWebDriver({ rpc: fake.rpc, sleep: fastSleep });
+
+    const conversation = await driver.ensureConversation();
+
+    expect(conversation.tabId).toBe("active");
+  });
+
   it("rejects with login-required when the page shows a signed-out surface", async () => {
     const fake = createFakeRpc([
       { name: "browser_tabs", result: { tabs: [], activeTabId: null, assignedTabId: null } },
@@ -257,6 +279,43 @@ describe("ChatGptWebDriver", () => {
         args: expect.objectContaining({ text: "hello world", append: false }),
       }),
     );
+  });
+
+  it("accepts a visible user message when the browser prompt has an internal preamble", async () => {
+    const fake = createFakeRpc([
+      { name: "browser_evaluate", result: observed() },
+      { name: "browser_type", result: {} },
+      {
+        name: "browser_evaluate",
+        result: observed({ composerText: "internal context hello", sendEnabled: true }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({ composerText: "internal context hello", sendEnabled: true }),
+      },
+      { name: "browser_click", result: {} },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          composerText: "still visible",
+          sendEnabled: true,
+          turns: [turn("user", "hello")],
+        }),
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      sendAcceptTimeoutMs: 200,
+    });
+
+    const result = await driver.sendPrompt(
+      REF,
+      "internal context\n\nhello",
+      { submittedText: "hello" },
+    );
+
+    expect(result.accepted).toBe(true);
   });
 
   it("rejects with busy when ChatGPT is already generating", async () => {
@@ -422,6 +481,27 @@ describe("ChatGptWebDriver", () => {
 
     expect(completion.outcome).toBe("stalled");
     expect(completion.text).toBe("partial");
+  });
+
+  it("does not wait forever when the submitted turn never becomes observable", async () => {
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({ generating: false, turns: [] }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      turnStartTimeoutMs: 50,
+      completionTimeoutMs: 5_000,
+    });
+
+    const completion = await driver.waitForCompletion(REF, "missing prompt");
+
+    expect(completion.outcome).toBe("timeout");
   });
 
   it("interrupt clicks the first visible stop selector", async () => {

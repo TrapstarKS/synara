@@ -299,7 +299,10 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
         }
 
         const sent = yield* Effect.tryPromise({
-          try: () => context.driver.sendPrompt(conversation, promptText),
+          try: () =>
+            context.driver.sendPrompt(conversation, promptText, {
+              submittedText: turn.submittedText,
+            }),
           catch: (error) => error,
         }).pipe(
           Effect.catch((error) => {
@@ -344,7 +347,7 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
 
         const completion = yield* Effect.tryPromise({
           try: () =>
-            context.driver.waitForCompletion(conversation, promptText, {
+            context.driver.waitForCompletion(conversation, turn.submittedText, {
               onText: (text) => {
                 const delta = computeDelta(streamed, text);
                 if (delta.kind === "none") return;

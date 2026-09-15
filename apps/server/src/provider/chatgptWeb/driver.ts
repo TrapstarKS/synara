@@ -57,6 +57,15 @@ export interface ChatGptSendResult {
   readonly observation: ChatGptObservation;
 }
 
+export interface ChatGptSendOptions {
+  /**
+   * Text that ChatGPT renders as the authored user message. The driver may
+   * send additional provider context before it, so this is intentionally
+   * separate from the full browser prompt.
+   */
+  readonly submittedText?: string;
+}
+
 export interface ChatGptDriverOptions {
   readonly rpc: ChatGptBrowserRpc;
   readonly sleep?: (milliseconds: number) => Promise<void>;
@@ -64,6 +73,10 @@ export interface ChatGptDriverOptions {
   readonly settleMs?: number;
   readonly readyTimeoutMs?: number;
   readonly sendAcceptTimeoutMs?: number;
+  /** Absolute upper bound for inserting, sending and accepting one prompt. */
+  readonly sendTimeoutMs?: number;
+  /** How long to wait for the submitted user turn to become observable. */
+  readonly turnStartTimeoutMs?: number;
   readonly stallMs?: number;
   readonly completionTimeoutMs?: number;
   /**
@@ -82,6 +95,8 @@ const DEFAULT_POLL_MS = 1000;
 const DEFAULT_SETTLE_MS = 1500;
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_SEND_ACCEPT_TIMEOUT_MS = 30_000;
+const DEFAULT_SEND_TIMEOUT_MS = 90_000;
+const DEFAULT_TURN_START_TIMEOUT_MS = 60_000;
 const DEFAULT_STALL_MS = 10 * 60_000;
 const DEFAULT_COMPLETION_TIMEOUT_MS = 45 * 60_000;
 const DEFAULT_LOGIN_WAIT_MS = 5 * 60_000;
@@ -137,6 +152,8 @@ export class ChatGptWebDriver {
   private readonly settleMs: number;
   private readonly readyTimeoutMs: number;
   private readonly sendAcceptTimeoutMs: number;
+  private readonly sendTimeoutMs: number;
+  private readonly turnStartTimeoutMs: number;
   private readonly stallMs: number;
   private readonly completionTimeoutMs: number;
   private readonly loginWaitMs: number;
@@ -149,21 +166,48 @@ export class ChatGptWebDriver {
     this.settleMs = options.settleMs ?? DEFAULT_SETTLE_MS;
     this.readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
     this.sendAcceptTimeoutMs = options.sendAcceptTimeoutMs ?? DEFAULT_SEND_ACCEPT_TIMEOUT_MS;
+    this.sendTimeoutMs = options.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
+    this.turnStartTimeoutMs = options.turnStartTimeoutMs ?? DEFAULT_TURN_START_TIMEOUT_MS;
     this.stallMs = options.stallMs ?? DEFAULT_STALL_MS;
     this.completionTimeoutMs = options.completionTimeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS;
     this.loginWaitMs = options.loginWaitMs ?? DEFAULT_LOGIN_WAIT_MS;
     this.onLoginRequired = options.onLoginRequired;
   }
 
-  private async call(input: ChatGptBrowserCallInput): Promise<unknown> {
+  private async call(
+    input: ChatGptBrowserCallInput,
+    deadlineAtMs?: number,
+  ): Promise<unknown> {
+    const boundedInput =
+      deadlineAtMs === undefined
+        ? input
+        : (() => {
+            const remaining = deadlineAtMs - Date.now();
+            if (remaining <= 0) {
+              throw new ChatGptDriverFailure(
+                "timeout",
+                "The ChatGPT prompt did not reach the page before the send timeout.",
+              );
+            }
+            return {
+              ...input,
+              timeoutMs: Math.max(100, Math.min(input.timeoutMs ?? 20_000, remaining)),
+            };
+          })();
     try {
-      return await this.rpc.call(input);
+      return await this.rpc.call(boundedInput);
     } catch (error) {
       if (error instanceof BrowserHostRpcError) {
         if (error.kind === "unavailable") {
           throw new ChatGptDriverFailure(
             "browser-unavailable",
             "The default-browser bridge is unavailable. Load the Synara ChatGPT extension and try again.",
+          );
+        }
+        if (error.kind === "timeout") {
+          throw new ChatGptDriverFailure(
+            "timeout",
+            "The browser did not answer while Synara was sending the ChatGPT prompt. Check the ChatGPT tab and try again.",
           );
         }
         if (browserHostErrorCode(error) === "BrowserInterruptedByHuman") {
@@ -211,7 +255,12 @@ export class ChatGptWebDriver {
       }
     }
     if (!wantedUrl) {
-      const reusable = tabs.find((tab) => isChatGptUrl(tab.url) && !this.isLoginLikeUrl(tab.url));
+      const reusable =
+        tabs.find(
+          (tab) =>
+            tab.active && isChatGptUrl(tab.url) && !this.isLoginLikeUrl(tab.url),
+        ) ??
+        tabs.find((tab) => isChatGptUrl(tab.url) && !this.isLoginLikeUrl(tab.url));
       if (reusable) {
         return await this.waitReady(reusable.tabId, reusable.url, { navigateIfStale: true });
       }
@@ -314,29 +363,36 @@ export class ChatGptWebDriver {
   private async waitForLogin(
     ref: ChatGptConversationRef,
     initial: ChatGptObservation,
+    operationDeadlineAtMs?: number,
   ): Promise<ChatGptObservation | null> {
     if (this.loginWaitMs <= 0) return null;
     this.onLoginRequired?.();
-    const deadline = Date.now() + this.loginWaitMs;
+    const deadline = Math.min(
+      Date.now() + this.loginWaitMs,
+      operationDeadlineAtMs ?? Number.POSITIVE_INFINITY,
+    );
     let observation = initial;
     while (Date.now() < deadline) {
       await this.sleep(Math.min(this.pollMs, 500));
-      observation = await this.observe(ref);
+      observation = await this.observe(ref, deadline);
       if (observation.composerPresent && !observation.loginRequired) return observation;
     }
     return null;
   }
 
-  async observe(ref: ChatGptConversationRef): Promise<ChatGptObservation> {
+  async observe(ref: ChatGptConversationRef, deadlineAtMs?: number): Promise<ChatGptObservation> {
     const raw = asRecord(
-      await this.call({
-        name: "browser_evaluate",
-        args: {
-          expression: buildChatGptObservationExpression(),
-          ...(ref.tabId === null ? {} : { tabId: ref.tabId }),
+      await this.call(
+        {
+          name: "browser_evaluate",
+          args: {
+            expression: buildChatGptObservationExpression(),
+            ...(ref.tabId === null ? {} : { tabId: ref.tabId }),
+          },
+          timeoutMs: 20_000,
         },
-        timeoutMs: 20_000,
-      }),
+        deadlineAtMs,
+      ),
     );
     const observation = parseChatGptObservation(raw?.value);
     if (!observation) {
@@ -349,19 +405,33 @@ export class ChatGptWebDriver {
   private async clickFirst(
     selectors: ReadonlyArray<string>,
     tabId: string | null,
+    deadlineAtMs?: number,
   ): Promise<boolean> {
     for (const selector of selectors) {
       try {
         const raw = asRecord(
-          await this.call({
-            name: "browser_click",
-            args: { target: { selector }, ...(tabId === null ? {} : { tabId }) },
-            timeoutMs: 15_000,
-          }),
+          await this.call(
+            {
+              name: "browser_click",
+              args: { target: { selector }, ...(tabId === null ? {} : { tabId }) },
+              timeoutMs: 15_000,
+            },
+            deadlineAtMs,
+          ),
         );
         if (raw !== null) return true;
-      } catch {
-        // Try the next shape; selectors drift with ChatGPT releases.
+      } catch (error) {
+        // A missing control is expected while selectors drift. Transport,
+        // timeout and human-control failures must escape immediately instead
+        // of being multiplied by every fallback selector.
+        if (
+          error instanceof ChatGptDriverFailure &&
+          (error.code === "browser-unavailable" ||
+            error.code === "interrupted-by-human" ||
+            error.code === "timeout")
+        ) {
+          throw error;
+        }
       }
     }
     return false;
@@ -399,10 +469,24 @@ export class ChatGptWebDriver {
   }
 
   private containsSubmittedPrompt(observation: ChatGptObservation, text: string): boolean {
-    const fingerprint = promptFingerprint(text);
+    const normalized = normalize(text);
+    const fingerprint = promptFingerprint(normalized);
     if (fingerprint.length === 0) return false;
-    return observation.turns.some(
-      (turn) => turn.role === "user" && normalize(turn.text).includes(fingerprint),
+
+    // The newest user turn is the only one that can acknowledge the current
+    // send. Looking only at it prevents an old repeated prompt from accepting
+    // a click that ChatGPT ignored.
+    const latestUser = observation.turns.findLast((turn) => turn.role === "user");
+    if (!latestUser) return false;
+    const visible = normalize(latestUser.text);
+    if (visible.length === 0) return false;
+    return (
+      visible.includes(fingerprint) ||
+      // Some ChatGPT renderers trim a long provider prompt. A short authored
+      // message still needs to match when the page keeps a little surrounding
+      // UI text, while the length guard avoids matching arbitrary one-letter
+      // leftovers.
+      (visible.length >= 8 && fingerprint.includes(visible))
     );
   }
 
@@ -411,21 +495,36 @@ export class ChatGptWebDriver {
    * proves it: the submitted text appears as a user turn, the composer clears,
    * or generation starts. A click alone is never acceptance.
    */
-  async sendPrompt(ref: ChatGptConversationRef, text: string): Promise<ChatGptSendResult> {
-    const before = await this.observe(ref);
+  async sendPrompt(
+    ref: ChatGptConversationRef,
+    text: string,
+    options: ChatGptSendOptions = {},
+  ): Promise<ChatGptSendResult> {
+    const submittedText = options.submittedText ?? text;
+    const deadlineAtMs = Date.now() + this.sendTimeoutMs;
+    return this.sendPromptWithinDeadline(ref, text, submittedText, deadlineAtMs);
+  }
+
+  private async sendPromptWithinDeadline(
+    ref: ChatGptConversationRef,
+    text: string,
+    submittedText: string,
+    deadlineAtMs: number,
+  ): Promise<ChatGptSendResult> {
+    const before = await this.observe(ref, deadlineAtMs);
     if (before.rateLimitText !== null) {
       if (before.rateLimitDismissible) await this.dismissRateLimit(ref);
       throw this.rateLimitFailure(before);
     }
     if (before.loginRequired) {
-      const ready = await this.waitForLogin(ref, before);
+      const ready = await this.waitForLogin(ref, before, deadlineAtMs);
       if (!ready) {
         throw new ChatGptDriverFailure(
           "login-required",
           "Sign in to ChatGPT in your default browser first.",
         );
       }
-      return this.sendPrompt(ref, text);
+      return this.sendPromptWithinDeadline(ref, text, submittedText, deadlineAtMs);
     }
     if (before.generating) {
       throw new ChatGptDriverFailure(
@@ -449,10 +548,10 @@ export class ChatGptWebDriver {
     });
 
     // Confirm the editor holds the text before spending a click on it.
-    const insertDeadline = Date.now() + 5_000;
+    const insertDeadline = Math.min(Date.now() + 5_000, deadlineAtMs);
     let inserted = false;
     while (Date.now() < insertDeadline) {
-      const current = await this.observe(ref);
+      const current = await this.observe(ref, insertDeadline);
       if (normalize(current.composerText).includes(promptFingerprint(text))) {
         inserted = true;
         break;
@@ -467,40 +566,51 @@ export class ChatGptWebDriver {
     }
 
     // Wait briefly for the send control to enable, then click it.
-    const sendDeadline = Date.now() + 5_000;
+    const sendDeadline = Math.min(Date.now() + 5_000, deadlineAtMs);
     let clicked = false;
     while (Date.now() < sendDeadline && !clicked) {
-      const current = await this.observe(ref);
+      const current = await this.observe(ref, sendDeadline);
       if (current.sendEnabled) {
-        clicked = await this.clickFirst(SEND_SELECTORS, ref.tabId);
+        clicked = await this.clickFirst(SEND_SELECTORS, ref.tabId, sendDeadline);
       }
       if (!clicked) await this.sleep(250);
     }
     if (!clicked) {
-      await this.call({
-        name: "browser_press",
-        args: { keys: ["Enter"], ...(ref.tabId === null ? {} : { tabId: ref.tabId }) },
-        timeoutMs: 10_000,
-      });
+      await this.call(
+        {
+          name: "browser_press",
+          args: { keys: ["Enter"], ...(ref.tabId === null ? {} : { tabId: ref.tabId }) },
+          timeoutMs: 10_000,
+        },
+        deadlineAtMs,
+      );
     }
 
-    const acceptDeadline = Date.now() + this.sendAcceptTimeoutMs;
+    const acceptDeadline = Math.min(Date.now() + this.sendAcceptTimeoutMs, deadlineAtMs);
+    let lastObservation = before;
     while (Date.now() < acceptDeadline) {
-      const observation = await this.observe(ref);
+      const observation = await this.observe(ref, acceptDeadline);
+      lastObservation = observation;
       if (observation.rateLimitText !== null) {
         if (observation.rateLimitDismissible) await this.dismissRateLimit(ref);
         throw this.rateLimitFailure(observation);
       }
       if (
         observation.generating ||
-        this.containsSubmittedPrompt(observation, text) ||
+        this.containsSubmittedPrompt(observation, submittedText) ||
         (observation.composerText.trim().length === 0 && observation.sendEnabled === false)
       ) {
         return { accepted: true, observation };
       }
       await this.sleep(Math.min(this.pollMs, 500));
     }
-    return { accepted: false, observation: await this.observe(ref) };
+    if (Date.now() >= deadlineAtMs) {
+      throw new ChatGptDriverFailure(
+        "timeout",
+        "The ChatGPT page did not confirm the prompt before the send timeout. Check the ChatGPT tab and try again.",
+      );
+    }
+    return { accepted: false, observation: lastObservation };
   }
 
   /**
@@ -521,6 +631,7 @@ export class ChatGptWebDriver {
     let lastChangeAt = Date.now();
     let stableSince: number | null = null;
     let rateLimitDismissed = false;
+    let submittedTurnSeen = false;
     let lastObservation = await this.observe(ref);
 
     for (;;) {
@@ -550,6 +661,10 @@ export class ChatGptWebDriver {
       }
 
       const hasUserTurn = this.containsSubmittedPrompt(observation, submittedText);
+      if (hasUserTurn) submittedTurnSeen = true;
+      if (!submittedTurnSeen && Date.now() - startedAt > this.turnStartTimeoutMs) {
+        return { outcome: "timeout", text: lastText, observation };
+      }
       const settledByQuiet = !observation.generating;
       if (settledByQuiet && hasUserTurn) {
         if (stableSince === null) stableSince = Date.now();
