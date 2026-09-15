@@ -1449,7 +1449,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         context?.terminalFailure?.error ??
         (error instanceof Error ? error : new Error("Failed to start Codex session.", { cause: error }));
       const cause = context?.transportError ?? failureError;
-      const message = context?.terminalFailure?.message ?? (cause instanceof Error ? cause.message : "Failed to start Codex session.");
+      const message =
+        context?.terminalFailure && context.transportError instanceof CodexAppServerTransportError
+          ? context.terminalFailure.message
+          : cause instanceof Error
+            ? cause.message
+            : "Failed to start Codex session.";
       if (context) {
         if (!context.terminalFailure) {
           this.updateSession(context, {
@@ -1458,17 +1463,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           });
           this.emitErrorEvent(context, "session/startFailed", message);
         }
-        try {
-          await this.stopSession(threadId);
-        } catch (stopError) {
-          if (!context.terminalFailure) {
-            throw stopError;
-          }
-          log.error("failed to stop Codex session after terminal startup failure", {
-            threadId,
-            error: stopError,
-          });
-        }
+        await this.stopSession(threadId);
       } else {
         gatewaySessionLease?.release();
         this.emitEvent({
