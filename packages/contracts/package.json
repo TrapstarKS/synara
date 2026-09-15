@@ -1,6 +1,6 @@
 {
   "name": "@synara/contracts",
-  "version": "0.8.36",
+  "version": "0.8.37",
   "private": true,
   "files": [
     "dist"

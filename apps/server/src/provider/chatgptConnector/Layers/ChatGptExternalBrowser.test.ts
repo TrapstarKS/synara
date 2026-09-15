@@ -81,4 +81,36 @@ describe("ChatGptExternalBrowser", () => {
 
     await expect(waiting).resolves.toBe(true);
   });
+
+  it("rebinds one idle connected bridge when a different thread starts", async () => {
+    const sent: string[] = [];
+    const browser = makeChatGptExternalBrowser({
+      available: true,
+      origin: "http://127.0.0.1:3773",
+      randomToken: () => "pair-token",
+      randomClientId: () => "client-1",
+    });
+    browser.createPairing("thread-1" as never);
+    browser.attachClient({
+      token: "pair-token",
+      send: async (payload) => {
+        sent.push(payload);
+      },
+    });
+
+    const resultPromise = browser.execute({
+      threadId: "thread-2" as never,
+      name: "browser_tabs",
+      args: {},
+      timeoutMs: 1_000,
+    });
+    const request = JSON.parse(sent[1] ?? "{}");
+    expect(request).toMatchObject({ type: "request", name: "browser_tabs" });
+    browser.handleClientMessage(
+      "client-1",
+      JSON.stringify({ type: "response", id: request.id, ok: true, result: { tabs: [] } }),
+    );
+
+    await expect(resultPromise).resolves.toEqual({ tabs: [] });
+  });
 });

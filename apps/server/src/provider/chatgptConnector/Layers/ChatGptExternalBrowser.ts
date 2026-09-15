@@ -44,8 +44,8 @@ interface PendingRequest {
 interface ClientState {
   readonly clientId: string;
   readonly token: string;
-  readonly threadId: ThreadId;
-  readonly threadKey: string;
+  threadId: ThreadId;
+  threadKey: string;
   readonly send: (payload: string) => Promise<void>;
   readonly pending: Map<number, PendingRequest>;
 }
@@ -211,19 +211,45 @@ export function makeChatGptExternalBrowser(input: {
     return { clientId: client.clientId, threadId: client.threadId };
   };
 
+  /**
+   * The extension keeps one local WebSocket alive while the user switches
+   * Synara conversations. Pairing starts from whichever conversation was
+   * visible in Settings, so a later provider session can legitimately arrive
+   * with a different thread id. Rebind only an unambiguous, idle client; this
+   * keeps the fail-closed behavior when multiple browser bridges are present
+   * or an action from the previous thread is still in flight.
+   */
+  const clientForThread = (threadId: ThreadId): ClientState | null => {
+    const threadKey = threadKeyFor(threadId);
+    const exact = clientsByThread.get(threadKey);
+    if (exact && resolvePairing(exact.token)) return exact;
+    if (exact) detachClient(exact.clientId);
+
+    const candidates = [...clients.values()].filter((client) => resolvePairing(client.token));
+    if (candidates.length !== 1) return null;
+    const candidate = candidates[0];
+    if (!candidate || candidate.pending.size > 0) return null;
+
+    if (clientsByThread.get(candidate.threadKey) === candidate) {
+      clientsByThread.delete(candidate.threadKey);
+    }
+    candidate.threadId = threadId;
+    candidate.threadKey = threadKey;
+    clientsByThread.set(threadKey, candidate);
+    return candidate;
+  };
+
   const execute = (request: ChatGptExternalBrowserExecuteInput): Promise<unknown> => {
     if (!input.available) {
       return Promise.reject(
         new Error("The external browser bridge is only available on a local Synara server."),
       );
     }
-    const threadKey = threadKeyFor(request.threadId);
-    const client = clientsByThread.get(threadKey);
-    if (!client || !resolvePairing(client.token)) {
-      if (client) detachClient(client.clientId);
+    const client = clientForThread(request.threadId);
+    if (!client) {
       return Promise.reject(
         new Error(
-          "The external browser bridge is not connected. Load extensions/chatgpt-browser in Chrome, Brave, or Arc, then click Sign in to ChatGPT again.",
+          "The external browser bridge is not connected to this Synara session. Load extensions/chatgpt-browser in Chrome, Brave, or Arc, then click Sign in to ChatGPT again.",
         ),
       );
     }
@@ -291,9 +317,7 @@ export function makeChatGptExternalBrowser(input: {
 
   const waitForClient = (threadId: ThreadId, timeoutMs: number): Promise<boolean> => {
     const threadKey = threadKeyFor(threadId);
-    const currentClient = clientsByThread.get(threadKey);
-    if (currentClient && resolvePairing(currentClient.token)) return Promise.resolve(true);
-    if (currentClient) detachClient(currentClient.clientId);
+    if (clientForThread(threadId)) return Promise.resolve(true);
     const boundedTimeout = Math.max(0, timeoutMs);
     if (boundedTimeout === 0) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {

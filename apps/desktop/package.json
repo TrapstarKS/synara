@@ -1,6 +1,6 @@
 {
   "name": "@synara/desktop",
-  "version": "0.8.36",
+  "version": "0.8.37",
   "private": true,
   "main": "dist-electron/main.js",
   "scripts": {
