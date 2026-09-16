@@ -3,6 +3,8 @@
 // Deliberately does not use the cookies, webRequest, or storage APIs for
 // ChatGPT data. It only attaches Chrome DevTools Protocol to ChatGPT/auth tabs
 // and forwards the small browser actions requested by the local Synara server.
+// It never brings a tab to the foreground or changes which tab is active:
+// CDP input works on background tabs, so driving ChatGPT stays invisible.
 
 const CHATGPT_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com"]);
 
@@ -108,7 +110,7 @@ function allowedUrlFromTab(tab) {
   return isAllowedTabUrl(pending) ? pending : "";
 }
 
-async function getAllowedTab(tabId, activate = false) {
+async function getAllowedTab(tabId) {
   const deadline = Date.now() + TAB_NAVIGATION_WAIT_MS;
   let tab = await chrome.tabs.get(tabId);
   // A freshly created Chrome tab commonly exposes the destination only as
@@ -126,7 +128,6 @@ async function getAllowedTab(tabId, activate = false) {
   if (!isAllowedTabUrl(tab.url || "")) {
     throw new Error("The bridge can only control ChatGPT and its sign-in tabs.");
   }
-  if (activate) await chrome.tabs.update(tabId, { active: true });
   await attachTab(tabId);
   return tab;
 }
@@ -283,7 +284,9 @@ async function dispatchMouseClick(tabId, point) {
   // Native CDP input is deliberate. Calling `element.click()` makes React
   // handlers run, but it does not reproduce the trusted user-input path that
   // keeps an already-open ChatGPT tab's live conversation state in sync.
-  await getAllowedTab(tabId, true);
+  // CDP input reaches background tabs, so driving ChatGPT never steals the
+  // user's active tab.
+  await getAllowedTab(tabId);
   const target = { tabId };
   await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
@@ -316,29 +319,59 @@ async function typeText(tabId, args) {
   const text = typeof args?.text === "string" ? args.text : "";
   if (text.length > 100_000) throw new Error("The prompt is too large.");
   const append = args?.append === true;
-  const point = await interactionPoint(tabId, selector);
-  await dispatchMouseClick(tabId, point);
-  const expression = `(() => {
-    const element = document.querySelector(${JSON.stringify(selector)});
-    if (!element) return false;
-    element.focus();
-    const selection = window.getSelection();
-    if (!selection) return false;
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    if (${append ? "true" : "false"}) range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    return true;
-  })()`;
-  const result = await evaluate(tabId, expression);
-  if (result.value !== true) throw new Error("The visible ChatGPT composer was not found.");
-  // `Input.insertText` is the browser's real text-entry path. In particular,
-  // Lexical's controlled contenteditable ignores enough synthetic input that
-  // a programmatic send can create a conversation server-side without
-  // updating the tab's live UI or stream.
-  await chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text });
+  const insert = async () => {
+    const point = await interactionPoint(tabId, selector);
+    await dispatchMouseClick(tabId, point);
+    const expression = `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) return false;
+      element.focus();
+      const selection = window.getSelection();
+      if (!selection) return false;
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      if (${append ? "true" : "false"}) range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()`;
+    const result = await evaluate(tabId, expression);
+    if (result.value !== true) throw new Error("The visible ChatGPT composer was not found.");
+    // `Input.insertText` is the browser's real text-entry path. In particular,
+    // Lexical's controlled contenteditable ignores enough synthetic input that
+    // a programmatic send can create a conversation server-side without
+    // updating the tab's live UI or stream.
+    await chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text });
+  };
+  await insert();
+  if (await composerHoldsText(tabId, selector, text)) return { typed: true };
+  // Background tabs normally accept CDP text input. If this renderer dropped
+  // it anyway, fall back to activating the tab and retyping so a send can
+  // never silently turn into a no-op; the server confirms insertion again.
+  await chrome.tabs.update(tabId, { active: true });
+  await insert();
   return { typed: true };
+}
+
+async function composerHoldsText(tabId, selector, text) {
+  const fingerprint = String(text || "")
+    .replace(/\s+/gu, "")
+    .slice(0, 40);
+  if (fingerprint.length === 0) return true;
+  const expression =
+    "(() => { const el = document.querySelector(" +
+    JSON.stringify(selector) +
+    "); if (!el) return false;" +
+    ' const raw = el.value !== undefined && el.value !== null ? String(el.value) : String(el.textContent || "");' +
+    ' return raw.replace(/\\s+/gu, "").includes(' +
+    JSON.stringify(fingerprint) +
+    "); })()";
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await evaluate(tabId, expression);
+    if (result.value === true) return true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return false;
 }
 
 const KEY_DATA = {
@@ -355,7 +388,8 @@ const KEY_DATA = {
 async function press(tabId, args) {
   const keys = Array.isArray(args?.keys) ? args.keys : [];
   if (keys.length === 0 || keys.length > 8) throw new Error("A short key sequence is required.");
-  await getAllowedTab(tabId, true);
+  // Key events go to the page's focused element; no tab activation needed.
+  await getAllowedTab(tabId);
   for (const rawKey of keys) {
     const key = String(rawKey);
     const data = KEY_DATA[key] || { code: key, keyCode: 0, text: "" };
@@ -399,7 +433,9 @@ async function browserOpen(args) {
   if (!isBrowserActionUrl(url) || !CHATGPT_HOSTS.has(new URL(url).hostname)) {
     throw new Error("The bridge can only open chatgpt.com.");
   }
-  const tab = await chrome.tabs.create({ url, active: true });
+  // Open in the background so a new conversation never pulls the user away
+  // from their current tab.
+  const tab = await chrome.tabs.create({ url, active: false });
   return { tabId: String(tab.id), finalUrl: allowedUrlFromTab(tab) || url };
 }
 
@@ -408,8 +444,9 @@ async function browserNavigate(tabId, args) {
   if (!isBrowserActionUrl(url) || !CHATGPT_HOSTS.has(new URL(url).hostname)) {
     throw new Error("The bridge can only navigate ChatGPT tabs to chatgpt.com.");
   }
-  await getAllowedTab(tabId, true);
-  const tab = await chrome.tabs.update(tabId, { url, active: true });
+  await getAllowedTab(tabId);
+  // Navigating a background tab is enough; do not change the active tab.
+  const tab = await chrome.tabs.update(tabId, { url });
   return { tabId: String(tab.id), finalUrl: allowedUrlFromTab(tab) || url };
 }
 

@@ -360,6 +360,7 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
 ];
 const BENIGN_PROCESS_OUTPUT_REGEXES = [/^(?:\^C)?Token usage:/i];
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
+  "no rollout found",
   "not found",
   "missing thread",
   "no such thread",

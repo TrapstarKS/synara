@@ -691,7 +691,13 @@ export class ChatGptWebDriver {
         return { outcome: "rate_limited", text: lastText, observation };
       }
       const lastAssistant = observation.turns.findLast((turn) => turn.role === "assistant");
-      const text = observation.terminalAssistantText ?? lastAssistant?.text ?? "";
+      // The model text is authoritative and keeps growing while the visible
+      // reveal is paused (background tab), so it leads the fallback chain.
+      const text =
+        observation.assistantModelText ??
+        observation.terminalAssistantText ??
+        lastAssistant?.text ??
+        "";
       if (text !== lastText) {
         lastText = text;
         lastChangeAt = Date.now();

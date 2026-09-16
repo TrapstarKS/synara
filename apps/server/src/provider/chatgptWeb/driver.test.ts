@@ -76,6 +76,7 @@ const observation = (overrides: Partial<ChatGptObservation> = {}): ChatGptObserv
     turns: [],
     latestAssistantCompleted: false,
     terminalAssistantText: null,
+    assistantModelText: null,
     toolRowCount: 0,
     errorText: null,
     rateLimitText: null,
@@ -492,6 +493,59 @@ describe("ChatGptWebDriver", () => {
         name: "browser_evaluate",
         result: observed({
           turns: [turn("user", "say hello"), turn("assistant", "Hello there")],
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      settleMs: 30,
+      stallMs: 5_000,
+      completionTimeoutMs: 5_000,
+    });
+    const onText = vi.fn();
+
+    const completion = await driver.waitForCompletion(REF, "say hello", { onText });
+
+    expect(completion.outcome).toBe("completed");
+    expect(completion.text).toBe("Hello there");
+    expect(onText.mock.calls.map((call) => call[0])).toEqual(["Hel", "Hello", "Hello there"]);
+  });
+
+  it("streams model text while the visible DOM lags behind a background turn", async () => {
+    // A background tab's on-screen reveal is animation-frame gated and can
+    // stay frozen while the model text keeps growing, so deltas must not
+    // depend on the rendered assistant turn.
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({ generating: true, turns: [turn("user", "say hello")] }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          generating: true,
+          turns: [turn("user", "say hello")],
+          assistantModelText: "Hel",
+        }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          generating: true,
+          turns: [turn("user", "say hello")],
+          assistantModelText: "Hello",
+        }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello")],
+          assistantModelText: "Hello there",
+          latestAssistantCompleted: true,
+          terminalAssistantText: "Hello there",
         }),
         times: Number.POSITIVE_INFINITY,
       },

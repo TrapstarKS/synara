@@ -746,13 +746,19 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
               },
             } satisfies ProviderRuntimeEvent);
 
+            // The turn must outlive the fiber that dispatched it: the provider
+            // command reactor completes its provider call as soon as
+            // `sendTurn` returns, and this Effect build interrupts a fiber's
+            // children when that parent completes. A detached fiber is owned
+            // by the session context instead; interruptTurn and stopSession
+            // still stop it explicitly.
             const fiber = yield* runTurn(
               context,
               turn,
               promptText,
               includesConversationPreamble,
               inbox,
-            ).pipe(Effect.forkChild({ startImmediately: true }));
+            ).pipe(Effect.forkDetach({ startImmediately: true }));
             turn.fiber = fiber;
 
             return {
@@ -831,12 +837,18 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
     });
 
     yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         for (const context of sessions.values()) {
           context.exec.killAll();
           connector.registry.endTurn(String(context.session.threadId));
           connector.registry.unregister(String(context.session.threadId));
-          void context.activeTurn?.fiber;
+          const fiber = context.activeTurn?.fiber;
+          if (fiber) {
+            // Turn fibers are detached, so adapter teardown has to stop them
+            // explicitly; otherwise a turn would keep polling the browser
+            // after its dispatcher and session are gone.
+            yield* Fiber.interrupt(fiber).pipe(Effect.catchCause(() => Effect.void));
+          }
         }
       }),
     );

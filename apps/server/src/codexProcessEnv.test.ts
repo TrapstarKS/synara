@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import os from "node:os";
 import path from "node:path";
 
-import { parse } from "smol-toml";
+import { parse, stringify, type TomlTable } from "smol-toml";
 import { describe, expect, it, vi } from "vitest";
 
 import { CodexProfileId } from "@synara/contracts";
@@ -49,6 +49,17 @@ function readOverlayConfigToml(overlayHome: string): Record<string, unknown> {
 
 function readMcpServers(overlayHome: string): Record<string, unknown> {
   return (readOverlayConfigToml(overlayHome).mcp_servers ?? {}) as Record<string, unknown>;
+}
+
+function removeMcpServerFromOverlay(overlayHome: string, name: string): void {
+  const config = parse(readOverlayConfig(overlayHome), { integersAsBigInt: true }) as TomlTable;
+  const servers = (config.mcp_servers ?? {}) as TomlTable;
+  delete servers[name];
+  writeFileSync(
+    path.join(overlayHome, "config.toml"),
+    stringify(config, { numbersAsFloat: true }),
+    "utf8",
+  );
 }
 
 describe("linkOrCopyCodexOverlayEntry", () => {
@@ -391,7 +402,7 @@ describe("buildCodexProcessEnv", () => {
     }
   });
 
-  it("keeps an MCP server added through a session across thread switches and restarts", async () => {
+  it("keeps an added MCP and remembers its removal across thread switches and restarts", async () => {
     const sourceHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-mcp-source-"));
     const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-mcp-runtime-"));
     const sourceConfig = [
@@ -461,6 +472,34 @@ describe("buildCodexProcessEnv", () => {
           bearer_token_env_var: "SYNARA_AGENT_GATEWAY_TOKEN",
         },
       });
+
+      // The user removes the MCP from the durable overlay, as Codex does for
+      // config/value/write with a replacement value. A restart must not revive
+      // it from the source config or from stale bookkeeping.
+      removeMcpServerFromOverlay(overlayHome, "roblox");
+      await buildCodexProcessEnv({
+        env: { SYNARA_HOME: runtimeHome },
+        homePath: sourceHome,
+        platform: "darwin",
+        appendConfigToml: managedConfig,
+      });
+      expect(readMcpServers(overlayHome)).toEqual({
+        "user-tool": { url: "http://127.0.0.1:2222/user-tool" },
+        synara: {
+          url: "http://127.0.0.1:3773/mcp",
+          bearer_token_env_var: "SYNARA_AGENT_GATEWAY_TOKEN",
+        },
+      });
+      expect(readMcpState(overlayHome).owned).toContain("roblox");
+
+      // A second restart confirms the tombstone is durable.
+      await buildCodexProcessEnv({
+        env: { SYNARA_HOME: runtimeHome },
+        homePath: sourceHome,
+        platform: "darwin",
+        appendConfigToml: managedConfig,
+      });
+      expect(readMcpServers(overlayHome)).not.toHaveProperty("roblox");
       expect(readFileSync(sourceConfigPath, "utf8")).toBe(sourceConfig);
     } finally {
       rmSync(sourceHome, { recursive: true, force: true });

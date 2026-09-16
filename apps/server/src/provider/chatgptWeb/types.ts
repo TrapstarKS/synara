@@ -67,6 +67,13 @@ export interface ChatGptObservation {
   readonly latestAssistantCompleted: boolean;
   /** Final public assistant text read from the same terminal model message. */
   readonly terminalAssistantText: string | null;
+  /**
+   * Public assistant text read from the newest answer-capable model message,
+   * available while the turn is still streaming. ChatGPT's on-screen reveal is
+   * animation-frame gated and stays frozen in a background tab, so the model
+   * text is what keeps deltas live when the visible DOM lags behind.
+   */
+  readonly assistantModelText: string | null;
   /** Count of tool/connector rows visible in the newest assistant turn. */
   readonly toolRowCount: number;
   /** Visible error banner text, when one is displayed. */

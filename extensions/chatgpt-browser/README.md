@@ -6,7 +6,9 @@ the user's normal browser profile.
 It does not request the `cookies` permission and does not read or export
 cookies, local storage, access tokens, or session tokens. The extension only
 connects to a loopback Synara server and uses the DevTools Protocol on tabs
-whose URL is ChatGPT or its sign-in flow.
+whose URL is ChatGPT or its sign-in flow. It drives those tabs in place with
+CDP input and never brings one to the foreground or changes which tab is
+active, so Synara can send and stream while you keep working in another tab.
 
 ## One-time setup
 

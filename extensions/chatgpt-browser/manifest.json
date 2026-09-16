@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Synara ChatGPT Browser Bridge",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Lets Synara drive and diagnose an already signed-in ChatGPT tab without exporting cookies.",
   "permissions": ["tabs", "debugger", "storage"],
   "host_permissions": [

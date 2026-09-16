@@ -560,7 +560,11 @@ export function buildChatGptObservationExpression(): string {
           var value = publicAssistantText(message);
           return { found: true, completed: true, text: value || null };
         }
-        return { found: true, completed: false, text: null };
+        // A turn in progress already streams its text through the model. The
+        // visible reveal is animation-frame gated and pauses in a background
+        // tab, so the model text is what keeps Synara live while the user
+        // stays on their own tab.
+        return { found: true, completed: false, text: publicAssistantText(message) || null };
       }
       return { found: false, completed: false, text: null };
     }, { found: false, completed: false, text: null });
@@ -702,7 +706,8 @@ export function buildChatGptObservationExpression(): string {
     sendEnabled: readSendEnabled(),
     turns: turns,
     latestAssistantCompleted: terminalAssistant.completed,
-    terminalAssistantText: terminalAssistant.text,
+    terminalAssistantText: terminalAssistant.completed ? terminalAssistant.text : null,
+    assistantModelText: terminalAssistant.text,
     toolRowCount: toolRowCount,
     errorText: readErrorText(newestAssistant),
     rateLimitText: rateLimit.text,
@@ -766,6 +771,7 @@ export function parseChatGptObservation(value: unknown): ChatGptObservation | nu
   const errorText = asNullableString(record["errorText"]);
   const rateLimitText = asNullableString(record["rateLimitText"]);
   const terminalAssistantText = asNullableString(record["terminalAssistantText"]);
+  const assistantModelText = asNullableString(record["assistantModelText"]);
 
   return {
     url,
@@ -781,6 +787,7 @@ export function parseChatGptObservation(value: unknown): ChatGptObservation | nu
     terminalAssistantText: terminalAssistantText
       ? terminalAssistantText.slice(0, MESSAGE_TEXT_CAP)
       : null,
+    assistantModelText: assistantModelText ? assistantModelText.slice(0, MESSAGE_TEXT_CAP) : null,
     toolRowCount: asCount(record["toolRowCount"]),
     errorText: errorText ? errorText.slice(0, ERROR_TEXT_CAP) : null,
     rateLimitText: rateLimitText ? rateLimitText.slice(0, RATE_LIMIT_TEXT_CAP) : null,

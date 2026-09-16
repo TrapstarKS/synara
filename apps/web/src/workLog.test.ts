@@ -4090,6 +4090,68 @@ describe("deriveTimelineEntries", () => {
     ]);
   });
 
+  it("keeps a late earlier-turn tool above a newer user message", () => {
+    const firstTurnId = TurnId.makeUnsafe("first-turn");
+    const secondTurnId = TurnId.makeUnsafe("second-turn");
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.makeUnsafe("first-user"),
+          role: "user",
+          text: "First request",
+          sequence: 10,
+          createdAt: "2026-09-15T16:00:00.000Z",
+          streaming: false,
+        },
+        {
+          id: MessageId.makeUnsafe("first-answer"),
+          role: "assistant",
+          text: "First answer",
+          sequence: 11,
+          turnId: firstTurnId,
+          createdAt: "2026-09-15T16:00:01.000Z",
+          streaming: false,
+        },
+        {
+          id: MessageId.makeUnsafe("second-user"),
+          role: "user",
+          text: "Second request",
+          sequence: 20,
+          createdAt: "2026-09-15T16:00:02.000Z",
+          streaming: false,
+        },
+        {
+          id: MessageId.makeUnsafe("second-answer"),
+          role: "assistant",
+          text: "Second answer",
+          sequence: 21,
+          turnId: secondTurnId,
+          createdAt: "2026-09-15T16:00:03.000Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [
+        {
+          id: "late-first-turn-tool",
+          turnId: firstTurnId,
+          sequence: 30,
+          createdAt: "2026-09-15T16:00:04.000Z",
+          tone: "tool",
+          label: "Late first-turn command",
+        },
+      ],
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "first-user",
+      "first-answer",
+      "late-first-turn-tool",
+      "second-user",
+      "second-answer",
+    ]);
+  });
+
   it.each([false, true])(
     "keeps tools and plans after repeated steering messages (later narration: %s)",
     (hasLaterNarration) => {

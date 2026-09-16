@@ -209,6 +209,7 @@ import {
   hasFileUndoSettled,
   resolveActiveThreadTitle,
   resolveActiveTurnLiveDiffState,
+  resolveCodexProfileId,
   resolveCommittedProviderModel,
   resolveDefaultEnvironmentPanelOpen,
   resolveDraftFallbackModelSelection,
@@ -255,6 +256,7 @@ import {
   type ComposerLocalDirectoryMenuHandle,
 } from "./chat/ComposerLocalDirectoryMenu";
 import { ComposerModelEffortPicker } from "./chat/ComposerModelEffortPicker";
+import { CodexProfilePicker } from "./chat/CodexProfilePicker";
 import { ComposerPendingApprovalPanel } from "./chat/ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
 import { ComposerQueuedHeader } from "./chat/ComposerQueuedHeader";
@@ -1234,7 +1236,7 @@ export default function ChatView({
     selectedRuntimeModel,
     composerProviderState,
     selectedPromptEffort,
-    selectedModelSelection,
+    selectedModelSelection: baseSelectedModelSelection,
     providerOptionsForDispatch,
     selectedModelForPickerWithCustomFallback,
     showComposerModelBootstrapSkeleton,
@@ -1265,6 +1267,23 @@ export default function ChatView({
   const featureFlags = useFeatureFlags();
   const showDebugTaskBanner = import.meta.env.DEV && featureFlags["show-debug-task-banner"];
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
+  const draftCodexModelSelection = composerDraft.modelSelectionByProvider.codex;
+  const resolvedCodexProfileId = resolveCodexProfileId({
+    hasThreadStarted,
+    threadModelSelection: activeThread?.modelSelection ?? null,
+    draftModelSelection: draftCodexModelSelection ?? null,
+    defaultProfileId: serverSettingsQuery.data?.providers.codex.defaultProfileId ?? undefined,
+  });
+  const selectedCodexProfileId = selectedProvider === "codex" ? resolvedCodexProfileId : undefined;
+  const selectedModelSelection = useMemo<ModelSelection>(() => {
+    if (baseSelectedModelSelection.provider !== "codex" || selectedCodexProfileId === undefined) {
+      return baseSelectedModelSelection;
+    }
+    return {
+      ...baseSelectedModelSelection,
+      profileId: selectedCodexProfileId,
+    };
+  }, [baseSelectedModelSelection, selectedCodexProfileId]);
 
   const phase = derivePhase(activeThread?.session ?? null);
   const isConnecting = phase === "connecting";
@@ -3367,6 +3386,10 @@ export default function ChatView({
         undefined,
         provider === "claudeAgent" ? runtimeModel?.supportsAutoMode : undefined,
       );
+      const nextSelectionWithProfile: ModelSelection =
+        nextModelSelection.provider === "codex" && resolvedCodexProfileId !== undefined
+          ? { ...nextModelSelection, profileId: resolvedCodexProfileId }
+          : nextModelSelection;
       const providerStatus = findProviderStatus(providerStatuses, provider);
       const nextRuntimeMode =
         runtimeMode === "auto" &&
@@ -3380,7 +3403,7 @@ export default function ChatView({
         nextRuntimeMode,
         persistRuntimeMode: persistRuntimeModeChange,
         commit: () => {
-          setComposerDraftModelSelectionAndSticky(activeThread.id, nextModelSelection);
+          setComposerDraftModelSelectionAndSticky(activeThread.id, nextSelectionWithProfile);
           if (provider === "cursor") {
             setComposerDraftProviderModelOptions(activeThread.id, provider, undefined, {
               persistSticky: true,
@@ -3405,6 +3428,7 @@ export default function ChatView({
       runtimeMode,
       runtimeModelsByProvider,
       scheduleComposerFocus,
+      resolvedCodexProfileId,
       setComposerDraftModelSelectionAndSticky,
       setComposerDraftProviderModelOptions,
     ],
@@ -4135,6 +4159,23 @@ export default function ChatView({
     },
     [setIsModelPickerOpen, setIsTraitsPickerOpen, handleModelPickerOpenChange],
   );
+  const codexProfilePicker =
+    selectedProvider === "codex" ? (
+      <CodexProfilePicker
+        profiles={serverSettingsQuery.data?.providers.codex.profiles ?? []}
+        profileId={selectedCodexProfileId}
+        disabled={hasThreadStarted}
+        onChange={(profileId: CodexProfileId | undefined) => {
+          if (!activeThread || selectedModelSelection.provider !== "codex") return;
+          const { profileId: _previousProfileId, ...selection } = selectedModelSelection;
+          setComposerDraftModelSelectionAndSticky(
+            activeThread.id,
+            profileId ? { ...selection, profileId } : selection,
+          );
+          scheduleComposerFocus();
+        }}
+      />
+    ) : null;
   const composerPickerControls = showComposerModelBootstrapSkeleton ? (
     useSplitComposerPickerControls ? (
       <>
@@ -4914,6 +4955,13 @@ export default function ChatView({
     activeThread.id,
   ).map((definition) => ({ definition }));
 
+  const activeCodexProfileId =
+    selectedProvider === "codex"
+      ? selectedCodexProfileId
+      : activeThread.modelSelection.provider === "codex"
+        ? activeThread.modelSelection.profileId
+        : undefined;
+
   // Shared inputs for both Environment panel surfaces (the header Popover when the dock is
   // open, and the docked right column when it is closed) so the two never drift.
   const environmentPanelProps: Omit<EnvironmentPanelProps, "open" | "variant"> = {
@@ -4926,6 +4974,7 @@ export default function ChatView({
     availableEditors,
     activeThreadId: activeThread.id,
     activeProvider: activeThread.session?.provider ?? activeThread.modelSelection.provider,
+    ...(activeCodexProfileId ? { activeCodexProfileId } : {}),
     isStudioChat: isStudioContainer,
     studioFolderPath: isStudioContainer ? resolvedThreadWorkingDirectory : null,
     showGitActions,
@@ -5371,7 +5420,12 @@ export default function ChatView({
                   <ChatComposerFooter
                     isComposerFooterCompact={isComposerFooterCompact}
                     leadingControls={renderComposerLeadingControls({ iconOnly: false })}
-                    composerPickerControls={composerPickerControls}
+                    composerPickerControls={
+                      <>
+                        {codexProfilePicker}
+                        {composerPickerControls}
+                      </>
+                    }
                     contextMeter={
                       !isVoiceRecording &&
                       !isVoiceTranscribing &&
@@ -5526,10 +5580,7 @@ export default function ChatView({
           handoffDisabled={handoffDisabled}
           handoffActionTargetProviders={handoffTargetProviders}
           handoffActionTargetCodexProfiles={handoffTargetCodexProfiles}
-          {...(activeThread.modelSelection.provider === "codex" &&
-          activeThread.modelSelection.profileId !== undefined
-            ? { activeCodexProfileId: activeThread.modelSelection.profileId }
-            : {})}
+          {...(activeCodexProfileId ? { activeCodexProfileId } : {})}
           handoffBadgeSourceProvider={handoffBadgeSourceProvider}
           handoffBadgeTargetProvider={handoffBadgeTargetProvider}
           providerHandoffTrail={providerHandoffTrail}
@@ -5729,7 +5780,7 @@ export default function ChatView({
                     </h2>
                   </div>
                 </div>
-                <div className="w-full shrink-0 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-4">
+                <div className="w-full shrink-0 pb-3 sm:pb-4">
                   {composerSection}
                   {relocateComposerLeadingControls ? (
                     <div className={COMPOSER_COLUMN_FRAME_CLASS_NAME}>
@@ -5862,10 +5913,7 @@ export default function ChatView({
                   {/* A trailing BranchToolbar only renders for legacy git threads; otherwise the
                       composer is the last element, so give it a comfortable bottom margin. */}
                   <div
-                    className={cn(
-                      "pb-[env(safe-area-inset-bottom)]",
-                      isGitRepo && !environmentEnabled ? "pt-0.5" : "pt-3 sm:pt-4",
-                    )}
+                    className={cn(isGitRepo && !environmentEnabled ? "pt-0.5" : "pt-3 sm:pt-4")}
                   />
                   {secondaryChromeReady &&
                   ((isGitRepo && !environmentEnabled) || relocateComposerLeadingControls) ? (

@@ -1604,6 +1604,14 @@ describe("isRecoverableThreadResumeError", () => {
     ).toBe(true);
   });
 
+  it("matches Codex rollout-missing resume errors", () => {
+    expect(
+      isRecoverableThreadResumeError(
+        new Error("thread/resume failed: no rollout found for thread id 01a09c5e"),
+      ),
+    ).toBe(true);
+  });
+
   it("ignores non-resume errors", () => {
     expect(
       isRecoverableThreadResumeError(new Error("thread/start failed: permission denied")),

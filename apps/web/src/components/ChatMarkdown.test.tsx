@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@pierre/diffs", () => ({
   getFiletypeFromFileName: (fileName: string) => (fileName.endsWith(".ts") ? "ts" : "text"),
@@ -17,6 +17,14 @@ vi.mock("@pierre/diffs", () => ({
 vi.mock("../hooks/useTheme", () => ({
   useTheme: () => ({ resolvedTheme: "light" }),
 }));
+
+// ChatMarkdown pulls a heavy module graph (markdown, math, highlighting). The
+// first cold `import()` can exceed the default 5s test timeout while the full
+// suite runs packages in parallel, which flaked the first assertion below.
+// Warm the module once so every test measures the behavior, not module load.
+beforeAll(async () => {
+  await import("./ChatMarkdown");
+}, 30_000);
 
 function renderWithQueryClient(ui: ReactElement) {
   const client = new QueryClient({

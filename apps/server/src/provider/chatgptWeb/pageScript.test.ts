@@ -217,6 +217,53 @@ describe("buildChatGptObservationExpression", () => {
     expect(observation.terminalAssistantText).toBe("Terminal descendant answer");
   });
 
+  it("exposes streaming model text before end_turn arrives", () => {
+    const observation = observe(
+      `
+        <section data-testid="conversation-turn-1" data-turn="user" data-turn-id="turn-1">
+          <div data-message-id="user-1"><div class="markdown">Hello there</div></div>
+        </section>
+        <section data-testid="conversation-turn-2" data-turn="assistant" data-turn-id="turn-2">
+          <div data-message-id="assistant-1"><div class="markdown">Frozen first chunk</div></div>
+        </section>
+        <form>
+          <div id="prompt-textarea" contenteditable="true"></div>
+          <button data-testid="stop-button">Stop</button>
+        </form>
+      `,
+      DEFAULT_URL,
+      () => {
+        const section = document.querySelector(
+          'section[data-testid="conversation-turn-2"]',
+        ) as Record<string, unknown> | null;
+        if (!section) throw new Error("assistant section missing");
+        section["__reactFiber$test"] = {
+          memoizedProps: {
+            turn: {
+              messages: [
+                {
+                  id: "assistant-1",
+                  author: { role: "assistant" },
+                  channel: "final",
+                  content: {
+                    content_type: "text",
+                    parts: ["Frozen first chunk and the model keeps streaming"],
+                  },
+                  end_turn: false,
+                  status: "in_progress",
+                },
+              ],
+            },
+          },
+        };
+      },
+    );
+
+    expect(observation.latestAssistantCompleted).toBe(false);
+    expect(observation.terminalAssistantText).toBeNull();
+    expect(observation.assistantModelText).toBe("Frozen first chunk and the model keeps streaming");
+  });
+
   it("returns and presents only authored user text from a framed model message", () => {
     const observation = observe(
       `

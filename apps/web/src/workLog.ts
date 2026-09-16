@@ -2741,16 +2741,20 @@ export function deriveTimelineEntries(
     if (entry.kind === "work" && entry.sequence !== undefined && turnBlock !== undefined) {
       // Prefer the last sequenced message before this activity. This keeps a
       // clock-skewed tool after its user message while preserving the older
-      // turn-block fallback for background-tool replays whose effective turnId
-      // changes during activity coalescing.
+      // turn block when a late replay carries a sequence newer than the next
+      // user message. The effective turn id can change during background-tool
+      // coalescing, but a known older turn must never be pulled below that
+      // newer user message.
+      let causalMessageOrder: number | undefined;
       for (let index = sequencedMessageOrders.length - 1; index >= 0; index -= 1) {
         const messageOrderEntry = sequencedMessageOrders[index]!;
         if (messageOrderEntry.sequence <= entry.sequence) {
-          orderByEntry.set(entry, messageOrderEntry.order);
+          causalMessageOrder = messageOrderEntry.order;
           break;
         }
       }
-      if (orderByEntry.has(entry)) {
+      if (causalMessageOrder !== undefined) {
+        orderByEntry.set(entry, Math.min(turnBlock, causalMessageOrder));
         continue;
       }
     }
