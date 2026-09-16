@@ -680,6 +680,24 @@ export function buildChatGptObservationExpression(): string {
     }, 0);
   }
 
+  // The turn watchdog must see progress beyond the answer text: tool output,
+  // reasoning chrome and status rows all render inside the newest assistant
+  // turn. A bounded tail plus the rendered size tells the driver the turn is
+  // still moving even while the final answer has not grown yet.
+  var assistantActivity = "";
+  if (newestAssistant) {
+    assistantActivity = safe(function () {
+      var total = 0;
+      var tail = "";
+      for (var index = 0; index < newestAssistant.sections.length; index++) {
+        var raw = String(newestAssistant.sections[index].textContent || "");
+        total += raw.length;
+        tail = (tail + raw.slice(-200)).slice(-200);
+      }
+      return String(total) + ":" + tail;
+    }, "");
+  }
+
   var rateLimit = readRateLimit();
   var composerNode = readComposer();
   var composerPresent = composerNode !== null;
@@ -706,8 +724,10 @@ export function buildChatGptObservationExpression(): string {
     sendEnabled: readSendEnabled(),
     turns: turns,
     latestAssistantCompleted: terminalAssistant.completed,
+    latestAssistantInProgress: terminalAssistant.found && !terminalAssistant.completed,
     terminalAssistantText: terminalAssistant.completed ? terminalAssistant.text : null,
     assistantModelText: terminalAssistant.text,
+    assistantActivity: assistantActivity,
     toolRowCount: toolRowCount,
     errorText: readErrorText(newestAssistant),
     rateLimitText: rateLimit.text,
@@ -772,6 +792,7 @@ export function parseChatGptObservation(value: unknown): ChatGptObservation | nu
   const rateLimitText = asNullableString(record["rateLimitText"]);
   const terminalAssistantText = asNullableString(record["terminalAssistantText"]);
   const assistantModelText = asNullableString(record["assistantModelText"]);
+  const assistantActivity = asNullableString(record["assistantActivity"]);
 
   return {
     url,
@@ -784,10 +805,12 @@ export function parseChatGptObservation(value: unknown): ChatGptObservation | nu
     sendEnabled: record["sendEnabled"] === true,
     turns: turns.slice(-MAX_TURNS),
     latestAssistantCompleted: record["latestAssistantCompleted"] === true,
+    latestAssistantInProgress: record["latestAssistantInProgress"] === true,
     terminalAssistantText: terminalAssistantText
       ? terminalAssistantText.slice(0, MESSAGE_TEXT_CAP)
       : null,
     assistantModelText: assistantModelText ? assistantModelText.slice(0, MESSAGE_TEXT_CAP) : null,
+    assistantActivity: assistantActivity ? assistantActivity.slice(0, 1_024) : "",
     toolRowCount: asCount(record["toolRowCount"]),
     errorText: errorText ? errorText.slice(0, ERROR_TEXT_CAP) : null,
     rateLimitText: rateLimitText ? rateLimitText.slice(0, RATE_LIMIT_TEXT_CAP) : null,

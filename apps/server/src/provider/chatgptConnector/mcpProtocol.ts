@@ -29,7 +29,7 @@ export interface ChatGptMcpHandleInput {
   readonly body: unknown;
   readonly tools: ReadonlyArray<ChatGptConnectorTool>;
   /** Attributes the call to exactly one Synara thread, or refuses. */
-  readonly resolveContext: () => ConnectorCallResolution;
+  readonly resolveContext: (sessionTag?: string) => ConnectorCallResolution;
   readonly serverVersion: string;
   readonly instructions: string;
   readonly onToolCall?: (toolName: string, outcome: "ok" | "error") => void;
@@ -71,6 +71,25 @@ function toolListResult(tools: ReadonlyArray<ChatGptConnectorTool>): Record<stri
   return {
     tools: tools.map((tool) => ({ ...tool.definition })),
   };
+}
+
+function asArgumentsRecord(args: unknown): Record<string, unknown> {
+  return typeof args === "object" && args !== null && !Array.isArray(args)
+    ? (args as Record<string, unknown>)
+    : {};
+}
+
+/** The conversations's attribution tag, when the model echoed it back. */
+function sessionTagFrom(args: unknown): string | undefined {
+  const value = asArgumentsRecord(args)["synara_session"];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/** Tool arguments without the attribution tag: it is transport plumbing. */
+function toolArguments(args: unknown): Record<string, unknown> {
+  const record = { ...asArgumentsRecord(args) };
+  delete record["synara_session"];
+  return record;
 }
 
 async function handleSingleMessage(
@@ -124,13 +143,13 @@ async function handleSingleMessage(
           input.onToolCall?.(name, "error");
           return { reply: jsonRpcResult(id, mcpToolResultError(`Unknown tool "${name}".`)) };
         }
-        const resolution = input.resolveContext();
+        const resolution = input.resolveContext(sessionTagFrom(params.arguments));
         if (!resolution.ok) {
           input.onToolCall?.(name, "error");
           return { reply: jsonRpcResult(id, mcpToolResultError(resolution.message)) };
         }
         try {
-          const result = await tool.handler(resolution.context, params.arguments ?? {});
+          const result = await tool.handler(resolution.context, toolArguments(params.arguments));
           input.onToolCall?.(name, result.isError === true ? "error" : "ok");
           const augmented =
             result.isError === true

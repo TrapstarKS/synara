@@ -16,6 +16,7 @@ export const CONNECTOR_INSTRUCTIONS = [
   "exec_command runs shell commands (not sandboxed to the workspace).",
   "write_stdin continues a live command session.",
   "agents coordinates worker chats for parallel work.",
+  "Pass the synara_session tag named in your conversation preamble with every workspace tool call; it keeps calls attributed while other Synara turns run.",
   "Tool calls are attributed to the Synara thread that started this turn; if a call is refused, tell the user why.",
 ].join("\n");
 
@@ -27,11 +28,16 @@ Use your tools rather than describing what you would do. Read files before editi
 
 The user sees your messages as ordinary conversation and your tool calls as they happen. If the user sends a correction while you work, treat it as steering the active task. Ask the user only when you genuinely need a decision you cannot resolve from the session context.`;
 
-export function buildConversationPreamble(workspaceRoot: string): string {
+export function buildConversationPreamble(workspaceRoot: string, sessionTag?: string): string {
+  const tag = sessionTag?.trim();
+  const tagLine =
+    tag !== undefined && tag.length > 0
+      ? `\n\nSynara session tag: ${tag}. Pass it as synara_session with every workspace tool call.`
+      : "";
   return `${BEHAVIOR_CONTRACT}
 
 Workspace root: ${workspaceRoot}
-File tools are scoped to this workspace; shell commands run with the user's normal privileges.`;
+File tools are scoped to this workspace; shell commands run with the user's normal privileges.${tagLine}`;
 }
 
 export function buildWorkerBootstrap(input: {
@@ -40,6 +46,7 @@ export function buildWorkerBootstrap(input: {
   readonly label: string;
   readonly task: string;
   readonly sharedContext?: string;
+  readonly sessionTag?: string;
 }): string {
   const lines = [
     `You are a Synara worker chat (${input.label}) supporting an active Synara coding thread.`,
@@ -47,6 +54,13 @@ export function buildWorkerBootstrap(input: {
     `Workspace root: ${input.workspaceRoot}`,
     "",
   ];
+  const tag = input.sessionTag?.trim();
+  if (tag !== undefined && tag.length > 0) {
+    lines.push(
+      `Synara session tag: ${tag}. Pass it as synara_session with every workspace tool call.`,
+      "",
+    );
+  }
   if (input.sharedContext && input.sharedContext.trim().length > 0) {
     lines.push("Shared context from the prime conversation:", input.sharedContext.trim(), "");
   }

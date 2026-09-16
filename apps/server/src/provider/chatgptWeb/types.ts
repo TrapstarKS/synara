@@ -65,6 +65,13 @@ export interface ChatGptObservation {
    * evidence than the Stop control, which can remain mounted after a reply.
    */
   readonly latestAssistantCompleted: boolean;
+  /**
+   * An answer-capable assistant message exists for the current turn and has
+   * not reached `end_turn` yet. The Stop control can disappear for a moment
+   * while ChatGPT is still working; this model state is the reliable busy
+   * signal that keeps a turn from settling early.
+   */
+  readonly latestAssistantInProgress: boolean;
   /** Final public assistant text read from the same terminal model message. */
   readonly terminalAssistantText: string | null;
   /**
@@ -74,6 +81,13 @@ export interface ChatGptObservation {
    * text is what keeps deltas live when the visible DOM lags behind.
    */
   readonly assistantModelText: string | null;
+  /**
+   * Rendered size plus tail of the newest assistant turn, tool rows and
+   * reasoning chrome included. Any change means the turn is still moving,
+   * which keeps the stall watchdog from killing a long tool or reasoning
+   * phase that has not produced answer text yet.
+   */
+  readonly assistantActivity: string;
   /** Count of tool/connector rows visible in the newest assistant turn. */
   readonly toolRowCount: number;
   /** Visible error banner text, when one is displayed. */

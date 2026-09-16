@@ -53,6 +53,7 @@ import {
 } from "../chatgptConnector/Services/ChatGptConnector.ts";
 import { ChatGptExternalBrowser } from "../chatgptConnector/Services/ChatGptExternalBrowser.ts";
 import { ChatGptWorkerBroker } from "../chatgptConnector/workers.ts";
+import { sessionTagForThread } from "../chatgptConnector/runtime.ts";
 import { ExecSessionManager } from "../chatgptConnector/tools/execSessions.ts";
 import { ChatGptWebDriver, ChatGptDriverFailure } from "../chatgptWeb/driver.ts";
 import {
@@ -394,6 +395,21 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
         );
         if (completion === null) return;
 
+        // The page navigates a fresh conversation to its /c/<id> URL on the
+        // first send. Keep the session and its cursor on the real conversation
+        // so a later resume reattaches to it instead of the root page.
+        if (
+          completion.observation.conversationPath !== null &&
+          completion.observation.url !== conversation.url
+        ) {
+          context.conversation = {
+            ...conversation,
+            url: completion.observation.url,
+            conversationPath: completion.observation.conversationPath,
+          };
+          context.session = { ...context.session, resumeCursor: completion.observation.url };
+        }
+
         const finalText = completion.text.trim().length > 0 ? completion.text : streamed;
         const remaining = computeDelta(streamed, finalText);
         if (remaining.kind !== "none") {
@@ -547,15 +563,20 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
             return completion.text;
           },
           onNotice: (notice) => emitRuntimeWarning(contextRef, notice),
+          sessionTag: sessionTagForThread(String(input.threadId)),
         });
         const exec = new ExecSessionManager();
 
         const conversation = yield* Effect.tryPromise({
           try: () =>
-            driver.ensureConversation({
-              ...(resumeUrl ? { existingUrl: resumeUrl } : {}),
-              ...(startOptions?.browserUrl ? { openUrl: startOptions.browserUrl } : {}),
-            }),
+            resumeUrl !== undefined || startOptions?.browserUrl !== undefined
+              ? driver.ensureConversation({
+                  ...(resumeUrl ? { existingUrl: resumeUrl } : {}),
+                  ...(startOptions?.browserUrl ? { openUrl: startOptions.browserUrl } : {}),
+                })
+              : // A fresh thread owns a fresh conversation: sessions must never
+                // share a tab, because several ChatGPT threads can run at once.
+                driver.openFreshConversation(),
           catch: (error) => toAdapterError("session/start", input.threadId, error),
         });
 
@@ -717,7 +738,12 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
             const includesConversationPreamble = !context.preambleSent;
             const contextParts: string[] = [];
             if (includesConversationPreamble) {
-              contextParts.push(buildConversationPreamble(context.workspaceRoot));
+              contextParts.push(
+                buildConversationPreamble(
+                  context.workspaceRoot,
+                  sessionTagForThread(String(context.session.threadId)),
+                ),
+              );
             }
             if (inbox.length > 0) {
               contextParts.push(`Updates from your workers:\n${inbox}`);

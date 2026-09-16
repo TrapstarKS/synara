@@ -260,6 +260,7 @@ describe("buildChatGptObservationExpression", () => {
     );
 
     expect(observation.latestAssistantCompleted).toBe(false);
+    expect(observation.latestAssistantInProgress).toBe(true);
     expect(observation.terminalAssistantText).toBeNull();
     expect(observation.assistantModelText).toBe("Frozen first chunk and the model keeps streaming");
   });

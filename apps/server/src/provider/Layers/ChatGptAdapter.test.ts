@@ -44,6 +44,8 @@ const observation = (overrides: Partial<ChatGptObservation> = {}): ChatGptObserv
   sendEnabled: false,
   turns: [],
   latestAssistantCompleted: false,
+  latestAssistantInProgress: false,
+  assistantActivity: "",
   terminalAssistantText: null,
   assistantModelText: null,
   toolRowCount: 0,
@@ -77,7 +79,13 @@ const makeFakeDriver = () => {
 
   const driver = {
     ensureConversation: async (): Promise<ChatGptConversationRef> => CONVERSATION,
-    openFreshConversation: async (): Promise<ChatGptConversationRef> => CONVERSATION,
+    // A fresh conversation starts on the ChatGPT root and only navigates to
+    // its /c/<id> URL once the first message is sent.
+    openFreshConversation: async (): Promise<ChatGptConversationRef> => ({
+      tabId: "t1",
+      url: "https://chatgpt.com/",
+      conversationPath: null,
+    }),
     sendPrompt: async (): Promise<ChatGptSendResult> => ({
       accepted: true,
       observation: observation(),
@@ -208,8 +216,13 @@ describe("ChatGptAdapter turn fiber lifetime", () => {
           Fiber.join(collector).pipe(Effect.as("terminal" as const)),
           Effect.sleep("3 seconds").pipe(Effect.as("timeout" as const)),
         );
+        // The session adopts the conversation's real /c/<id> URL from the
+        // terminal observation, so a later resume reattaches to the
+        // conversation itself instead of the root page.
+        const sessions = yield* adapter.listSessions();
+        const session = sessions.find((entry) => String(entry.threadId) === String(threadId));
         yield* adapter.stopSession(threadId).pipe(Effect.catchCause(() => Effect.void));
-        return { collected, outcome };
+        return { collected, outcome, resumeCursor: session?.resumeCursor };
       }).pipe(Effect.scoped, Effect.provide(layerFor(fakes))),
     );
 
@@ -231,5 +244,6 @@ describe("ChatGptAdapter turn fiber lifetime", () => {
     ]);
     const terminal = events.collected.at(-1);
     expect(terminal?.payload).toMatchObject({ state: "completed" });
+    expect(events.resumeCursor).toBe(CONVERSATION.url);
   });
 });

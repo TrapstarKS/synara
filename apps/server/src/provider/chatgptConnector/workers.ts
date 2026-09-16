@@ -75,6 +75,8 @@ export interface ChatGptWorkerBrokerOptions {
     onGenerating: (generating: boolean) => void,
   ) => Promise<string>;
   readonly onNotice?: (notice: string) => void;
+  /** Session tag worker chats echo back so tool calls stay attributable. */
+  readonly sessionTag?: string;
 }
 
 interface WorkerState {
@@ -251,6 +253,7 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
         label,
         task: worker.task,
         ...(input.context ? { sharedContext: input.context } : {}),
+        ...(this.options.sessionTag ? { sessionTag: this.options.sessionTag } : {}),
       });
       const framedBootstrap = prependChatGptPromptContext(worker.task, bootstrap);
       try {

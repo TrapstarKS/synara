@@ -205,6 +205,30 @@ describe("tools/call", () => {
     expect(onToolCall).toHaveBeenCalledExactlyOnceWith("nope", "error");
   });
 
+  it("forwards the synara_session tag and keeps it out of tool arguments", async () => {
+    let resolvedTag: string | undefined;
+    let handlerArguments: unknown;
+    const output = await post(callBody("echo", { value: "hi", synara_session: "abc12345" }), {
+      resolveContext: (sessionTag) => {
+        resolvedTag = sessionTag;
+        return { ok: true, context: CALL_CONTEXT };
+      },
+      tools: [
+        {
+          definition: echoTool.definition,
+          handler: async (_context, args) => {
+            handlerArguments = args;
+            return { content: [{ type: "text", text: "ok" }] };
+          },
+        },
+      ],
+    });
+
+    expect(output.status).toBe(200);
+    expect(resolvedTag).toBe("abc12345");
+    expect(handlerArguments).toEqual({ value: "hi" });
+  });
+
   it("refuses a call whose context cannot be attributed", async () => {
     const handler = vi.fn(
       async (): Promise<McpToolCallResult> => ({ content: [{ type: "text", text: "ran" }] }),

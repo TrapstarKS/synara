@@ -98,7 +98,10 @@ const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_SEND_ACCEPT_TIMEOUT_MS = 30_000;
 const DEFAULT_SEND_TIMEOUT_MS = 90_000;
 const DEFAULT_TURN_START_TIMEOUT_MS = 60_000;
-const DEFAULT_STALL_MS = 10 * 60_000;
+// Long tool runs and deep reasoning produce tool output and reasoning chrome
+// long before the answer text grows; the activity signal covers those, so this
+// watchdog only has to catch a page that stopped moving entirely.
+const DEFAULT_STALL_MS = 20 * 60_000;
 const DEFAULT_COMPLETION_TIMEOUT_MS = 45 * 60_000;
 const DEFAULT_LOGIN_WAIT_MS = 5 * 60_000;
 
@@ -671,6 +674,11 @@ export class ChatGptWebDriver {
     let stableSince: number | null = null;
     let rateLimitDismissed = false;
     let submittedTurnSeen = false;
+    // Settling by quietness is only safe after this turn visibly did something:
+    // the Stop control can be missing before the answer starts or between
+    // phases, and a fresh turn would otherwise "complete" on arrival.
+    let sawActivity = false;
+    let lastActivity = "";
     let lastObservation = await this.observe(ref);
 
     for (;;) {
@@ -691,13 +699,34 @@ export class ChatGptWebDriver {
         return { outcome: "rate_limited", text: lastText, observation };
       }
       const lastAssistant = observation.turns.findLast((turn) => turn.role === "assistant");
+      // Tool output and reasoning chrome update inside the newest assistant
+      // turn even while the answer text has not grown yet; any change there is
+      // progress for the stall watchdog.
+      if (observation.assistantActivity !== lastActivity) {
+        lastActivity = observation.assistantActivity;
+        lastChangeAt = Date.now();
+      }
       // The model text is authoritative and keeps growing while the visible
       // reveal is paused (background tab), so it leads the fallback chain.
-      const text =
+      const observedText =
         observation.assistantModelText ??
         observation.terminalAssistantText ??
         lastAssistant?.text ??
         "";
+      // A renderer catch-up can briefly drop the assistant text while the turn
+      // is still running; never replace a real answer with an empty string.
+      const text =
+        observedText.length === 0 && lastText.length > 0 && !observation.latestAssistantCompleted
+          ? lastText
+          : observedText;
+      if (
+        observation.generating ||
+        observation.latestAssistantInProgress ||
+        observation.latestAssistantCompleted ||
+        text.length > 0
+      ) {
+        sawActivity = true;
+      }
       if (text !== lastText) {
         lastText = text;
         lastChangeAt = Date.now();
@@ -726,7 +755,12 @@ export class ChatGptWebDriver {
           observation,
         };
       }
-      const settledByQuiet = !observation.generating;
+      // ChatGPT's model state outranks the Stop control: the control can be
+      // unmounted for a moment or for a whole phase while the answer keeps
+      // being produced. Only quiet once activity was seen and the newest
+      // answer message is neither waiting nor in progress.
+      const settledByQuiet =
+        sawActivity && !observation.generating && !observation.latestAssistantInProgress;
       if (settledByQuiet && hasUserTurn) {
         if (stableSince === null) stableSince = Date.now();
         if (Date.now() - stableSince >= this.settleMs) {
@@ -742,7 +776,10 @@ export class ChatGptWebDriver {
         stableSince = null;
       }
 
-      if (observation.generating && Date.now() - lastChangeAt > this.stallMs) {
+      if (
+        (observation.generating || observation.latestAssistantInProgress) &&
+        Date.now() - lastChangeAt > this.stallMs
+      ) {
         return { outcome: "stalled", text, observation };
       }
 

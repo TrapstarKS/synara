@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ChatGptRuntimeRegistry,
+  sessionTagForThread,
   type ChatGptThreadRuntime,
   type ConnectorCallContext,
 } from "./runtime.ts";
@@ -32,16 +33,16 @@ function makeRuntime(threadId: string, workspaceRoot = `/tmp/${threadId}`): Chat
   };
 }
 
-function resolveOk(registry: ChatGptRuntimeRegistry): ConnectorCallContext {
-  const resolution = registry.resolveCallContext();
+function resolveOk(registry: ChatGptRuntimeRegistry, sessionTag?: string): ConnectorCallContext {
+  const resolution = registry.resolveCallContext(sessionTag);
   if (!resolution.ok) {
     throw new Error(`Expected an attributed context, got: ${resolution.message}`);
   }
   return resolution.context;
 }
 
-function resolveError(registry: ChatGptRuntimeRegistry): string {
-  const resolution = registry.resolveCallContext();
+function resolveError(registry: ChatGptRuntimeRegistry, sessionTag?: string): string {
+  const resolution = registry.resolveCallContext(sessionTag);
   if (resolution.ok) {
     throw new Error("Expected the call to be refused.");
   }
@@ -90,24 +91,42 @@ describe("ChatGptRuntimeRegistry", () => {
     expect(resolveError(registry)).toContain(NO_ACTIVE_TURN);
   });
 
-  it("admits one turn at a time across threads and re-begins on the same thread", () => {
+  it("admits concurrent turns and resolves tagged calls per conversation", () => {
     const registry = new ChatGptRuntimeRegistry();
     registry.register(makeRuntime("thread-a"));
     registry.register(makeRuntime("thread-b"));
 
-    expect(registry.beginTurn("thread-a", "turn-1")).toEqual({ ok: true });
+    expect(registry.beginTurn("thread-a", "turn-a1")).toEqual({ ok: true });
+    expect(registry.beginTurn("thread-b", "turn-b1")).toEqual({ ok: true });
 
-    const conflict = registry.beginTurn("thread-b", "turn-b1");
-    expect(conflict.ok).toBe(false);
-    if (conflict.ok) throw new Error("Expected the second thread's turn to be refused.");
-    expect(conflict.message).toContain("Only one ChatGPT turn can run at a time");
-    expect(registry.snapshot()).toMatchObject({
-      activeThreadId: "thread-a",
-      activeTurnId: "turn-1",
+    // Two live turns without a tag are ambiguous: refuse instead of guessing.
+    expect(resolveError(registry)).toContain("Several ChatGPT (Web) turns are active");
+
+    // The session tag names the conversation, so tool calls stay attributable.
+    const tagA = sessionTagForThread("thread-a");
+    expect(registry.resolveCallContext(tagA)).toMatchObject({
+      ok: true,
+      context: { threadId: "thread-a", turnId: "turn-a1" },
+    });
+    expect(registry.resolveCallContext(sessionTagForThread("thread-b"))).toMatchObject({
+      ok: true,
+      context: { threadId: "thread-b", turnId: "turn-b1" },
     });
 
-    expect(registry.beginTurn("thread-a", "turn-2")).toEqual({ ok: true });
-    expect(resolveOk(registry).turnId).toBe("turn-2");
+    // A known tag with no turn in flight, and unknown tags, fail closed.
+    registry.endTurn("thread-a");
+    expect(resolveError(registry, tagA)).toContain("no ChatGPT (Web) turn in flight");
+    expect(resolveError(registry, "deadbeef")).toContain("Unknown synara_session tag");
+
+    // With a single turn left, an untagged call resolves again.
+    expect(resolveOk(registry).turnId).toBe("turn-b1");
+
+    // Re-begins on the same thread keep their own turn.
+    expect(registry.beginTurn("thread-a", "turn-a2")).toEqual({ ok: true });
+    expect(registry.resolveCallContext(tagA)).toMatchObject({
+      ok: true,
+      context: { threadId: "thread-a", turnId: "turn-a2" },
+    });
   });
 
   it("clears only the matching thread's turn", () => {
@@ -145,6 +164,7 @@ describe("ChatGptRuntimeRegistry", () => {
     expect(registry.snapshot()).toEqual({
       activeThreadId: null,
       activeTurnId: null,
+      activeThreadIds: [],
       registeredThreadIds: [],
     });
 
@@ -153,20 +173,24 @@ describe("ChatGptRuntimeRegistry", () => {
     expect(registry.snapshot()).toEqual({
       activeThreadId: null,
       activeTurnId: null,
+      activeThreadIds: [],
       registeredThreadIds: ["thread-a", "thread-b"],
     });
 
+    registry.beginTurn("thread-a", "turn-a1");
     registry.beginTurn("thread-b", "turn-2");
     expect(registry.snapshot()).toEqual({
       activeThreadId: "thread-b",
       activeTurnId: "turn-2",
+      activeThreadIds: ["thread-a", "thread-b"],
       registeredThreadIds: ["thread-a", "thread-b"],
     });
 
     registry.endTurn("thread-b");
     expect(registry.snapshot()).toEqual({
-      activeThreadId: null,
-      activeTurnId: null,
+      activeThreadId: "thread-a",
+      activeTurnId: "turn-a1",
+      activeThreadIds: ["thread-a"],
       registeredThreadIds: ["thread-a", "thread-b"],
     });
   });

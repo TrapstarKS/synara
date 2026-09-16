@@ -75,6 +75,8 @@ const observation = (overrides: Partial<ChatGptObservation> = {}): ChatGptObserv
     sendEnabled: false,
     turns: [],
     latestAssistantCompleted: false,
+    latestAssistantInProgress: false,
+    assistantActivity: "",
     terminalAssistantText: null,
     assistantModelText: null,
     toolRowCount: 0,
@@ -565,6 +567,148 @@ describe("ChatGptWebDriver", () => {
     expect(completion.outcome).toBe("completed");
     expect(completion.text).toBe("Hello there");
     expect(onText.mock.calls.map((call) => call[0])).toEqual(["Hel", "Hello", "Hello there"]);
+  });
+
+  it("does not settle while the model reports the answer still in progress", async () => {
+    // ChatGPT can drop the Stop control for a moment (or an entire phase)
+    // while it keeps working. Without the model-state gate, the quiet path
+    // would complete the turn with the partial text the moment the control
+    // disappears.
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({ generating: true, turns: [turn("user", "say hello")] }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello")],
+          latestAssistantInProgress: true,
+          assistantModelText: "Hel",
+        }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello")],
+          latestAssistantInProgress: true,
+          assistantModelText: "Hello",
+        }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello")],
+          latestAssistantCompleted: true,
+          terminalAssistantText: "Hello there",
+          assistantModelText: "Hello there",
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      settleMs: 20,
+      stallMs: 5_000,
+      completionTimeoutMs: 5_000,
+    });
+    const onText = vi.fn();
+
+    const completion = await driver.waitForCompletion(REF, "say hello", { onText });
+
+    expect(completion.outcome).toBe("completed");
+    expect(completion.text).toBe("Hello there");
+    expect(onText.mock.calls.map((call) => call[0])).toEqual(["Hel", "Hello", "Hello there"]);
+  });
+
+  it("keeps a working turn alive when only tool activity changes", async () => {
+    // A long tool phase grows tool output but not the answer text. The stall
+    // watchdog must count that rendered activity as progress instead of
+    // killing the turn while ChatGPT is still working.
+    const steps = Array.from({ length: 12 }, (_, index) => ({
+      name: "browser_evaluate" as const,
+      result: observed({
+        generating: true,
+        turns: [turn("user", "run the suite")],
+        assistantActivity: `${(index + 1) * 100}:tool output ${index + 1}`,
+      }),
+    }));
+    const fake = createFakeRpc([
+      ...steps,
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "run the suite"), turn("assistant", "Done")],
+          latestAssistantCompleted: true,
+          terminalAssistantText: "Done",
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      stallMs: 25,
+      completionTimeoutMs: 5_000,
+    });
+
+    const completion = await driver.waitForCompletion(REF, "run the suite");
+
+    expect(completion.outcome).toBe("completed");
+    expect(completion.text).toBe("Done");
+  });
+
+  it("never replaces a streamed answer with a transient empty observation", async () => {
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({ generating: true, turns: [turn("user", "say hello")] }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          generating: true,
+          turns: [turn("user", "say hello")],
+          latestAssistantInProgress: true,
+          assistantModelText: "Hello",
+        }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          generating: true,
+          turns: [turn("user", "say hello")],
+          latestAssistantInProgress: true,
+        }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello"), turn("assistant", "Hello there")],
+          latestAssistantCompleted: true,
+          terminalAssistantText: "Hello there",
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      settleMs: 20,
+      stallMs: 5_000,
+      completionTimeoutMs: 5_000,
+    });
+    const onText = vi.fn();
+
+    const completion = await driver.waitForCompletion(REF, "say hello", { onText });
+
+    expect(completion.outcome).toBe("completed");
+    expect(completion.text).toBe("Hello there");
+    expect(onText.mock.calls.map((call) => call[0])).toEqual(["Hello", "Hello there"]);
   });
 
   it("completes from ChatGPT end_turn evidence while a stale Stop control remains", async () => {

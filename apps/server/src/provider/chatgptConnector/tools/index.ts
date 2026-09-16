@@ -246,6 +246,35 @@ const writeStdinTool: ChatGptConnectorTool = {
   },
 };
 
+const SESSION_TAG_PROPERTY = {
+  type: "string",
+  description:
+    "The synara_session tag named in this conversation's Synara preamble. Pass it with every workspace tool call so the call stays attributed while several Synara turns run at once.",
+} as const;
+
+/**
+ * Adds the optional attribution tag to one tool schema. The tag is stripped
+ * again before the handler runs; it exists so tool calls remain attributable
+ * when more than one ChatGPT turn is active.
+ */
+function withSessionTag(tool: ChatGptConnectorTool): ChatGptConnectorTool {
+  const inputSchema = tool.definition.inputSchema;
+  const properties =
+    typeof inputSchema["properties"] === "object" && inputSchema["properties"] !== null
+      ? (inputSchema["properties"] as Record<string, unknown>)
+      : {};
+  return {
+    ...tool,
+    definition: {
+      ...tool.definition,
+      inputSchema: {
+        ...inputSchema,
+        properties: { ...properties, synara_session: SESSION_TAG_PROPERTY },
+      },
+    },
+  };
+}
+
 /** The complete connector surface, in stable order. */
 export function createChatGptConnectorTools(): ReadonlyArray<ChatGptConnectorTool> {
   const agents = createAgentsTool();
@@ -255,5 +284,5 @@ export function createChatGptConnectorTools(): ReadonlyArray<ChatGptConnectorToo
     execCommandTool,
     writeStdinTool,
     { definition: agents.definition, handler: agents.handler },
-  ];
+  ].map(withSessionTag);
 }
