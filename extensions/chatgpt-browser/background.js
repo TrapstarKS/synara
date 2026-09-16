@@ -23,6 +23,8 @@ const RECONNECT_MAX_DELAY_MS = 30_000;
 // traffic, but an idle socket can otherwise be suspended between Synara turns.
 const KEEPALIVE_INTERVAL_MS = 20_000;
 const TAB_NAVIGATION_WAIT_MS = 10_000;
+const MAX_CONSOLE_ENTRIES_PER_TAB = 200;
+const MAX_CONSOLE_ENTRY_BYTES = 8_000;
 
 let pairing = null;
 let socket = null;
@@ -31,6 +33,8 @@ let reconnectTimer = null;
 let reconnectAttempt = 0;
 let keepaliveTimer = null;
 const attachedTabIds = new Set();
+const consoleEntriesByTabId = new Map();
+let nextConsoleSequence = 1;
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -97,9 +101,20 @@ async function attachTab(tabId) {
     // still fails on the first command with a useful error.
     if (message.includes("already attached") || message.includes("Another debugger")) {
       attachedTabIds.add(tabId);
-      return;
+    } else {
+      throw new Error(`Could not attach to the ChatGPT tab: ${message}`, { cause: error });
     }
-    throw new Error(`Could not attach to the ChatGPT tab: ${message}`);
+  }
+  try {
+    // Keep a small, in-memory diagnostic trail for the explicit
+    // browser_console action. It never touches cookies/storage and is only
+    // returned over the loopback debug route.
+    await chrome.debugger.sendCommand({ tabId }, "Runtime.enable");
+  } catch (error) {
+    attachedTabIds.delete(tabId);
+    throw new Error(`Could not enable ChatGPT diagnostics: ${errorMessage(error)}`, {
+      cause: error,
+    });
   }
 }
 
@@ -185,18 +200,44 @@ function debugRemoteValue(value) {
 
 function debugConsoleEntry(params) {
   const args = Array.isArray(params?.args) ? params.args : [];
+  const argumentText = args
+    .map(debugRemoteValue)
+    .map((value) => String(value ?? ""))
+    .filter(Boolean)
+    .join(" ");
+  const stackText = String(params?.stackTrace?.description || "");
   return {
     type: typeof params?.type === "string" ? params.type : "log",
-    text:
-      typeof params?.type === "string" && params.type === "error"
-        ? String(params?.stackTrace?.description || "").slice(0, 4_000)
-        : args
-            .map(debugRemoteValue)
-            .map((value) => String(value ?? ""))
-            .join(" ")
-            .slice(0, 4_000),
+    text: [stackText, argumentText].filter(Boolean).join(" ").slice(0, 4_000),
     args: args.slice(0, 20).map(debugRemoteValue),
   };
+}
+
+function rememberConsoleEvent(source, method, params) {
+  if (method !== "Runtime.consoleAPICalled" || typeof source?.tabId !== "number") return;
+  const entry = {
+    sequence: nextConsoleSequence++,
+    time: new Date().toISOString(),
+    ...debugConsoleEntry(params),
+  };
+  if (JSON.stringify(entry).length > MAX_CONSOLE_ENTRY_BYTES) {
+    entry.text = entry.text.slice(0, 2_000);
+    entry.args = entry.args.slice(0, 8);
+  }
+  const entries = consoleEntriesByTabId.get(source.tabId) || [];
+  entries.push(entry);
+  if (entries.length > MAX_CONSOLE_ENTRIES_PER_TAB) {
+    entries.splice(0, entries.length - MAX_CONSOLE_ENTRIES_PER_TAB);
+  }
+  consoleEntriesByTabId.set(source.tabId, entries);
+}
+
+chrome.debugger.onEvent.addListener(rememberConsoleEvent);
+
+function consoleSnapshot(tabId, since) {
+  const entries = consoleEntriesByTabId.get(tabId) || [];
+  const minimum = Number.isSafeInteger(since) && since >= 0 ? since : 0;
+  return entries.filter((entry) => entry.sequence > minimum).slice(-100);
 }
 
 /**
@@ -210,6 +251,7 @@ async function debugEvaluate(tabId, args) {
     throw new Error("A bounded JavaScript expression is required.");
   }
   const events = [];
+  if (args?.clearConsole === true) consoleEntriesByTabId.delete(tabId);
   const listener = (source, method, params) => {
     if (source?.tabId !== tabId || method !== "Runtime.consoleAPICalled") return;
     if (events.length < 100) events.push(debugConsoleEntry(params));
@@ -222,15 +264,13 @@ async function debugEvaluate(tabId, args) {
     return {
       ...result,
       console: events,
+      ...(args?.includeRecentConsole === true
+        ? { recentConsole: consoleSnapshot(tabId, Number(args?.since)) }
+        : {}),
       ...(screenshot ? { screenshot } : {}),
     };
   } finally {
     chrome.debugger.onEvent.removeListener(listener);
-    try {
-      await sendCommand(tabId, "Runtime.disable");
-    } catch {
-      // A tab can close immediately after evaluation; the result is still useful.
-    }
   }
 }
 
@@ -367,12 +407,11 @@ async function typeText(tabId, args) {
   };
   await insert();
   if (await composerHoldsText(tabId, selector, text)) return { typed: true };
-  // Background tabs normally accept CDP text input. If this renderer dropped
-  // it anyway, fall back to activating the tab and retyping so a send can
-  // never silently turn into a no-op; the server confirms insertion again.
-  await chrome.tabs.update(tabId, { active: true });
+  // Retry once without changing the user's active tab; activating it would
+  // violate the bridge contract and could steal focus from unrelated work.
   await insert();
-  return { typed: true };
+  if (await composerHoldsText(tabId, selector, text)) return { typed: true };
+  throw new Error("The ChatGPT composer did not accept the inserted text.");
 }
 
 async function composerHoldsText(tabId, selector, text) {
@@ -491,6 +530,25 @@ async function browserScreenshot(tabId) {
   return { data: response?.data || "", mimeType: "image/png" };
 }
 
+async function allowedTabShell(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!isAllowedTabUrl(tab?.url || "") && !isAllowedTabUrl(tab?.pendingUrl || "")) {
+    throw new Error("The bridge can only inspect ChatGPT and its sign-in tabs.");
+  }
+  await protectTab(tabId);
+  return tab;
+}
+
+async function browserConsole(tabId, args) {
+  await getAllowedTab(tabId);
+  const since = Number(args?.since);
+  const entries = consoleSnapshot(tabId, since);
+  const nextSequence =
+    entries.at(-1)?.sequence ?? (Number.isSafeInteger(since) && since >= 0 ? since : 0);
+  if (args?.clear === true) consoleEntriesByTabId.delete(tabId);
+  return { entries, nextSequence };
+}
+
 /**
  * Reports whether the tab is a discarded or frozen shell.
  *
@@ -500,7 +558,7 @@ async function browserScreenshot(tabId) {
  * asks here before deciding to reload.
  */
 async function browserTabState(tabId) {
-  const tab = await chrome.tabs.get(tabId);
+  const tab = await allowedTabShell(tabId);
   return {
     discarded: tab.discarded === true,
     frozen: tab.frozen === true,
@@ -518,8 +576,10 @@ async function browserTabState(tabId) {
  * instead of the turn failing on a dead page.
  */
 async function browserReloadTab(tabId) {
+  await allowedTabShell(tabId);
   await chrome.tabs.reload(tabId);
   attachedTabIds.delete(tabId);
+  consoleEntriesByTabId.delete(tabId);
   return { reloaded: true };
 }
 
@@ -548,6 +608,8 @@ async function executeRequest(request) {
       return await browserClose(tabIdFromArgs(args));
     case "browser_screenshot":
       return await browserScreenshot(tabIdFromArgs(args));
+    case "browser_console":
+      return await browserConsole(tabIdFromArgs(args), args);
     case "browser_tab_state":
       return await browserTabState(tabIdFromArgs(args));
     case "browser_reload_tab":
@@ -718,7 +780,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.debugger.onDetach.addListener(({ tabId }) => {
-  if (typeof tabId === "number") attachedTabIds.delete(tabId);
+  if (typeof tabId === "number") {
+    attachedTabIds.delete(tabId);
+    consoleEntriesByTabId.delete(tabId);
+  }
 });
 
 void loadPairing();

@@ -435,6 +435,17 @@ describe("ChatGptWebDriver", () => {
     expect(fake.calls.filter((input) => input.name === "browser_type")).toHaveLength(0);
   });
 
+  it("fails fast when the selected conversation was deleted", async () => {
+    const fake = createFakeRpc([
+      { name: "browser_evaluate", result: observed({ errorText: "Conversation not found." }) },
+    ]);
+    const driver = new ChatGptWebDriver({ rpc: fake.rpc, sleep: fastSleep });
+
+    const failure = await expectFailure(() => driver.sendPrompt(REF, "hello"), "page-unexpected");
+    expect(failure.message).toContain("no longer available");
+    expect(fake.calls.filter((input) => input.name === "browser_type")).toHaveLength(0);
+  });
+
   it("returns accepted false when the page never proves the prompt was sent", async () => {
     const fake = createFakeRpc([
       { name: "browser_evaluate", result: observed() },

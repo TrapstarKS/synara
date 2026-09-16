@@ -33,6 +33,8 @@ const RATE_LIMIT_TEXT_CAP = 500;
 const COMPOSER_TEXT_CAP = 20_000;
 /** Leading body-text window scanned for signed-out account copy. */
 const LOGIN_SCAN_CAP = 4_000;
+/** Mutation-driven observations still need a bounded fallback for throttled pages. */
+const DEFAULT_OBSERVATION_WAIT_MS = 1_000;
 
 /**
  * `/c/<id>` or a Project's `/g/<gid>/c/<id>`. `/share/c/<id>` is a public
@@ -104,7 +106,7 @@ export function buildChatGptObservationExpression(): string {
   var RATE_LIMIT_BODY_KO_B = "\uba87 \ubd84 \ud6c4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694";
   var RATE_LIMIT_ACK = /^got it$/i;
   var RATE_LIMIT_ACK_KO = "\uc54c\uaca0\uc2b5\ub2c8\ub2e4";
-  var TRANSPORT_FAILURE = /^(?:message delivery timed out(?:\. please try again\.?)?|connection interrupted\.? waiting for the complete answer\.?|unknown error occurred\.?|there was an error generating (?:a|the) response\.?|error in message stream\.?|network error\.?|something went wrong\.?|something went wrong while generating the response(?:\. if this issue persists please contact us through our help center at help\.openai\.com\.?)?\.?)(?: retry)?$/i;
+  var TRANSPORT_FAILURE = /^(?:conversation not found\.?|this conversation is no longer available\.?|message delivery timed out(?:\. please try again\.?)?|connection interrupted\.? waiting for the complete answer\.?|unknown error occurred\.?|there was an error generating (?:a|the) response\.?|error in message stream\.?|network error\.?|something went wrong\.?|something went wrong while generating the response(?:\. if this issue persists please contact us through our help center at help\.openai\.com\.?)?\.?)(?: retry)?$/i;
 
   var safe = function (read, fallback) {
     try {
@@ -570,6 +572,40 @@ export function buildChatGptObservationExpression(): string {
     }, { found: false, completed: false, text: null });
   };
 
+  // React can advance tool/reasoning state before the visible markdown changes. Keep a
+  // privacy-safe activity fingerprint of the newest assistant model: ids and bounded
+  // metadata prove that the turn moved, while authored model text continues to cross the
+  // bridge only through assistantModelText/terminalAssistantText.
+  var modelActivityOf = function (section) {
+    return safe(function () {
+      var messages = turnMessagesFromSection(section);
+      if (!Array.isArray(messages)) return "";
+      var parts = [];
+      var start = Math.max(0, messages.length - 24);
+      for (var index = start; index < messages.length; index++) {
+        var message = messages[index];
+        if (!message || typeof message !== "object") continue;
+        var author = message.author;
+        var role = author && typeof author.role === "string" ? author.role : "";
+        if (role !== "assistant" && role !== "tool") continue;
+        var content = message.content;
+        var contentType = content && typeof content === "object" &&
+          typeof content.content_type === "string" ? content.content_type : "";
+        var textLength = modelMessageText(message, MESSAGE_TEXT_CAP).length;
+        parts.push([
+          typeof message.id === "string" ? message.id.slice(0, 120) : "",
+          role,
+          typeof message.channel === "string" ? message.channel : "",
+          typeof message.status === "string" ? message.status : "",
+          message.end_turn === true ? "1" : "0",
+          contentType,
+          String(textLength)
+        ].join(":"));
+      }
+      return parts.join("|").slice(-4_000);
+    }, "");
+  };
+
   var sections = safe(function () {
     var found = document.querySelectorAll(TURN_SECTION);
     var list = [];
@@ -689,12 +725,17 @@ export function buildChatGptObservationExpression(): string {
     assistantActivity = safe(function () {
       var total = 0;
       var tail = "";
+      var model = "";
       for (var index = 0; index < newestAssistant.sections.length; index++) {
         var raw = String(newestAssistant.sections[index].textContent || "");
         total += raw.length;
         tail = (tail + raw.slice(-200)).slice(-200);
+        var nextModel = modelActivityOf(newestAssistant.sections[index]);
+        if (nextModel && model.indexOf(nextModel) === -1) {
+          model = (model ? model + "|" : "") + nextModel;
+        }
       }
-      return String(total) + ":" + tail;
+      return String(total) + ":" + tail + ":model:" + model;
     }, "");
   }
 
@@ -733,6 +774,150 @@ export function buildChatGptObservationExpression(): string {
     rateLimitText: rateLimit.text,
     rateLimitDismissible: rateLimit.dismissible
   };
+})()`;
+}
+
+/**
+ * Builds a mutation-driven observation expression for the streaming loop.
+ *
+ * Chat On Steroids keeps a Fiber recorder alive and uses MutationObserver to wake it when
+ * React commits a new answer/tool phase. The external-browser bridge cannot keep a page
+ * callback open, so this expression uses the same idea for one bounded RPC: read once,
+ * resolve on the next relevant DOM/React commit, and fall back to a short timer when Chrome
+ * throttles a background document. The returned value is still the normal observation shape.
+ */
+export function buildChatGptObservationWaitExpression(
+  waitMs = DEFAULT_OBSERVATION_WAIT_MS,
+): string {
+  const boundedWaitMs = Math.max(
+    100,
+    Math.min(Number.isFinite(waitMs) ? Math.floor(waitMs) : DEFAULT_OBSERVATION_WAIT_MS, 5_000),
+  );
+  const observationExpression = buildChatGptObservationExpression();
+  return String.raw`(() => {
+  var initial = ${observationExpression};
+  var signature = function (value) {
+    try {
+      return JSON.stringify({
+        url: value && value.url || "",
+        conversationPath: value && value.conversationPath || null,
+        loginRequired: value && value.loginRequired === true,
+        composerPresent: value && value.composerPresent === true,
+        composerText: value && value.composerText || "",
+        generating: value && value.generating === true,
+        sendEnabled: value && value.sendEnabled === true,
+        turns: value && Array.isArray(value.turns) ? value.turns : [],
+        latestAssistantCompleted: value && value.latestAssistantCompleted === true,
+        latestAssistantInProgress: value && value.latestAssistantInProgress === true,
+        terminalAssistantText: value && value.terminalAssistantText || null,
+        assistantModelText: value && value.assistantModelText || null,
+        assistantActivity: value && value.assistantActivity || "",
+        toolRowCount: value && value.toolRowCount || 0,
+        errorText: value && value.errorText || null,
+        rateLimitText: value && value.rateLimitText || null,
+        rateLimitDismissible: value && value.rateLimitDismissible === true
+      });
+    } catch (error) {
+      return "";
+    }
+  };
+  var initialSignature = signature(initial);
+  if (typeof MutationObserver !== "function" || !document.body) return initial;
+  var selectors = ${JSON.stringify(CHATGPT_SELECTORS)};
+  var relevantSelector = [
+    selectors.turnSection,
+    selectors.composer,
+    selectors.alertBanner,
+    selectors.stopControl,
+    selectors.sendControl
+  ].join(",");
+  var matchesRelevant = function (node) {
+    try {
+      if (!node || node.nodeType !== 1) return false;
+      return node.matches(relevantSelector) ||
+        node.closest(relevantSelector) !== null ||
+        node.querySelector(relevantSelector) !== null;
+    } catch (error) {
+      return false;
+    }
+  };
+  return new Promise(function (resolve) {
+    var settled = false;
+    var queued = false;
+    var timer = null;
+    var observer = null;
+    var read = function () {
+      try {
+        return ${observationExpression};
+      } catch (error) {
+        return initial;
+      }
+    };
+    var finish = function (value) {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      if (observer) observer.disconnect();
+      resolve(value);
+    };
+    var check = function () {
+      if (settled) return;
+      var next = read();
+      if (signature(next) !== initialSignature) finish(next);
+    };
+    observer = new MutationObserver(function (records) {
+      var relevant = false;
+      for (var index = 0; index < records.length && !relevant; index++) {
+        var record = records[index];
+        if (matchesRelevant(record.target && record.target.nodeType === 1
+          ? record.target : record.target && record.target.parentElement)) {
+          relevant = true;
+          break;
+        }
+        var changed = [];
+        for (var addedIndex = 0; addedIndex < (record.addedNodes || []).length; addedIndex++) {
+          changed.push(record.addedNodes[addedIndex]);
+        }
+        for (var removedIndex = 0; removedIndex < (record.removedNodes || []).length; removedIndex++) {
+          changed.push(record.removedNodes[removedIndex]);
+        }
+        for (var nodeIndex = 0; nodeIndex < changed.length; nodeIndex++) {
+          if (matchesRelevant(changed[nodeIndex])) {
+            relevant = true;
+            break;
+          }
+        }
+      }
+      if (!relevant) return;
+      if (settled || queued) return;
+      queued = true;
+      Promise.resolve().then(function () {
+        queued = false;
+        check();
+      });
+    });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: [
+        "aria-hidden",
+        "aria-label",
+        "class",
+        "data-message-author-role",
+        "data-message-id",
+        "data-testid",
+        "data-turn",
+        "data-turn-id",
+        "hidden",
+        "inert",
+        "style"
+      ]
+    });
+    timer = setTimeout(function () { finish(read()); }, ${boundedWaitMs});
+    check();
+  });
 })()`;
 }
 

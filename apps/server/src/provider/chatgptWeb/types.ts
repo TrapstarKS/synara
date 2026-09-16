@@ -20,6 +20,7 @@ export type ChatGptBrowserToolName =
   | "browser_press"
   | "browser_type"
   | "browser_screenshot"
+  | "browser_console"
   | "browser_tab_state"
   | "browser_reload_tab"
   | "browser_close";

@@ -39,6 +39,7 @@ const debugTools = new Set<ChatGptBrowserToolName>([
   "browser_type",
   "browser_press",
   "browser_screenshot",
+  "browser_console",
   "browser_tab_state",
   "browser_reload_tab",
   "browser_close",

@@ -58,6 +58,8 @@ function loadBackground(input?: {
   readonly getTab?: () => Promise<Record<string, unknown>>;
 }) {
   const sockets: FakeWebSocket[] = [];
+  const debuggerEventListeners: Array<(source: unknown, method: string, params: unknown) => void> =
+    [];
   const WebSocket = class extends FakeWebSocket {
     static override readonly OPEN = FakeWebSocket.OPEN;
     constructor(url: string) {
@@ -86,6 +88,15 @@ function loadBackground(input?: {
     debugger: {
       attach,
       sendCommand,
+      onEvent: {
+        addListener: vi.fn((listener) => {
+          debuggerEventListeners.push(listener);
+        }),
+        removeListener: vi.fn((listener) => {
+          const index = debuggerEventListeners.indexOf(listener);
+          if (index >= 0) debuggerEventListeners.splice(index, 1);
+        }),
+      },
       onDetach: { addListener: vi.fn() },
     },
     tabs: {
@@ -111,7 +122,15 @@ function loadBackground(input?: {
     setInterval: vi.fn(() => 1),
     setTimeout: immediateTimeout,
   });
-  return { attach, chrome, sendCommand, sockets };
+  return {
+    attach,
+    chrome,
+    sendCommand,
+    sockets,
+    emitDebuggerEvent: (source: unknown, method: string, params: unknown) => {
+      for (const listener of [...debuggerEventListeners]) listener(source, method, params);
+    },
+  };
 }
 
 describe("ChatGPT browser extension background", () => {
@@ -251,5 +270,74 @@ describe("ChatGPT browser extension background", () => {
       ok: true,
       result: { reloaded: true },
     });
+  });
+
+  it("exposes bounded console diagnostics without leaking error context", async () => {
+    const harness = loadBackground({
+      getTab: async () => ({
+        id: 11,
+        url: "https://chatgpt.com/c/abc",
+        active: false,
+      }),
+    });
+    harness.emitDebuggerEvent({ tabId: 11 }, "Runtime.consoleAPICalled", {
+      type: "error",
+      args: [{ value: "Conversation not found" }],
+      stackTrace: { description: "RequestError: Conversation not found" },
+    });
+    await flush();
+    const socket = harness.sockets[0]!;
+    socket.readyState = FakeWebSocket.OPEN;
+    socket.emit("open");
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "request",
+        id: 5,
+        name: "browser_console",
+        args: { tabId: "11" },
+      }),
+    });
+    await flush();
+
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toMatchObject({
+      type: "response",
+      id: 5,
+      ok: true,
+      result: {
+        entries: [
+          {
+            type: "error",
+            text: expect.stringContaining("Conversation not found"),
+          },
+        ],
+      },
+    });
+    expect(BACKGROUND_SOURCE).not.toContain("chrome.tabs.update(tabId, { active: true })");
+  });
+
+  it("rejects tab-state and reload requests for non-ChatGPT tabs", async () => {
+    const harness = loadBackground({
+      getTab: async () => ({ id: 12, url: "https://example.com/", active: false }),
+    });
+    await flush();
+    const socket = harness.sockets[0]!;
+    socket.readyState = FakeWebSocket.OPEN;
+    socket.emit("open");
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "request",
+        id: 6,
+        name: "browser_reload_tab",
+        args: { tabId: "12" },
+      }),
+    });
+    await flush();
+
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toMatchObject({
+      type: "response",
+      id: 6,
+      ok: false,
+    });
+    expect(harness.chrome.tabs.reload).not.toHaveBeenCalled();
   });
 });

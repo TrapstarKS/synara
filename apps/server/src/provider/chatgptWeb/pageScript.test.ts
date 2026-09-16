@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildChatGptObservationExpression,
+  buildChatGptObservationWaitExpression,
   buildDismissRateLimitExpression,
   parseChatGptObservation,
 } from "./pageScript.ts";
@@ -263,6 +264,30 @@ describe("buildChatGptObservationExpression", () => {
     expect(observation.latestAssistantInProgress).toBe(true);
     expect(observation.terminalAssistantText).toBeNull();
     expect(observation.assistantModelText).toBe("Frozen first chunk and the model keeps streaming");
+    expect(observation.assistantActivity).toContain(":model:");
+  });
+
+  it("wakes the streaming expression on a transcript mutation", async () => {
+    document.body.innerHTML = `
+      <section data-testid="conversation-turn-1" data-turn="user">
+        <div data-message-author-role="user"><div class="whitespace-pre-wrap">Hello</div></div>
+      </section>
+      <section data-testid="conversation-turn-2" data-turn="assistant">
+        <div data-message-author-role="assistant"><div class="markdown">first chunk</div></div>
+      </section>
+    `;
+    const evaluate = new Function(
+      `return (${buildChatGptObservationWaitExpression(1_000)});`,
+    ) as () => Promise<unknown>;
+    const pending = evaluate();
+    const markdown = document.querySelector(".markdown") as { textContent: string } | null;
+    if (!markdown) throw new Error("assistant markdown missing");
+    setTimeout(() => {
+      markdown.textContent = "second chunk";
+    }, 0);
+
+    const observation = parseChatGptObservation(await pending);
+    expect(observation?.turns.at(-1)?.text).toBe("second chunk");
   });
 
   it("returns and presents only authored user text from a framed model message", () => {
@@ -541,6 +566,14 @@ describe("buildChatGptObservationExpression", () => {
     `);
 
     expect(observation.errorText).toBe("Message delivery timed out. Please try again.");
+  });
+
+  it("recognizes a deleted ChatGPT conversation as a terminal page error", () => {
+    const observation = observe(`
+      <div role="alert">Conversation not found.</div>
+    `);
+
+    expect(observation.errorText).toBe("Conversation not found.");
   });
 
   it("ignores visible non-failure alerts", () => {

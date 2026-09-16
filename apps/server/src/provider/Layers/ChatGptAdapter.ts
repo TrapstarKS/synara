@@ -554,7 +554,11 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
           },
           waitForWorkerTurn: async (ref, submitted, onGenerating) => {
             const completion = await driver.waitForCompletion(ref, submitted, {
-              onText: (_text, observation) => onGenerating(observation.generating),
+              // The Stop control is only a UI hint and can disappear between React
+              // commits. Keep worker ownership alive while the page model still marks
+              // its newest public assistant message in progress as well.
+              onText: (_text, observation) =>
+                onGenerating(observation.generating || observation.latestAssistantInProgress),
             });
             onGenerating(false);
             if (completion.outcome === "rate_limited") {

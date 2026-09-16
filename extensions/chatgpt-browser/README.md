@@ -11,7 +11,14 @@ CDP input and never brings one to the foreground or changes which tab is
 active, so Synara can send and stream while you keep working in another tab.
 Tabs it drives are opted out of Chrome's Memory Saver discarding, and a tab
 Chrome still discarded or froze is reported and reloaded so the conversation
-continues.
+continues. The loopback debug bridge also exposes a bounded, in-memory console
+buffer for diagnosing the live page without opening DevTools; it is available
+only through the explicit local debug action and is cleared when a tab detaches.
+
+Streaming reads ChatGPT's public React/Fiber message model for the current
+assistant text and completion state. The provider waits for React/DOM commits
+with a `MutationObserver` and keeps a short timer fallback for throttled or
+background tabs, so it does not depend on the visible animation-frame reveal.
 
 ## One-time setup
 

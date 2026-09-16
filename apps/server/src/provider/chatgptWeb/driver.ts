@@ -15,6 +15,7 @@
 import { BrowserHostRpcError } from "../../browserAutomation/browserHostRpcClient.ts";
 import {
   buildChatGptObservationExpression,
+  buildChatGptObservationWaitExpression,
   buildDismissRateLimitExpression,
   parseChatGptObservation,
 } from "./pageScript.ts";
@@ -104,6 +105,7 @@ const DEFAULT_TURN_START_TIMEOUT_MS = 60_000;
 const DEFAULT_STALL_MS = 20 * 60_000;
 const DEFAULT_COMPLETION_TIMEOUT_MS = 45 * 60_000;
 const DEFAULT_LOGIN_WAIT_MS = 5 * 60_000;
+const DEFAULT_STREAM_WAIT_MS = 1_000;
 
 const SEND_SELECTORS = [
   'button[data-testid="send-button"]',
@@ -139,6 +141,9 @@ const promptFingerprint = (value: string): string => normalize(value).slice(0, 1
  */
 const compactPromptText = (value: string): string => value.replace(/\s+/gu, "");
 
+const conversationUnavailable = (value: string | null | undefined): boolean =>
+  /conversation not found|conversation is no longer available/iu.test(value ?? "");
+
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -170,6 +175,7 @@ export class ChatGptWebDriver {
   private readonly stallMs: number;
   private readonly completionTimeoutMs: number;
   private readonly loginWaitMs: number;
+  private readonly streamWaitMs: number;
   private readonly onLoginRequired: (() => void) | undefined;
 
   constructor(options: ChatGptDriverOptions) {
@@ -184,6 +190,13 @@ export class ChatGptWebDriver {
     this.stallMs = options.stallMs ?? DEFAULT_STALL_MS;
     this.completionTimeoutMs = options.completionTimeoutMs ?? DEFAULT_COMPLETION_TIMEOUT_MS;
     this.loginWaitMs = options.loginWaitMs ?? DEFAULT_LOGIN_WAIT_MS;
+    this.streamWaitMs = Math.max(
+      100,
+      Math.min(
+        2_000,
+        Number.isFinite(this.pollMs) && this.pollMs > 0 ? this.pollMs : DEFAULT_STREAM_WAIT_MS,
+      ),
+    );
     this.onLoginRequired = options.onLoginRequired;
   }
 
@@ -412,16 +425,20 @@ export class ChatGptWebDriver {
     return null;
   }
 
-  async observe(ref: ChatGptConversationRef, deadlineAtMs?: number): Promise<ChatGptObservation> {
+  async observe(
+    ref: ChatGptConversationRef,
+    deadlineAtMs?: number,
+    expression?: string,
+  ): Promise<ChatGptObservation> {
     const raw = asRecord(
       await this.call(
         {
           name: "browser_evaluate",
           args: {
-            expression: buildChatGptObservationExpression(),
+            expression: expression ?? buildChatGptObservationExpression(),
             ...(ref.tabId === null ? {} : { tabId: ref.tabId }),
           },
-          timeoutMs: 30_000,
+          timeoutMs: expression === undefined ? 30_000 : Math.max(5_000, this.streamWaitMs + 5_000),
         },
         deadlineAtMs,
       ),
@@ -440,12 +457,18 @@ export class ChatGptWebDriver {
    * never answers again until it is reloaded, so a confirmed stalled shell is
    * reloaded once here and the turn continues on the same conversation.
    */
-  private async observeWithinTurn(ref: ChatGptConversationRef): Promise<ChatGptObservation> {
+  private async observeWithinTurn(
+    ref: ChatGptConversationRef,
+    waitForMutation = false,
+  ): Promise<ChatGptObservation> {
     let timeouts = 0;
     let recoveryAttempted = false;
+    const expression = waitForMutation
+      ? buildChatGptObservationWaitExpression(this.streamWaitMs)
+      : undefined;
     for (;;) {
       try {
-        return await this.observe(ref);
+        return await this.observe(ref, undefined, expression);
       } catch (error) {
         if (!(error instanceof ChatGptDriverFailure) || error.code !== "timeout") throw error;
         timeouts += 1;
@@ -623,6 +646,12 @@ export class ChatGptWebDriver {
     deadlineAtMs: number,
   ): Promise<ChatGptSendResult> {
     const before = await this.observe(ref, deadlineAtMs);
+    if (conversationUnavailable(before.errorText)) {
+      throw new ChatGptDriverFailure(
+        "page-unexpected",
+        "The selected ChatGPT conversation is no longer available. Start a new ChatGPT conversation and try again.",
+      );
+    }
     if (before.rateLimitText !== null) {
       if (before.rateLimitDismissible) await this.dismissRateLimit(ref);
       throw this.rateLimitFailure(before);
@@ -771,7 +800,7 @@ export class ChatGptWebDriver {
         return { outcome: "timeout", text: lastText, observation: lastObservation };
       }
 
-      const observation = await this.observeWithinTurn(ref);
+      const observation = await this.observeWithinTurn(ref, true);
       lastObservation = observation;
       if (observation.rateLimitText !== null) {
         if (observation.rateLimitDismissible && !rateLimitDismissed) {
@@ -823,6 +852,9 @@ export class ChatGptWebDriver {
       if (!submittedTurnSeen && Date.now() - startedAt > this.turnStartTimeoutMs) {
         return { outcome: "timeout", text: lastText, observation };
       }
+      if (conversationUnavailable(observation.errorText)) {
+        return { outcome: "failed", text, observation };
+      }
       // The page observer scopes transport failures to the newest assistant
       // turn. They outrank a stale successful Fiber message left behind by a
       // retry, otherwise a delivery-error card can be promoted to completion.
@@ -863,7 +895,10 @@ export class ChatGptWebDriver {
         return { outcome: "stalled", text, observation };
       }
 
-      await this.sleep(observation.generating ? this.pollMs : Math.min(this.pollMs, 500));
+      // The page expression already waits for the next React/DOM commit or its bounded
+      // fallback. Yield once so cancellation and session-owned event consumers get a turn
+      // between back-to-back mutations without adding a full polling interval to streaming.
+      await this.sleep(0);
     }
   }
 
