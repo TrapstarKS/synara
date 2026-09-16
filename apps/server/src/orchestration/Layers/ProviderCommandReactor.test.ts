@@ -210,7 +210,9 @@ const deriveServerPathsSync = (baseDir: string, devUrl: URL | undefined) =>
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
+  // Shared CI runners can stall this file's Effect pipeline well past 2s under
+  // a full parallel suite; the local run is ~200ms, so keep generous headroom.
+  timeoutMs = 8000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   const poll = async (): Promise<void> => {

@@ -631,7 +631,17 @@ export class ChatGptWebDriver {
     const acceptDeadline = Math.min(Date.now() + this.sendAcceptTimeoutMs, deadlineAtMs);
     let lastObservation = before;
     while (Date.now() < acceptDeadline) {
-      const observation = await this.observe(ref, acceptDeadline);
+      let observation: ChatGptObservation;
+      try {
+        observation = await this.observe(ref, acceptDeadline);
+      } catch (error) {
+        // A poll that cannot finish inside the accept window is that window
+        // closing, not a send failure: fall through to the post-loop logic,
+        // which still throws when the overall send deadline was the one that
+        // elapsed. Slow hosts (CI) can cross the deadline mid-poll.
+        if (error instanceof ChatGptDriverFailure && error.code === "timeout") break;
+        throw error;
+      }
       lastObservation = observation;
       if (observation.rateLimitText !== null) {
         if (observation.rateLimitDismissible) await this.dismissRateLimit(ref);
