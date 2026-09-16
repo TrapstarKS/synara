@@ -210,9 +210,10 @@ const deriveServerPathsSync = (baseDir: string, devUrl: URL | undefined) =>
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  // Shared CI runners can stall this file's Effect pipeline well past 2s under
-  // a full parallel suite; the local run is ~200ms, so keep generous headroom.
-  timeoutMs = 8000,
+  // These waits poll the live Effect pipeline plus SQLite through the harness.
+  // A loaded shared CI runner has crossed even 8s (observed 8.2s on a release
+  // verification run), so keep generous headroom over the worst case.
+  timeoutMs = 20_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   const poll = async (): Promise<void> => {
