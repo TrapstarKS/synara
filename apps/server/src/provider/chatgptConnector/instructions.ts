@@ -16,8 +16,8 @@ export const CONNECTOR_INSTRUCTIONS = [
   "exec_command runs shell commands (not sandboxed to the workspace).",
   "write_stdin continues a live command session.",
   "agents coordinates worker chats for parallel work.",
-  "Pass the synara_session tag named in your conversation preamble with every workspace tool call; it keeps calls attributed while other Synara turns run.",
-  "Tool calls are attributed to the Synara thread that started this turn; if a call is refused, tell the user why.",
+  "Pass the synara_session tag from the most recent Synara message with every workspace tool call; it keeps calls attributed while other Synara turns run.",
+  "Tool calls are attributed to the Synara thread that owns this conversation; if a call is refused, tell the user why.",
 ].join("\n");
 
 const BEHAVIOR_CONTRACT = `You are a coding agent working with the user through Synara, a local workspace app. You and the user share one workspace, and your job is to collaborate with them until their intended goal is completely handled.
@@ -32,12 +32,22 @@ export function buildConversationPreamble(workspaceRoot: string, sessionTag?: st
   const tag = sessionTag?.trim();
   const tagLine =
     tag !== undefined && tag.length > 0
-      ? `\n\nSynara session tag: ${tag}. Pass it as synara_session with every workspace tool call.`
+      ? `\n\nSynara session tag: ${tag}. Pass it as synara_session with every workspace tool call. If earlier Synara instructions in this conversation name a different tag, this one is current.`
       : "";
   return `${BEHAVIOR_CONTRACT}
 
 Workspace root: ${workspaceRoot}
 File tools are scoped to this workspace; shell commands run with the user's normal privileges.${tagLine}`;
+}
+
+/**
+ * One-line attribution reminder prepended to turns after the first, so a long
+ * or resumed conversation always sees the current session tag next to the
+ * newest request instead of relying on a stale preamble from its history.
+ */
+export function buildSessionTagReminder(sessionTag: string): string {
+  const tag = sessionTag.trim();
+  return `Synara bridge: this conversation is Synara session ${tag}. Pass "synara_session": "${tag}" with every workspace tool call; earlier tags in this conversation are stale.`;
 }
 
 export function buildWorkerBootstrap(input: {

@@ -62,7 +62,10 @@ import {
   rateLimitedTurnMessage,
   remainingRateLimitCooldownMs,
 } from "../chatgptWeb/rateLimit.ts";
-import { buildConversationPreamble } from "../chatgptConnector/instructions.ts";
+import {
+  buildConversationPreamble,
+  buildSessionTagReminder,
+} from "../chatgptConnector/instructions.ts";
 import { ChatGptWorkerRateLimitedError } from "../chatgptConnector/workers.ts";
 import type { ChatGptBrowserRpc, ChatGptConversationRef } from "../chatgptWeb/types.ts";
 import { prependChatGptPromptContext } from "../chatgptWeb/userPrompt.ts";
@@ -736,14 +739,15 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
 
             const inbox = context.broker.drainInbox(String(input.threadId));
             const includesConversationPreamble = !context.preambleSent;
+            const sessionTag = sessionTagForThread(String(context.session.threadId));
             const contextParts: string[] = [];
             if (includesConversationPreamble) {
-              contextParts.push(
-                buildConversationPreamble(
-                  context.workspaceRoot,
-                  sessionTagForThread(String(context.session.threadId)),
-                ),
-              );
+              contextParts.push(buildConversationPreamble(context.workspaceRoot, sessionTag));
+            } else {
+              // Re-state the attribution tag every turn: long or resumed
+              // conversations otherwise rely on a stale preamble and send
+              // untagged calls that fail closed while several turns run.
+              contextParts.push(buildSessionTagReminder(sessionTag));
             }
             if (inbox.length > 0) {
               contextParts.push(`Updates from your workers:\n${inbox}`);

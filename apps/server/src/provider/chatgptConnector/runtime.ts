@@ -7,9 +7,11 @@
 // attribution is runtime-based: a thread registers exactly one runtime while
 // its session is alive, and a call is attributed to that thread's active turn.
 // Several threads may run turns at the same time; a call then has to name its
-// conversation's `synara_session` tag (named in the conversation preamble) or
-// it is refused instead of guessed, matching the reference implementation's
-// fail-closed identity discipline.
+// conversation's `synara_session` tag (named in the conversation preamble and
+// restated on later turns) or it is refused instead of guessed, matching the
+// reference implementation's fail-closed identity discipline. A tag that
+// names a live session stays attributable after its turn settles, so long or
+// resumed conversations can keep working between turns.
 
 import { createHash } from "node:crypto";
 
@@ -44,10 +46,10 @@ export interface ChatGptRuntimeSnapshot {
 }
 
 const NO_ACTIVE_TURN_MESSAGE =
-  "No ChatGPT (Web) turn is active in Synara, so this tool call cannot be attributed to a workspace. Start or continue the turn in Synara and retry.";
+  "No ChatGPT (Web) turn is active in Synara, so this tool call cannot be attributed to a workspace. Include the synara_session tag from the most recent Synara message, or start or continue the turn in Synara and retry.";
 
 const MULTIPLE_ACTIVE_TURNS_MESSAGE =
-  "Several ChatGPT (Web) turns are active at once, so this call cannot be attributed to one conversation. Repeat the call including the synara_session tag named in this conversation's Synara preamble.";
+  "Several ChatGPT (Web) turns are active at once, so this call cannot be attributed to one conversation. Repeat the call including the synara_session tag from the most recent Synara message in this conversation.";
 
 /**
  * Short stable tag that names one Synara thread inside its ChatGPT
@@ -62,6 +64,8 @@ export class ChatGptRuntimeRegistry {
   private readonly runtimes = new Map<string, ChatGptThreadRuntime>();
   /** Threads with a turn in flight, in the order their turns began. */
   private readonly activeTurns = new Map<string, string>();
+  /** The most recent turn id per thread, kept after the turn settles. */
+  private readonly lastTurns = new Map<string, string>();
 
   register(runtime: ChatGptThreadRuntime): void {
     this.runtimes.set(runtime.threadId, runtime);
@@ -70,6 +74,7 @@ export class ChatGptRuntimeRegistry {
   unregister(threadId: string): void {
     this.runtimes.delete(threadId);
     this.activeTurns.delete(threadId);
+    this.lastTurns.delete(threadId);
   }
 
   get(threadId: string): ChatGptThreadRuntime | undefined {
@@ -92,6 +97,7 @@ export class ChatGptRuntimeRegistry {
     // Re-inserting on re-begin keeps map order aligned with recency.
     this.activeTurns.delete(threadId);
     this.activeTurns.set(threadId, turnId);
+    this.lastTurns.set(threadId, turnId);
     return { ok: true };
   }
 
@@ -108,17 +114,18 @@ export class ChatGptRuntimeRegistry {
     if (tag !== undefined && tag.length > 0) {
       for (const runtime of this.runtimes.values()) {
         if (sessionTagForThread(runtime.threadId) !== tag) continue;
-        const turnId = this.activeTurns.get(runtime.threadId);
-        return turnId === undefined
-          ? {
-              ok: false,
-              message: `This Synara session (${tag}) has no ChatGPT (Web) turn in flight right now.`,
-            }
-          : { ok: true, context: this.contextFor(runtime, turnId) };
+        // A live session keeps its thread attributable after its turn settles:
+        // long or resumed conversations keep working between turns, and the
+        // thread's most recent turn is the truthful owner of new tool calls.
+        const turnId =
+          this.activeTurns.get(runtime.threadId) ??
+          this.lastTurns.get(runtime.threadId) ??
+          "connector";
+        return { ok: true, context: this.contextFor(runtime, turnId) };
       }
       return {
         ok: false,
-        message: `Unknown synara_session tag "${tag}". Use the tag named in this conversation's Synara preamble.`,
+        message: `Unknown synara_session tag "${tag}". Use the tag named in the most recent Synara message in this conversation.`,
       };
     }
     if (this.activeTurns.size === 0) {

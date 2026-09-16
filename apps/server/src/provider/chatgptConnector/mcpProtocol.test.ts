@@ -18,7 +18,12 @@ import {
   type ChatGptMcpHandleInput,
   type ChatGptMcpHandleOutput,
 } from "./mcpProtocol.ts";
-import type { ConnectorCallContext, ConnectorCallResolution } from "./runtime.ts";
+import { buildConversationPreamble, buildSessionTagReminder } from "./instructions.ts";
+import {
+  sessionTagForThread,
+  type ConnectorCallContext,
+  type ConnectorCallResolution,
+} from "./runtime.ts";
 import { createChatGptConnectorTools, type ChatGptConnectorTool } from "./tools/index.ts";
 
 interface JsonRpcReply {
@@ -167,6 +172,17 @@ describe("initialize", () => {
     const result = record(replyAt(output.body).result);
 
     expect(result.instructions).toHaveLength(CHATGPT_CONNECTOR_INSTRUCTIONS_MAX_BYTES);
+  });
+
+  it("restates the current session tag and marks older tags stale", () => {
+    const tag = sessionTagForThread("thread-z");
+    const preamble = buildConversationPreamble("/tmp/ws", tag);
+    expect(preamble).toContain(`Synara session tag: ${tag}`);
+    expect(preamble).toContain("this one is current");
+
+    const reminder = buildSessionTagReminder(tag);
+    expect(reminder).toContain(`"synara_session": "${tag}"`);
+    expect(reminder).toContain("stale");
   });
 });
 

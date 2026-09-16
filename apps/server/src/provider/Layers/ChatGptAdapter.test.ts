@@ -15,7 +15,7 @@ import {
   ChatGptConnector,
   type ChatGptConnectorShape,
 } from "../chatgptConnector/Services/ChatGptConnector.ts";
-import { ChatGptRuntimeRegistry } from "../chatgptConnector/runtime.ts";
+import { ChatGptRuntimeRegistry, sessionTagForThread } from "../chatgptConnector/runtime.ts";
 import {
   ChatGptExternalBrowser,
   type ChatGptExternalBrowserShape,
@@ -76,6 +76,7 @@ const makeFakeDriver = () => {
   let onText: ((text: string) => void) | null = null;
   let resolveCompletion: ((completion: ChatGptCompletion) => void) | null = null;
   let interrupts = 0;
+  const prompts: string[] = [];
 
   const driver = {
     ensureConversation: async (): Promise<ChatGptConversationRef> => CONVERSATION,
@@ -86,10 +87,10 @@ const makeFakeDriver = () => {
       url: "https://chatgpt.com/",
       conversationPath: null,
     }),
-    sendPrompt: async (): Promise<ChatGptSendResult> => ({
-      accepted: true,
-      observation: observation(),
-    }),
+    sendPrompt: async (_ref: ChatGptConversationRef, text: string): Promise<ChatGptSendResult> => {
+      prompts.push(text);
+      return { accepted: true, observation: observation() };
+    },
     waitForCompletion: async (
       _ref: ChatGptConversationRef,
       _submittedText: string,
@@ -110,6 +111,7 @@ const makeFakeDriver = () => {
     driver,
     isWaiting: () => resolveCompletion !== null,
     emitText: (text: string) => onText?.(text),
+    prompts: () => prompts,
     finish: (text: string) =>
       resolveCompletion?.({
         outcome: "completed",
@@ -245,5 +247,56 @@ describe("ChatGptAdapter turn fiber lifetime", () => {
     const terminal = events.collected.at(-1);
     expect(terminal?.payload).toMatchObject({ state: "completed" });
     expect(events.resumeCursor).toBe(CONVERSATION.url);
+  });
+
+  it("restates the session tag on turns after the first", async () => {
+    const fake = makeFakeDriver();
+    const fakes = makeFakes();
+    const threadId = ThreadId.makeUnsafe("chatgpt-adapter-tag-thread");
+    const tag = sessionTagForThread(String(threadId));
+    const registry = fakes.connector.registry;
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* makeChatGptAdapter({
+          createDriver: () => fake.driver,
+          resolveMaxWorkers: () => Effect.succeed(0),
+        });
+        yield* adapter.startSession({
+          provider: "chatgpt",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: process.cwd(),
+        });
+
+        // Turn 1 carries the full preamble, including the session tag.
+        yield* adapter.sendTurn({ threadId, input: "first" });
+        yield* Effect.promise(() =>
+          waitForValue(() => (fake.prompts().length === 1 ? true : null)),
+        );
+        yield* Effect.sync(() => fake.finish("one"));
+        yield* Effect.promise(() =>
+          waitForValue(() => (registry.isTurnActive(String(threadId)) ? null : true)),
+        );
+
+        // Turn 2 must restate the tag next to the newest request: long or
+        // resumed conversations otherwise send untagged calls that fail closed
+        // while several turns run.
+        yield* adapter.sendTurn({ threadId, input: "second" });
+        yield* Effect.promise(() =>
+          waitForValue(() => (fake.prompts().length === 2 ? true : null)),
+        );
+        yield* Effect.sync(() => fake.finish("two"));
+        yield* adapter.stopSession(threadId).pipe(Effect.catchCause(() => Effect.void));
+      }).pipe(Effect.scoped, Effect.provide(layerFor(fakes))),
+    );
+
+    const prompts = fake.prompts();
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain(`Synara session tag: ${tag}`);
+    expect(prompts[0]).toContain("Workspace root:");
+    expect(prompts[1]).toContain(`Synara bridge: this conversation is Synara session ${tag}`);
+    expect(prompts[1]).toContain(`"synara_session": "${tag}"`);
+    expect(prompts[1]).not.toContain("Workspace root:");
   });
 });

@@ -113,10 +113,22 @@ describe("ChatGptRuntimeRegistry", () => {
       context: { threadId: "thread-b", turnId: "turn-b1" },
     });
 
-    // A known tag with no turn in flight, and unknown tags, fail closed.
+    // A tagged call keeps its thread attributable after the turn settles, so
+    // long or resumed conversations keep working between turns. Unknown tags
+    // still fail closed.
     registry.endTurn("thread-a");
-    expect(resolveError(registry, tagA)).toContain("no ChatGPT (Web) turn in flight");
+    expect(registry.resolveCallContext(tagA)).toMatchObject({
+      ok: true,
+      context: { threadId: "thread-a", turnId: "turn-a1" },
+    });
     expect(resolveError(registry, "deadbeef")).toContain("Unknown synara_session tag");
+
+    // A live session that has not begun a turn yet still answers its own tag.
+    registry.register(makeRuntime("thread-c"));
+    expect(registry.resolveCallContext(sessionTagForThread("thread-c"))).toMatchObject({
+      ok: true,
+      context: { threadId: "thread-c", turnId: "connector" },
+    });
 
     // With a single turn left, an untagged call resolves again.
     expect(resolveOk(registry).turnId).toBe("turn-b1");
