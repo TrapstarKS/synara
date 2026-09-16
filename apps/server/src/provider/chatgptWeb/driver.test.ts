@@ -784,7 +784,11 @@ describe("ChatGptWebDriver", () => {
     expect(completion.observation.errorText).toContain("delivery timed out");
   });
 
-  it("returns interrupted when the final assistant turn is flagged interrupted", async () => {
+  it("settles as completed when the assistant turn carries progress markers", async () => {
+    // ChatGPT's renderer decorates commentary/progress blocks with
+    // `data-interrupted`; that marks "not the final answer", not a stopped
+    // answer. Reading it as an interrupt ended working turns early while
+    // ChatGPT kept going, so progress markers must still settle as completed.
     const fake = createFakeRpc([
       {
         name: "browser_evaluate",
@@ -816,8 +820,53 @@ describe("ChatGptWebDriver", () => {
 
     const completion = await driver.waitForCompletion(REF, "say hello");
 
-    expect(completion.outcome).toBe("interrupted");
+    expect(completion.outcome).toBe("completed");
     expect(completion.text).toBe("partial");
+  });
+
+  it("keeps waiting while commentary or tool activity keeps changing", async () => {
+    // The answer text can be stable between tool rounds while commentary and
+    // tool rows still render. The quiet settle must require the whole turn to
+    // stop moving, not just the answer text.
+    const activitySteps = Array.from({ length: 8 }, (_, index) => ({
+      name: "browser_evaluate" as const,
+      result: observed({
+        turns: [turn("user", "say hello"), turn("assistant", "Hel")],
+        assistantActivity: `step ${index + 1}`,
+      }),
+    }));
+    const fake = createFakeRpc([
+      {
+        name: "browser_evaluate",
+        result: observed({ generating: true, turns: [turn("user", "say hello")] }),
+      },
+      ...activitySteps,
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello"), turn("assistant", "Hello there")],
+          latestAssistantCompleted: true,
+          terminalAssistantText: "Hello there",
+          assistantModelText: "Hello there",
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      settleMs: 5,
+      stallMs: 5_000,
+      completionTimeoutMs: 5_000,
+    });
+    const onText = vi.fn();
+
+    const completion = await driver.waitForCompletion(REF, "say hello", { onText });
+
+    expect(completion.outcome).toBe("completed");
+    expect(completion.text).toBe("Hello there");
+    expect(onText).toHaveBeenLastCalledWith("Hello there", expect.anything());
   });
 
   it("returns stalled when generating text stops growing past stallMs", async () => {

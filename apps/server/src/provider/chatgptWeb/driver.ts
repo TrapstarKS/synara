@@ -701,10 +701,12 @@ export class ChatGptWebDriver {
       const lastAssistant = observation.turns.findLast((turn) => turn.role === "assistant");
       // Tool output and reasoning chrome update inside the newest assistant
       // turn even while the answer text has not grown yet; any change there is
-      // progress for the stall watchdog.
+      // progress for the stall watchdog. It must also reset the quiet window:
+      // commentary or tool rows still moving mean the turn is not settled.
       if (observation.assistantActivity !== lastActivity) {
         lastActivity = observation.assistantActivity;
         lastChangeAt = Date.now();
+        stableSince = null;
       }
       // The model text is authoritative and keeps growing while the visible
       // reveal is paused (background tab), so it leads the fallback chain.
@@ -749,11 +751,10 @@ export class ChatGptWebDriver {
       // Stop control is only a busy hint and can remain mounted after the final
       // message, which previously left Synara in "Thinking" indefinitely.
       if (hasUserTurn && observation.latestAssistantCompleted) {
-        return {
-          outcome: lastAssistant?.interrupted === true ? "interrupted" : "completed",
-          text,
-          observation,
-        };
+        // Progress/commentary blocks carry `data-interrupted` markers in the
+        // current renderer ("text under it is not the final answer"). That is
+        // not a stopped answer, so completion evidence settles as completed.
+        return { outcome: "completed", text, observation };
       }
       // ChatGPT's model state outranks the Stop control: the control can be
       // unmounted for a moment or for a whole phase while the answer keeps
@@ -766,9 +767,6 @@ export class ChatGptWebDriver {
         if (Date.now() - stableSince >= this.settleMs) {
           if (observation.errorText !== null) {
             return { outcome: "failed", text, observation };
-          }
-          if (lastAssistant?.interrupted === true) {
-            return { outcome: "interrupted", text, observation };
           }
           return { outcome: "completed", text, observation };
         }
