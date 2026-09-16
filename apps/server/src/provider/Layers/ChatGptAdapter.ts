@@ -52,7 +52,7 @@ import {
   type ChatGptConnectorShape,
 } from "../chatgptConnector/Services/ChatGptConnector.ts";
 import { ChatGptExternalBrowser } from "../chatgptConnector/Services/ChatGptExternalBrowser.ts";
-import { ChatGptWorkerBroker } from "../chatgptConnector/workers.ts";
+import { ChatGptWorkerBroker, type ChatGptWorkerEvent } from "../chatgptConnector/workers.ts";
 import { sessionTagForThread } from "../chatgptConnector/runtime.ts";
 import { ExecSessionManager } from "../chatgptConnector/tools/execSessions.ts";
 import { ChatGptWebDriver, ChatGptDriverFailure } from "../chatgptWeb/driver.ts";
@@ -108,6 +108,9 @@ function computeDelta(
   return { kind: "replace", text: next };
 }
 
+const excerpt = (value: string, max = 400): string =>
+  value.length <= max ? value : `${value.slice(0, max)}…`;
+
 export interface ChatGptAdapterDependencies {
   readonly createDriver?: (input: { readonly threadId: ThreadId }) => ChatGptWebDriver;
   readonly resolveMaxWorkers?: () => Effect.Effect<number>;
@@ -118,6 +121,15 @@ interface ChatGptTurnState {
   readonly submittedText: string;
   fiber: Fiber.Fiber<unknown, unknown> | null;
   terminalEmitted: boolean;
+}
+
+interface ChatGptWorkerRuntimeTurn {
+  readonly workerId: string;
+  readonly turnId: TurnId;
+  readonly parentTurnId: TurnId;
+  readonly parentItemId: RuntimeItemId;
+  childItemId: RuntimeItemId;
+  streamed: string;
 }
 
 interface ChatGptSessionContext {
@@ -132,6 +144,7 @@ interface ChatGptSessionContext {
   reasoningEffort: string | undefined;
   preambleSent: boolean;
   activeTurn: ChatGptTurnState | null;
+  readonly workerTurns: Map<string, ChatGptWorkerRuntimeTurn>;
   stopped: boolean;
   /** Wall-clock deadline before a new turn is attempted after an access limit. */
   rateLimitedUntilMs: number | null;
@@ -200,7 +213,13 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
 
     const base = (
       context: ChatGptSessionContext,
-      options?: { readonly includeTurn?: boolean; readonly itemId?: RuntimeItemId },
+      options?: {
+        readonly includeTurn?: boolean;
+        readonly itemId?: RuntimeItemId;
+        readonly turnId?: TurnId;
+        readonly parentTurnId?: TurnId;
+        readonly providerRefs?: NonNullable<ProviderRuntimeEvent["providerRefs"]>;
+      },
     ) => ({
       ...makeChatGptRuntimeEventBase({
         threadId: context.session.threadId,
@@ -208,13 +227,18 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
           ? { lifecycleGeneration: context.lifecycleGeneration }
           : {}),
       }),
-      ...(options?.includeTurn !== false && context.activeTurn
-        ? { turnId: context.activeTurn.turnId }
-        : {}),
+      ...(options?.turnId
+        ? { turnId: options.turnId }
+        : options?.includeTurn !== false && context.activeTurn
+          ? { turnId: context.activeTurn.turnId }
+          : {}),
+      ...(options?.parentTurnId ? { parentTurnId: options.parentTurnId } : {}),
       ...(options?.itemId ? { itemId: options.itemId } : {}),
-      ...(context.conversation?.url
-        ? { providerRefs: { providerThreadId: context.conversation.url } }
-        : {}),
+      ...(options?.providerRefs
+        ? { providerRefs: options.providerRefs }
+        : context.conversation?.url
+          ? { providerRefs: { providerThreadId: context.conversation.url } }
+          : {}),
     });
 
     const externalRpcFor = (threadId: ThreadId): ChatGptBrowserRpc => ({
@@ -285,6 +309,276 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
         type: "runtime.warning",
         payload: { message: detail },
       } satisfies ProviderRuntimeEvent);
+    };
+
+    const emitWorkerEvent = (context: ChatGptSessionContext, event: ChatGptWorkerEvent): void => {
+      const parentProviderThreadId =
+        context.conversation?.url ?? `chatgpt:${String(context.session.threadId)}`;
+      const parentTurnId = TurnId.makeUnsafe(event.parentTurnId);
+      const childTurnId = TurnId.makeUnsafe(event.turnId);
+      const parentItemId = RuntimeItemId.makeUnsafe(
+        `chatgpt-${event.parentTurnId}-worker-${event.workerId}-${event.turnId}`,
+      );
+      const childRefs = {
+        providerThreadId: event.workerId,
+        providerParentThreadId: parentProviderThreadId,
+        providerTurnId: event.turnId,
+        parentProviderTurnId: event.parentTurnId,
+      };
+      const parentRefs = {
+        providerThreadId: parentProviderThreadId,
+        providerTurnId: event.parentTurnId,
+      };
+      const key = `${event.workerId}:${event.turnId}`;
+      const identity = {
+        threadId: event.workerId,
+        agentId: event.workerId,
+        agentNickname: event.label,
+        prompt: event.task,
+        ...(event.model ? { model: event.model } : {}),
+        ...(event.reasoningEffort ? { effort: event.reasoningEffort } : {}),
+      };
+      const workerData = (
+        status: "running" | "completed" | "failed",
+        extra?: Record<string, unknown>,
+      ): Record<string, unknown> => ({
+        toolCallId: String(parentItemId),
+        callId: String(parentItemId),
+        toolName: "agents",
+        input: {
+          action: "spawn",
+          workers: [
+            {
+              label: event.label,
+              task: event.task,
+              ...(event.model ? { model: event.model } : {}),
+              ...(event.reasoningEffort ? { reasoning_effort: event.reasoningEffort } : {}),
+            },
+          ],
+        },
+        receiverThreadId: event.workerId,
+        receiverThreadIds: [event.workerId],
+        receiverAgents: [identity],
+        agentStates: {
+          [event.workerId]: {
+            threadId: event.workerId,
+            agentId: event.workerId,
+            nickname: event.label,
+            prompt: event.task,
+            status,
+            ...(event.type === "text" && event.text.length > 0
+              ? { latestUpdate: excerpt(event.text, 400) }
+              : {}),
+            ...(event.type === "turn.completed" && event.text.length > 0
+              ? { message: excerpt(event.text, 400) }
+              : {}),
+            ...(event.type === "turn.completed" && event.errorMessage
+              ? { message: excerpt(event.errorMessage, 400) }
+              : {}),
+          },
+        },
+        ...extra,
+      });
+
+      if (event.type === "turn.started") {
+        const state: ChatGptWorkerRuntimeTurn = {
+          workerId: event.workerId,
+          turnId: childTurnId,
+          parentTurnId,
+          parentItemId,
+          childItemId: RuntimeItemId.makeUnsafe(
+            `chatgpt-${event.workerId}-${event.turnId}-assistant`,
+          ),
+          streamed: "",
+        };
+        context.workerTurns.set(key, state);
+
+        // Materialize the collab item before routing any child event. Ingestion
+        // uses this payload to create the visible subagent thread and strip row.
+        offer({
+          ...base(context, {
+            includeTurn: false,
+            turnId: parentTurnId,
+            itemId: parentItemId,
+            providerRefs: parentRefs,
+          }),
+          type: "item.started",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            status: "inProgress",
+            title: event.label,
+            detail: event.task,
+            data: workerData("running"),
+          },
+        } satisfies ProviderRuntimeEvent);
+        offer({
+          ...base(context, {
+            includeTurn: false,
+            parentTurnId,
+            providerRefs: childRefs,
+          }),
+          type: "thread.started",
+          payload: {
+            providerThreadId: event.workerId,
+            name: event.label,
+            ...(event.model ? { model: event.model } : {}),
+            ...(event.reasoningEffort ? { reasoningEffort: event.reasoningEffort } : {}),
+          },
+        } satisfies ProviderRuntimeEvent);
+        offer({
+          ...base(context, {
+            includeTurn: false,
+            turnId: childTurnId,
+            parentTurnId,
+            providerRefs: childRefs,
+          }),
+          type: "turn.started",
+          payload: {
+            ...(event.model ? { model: event.model } : {}),
+            ...(event.reasoningEffort ? { effort: event.reasoningEffort } : {}),
+          },
+        } satisfies ProviderRuntimeEvent);
+        offer({
+          ...base(context, {
+            includeTurn: false,
+            turnId: childTurnId,
+            parentTurnId,
+            itemId: state.childItemId,
+            providerRefs: childRefs,
+          }),
+          type: "item.started",
+          payload: { itemType: "assistant_message", status: "inProgress", title: "Assistant" },
+        } satisfies ProviderRuntimeEvent);
+        return;
+      }
+
+      const state = context.workerTurns.get(key);
+      if (!state) return;
+
+      const emitChildText = (nextText: string): void => {
+        const delta = computeDelta(state.streamed, nextText);
+        if (delta.kind === "none") return;
+        if (delta.kind === "replace") {
+          offer({
+            ...base(context, {
+              includeTurn: false,
+              turnId: state.turnId,
+              parentTurnId: state.parentTurnId,
+              itemId: state.childItemId,
+              providerRefs: childRefs,
+            }),
+            type: "item.completed",
+            payload: {
+              itemType: "assistant_message",
+              status: "completed",
+              title: "Assistant",
+              data: { text: state.streamed },
+            },
+          } satisfies ProviderRuntimeEvent);
+          state.childItemId = RuntimeItemId.makeUnsafe(
+            `chatgpt-${event.workerId}-${event.turnId}-assistant-${crypto.randomUUID()}`,
+          );
+          offer({
+            ...base(context, {
+              includeTurn: false,
+              turnId: state.turnId,
+              parentTurnId: state.parentTurnId,
+              itemId: state.childItemId,
+              providerRefs: childRefs,
+            }),
+            type: "item.started",
+            payload: { itemType: "assistant_message", status: "inProgress", title: "Assistant" },
+          } satisfies ProviderRuntimeEvent);
+        }
+        offer({
+          ...base(context, {
+            includeTurn: false,
+            turnId: state.turnId,
+            parentTurnId: state.parentTurnId,
+            itemId: state.childItemId,
+            providerRefs: childRefs,
+          }),
+          type: "content.delta",
+          payload: { streamKind: "assistant_text", delta: delta.text },
+        } satisfies ProviderRuntimeEvent);
+        state.streamed = nextText;
+      };
+
+      if (event.type === "text") {
+        emitChildText(event.text);
+        offer({
+          ...base(context, {
+            includeTurn: false,
+            turnId: state.parentTurnId,
+            itemId: state.parentItemId,
+            providerRefs: parentRefs,
+          }),
+          type: "item.updated",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            status: "inProgress",
+            title: event.label,
+            detail: excerpt(event.text, 400),
+            data: workerData("running"),
+          },
+        } satisfies ProviderRuntimeEvent);
+        return;
+      }
+
+      emitChildText(event.text);
+      offer({
+        ...base(context, {
+          includeTurn: false,
+          turnId: state.turnId,
+          parentTurnId: state.parentTurnId,
+          itemId: state.childItemId,
+          providerRefs: childRefs,
+        }),
+        type: "item.completed",
+        payload: {
+          itemType: "assistant_message",
+          status: event.status === "completed" ? "completed" : "failed",
+          title: "Assistant",
+          data: { text: state.streamed },
+        },
+      } satisfies ProviderRuntimeEvent);
+      offer({
+        ...base(context, {
+          includeTurn: false,
+          turnId: state.turnId,
+          parentTurnId: state.parentTurnId,
+          providerRefs: childRefs,
+        }),
+        type: "turn.completed",
+        payload: {
+          state: event.status,
+          stopReason: event.status === "completed" ? "model_stop" : "error",
+          ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
+        },
+      } satisfies ProviderRuntimeEvent);
+      offer({
+        ...base(context, {
+          includeTurn: false,
+          turnId: state.parentTurnId,
+          itemId: state.parentItemId,
+          providerRefs: parentRefs,
+        }),
+        type: "item.completed",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: event.status === "completed" ? "completed" : "failed",
+          title: event.label,
+          detail:
+            event.status === "completed"
+              ? excerpt(state.streamed || event.text, 400)
+              : excerpt(event.errorMessage ?? event.text, 400),
+          data: workerData(event.status, {
+            result: event.text,
+            ...(event.errorMessage ? { error: event.errorMessage } : {}),
+          }),
+        },
+      } satisfies ProviderRuntimeEvent);
+      context.workerTurns.delete(key);
     };
 
     const runTurn = (
@@ -552,13 +846,16 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
               throw error;
             }
           },
-          waitForWorkerTurn: async (ref, submitted, onGenerating) => {
+          waitForWorkerTurn: async (ref, submitted, onGenerating, onText, signal) => {
             const completion = await driver.waitForCompletion(ref, submitted, {
               // The Stop control is only a UI hint and can disappear between React
               // commits. Keep worker ownership alive while the page model still marks
               // its newest public assistant message in progress as well.
-              onText: (_text, observation) =>
-                onGenerating(observation.generating || observation.latestAssistantInProgress),
+              onText: (text, observation) => {
+                onGenerating(observation.generating || observation.latestAssistantInProgress);
+                onText?.(text);
+              },
+              ...(signal ? { signal } : {}),
             });
             onGenerating(false);
             if (completion.outcome === "rate_limited") {
@@ -570,6 +867,9 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
             return completion.text;
           },
           onNotice: (notice) => emitRuntimeWarning(contextRef, notice),
+          onWorkerEvent: (event) => {
+            if (contextRef) emitWorkerEvent(contextRef, event);
+          },
           sessionTag: sessionTagForThread(String(input.threadId)),
         });
         const exec = new ExecSessionManager();
@@ -611,6 +911,7 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
           reasoningEffort,
           preambleSent: false,
           activeTurn: null,
+          workerTurns: new Map(),
           stopped: false,
           rateLimitedUntilMs: null,
         };
@@ -836,6 +1137,7 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
           }
         }
         context.exec.killAll();
+        context.workerTurns.clear();
         context.broker.forgetThread(String(context.session.threadId));
         connector.registry.endTurn(String(context.session.threadId));
         connector.registry.unregister(String(context.session.threadId));
@@ -874,6 +1176,7 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
       Effect.gen(function* () {
         for (const context of sessions.values()) {
           context.exec.killAll();
+          context.workerTurns.clear();
           connector.registry.endTurn(String(context.session.threadId));
           connector.registry.unregister(String(context.session.threadId));
           const fiber = context.activeTurn?.fiber;

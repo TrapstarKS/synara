@@ -73,20 +73,26 @@ const waitForValue = async <A>(read: () => A | null, timeoutMs = 2_000): Promise
  * tells it to stream text and then finish, exactly like a live page would.
  */
 const makeFakeDriver = () => {
-  let onText: ((text: string) => void) | null = null;
-  let resolveCompletion: ((completion: ChatGptCompletion) => void) | null = null;
+  const waiters = new Map<
+    string,
+    {
+      readonly onText: (text: string) => void;
+      readonly resolve: (completion: ChatGptCompletion) => void;
+    }
+  >();
   let interrupts = 0;
+  let freshConversationCount = 0;
   const prompts: string[] = [];
 
   const driver = {
     ensureConversation: async (): Promise<ChatGptConversationRef> => CONVERSATION,
     // A fresh conversation starts on the ChatGPT root and only navigates to
     // its /c/<id> URL once the first message is sent.
-    openFreshConversation: async (): Promise<ChatGptConversationRef> => ({
-      tabId: "t1",
-      url: "https://chatgpt.com/",
-      conversationPath: null,
-    }),
+    openFreshConversation: async (): Promise<ChatGptConversationRef> => {
+      const tabId = freshConversationCount === 0 ? "t1" : `worker-${freshConversationCount}`;
+      freshConversationCount += 1;
+      return { tabId, url: "https://chatgpt.com/", conversationPath: null };
+    },
     sendPrompt: async (_ref: ChatGptConversationRef, text: string): Promise<ChatGptSendResult> => {
       prompts.push(text);
       return { accepted: true, observation: observation() };
@@ -94,11 +100,13 @@ const makeFakeDriver = () => {
     waitForCompletion: async (
       _ref: ChatGptConversationRef,
       _submittedText: string,
-      hooks?: { readonly onText?: (text: string) => void },
+      hooks?: { readonly onText?: (text: string, observation: ChatGptObservation) => void },
     ): Promise<ChatGptCompletion> => {
-      onText = (text) => hooks?.onText?.(text);
       return await new Promise<ChatGptCompletion>((resolve) => {
-        resolveCompletion = resolve;
+        waiters.set(_ref.tabId ?? "unknown", {
+          onText: (text) => hooks?.onText?.(text, observation()),
+          resolve,
+        });
       });
     },
     interrupt: async (): Promise<void> => {
@@ -109,15 +117,19 @@ const makeFakeDriver = () => {
 
   return {
     driver,
-    isWaiting: () => resolveCompletion !== null,
-    emitText: (text: string) => onText?.(text),
+    isWaiting: (tabId = "t1") => waiters.has(tabId),
+    emitText: (text: string, tabId = "t1") => waiters.get(tabId)?.onText(text),
     prompts: () => prompts,
-    finish: (text: string) =>
-      resolveCompletion?.({
+    finish: (text: string, tabId = "t1") => {
+      const waiter = waiters.get(tabId);
+      if (!waiter) return;
+      waiters.delete(tabId);
+      waiter.resolve({
         outcome: "completed",
         text,
         observation: observation({ terminalAssistantText: text, latestAssistantCompleted: true }),
-      }),
+      });
+    },
     interrupts: () => interrupts,
   };
 };
@@ -247,6 +259,88 @@ describe("ChatGptAdapter turn fiber lifetime", () => {
     const terminal = events.collected.at(-1);
     expect(terminal?.payload).toMatchObject({ state: "completed" });
     expect(events.resumeCursor).toBe(CONVERSATION.url);
+  });
+
+  it("projects ChatGPT workers as visible child subagent threads", async () => {
+    const fake = makeFakeDriver();
+    const fakes = makeFakes();
+    const threadId = ThreadId.makeUnsafe("chatgpt-adapter-worker-thread");
+    const tag = sessionTagForThread(String(threadId));
+
+    const events = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* makeChatGptAdapter({
+          createDriver: () => fake.driver,
+          resolveMaxWorkers: () => Effect.succeed(1),
+        });
+        const collected: Array<ProviderRuntimeEvent> = [];
+        const collector = yield* adapter.streamEvents.pipe(
+          Stream.tap((event) => Effect.sync(() => collected.push(event))),
+          Stream.takeUntil(
+            (event) =>
+              event.type === "turn.completed" &&
+              event.providerRefs?.providerThreadId === "worker-1",
+          ),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: "chatgpt",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: process.cwd(),
+        });
+        yield* adapter.sendTurn({ threadId, input: "delegate this" });
+        yield* Effect.promise(() => waitForValue(() => (fake.isWaiting() ? true : null)));
+
+        const resolution = fakes.connector.registry.resolveCallContext(tag);
+        if (!resolution.ok) throw new Error(resolution.message);
+        yield* Effect.promise(() =>
+          resolution.context.agents.spawn(resolution.context, {
+            workers: [{ label: "researcher", task: "inspect the repository" }],
+          }),
+        );
+        yield* Effect.promise(() => waitForValue(() => (fake.isWaiting("worker-1") ? true : null)));
+        fake.emitText("partial worker output", "worker-1");
+        fake.finish("final worker output", "worker-1");
+
+        const outcome = yield* Effect.raceFirst(
+          Fiber.join(collector).pipe(Effect.as("terminal" as const)),
+          Effect.sleep("3 seconds").pipe(Effect.as("timeout" as const)),
+        );
+        yield* adapter.stopSession(threadId).pipe(Effect.catchCause(() => Effect.void));
+        return { collected, outcome };
+      }).pipe(Effect.scoped, Effect.provide(layerFor(fakes))),
+    );
+
+    expect(events.outcome).toBe("terminal");
+    const workerEvents = events.collected.filter(
+      (event) => event.providerRefs?.providerThreadId === "worker-1",
+    );
+    expect(workerEvents.map((event) => event.type)).toEqual([
+      "thread.started",
+      "turn.started",
+      "item.started",
+      "content.delta",
+      "item.completed",
+      "item.started",
+      "content.delta",
+      "item.completed",
+      "turn.completed",
+    ]);
+    expect(workerEvents.every((event) => event.providerRefs?.providerParentThreadId)).toBe(true);
+    const parentCollab = events.collected.find(
+      (event) =>
+        event.type === "item.started" && event.payload.itemType === "collab_agent_tool_call",
+    );
+    if (!parentCollab || parentCollab.type !== "item.started") {
+      throw new Error("worker parent collab item was not emitted");
+    }
+    expect(parentCollab.payload.data).toMatchObject({
+      receiverThreadId: "worker-1",
+      receiverAgents: [{ threadId: "worker-1", agentNickname: "researcher" }],
+    });
   });
 
   it("restates the session tag on turns after the first", async () => {

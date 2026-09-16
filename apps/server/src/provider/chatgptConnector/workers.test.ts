@@ -15,7 +15,11 @@ import { ChatGptDriverFailure } from "../chatgptWeb/driver.ts";
 import type { ChatGptConversationRef } from "../chatgptWeb/types.ts";
 import { chatGptAuthoredPromptText } from "../chatgptWeb/userPrompt.ts";
 import type { ConnectorCallContext } from "./runtime.ts";
-import { ChatGptWorkerBroker, ChatGptWorkerRateLimitedError } from "./workers.ts";
+import {
+  ChatGptWorkerBroker,
+  ChatGptWorkerRateLimitedError,
+  type ChatGptWorkerEvent,
+} from "./workers.ts";
 
 const toolText = (result: McpToolCallResult): string => {
   const [first] = result.content;
@@ -25,6 +29,7 @@ const toolText = (result: McpToolCallResult): string => {
 interface PendingTurn {
   readonly submittedText: string;
   readonly onGenerating: (generating: boolean) => void;
+  readonly onText: (text: string) => void;
   readonly resolve: (answer: string) => void;
   readonly reject: (error: unknown) => void;
 }
@@ -49,12 +54,20 @@ const createHarness = () => {
       _ref: ChatGptConversationRef,
       submittedText: string,
       onGenerating: (generating: boolean) => void,
+      onText?: (text: string) => void,
     ) =>
       new Promise<string>((resolve, reject) => {
-        pendingTurns.push({ submittedText, onGenerating, resolve, reject });
+        pendingTurns.push({
+          submittedText,
+          onGenerating,
+          onText: onText ?? (() => undefined),
+          resolve,
+          reject,
+        });
       }),
   );
   const onNotice = vi.fn();
+  const workerEvents: ChatGptWorkerEvent[] = [];
   const broker = new ChatGptWorkerBroker({
     workspaceRoot: "/tmp/ws",
     maxWorkers: 2,
@@ -62,6 +75,7 @@ const createHarness = () => {
     sendPrompt,
     waitForWorkerTurn,
     onNotice,
+    onWorkerEvent: (event) => workerEvents.push(event),
   });
   const context: ConnectorCallContext = {
     workspaceRoot: "/tmp/ws",
@@ -85,10 +99,59 @@ const createHarness = () => {
     ref,
     sendPrompt,
     waitForWorkerTurn,
+    workerEvents,
   };
 };
 
 describe("ChatGptWorkerBroker", () => {
+  it("emits a live worker turn lifecycle with full-text streaming", async () => {
+    const harness = createHarness();
+    await harness.broker.spawn(harness.context, { workers: [{ task: "inspect the repo" }] });
+
+    expect(harness.workerEvents).toHaveLength(1);
+    expect(harness.workerEvents[0]).toMatchObject({
+      type: "turn.started",
+      workerId: "worker-1",
+      parentTurnId: "turn-1",
+      label: "inspect the repo",
+    });
+
+    harness.pendingTurn(0).onText("partial answer");
+    expect(harness.workerEvents.at(-1)).toMatchObject({
+      type: "text",
+      workerId: "worker-1",
+      text: "partial answer",
+    });
+
+    harness.pendingTurn(0).resolve("final answer");
+    await vi.waitFor(() => {
+      expect(harness.workerEvents.at(-1)).toMatchObject({
+        type: "turn.completed",
+        workerId: "worker-1",
+        status: "completed",
+        text: "final answer",
+      });
+    });
+  });
+
+  it("closes active worker turns when the owning session stops", async () => {
+    const harness = createHarness();
+    await harness.broker.spawn(harness.context, { workers: [{ task: "long task" }] });
+
+    harness.broker.forgetThread(harness.context.threadId);
+    expect(harness.workerEvents.at(-1)).toMatchObject({
+      type: "turn.completed",
+      workerId: "worker-1",
+      status: "failed",
+      errorMessage: "Session stopped.",
+    });
+
+    harness.pendingTurn(0).resolve("late answer");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(harness.workerEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(harness.onNotice).not.toHaveBeenCalled();
+  });
+
   it("spawns workers into free slots, refuses overflow, and reuses identical workers", async () => {
     const harness = createHarness();
 

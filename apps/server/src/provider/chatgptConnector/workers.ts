@@ -9,6 +9,8 @@
 // worker chats in the same browser session as the prime: every worker is a
 // real ChatGPT conversation the driver can send to and read from.
 
+import { randomUUID } from "node:crypto";
+
 import type { McpToolCallResult } from "../../agentGateway/protocol.ts";
 import { mcpToolResultError } from "../../agentGateway/protocol.ts";
 import { buildWorkerBootstrap } from "./instructions.ts";
@@ -58,6 +60,47 @@ export interface ChatGptRunSnapshot {
   readonly pendingInbox: number;
 }
 
+export type ChatGptWorkerEvent =
+  | {
+      readonly type: "turn.started";
+      readonly threadId: string;
+      readonly parentTurnId: string;
+      readonly turnId: string;
+      readonly workerId: string;
+      readonly label: string;
+      readonly task: string;
+      readonly model: string | null;
+      readonly reasoningEffort: string | null;
+      readonly conversation: ChatGptConversationRef;
+      readonly submittedText: string;
+    }
+  | {
+      readonly type: "text";
+      readonly threadId: string;
+      readonly parentTurnId: string;
+      readonly turnId: string;
+      readonly workerId: string;
+      readonly label: string;
+      readonly task: string;
+      readonly model: string | null;
+      readonly reasoningEffort: string | null;
+      readonly text: string;
+    }
+  | {
+      readonly type: "turn.completed";
+      readonly threadId: string;
+      readonly parentTurnId: string;
+      readonly turnId: string;
+      readonly workerId: string;
+      readonly label: string;
+      readonly task: string;
+      readonly model: string | null;
+      readonly reasoningEffort: string | null;
+      readonly status: "completed" | "failed";
+      readonly text: string;
+      readonly errorMessage?: string;
+    };
+
 export interface ChatGptWorkerBrokerOptions {
   readonly workspaceRoot: string;
   readonly maxWorkers: number;
@@ -74,8 +117,11 @@ export interface ChatGptWorkerBrokerOptions {
     ref: ChatGptConversationRef,
     submittedText: string,
     onGenerating: (generating: boolean) => void,
+    onText?: (text: string) => void,
+    signal?: AbortSignal,
   ) => Promise<string>;
   readonly onNotice?: (notice: string) => void;
+  readonly onWorkerEvent?: (event: ChatGptWorkerEvent) => void;
   /** Session tag worker chats echo back so tool calls stay attributable. */
   readonly sessionTag?: string;
 }
@@ -88,17 +134,22 @@ interface WorkerState {
   readonly reasoningEffort: string;
   readonly conversation: ChatGptConversationRef;
   status: ChatGptWorkerStatus;
-  queuedMessages: string[];
+  queuedMessages: Array<{ readonly text: string; readonly parentTurnId: string }>;
   lastResult: string | null;
   finishedViaTool: boolean;
   generating: boolean;
   watcherActive: boolean;
+  activeTurnId: string | null;
+  activeParentTurnId: string | null;
+  activeText: string;
 }
 
 interface PrimeRun {
   readonly threadId: string;
   readonly workers: Map<string, WorkerState>;
   readonly inbox: string[];
+  readonly abortController: AbortController;
+  stopped: boolean;
 }
 
 const MAX_TOTAL_WORKERS = 8;
@@ -126,7 +177,13 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
   private runFor(threadId: string): PrimeRun {
     const existing = this.runs.get(threadId);
     if (existing) return existing;
-    const created: PrimeRun = { threadId, workers: new Map(), inbox: [] };
+    const created: PrimeRun = {
+      threadId,
+      workers: new Map(),
+      inbox: [],
+      abortController: new AbortController(),
+      stopped: false,
+    };
     this.runs.set(threadId, created);
     return created;
   }
@@ -137,6 +194,84 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
       if (worker.status === "active") count += 1;
     }
     return count;
+  }
+
+  private notifyWorkerEvent(event: ChatGptWorkerEvent): void {
+    try {
+      this.options.onWorkerEvent?.(event);
+    } catch {
+      // Runtime telemetry must never stop worker delivery or completion.
+    }
+  }
+
+  private beginWorkerTurn(
+    run: PrimeRun,
+    worker: WorkerState,
+    submittedText: string,
+    parentTurnId: string,
+  ): void {
+    const turnId = randomUUID();
+    worker.activeTurnId = turnId;
+    worker.activeParentTurnId = parentTurnId;
+    worker.activeText = "";
+    worker.finishedViaTool = false;
+    this.notifyWorkerEvent({
+      type: "turn.started",
+      threadId: run.threadId,
+      parentTurnId,
+      turnId,
+      workerId: worker.id,
+      label: worker.label,
+      task: worker.task,
+      model: worker.model.length > 0 ? worker.model : null,
+      reasoningEffort: worker.reasoningEffort.length > 0 ? worker.reasoningEffort : null,
+      conversation: worker.conversation,
+      submittedText,
+    });
+  }
+
+  private workerText(run: PrimeRun, worker: WorkerState, text: string): void {
+    if (!worker.activeTurnId || !worker.activeParentTurnId || text.length === 0) return;
+    worker.activeText = text;
+    this.notifyWorkerEvent({
+      type: "text",
+      threadId: run.threadId,
+      parentTurnId: worker.activeParentTurnId,
+      turnId: worker.activeTurnId,
+      workerId: worker.id,
+      label: worker.label,
+      task: worker.task,
+      model: worker.model.length > 0 ? worker.model : null,
+      reasoningEffort: worker.reasoningEffort.length > 0 ? worker.reasoningEffort : null,
+      text,
+    });
+  }
+
+  private completeWorkerTurn(
+    run: PrimeRun,
+    worker: WorkerState,
+    status: "completed" | "failed",
+    text: string,
+    errorMessage?: string,
+  ): void {
+    if (!worker.activeTurnId || !worker.activeParentTurnId) return;
+    this.notifyWorkerEvent({
+      type: "turn.completed",
+      threadId: run.threadId,
+      parentTurnId: worker.activeParentTurnId,
+      turnId: worker.activeTurnId,
+      workerId: worker.id,
+      label: worker.label,
+      task: worker.task,
+      model: worker.model.length > 0 ? worker.model : null,
+      reasoningEffort: worker.reasoningEffort.length > 0 ? worker.reasoningEffort : null,
+      status,
+      text,
+      ...(errorMessage ? { errorMessage } : {}),
+    });
+    worker.activeTurnId = null;
+    worker.activeParentTurnId = null;
+    worker.activeText = "";
   }
 
   /** Reports not yet delivered to the prime; cleared by the connector. */
@@ -178,6 +313,14 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
   }
 
   forgetThread(threadId: string): void {
+    const run = this.runs.get(threadId);
+    if (!run) return;
+    run.stopped = true;
+    for (const worker of run.workers.values()) {
+      worker.status = worker.status === "finished" ? "finished" : "failed";
+      this.completeWorkerTurn(run, worker, "failed", worker.activeText, "Session stopped.");
+    }
+    run.abortController.abort();
     this.runs.delete(threadId);
   }
 
@@ -246,6 +389,9 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
         finishedViaTool: false,
         generating: false,
         watcherActive: false,
+        activeTurnId: null,
+        activeParentTurnId: null,
+        activeText: "",
       };
       run.workers.set(workerId, worker);
       const bootstrap = buildWorkerBootstrap({
@@ -268,6 +414,7 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
           `agents: ${workerId} chat opened but the task could not be sent: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
+      this.beginWorkerTurn(run, worker, worker.task, String(context.turnId));
       this.watch(run, worker, worker.task);
       spawned.push(workerId);
     }
@@ -300,7 +447,7 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
    * messages are waiting.
    */
   private watch(run: PrimeRun, worker: WorkerState, submittedText: string): void {
-    if (worker.watcherActive) return;
+    if (run.stopped || worker.watcherActive) return;
     worker.watcherActive = true;
     void (async () => {
       let submitted = submittedText;
@@ -315,6 +462,8 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
               (generating) => {
                 worker.generating = generating;
               },
+              (text) => this.workerText(run, worker, text),
+              run.abortController.signal,
             );
           } catch (error) {
             // A stalled page fails one watch round while the worker keeps
@@ -333,10 +482,17 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
           }
           stallRetries = 0;
           worker.generating = false;
-          if (worker.status === "failed") break;
+          if (run.stopped) break;
+          if (worker.status === "failed") {
+            this.completeWorkerTurn(run, worker, "failed", worker.activeText, "Worker failed.");
+            break;
+          }
 
-          if (!worker.finishedViaTool && answer.trim().length > 0) {
-            worker.lastResult = answer.trim();
+          const reportText = worker.finishedViaTool
+            ? (worker.lastResult ?? worker.activeText)
+            : answer.trim() || worker.activeText;
+          if (!worker.finishedViaTool && reportText.length > 0) {
+            worker.lastResult = reportText;
             run.inbox.push(`• ${worker.id}: [reported] ${excerpt(worker.lastResult, 2000)}`);
             worker.status = "sleeping";
           } else if (worker.finishedViaTool) {
@@ -345,15 +501,24 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
             // Turn ended without an answer; treat it as a completed (empty) turn.
             worker.status = "sleeping";
           }
+          this.completeWorkerTurn(run, worker, "completed", reportText);
 
           const next = worker.queuedMessages.shift();
           if (next === undefined) break;
-          submitted = next;
+          submitted = next.text;
           worker.status = "active";
           try {
-            await this.options.sendPrompt(worker.conversation, next);
+            await this.options.sendPrompt(worker.conversation, next.text);
+            this.beginWorkerTurn(run, worker, next.text, next.parentTurnId);
           } catch (error) {
             worker.status = "failed";
+            this.completeWorkerTurn(
+              run,
+              worker,
+              "failed",
+              worker.activeText,
+              error instanceof Error ? error.message : String(error),
+            );
             this.options.onNotice?.(
               `${worker.id} could not receive a queued message: ${error instanceof Error ? error.message : String(error)}`,
             );
@@ -361,15 +526,24 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
           }
         }
       } catch (error) {
+        if (run.stopped) return;
         if (error instanceof ChatGptWorkerRateLimitedError) {
           // The worker chat is intact; ChatGPT is only throttling access.
           worker.generating = false;
           worker.status = "sleeping";
+          this.completeWorkerTurn(run, worker, "failed", worker.activeText, error.notice);
           this.options.onNotice?.(
             `${worker.id} hit ChatGPT's rate limit (${error.notice}). Message it again in a few minutes to continue; its history is kept.`,
           );
         } else {
           worker.status = worker.status === "failed" ? "failed" : "sleeping";
+          this.completeWorkerTurn(
+            run,
+            worker,
+            "failed",
+            worker.activeText,
+            error instanceof Error ? error.message : String(error),
+          );
           this.options.onNotice?.(
             `${worker.id} stopped being watched: ${error instanceof Error ? error.message : String(error)}`,
           );
@@ -413,7 +587,7 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
         if (worker.queuedMessages.length >= MAX_QUEUED_MESSAGES_PER_WORKER) {
           return mcpToolResultError(`agents: ${worker.id} has too many queued messages.`);
         }
-        worker.queuedMessages.push(message.text);
+        worker.queuedMessages.push({ text: message.text, parentTurnId: String(context.turnId) });
         acknowledged.push(`${worker.id} queued`);
         continue;
       }
@@ -437,13 +611,14 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
             `agents: could not wake ${worker.id}: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
+        this.beginWorkerTurn(run, worker, message.text, String(context.turnId));
         this.watch(run, worker, message.text);
         acknowledged.push(`${worker.id} ${wasSleeping ? "woken" : "messaged"}`);
       } else {
         if (worker.queuedMessages.length >= MAX_QUEUED_MESSAGES_PER_WORKER) {
           return mcpToolResultError(`agents: ${worker.id} has too many queued messages.`);
         }
-        worker.queuedMessages.push(message.text);
+        worker.queuedMessages.push({ text: message.text, parentTurnId: String(context.turnId) });
         acknowledged.push(`${worker.id} queued`);
       }
     }

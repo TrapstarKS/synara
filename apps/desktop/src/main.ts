@@ -328,6 +328,7 @@ const BASE_DIR =
   process.env.SYNARA_HOME?.trim() ||
   Path.join(OS.homedir(), desktopIdentity.defaultHomeDirectoryName);
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
+const BACKEND_PORT_PATH = Path.join(STATE_DIR, "backend-port");
 const DESKTOP_WINDOW_STATE_PATH = Path.join(STATE_DIR, "desktop-window-state.json");
 const DESKTOP_APP_ICON_PATH = Path.join(STATE_DIR, "desktop-app-icon");
 const DESKTOP_CUSTOM_TITLE_BAR_PATH = Path.join(STATE_DIR, "desktop-custom-title-bar.json");
@@ -687,11 +688,27 @@ function cancelBackendReadinessWait(): void {
 }
 
 async function reserveBackendEndpoint(reason: string): Promise<void> {
+  let preferredPort = 0;
+  try {
+    const savedPort = Number.parseInt(FS.readFileSync(BACKEND_PORT_PATH, "utf8").trim(), 10);
+    if (Number.isInteger(savedPort) && savedPort >= 1024 && savedPort <= 65_535) {
+      preferredPort = savedPort;
+    }
+  } catch {
+    // First launch, a profile created by an older build, or a partial cleanup.
+  }
   backendPort = await Effect.service(NetService).pipe(
-    Effect.flatMap((net) => net.reserveLoopbackPort()),
+    Effect.flatMap((net) => net.findAvailablePort(preferredPort)),
     Effect.provide(NetService.layer),
     Effect.runPromise,
   );
+  try {
+    FS.mkdirSync(STATE_DIR, { recursive: true });
+    FS.writeFileSync(BACKEND_PORT_PATH, `${backendPort}\n`, "utf8");
+  } catch {
+    // A port that cannot be persisted is still valid for this process; pairing
+    // remains recoverable through the normal settings action.
+  }
   backendHttpUrl = `http://127.0.0.1:${backendPort}`;
   backendWsUrl = `ws://127.0.0.1:${backendPort}/?token=${encodeURIComponent(backendAuthToken)}`;
   process.env.SYNARA_DESKTOP_WS_URL = backendWsUrl;
