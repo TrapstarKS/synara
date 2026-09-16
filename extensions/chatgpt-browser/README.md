@@ -9,6 +9,9 @@ connects to a loopback Synara server and uses the DevTools Protocol on tabs
 whose URL is ChatGPT or its sign-in flow. It drives those tabs in place with
 CDP input and never brings one to the foreground or changes which tab is
 active, so Synara can send and stream while you keep working in another tab.
+Tabs it drives are opted out of Chrome's Memory Saver discarding, and a tab
+Chrome still discarded or froze is reported and reloaded so the conversation
+continues.
 
 ## One-time setup
 

@@ -94,6 +94,7 @@ function loadBackground(input?: {
       update: vi.fn(async () => ({})),
       create: vi.fn(async () => ({})),
       remove: vi.fn(async () => undefined),
+      reload: vi.fn(async () => undefined),
     },
   };
   const immediateTimeout = (callback: () => void): number => {
@@ -195,6 +196,60 @@ describe("ChatGPT browser extension background", () => {
       id: 2,
       ok: true,
       result: { value: { ready: true } },
+    });
+  });
+
+  it("reports a discarded tab shell and reloads it on request", async () => {
+    const harness = loadBackground({
+      getTab: async () => ({
+        id: 9,
+        url: "https://chatgpt.com/c/abc",
+        discarded: true,
+        active: false,
+      }),
+    });
+    await flush();
+    const socket = harness.sockets[0]!;
+    socket.readyState = FakeWebSocket.OPEN;
+    socket.emit("open");
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "request",
+        id: 3,
+        name: "browser_tab_state",
+        args: { tabId: "9" },
+      }),
+    });
+    await flush();
+
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toMatchObject({
+      type: "response",
+      id: 3,
+      ok: true,
+      result: {
+        discarded: true,
+        frozen: false,
+        active: false,
+        url: "https://chatgpt.com/c/abc",
+      },
+    });
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "request",
+        id: 4,
+        name: "browser_reload_tab",
+        args: { tabId: "9" },
+      }),
+    });
+    await flush();
+
+    expect(harness.chrome.tabs.reload).toHaveBeenCalledWith(9);
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toMatchObject({
+      type: "response",
+      id: 4,
+      ok: true,
+      result: { reloaded: true },
     });
   });
 });

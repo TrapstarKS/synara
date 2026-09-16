@@ -103,6 +103,27 @@ async function attachTab(tabId) {
   }
 }
 
+/**
+ * Keeps Chrome's Memory Saver from discarding a tab the bridge drives.
+ *
+ * A discarded (or Energy-Saver frozen) tab keeps its URL and still answers
+ * `chrome.tabs` queries, but its page never answers another evaluation until
+ * it is reloaded. Synara drives ChatGPT in background tabs, which is exactly
+ * the set Memory Saver targets, so every tab the bridge touches opts out once.
+ */
+const discardProtectedTabIds = new Set();
+
+async function protectTab(tabId) {
+  if (discardProtectedTabIds.has(tabId)) return;
+  discardProtectedTabIds.add(tabId);
+  try {
+    await chrome.tabs.update(tabId, { autoDiscardable: false });
+  } catch {
+    // The tab changed under us; the next command re-reads and retries it.
+    discardProtectedTabIds.delete(tabId);
+  }
+}
+
 function allowedUrlFromTab(tab) {
   const committed = typeof tab?.url === "string" ? tab.url : "";
   if (isAllowedTabUrl(committed)) return committed;
@@ -128,6 +149,7 @@ async function getAllowedTab(tabId) {
   if (!isAllowedTabUrl(tab.url || "")) {
     throw new Error("The bridge can only control ChatGPT and its sign-in tabs.");
   }
+  await protectTab(tabId);
   await attachTab(tabId);
   return tab;
 }
@@ -469,6 +491,38 @@ async function browserScreenshot(tabId) {
   return { data: response?.data || "", mimeType: "image/png" };
 }
 
+/**
+ * Reports whether the tab is a discarded or frozen shell.
+ *
+ * Memory Saver discards a background document and Energy Saver freezes its
+ * timers; both leave a tab that still answers with its URL while its page
+ * cannot run any work. The app cannot tell that apart from a busy page, so it
+ * asks here before deciding to reload.
+ */
+async function browserTabState(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  return {
+    discarded: tab.discarded === true,
+    frozen: tab.frozen === true,
+    active: tab.active === true,
+    url: typeof tab.url === "string" ? tab.url : "",
+    pendingUrl: typeof tab.pendingUrl === "string" ? tab.pendingUrl : "",
+  };
+}
+
+/**
+ * Reloads a discarded or frozen ChatGPT tab back to life.
+ *
+ * The conversation URL survives the reload, and ChatGPT reattaches any
+ * server-side generation it still owns, so the same conversation continues
+ * instead of the turn failing on a dead page.
+ */
+async function browserReloadTab(tabId) {
+  await chrome.tabs.reload(tabId);
+  attachedTabIds.delete(tabId);
+  return { reloaded: true };
+}
+
 async function executeRequest(request) {
   const args = request.args && typeof request.args === "object" ? request.args : {};
   switch (request.name) {
@@ -494,6 +548,10 @@ async function executeRequest(request) {
       return await browserClose(tabIdFromArgs(args));
     case "browser_screenshot":
       return await browserScreenshot(tabIdFromArgs(args));
+    case "browser_tab_state":
+      return await browserTabState(tabIdFromArgs(args));
+    case "browser_reload_tab":
+      return await browserReloadTab(tabIdFromArgs(args));
     default:
       throw new Error(`Unsupported browser action: ${String(request.name)}.`);
   }

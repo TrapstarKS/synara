@@ -931,6 +931,83 @@ describe("ChatGptWebDriver", () => {
     expect(failure.message).toContain("external browser action timed out");
   });
 
+  it("reloads a discarded tab and continues the same turn", async () => {
+    // Chrome's Memory Saver can discard a background ChatGPT tab: it still
+    // answers with its URL but never answers another evaluation until it is
+    // reloaded. A confirmed stalled shell is reloaded once and the turn goes on.
+    const stall = new Error("The external browser action timed out: browser_evaluate.");
+    const fake = createFakeRpc([
+      { name: "browser_evaluate", reject: stall },
+      { name: "browser_evaluate", reject: stall },
+      { name: "browser_tab_state", result: { discarded: true, frozen: false } },
+      { name: "browser_reload_tab", result: { reloaded: true } },
+      {
+        name: "browser_evaluate",
+        result: observed({ generating: true, turns: [turn("user", "say hello")] }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello"), turn("assistant", "Hello")],
+          latestAssistantCompleted: true,
+          terminalAssistantText: "Hello",
+          assistantModelText: "Hello",
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      settleMs: 20,
+      stallMs: 5_000,
+      completionTimeoutMs: 10_000,
+    });
+
+    const completion = await driver.waitForCompletion(REF, "say hello");
+
+    expect(completion.outcome).toBe("completed");
+    expect(completion.text).toBe("Hello");
+    expect(fake.calls.filter((input) => input.name === "browser_reload_tab")).toHaveLength(1);
+  });
+
+  it("never reloads a healthy tab while a page stalls", async () => {
+    const stall = new Error("The external browser action timed out: browser_evaluate.");
+    const fake = createFakeRpc([
+      { name: "browser_evaluate", reject: stall },
+      { name: "browser_evaluate", reject: stall },
+      { name: "browser_tab_state", result: { discarded: false, frozen: false } },
+      {
+        name: "browser_evaluate",
+        result: observed({ generating: true, turns: [turn("user", "say hello")] }),
+      },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello"), turn("assistant", "Hello")],
+          latestAssistantCompleted: true,
+          terminalAssistantText: "Hello",
+          assistantModelText: "Hello",
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      settleMs: 20,
+      stallMs: 5_000,
+      completionTimeoutMs: 10_000,
+    });
+
+    const completion = await driver.waitForCompletion(REF, "say hello");
+
+    expect(completion.outcome).toBe("completed");
+    expect(fake.calls.filter((input) => input.name === "browser_reload_tab")).toHaveLength(0);
+  });
+
   it("returns stalled when generating text stops growing past stallMs", async () => {
     const fake = createFakeRpc([
       {

@@ -436,19 +436,68 @@ export class ChatGptWebDriver {
   /**
    * Reads the page, absorbing stalls the browser usually recovers from: a
    * busy ChatGPT conversation can stop answering one evaluation while it
-   * renders, and the next attempt succeeds. Persistent stalls still throw.
+   * renders, and the next attempt succeeds. A tab Chrome discarded or froze
+   * never answers again until it is reloaded, so a confirmed stalled shell is
+   * reloaded once here and the turn continues on the same conversation.
    */
   private async observeWithinTurn(ref: ChatGptConversationRef): Promise<ChatGptObservation> {
     let timeouts = 0;
+    let recoveryAttempted = false;
     for (;;) {
       try {
         return await this.observe(ref);
       } catch (error) {
         if (!(error instanceof ChatGptDriverFailure) || error.code !== "timeout") throw error;
         timeouts += 1;
+        if (timeouts >= 2 && !recoveryAttempted) {
+          recoveryAttempted = true;
+          if ((await this.tabStallState(ref)) === "stalled") {
+            if (await this.reloadStalledTab(ref)) {
+              timeouts = 0;
+              await this.sleep(Math.min(this.pollMs * 2, 2_000));
+            }
+          }
+        }
         if (timeouts > 4) throw error;
         await this.sleep(this.pollMs);
       }
+    }
+  }
+
+  /**
+   * Whether the tab is a discarded or frozen shell; "unknown" when the bridge
+   * cannot answer, which must never trigger a reload by itself.
+   */
+  private async tabStallState(
+    ref: ChatGptConversationRef,
+  ): Promise<"stalled" | "healthy" | "unknown"> {
+    try {
+      const raw = asRecord(
+        await this.call({
+          name: "browser_tab_state",
+          args: ref.tabId === null ? {} : { tabId: ref.tabId },
+          timeoutMs: 8_000,
+        }),
+      );
+      return raw?.["discarded"] === true || raw?.["frozen"] === true ? "stalled" : "healthy";
+    } catch {
+      return "unknown";
+    }
+  }
+
+  /** Reloads a discarded or frozen tab; the conversation URL survives it. */
+  private async reloadStalledTab(ref: ChatGptConversationRef): Promise<boolean> {
+    try {
+      const raw = asRecord(
+        await this.call({
+          name: "browser_reload_tab",
+          args: ref.tabId === null ? {} : { tabId: ref.tabId },
+          timeoutMs: 10_000,
+        }),
+      );
+      return raw?.["reloaded"] === true;
+    } catch {
+      return false;
     }
   }
 
