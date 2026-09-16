@@ -228,10 +228,14 @@ export class ChatGptWebDriver {
         }
         throw new ChatGptDriverFailure("tool-error", `Browser action failed: ${error.message}`);
       }
-      throw new ChatGptDriverFailure(
-        "tool-error",
-        `Browser action failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("external browser action timed out")) {
+        // The extension did not answer an evaluation before its deadline. The
+        // page can stall while it renders a busy conversation, so callers may
+        // retry; this is not a definitive browser failure.
+        throw new ChatGptDriverFailure("timeout", message);
+      }
+      throw new ChatGptDriverFailure("tool-error", `Browser action failed: ${message}`);
     }
   }
 
@@ -417,7 +421,7 @@ export class ChatGptWebDriver {
             expression: buildChatGptObservationExpression(),
             ...(ref.tabId === null ? {} : { tabId: ref.tabId }),
           },
-          timeoutMs: 20_000,
+          timeoutMs: 30_000,
         },
         deadlineAtMs,
       ),
@@ -427,6 +431,25 @@ export class ChatGptWebDriver {
       throw new ChatGptDriverFailure("page-unexpected", "Could not read the ChatGPT page state.");
     }
     return observation;
+  }
+
+  /**
+   * Reads the page, absorbing stalls the browser usually recovers from: a
+   * busy ChatGPT conversation can stop answering one evaluation while it
+   * renders, and the next attempt succeeds. Persistent stalls still throw.
+   */
+  private async observeWithinTurn(ref: ChatGptConversationRef): Promise<ChatGptObservation> {
+    let timeouts = 0;
+    for (;;) {
+      try {
+        return await this.observe(ref);
+      } catch (error) {
+        if (!(error instanceof ChatGptDriverFailure) || error.code !== "timeout") throw error;
+        timeouts += 1;
+        if (timeouts > 4) throw error;
+        await this.sleep(this.pollMs);
+      }
+    }
   }
 
   /** Clicks the first matching selector; returns whether any click was issued. */
@@ -689,7 +712,7 @@ export class ChatGptWebDriver {
     // phases, and a fresh turn would otherwise "complete" on arrival.
     let sawActivity = false;
     let lastActivity = "";
-    let lastObservation = await this.observe(ref);
+    let lastObservation = await this.observeWithinTurn(ref);
 
     for (;;) {
       if (hooks?.signal?.aborted === true) {
@@ -699,7 +722,7 @@ export class ChatGptWebDriver {
         return { outcome: "timeout", text: lastText, observation: lastObservation };
       }
 
-      const observation = await this.observe(ref);
+      const observation = await this.observeWithinTurn(ref);
       lastObservation = observation;
       if (observation.rateLimitText !== null) {
         if (observation.rateLimitDismissible && !rateLimitDismissed) {

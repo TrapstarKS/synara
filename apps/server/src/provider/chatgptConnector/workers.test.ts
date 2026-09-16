@@ -11,6 +11,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { McpToolCallResult } from "../../agentGateway/protocol.ts";
+import { ChatGptDriverFailure } from "../chatgptWeb/driver.ts";
 import type { ChatGptConversationRef } from "../chatgptWeb/types.ts";
 import { chatGptAuthoredPromptText } from "../chatgptWeb/userPrompt.ts";
 import type { ConnectorCallContext } from "./runtime.ts";
@@ -234,6 +235,39 @@ describe("ChatGptWorkerBroker", () => {
     });
     expect(toolText(message)).toContain("worker-1 woken");
     expect(harness.broker.snapshot("thread-1").workers[0]?.status).toBe("active");
+  });
+
+  it("keeps watching a worker through a transient browser stall", async () => {
+    const harness = createHarness();
+    await harness.broker.spawn(harness.context, { workers: [{ task: "one" }] });
+
+    // One watch round fails with a stalled page evaluation; the worker keeps
+    // working inside ChatGPT, so the watcher must retry instead of stopping.
+    harness
+      .pendingTurn(0)
+      .reject(
+        new ChatGptDriverFailure(
+          "timeout",
+          "The external browser action timed out: browser_evaluate.",
+        ),
+      );
+
+    await vi.waitFor(
+      () => {
+        expect(harness.pendingTurns.length).toBeGreaterThanOrEqual(2);
+      },
+      { timeout: 5_000 },
+    );
+    harness.pendingTurn(1).resolve("finished despite the stall");
+
+    await vi.waitFor(() => {
+      expect(harness.broker.snapshot("thread-1").workers[0]?.lastResult).toBe(
+        "finished despite the stall",
+      );
+    });
+    expect(harness.onNotice).not.toHaveBeenCalledWith(
+      expect.stringContaining("stopped being watched"),
+    );
   });
 
   it("reports a rate-limited wake without marking the worker failed", async () => {

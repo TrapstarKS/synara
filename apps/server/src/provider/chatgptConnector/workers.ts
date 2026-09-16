@@ -13,6 +13,7 @@ import type { McpToolCallResult } from "../../agentGateway/protocol.ts";
 import { mcpToolResultError } from "../../agentGateway/protocol.ts";
 import { buildWorkerBootstrap } from "./instructions.ts";
 import type { ConnectorCallContext } from "./runtime.ts";
+import { ChatGptDriverFailure } from "../chatgptWeb/driver.ts";
 import { prependChatGptPromptContext } from "../chatgptWeb/userPrompt.ts";
 import type {
   ConnectorAgentBridge,
@@ -303,15 +304,34 @@ export class ChatGptWorkerBroker implements ConnectorAgentBridge {
     worker.watcherActive = true;
     void (async () => {
       let submitted = submittedText;
+      let stallRetries = 0;
       try {
         for (;;) {
-          const answer = await this.options.waitForWorkerTurn(
-            worker.conversation,
-            submitted,
-            (generating) => {
-              worker.generating = generating;
-            },
-          );
+          let answer: string;
+          try {
+            answer = await this.options.waitForWorkerTurn(
+              worker.conversation,
+              submitted,
+              (generating) => {
+                worker.generating = generating;
+              },
+            );
+          } catch (error) {
+            // A stalled page fails one watch round while the worker keeps
+            // working inside ChatGPT; retry a few times before giving up so a
+            // transient browser timeout does not end the watch.
+            if (
+              error instanceof ChatGptDriverFailure &&
+              error.code === "timeout" &&
+              stallRetries < 5
+            ) {
+              stallRetries += 1;
+              await new Promise((resolve) => setTimeout(resolve, 1_000));
+              continue;
+            }
+            throw error;
+          }
+          stallRetries = 0;
           worker.generating = false;
           if (worker.status === "failed") break;
 

@@ -38,7 +38,9 @@ const fastSleep = (milliseconds: number): Promise<void> =>
 
 interface RpcStep {
   readonly name: ChatGptBrowserToolName;
-  readonly result: unknown;
+  readonly result?: unknown;
+  /** Thrown instead of a result, to script a failing call. */
+  readonly reject?: unknown;
   /** How many calls this step answers; defaults to one, Infinity keeps answering. */
   readonly times?: number;
 }
@@ -51,6 +53,7 @@ const createFakeRpc = (steps: ReadonlyArray<RpcStep>) => {
     const step = queue.find((entry) => entry.name === input.name && entry.remaining > 0);
     if (!step) throw new Error(`unexpected browser RPC call: ${input.name}`);
     if (step.remaining !== Number.POSITIVE_INFINITY) step.remaining -= 1;
+    if (step.reject !== undefined) throw step.reject;
     return step.result;
   });
   const rpc: ChatGptBrowserRpc = { call };
@@ -867,6 +870,65 @@ describe("ChatGptWebDriver", () => {
     expect(completion.outcome).toBe("completed");
     expect(completion.text).toBe("Hello there");
     expect(onText).toHaveBeenLastCalledWith("Hello there", expect.anything());
+  });
+
+  it("retries browser stalls while observing and still completes", async () => {
+    // The extension can time out one evaluation while a busy conversation
+    // renders; the turn must ride that out instead of failing.
+    const stall = new Error("The external browser action timed out: browser_evaluate.");
+    const fake = createFakeRpc([
+      { name: "browser_evaluate", reject: stall },
+      {
+        name: "browser_evaluate",
+        result: observed({ generating: true, turns: [turn("user", "say hello")] }),
+      },
+      { name: "browser_evaluate", reject: stall },
+      {
+        name: "browser_evaluate",
+        result: observed({
+          turns: [turn("user", "say hello"), turn("assistant", "Hello")],
+          latestAssistantCompleted: true,
+          terminalAssistantText: "Hello",
+          assistantModelText: "Hello",
+        }),
+        times: Number.POSITIVE_INFINITY,
+      },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      settleMs: 20,
+      stallMs: 5_000,
+      completionTimeoutMs: 10_000,
+    });
+
+    const completion = await driver.waitForCompletion(REF, "say hello");
+
+    expect(completion.outcome).toBe("completed");
+    expect(completion.text).toBe("Hello");
+  });
+
+  it("gives up when the browser keeps stalling", async () => {
+    const stall = new Error("The external browser action timed out: browser_evaluate.");
+    const fake = createFakeRpc([
+      { name: "browser_evaluate", reject: stall, times: Number.POSITIVE_INFINITY },
+    ]);
+    const driver = new ChatGptWebDriver({
+      rpc: fake.rpc,
+      sleep: fastSleep,
+      pollMs: 10,
+      settleMs: 20,
+      stallMs: 5_000,
+      completionTimeoutMs: 10_000,
+    });
+
+    const failure = await expectFailure(
+      () => driver.waitForCompletion(REF, "say hello"),
+      "timeout",
+    );
+
+    expect(failure.message).toContain("external browser action timed out");
   });
 
   it("returns stalled when generating text stops growing past stallMs", async () => {
