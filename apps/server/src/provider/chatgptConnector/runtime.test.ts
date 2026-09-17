@@ -73,9 +73,32 @@ describe("ChatGptRuntimeRegistry", () => {
     expect(context.exec).toBe(runtime.exec);
   });
 
-  it("refuses after registration but before a turn begins", () => {
+  it("uses the sole registered runtime before a turn begins", () => {
     const registry = new ChatGptRuntimeRegistry();
     registry.register(makeRuntime("thread-a"));
+
+    expect(resolveOk(registry)).toMatchObject({
+      threadId: "thread-a",
+      turnId: "connector",
+    });
+  });
+
+  it("keeps the sole registered runtime usable after an untagged turn settles", () => {
+    const registry = new ChatGptRuntimeRegistry();
+    registry.register(makeRuntime("thread-a"));
+    registry.beginTurn("thread-a", "turn-a1");
+    registry.endTurn("thread-a");
+
+    expect(resolveOk(registry)).toMatchObject({
+      threadId: "thread-a",
+      turnId: "turn-a1",
+    });
+  });
+
+  it("still refuses an untagged call when several runtimes are idle", () => {
+    const registry = new ChatGptRuntimeRegistry();
+    registry.register(makeRuntime("thread-a"));
+    registry.register(makeRuntime("thread-b"));
 
     expect(resolveError(registry)).toContain(NO_ACTIVE_TURN);
   });

@@ -5,13 +5,15 @@
 //
 // ChatGPT's MCP connector sends no conversation identity on the wire, so
 // attribution is runtime-based: a thread registers exactly one runtime while
-// its session is alive, and a call is attributed to that thread's active turn.
+// its session is alive. A call is attributed to its active turn when possible;
+// with exactly one live runtime, calls remain attributable between turns too.
 // Several threads may run turns at the same time; a call then has to name its
 // conversation's `synara_session` tag (named in the conversation preamble and
 // restated on later turns) or it is refused instead of guessed, matching the
 // reference implementation's fail-closed identity discipline. A tag that
 // names a live session stays attributable after its turn settles, so long or
-// resumed conversations can keep working between turns.
+// resumed conversations can keep working between turns. When only one runtime
+// is registered, the same recovery is also safe for an untagged call.
 
 import { createHash } from "node:crypto";
 
@@ -129,6 +131,19 @@ export class ChatGptRuntimeRegistry {
       };
     }
     if (this.activeTurns.size === 0) {
+      // ChatGPT's connector transport does not carry conversation identity.
+      // Do not reject a delayed/untagged call when there is only one possible
+      // live Synara session: this is the common case after the provider has
+      // already settled its turn but ChatGPT is still finishing connector
+      // work. Multiple runtimes remain fail-closed to avoid cross-workspace
+      // tool execution.
+      if (this.runtimes.size === 1) {
+        const runtime = this.runtimes.values().next().value;
+        if (runtime !== undefined) {
+          const turnId = this.lastTurns.get(runtime.threadId) ?? "connector";
+          return { ok: true, context: this.contextFor(runtime, turnId) };
+        }
+      }
       return { ok: false, message: NO_ACTIVE_TURN_MESSAGE };
     }
     if (this.activeTurns.size > 1) {
