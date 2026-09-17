@@ -75,6 +75,13 @@ export interface ProviderAdapterCapabilities {
   /** Exact native call authority allows Stop to preserve sibling agents in the runtime. */
   readonly supportsTurnScopedGateway?: boolean;
   /**
+   * The provider session owns a durable native conversation (for example a
+   * browser tab). Idle cleanup must not mistake the absence of a temporary
+   * turn watcher for a request to release that session. Explicit stop APIs
+   * still release it.
+   */
+  readonly preserveSessionOnIdle?: boolean;
+  /**
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;

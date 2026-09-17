@@ -4,8 +4,9 @@
 // Layer: Server provider connector
 //
 // ChatGPT's MCP connector sends no conversation identity on the wire, so
-// attribution is runtime-based: a thread registers exactly one runtime while
-// its session is alive. A call is attributed to its active turn when possible;
+// attribution is runtime-based: a thread registers exactly one durable
+// session route while its session is alive. A call is attributed to its
+// temporary turn watcher when possible;
 // with exactly one live runtime, calls remain attributable between turns too.
 // Several threads may run turns at the same time; a call then has to name its
 // conversation's `synara_session` tag (named in the conversation preamble and
@@ -64,9 +65,9 @@ export function sessionTagForThread(threadId: string): string {
 
 export class ChatGptRuntimeRegistry {
   private readonly runtimes = new Map<string, ChatGptThreadRuntime>();
-  /** Threads with a turn in flight, in the order their turns began. */
+  /** Temporary watchers with a turn in flight, in the order they began. */
   private readonly activeTurns = new Map<string, string>();
-  /** The most recent turn id per thread, kept after the turn settles. */
+  /** The most recent watcher/turn id, kept on the durable session route. */
   private readonly lastTurns = new Map<string, string>();
 
   register(runtime: ChatGptThreadRuntime): void {
@@ -104,6 +105,9 @@ export class ChatGptRuntimeRegistry {
   }
 
   endTurn(threadId: string): void {
+    // Retire only the temporary watcher. Do not remove the session route: a
+    // delayed tool call may arrive after the watcher failed, and its durable
+    // synara_session tag still identifies the same conversation.
     this.activeTurns.delete(threadId);
   }
 

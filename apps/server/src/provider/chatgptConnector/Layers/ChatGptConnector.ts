@@ -180,7 +180,11 @@ export const makeChatGptConnector = Effect.gen(function* () {
               tools,
               instructions: CONNECTOR_INSTRUCTIONS,
               serverVersion: CHATGPT_CONNECTOR_SERVER_VERSION,
-              resolveContext: () => registry.resolveCallContext(),
+              // Preserve the conversation identity extracted by the MCP
+              // protocol. Dropping this argument makes a perfectly valid
+              // durable session look like an unowned call as soon as its
+              // temporary turn watcher settles.
+              resolveContext: (sessionTag) => registry.resolveCallContext(sessionTag),
               augmentToolResult: (context, result) => {
                 const note = context.agents.takeInbox?.(context) ?? "";
                 if (note.length === 0) return result;

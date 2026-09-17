@@ -120,12 +120,12 @@ const makeFakeDriver = () => {
     isWaiting: (tabId = "t1") => waiters.has(tabId),
     emitText: (text: string, tabId = "t1") => waiters.get(tabId)?.onText(text),
     prompts: () => prompts,
-    finish: (text: string, tabId = "t1") => {
+    finish: (text: string, tabId = "t1", outcome: "completed" | "failed" = "completed") => {
       const waiter = waiters.get(tabId);
       if (!waiter) return;
       waiters.delete(tabId);
       waiter.resolve({
-        outcome: "completed",
+        outcome,
         text,
         observation: observation({ terminalAssistantText: text, latestAssistantCompleted: true }),
       });
@@ -259,6 +259,49 @@ describe("ChatGptAdapter turn fiber lifetime", () => {
     const terminal = events.collected.at(-1);
     expect(terminal?.payload).toMatchObject({ state: "completed" });
     expect(events.resumeCursor).toBe(CONVERSATION.url);
+  });
+
+  it("keeps the durable tagged session after a temporary watcher failure", async () => {
+    const fake = makeFakeDriver();
+    const fakes = makeFakes();
+    const threadId = ThreadId.makeUnsafe("chatgpt-adapter-watcher-failure");
+    const tag = sessionTagForThread(String(threadId));
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* makeChatGptAdapter({
+          createDriver: () => fake.driver,
+          resolveMaxWorkers: () => Effect.succeed(0),
+        });
+        yield* adapter.startSession({
+          provider: "chatgpt",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: process.cwd(),
+        });
+        yield* adapter.sendTurn({ threadId, input: "watch this" });
+        yield* Effect.promise(() => waitForValue(() => (fake.isWaiting() ? true : null)));
+
+        // The completion watcher fails, but the browser conversation/session
+        // remains alive and must still answer a tagged connector call.
+        fake.finish("partial answer", "t1", "failed");
+        yield* Effect.promise(() =>
+          waitForValue(() =>
+            fakes.connector.registry.isTurnActive(String(threadId)) ? null : true,
+          ),
+        );
+
+        const resolution = fakes.connector.registry.resolveCallContext(tag);
+        if (!resolution.ok) throw new Error(resolution.message);
+        expect(resolution.context.threadId).toBe(String(threadId));
+        expect(resolution.context.turnId).not.toBe("connector");
+        expect(
+          (yield* adapter.listSessions()).find((session) => session.threadId === threadId),
+        ).toMatchObject({ status: "error", resumeCursor: CONVERSATION.url });
+
+        yield* adapter.stopSession(threadId).pipe(Effect.catchCause(() => Effect.void));
+      }).pipe(Effect.scoped, Effect.provide(layerFor(fakes))),
+    );
   });
 
   it("projects ChatGPT workers as visible child subagent threads", async () => {

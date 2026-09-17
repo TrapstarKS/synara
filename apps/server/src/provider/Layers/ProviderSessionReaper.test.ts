@@ -76,6 +76,7 @@ function makeLayer(input: {
 function makeProviderServiceStub(input: {
   readonly stopSession: ProviderServiceShape["stopSession"];
   readonly stopRuntimeSession?: NonNullable<ProviderServiceShape["stopRuntimeSession"]>;
+  readonly getCapabilities?: ProviderServiceShape["getCapabilities"];
 }): ProviderServiceShape {
   return {
     startSession: () => unsupported(),
@@ -91,7 +92,7 @@ function makeProviderServiceStub(input: {
     stopSession: input.stopSession,
     ...(input.stopRuntimeSession ? { stopRuntimeSession: input.stopRuntimeSession } : {}),
     listSessions: () => Effect.succeed([]),
-    getCapabilities: () => unsupported(),
+    getCapabilities: input.getCapabilities ?? (() => unsupported()),
     rollbackConversation: () => unsupported(),
     compactThread: () => unsupported(),
     listMcpServers: () => unsupported(),
@@ -248,6 +249,63 @@ describe("ProviderSessionReaperLive", () => {
             threadShell: makeThreadShell({ threadId, activeTurnId: turnId }),
             directory,
             providerService: makeProviderServiceStub({ stopSession, stopRuntimeSession }),
+          }),
+        ),
+        Effect.runPromise,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+
+    expect(stopRuntimeSession).not.toHaveBeenCalled();
+    expect(stopSession).not.toHaveBeenCalled();
+  });
+
+  it("does not reap a provider session marked durable on idle", async () => {
+    const threadId = ThreadId.makeUnsafe("thread-reaper-durable-chatgpt");
+    const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(() => Effect.void);
+    const stopRuntimeSession = vi.fn<NonNullable<ProviderServiceShape["stopRuntimeSession"]>>(
+      () => Effect.void,
+    );
+    const getCapabilities: ProviderServiceShape["getCapabilities"] = () =>
+      Effect.succeed({
+        sessionModelSwitch: "restart-session",
+        preserveSessionOnIdle: true,
+      });
+    const directory: ProviderSessionDirectoryShape = {
+      upsert: () => Effect.void,
+      getProvider: () => unsupported(),
+      getBinding: () => unsupported(),
+      remove: () => Effect.void,
+      listThreadIds: () => Effect.succeed([]),
+      listBindings: () =>
+        Effect.succeed([
+          {
+            threadId,
+            provider: "chatgpt",
+            status: "running",
+            lastSeenAt: "2026-01-01T00:00:00.000Z",
+            resumeCursor: { url: "https://chatgpt.com/c/durable" },
+          },
+        ]),
+    };
+
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      await Effect.gen(function* () {
+        const reaper = yield* ProviderSessionReaper;
+        yield* Scope.provide(reaper.start(), scope);
+      }).pipe(
+        Effect.provide(
+          makeLayer({
+            threadShell: makeThreadShell({ threadId, activeTurnId: null }),
+            directory,
+            providerService: makeProviderServiceStub({
+              stopSession,
+              stopRuntimeSession,
+              getCapabilities,
+            }),
           }),
         ),
         Effect.runPromise,

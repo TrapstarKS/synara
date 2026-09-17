@@ -295,6 +295,9 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
         ...(payload.errorMessage ? { lastError: payload.errorMessage } : {}),
       };
       context.activeTurn = null;
+      // A completed/failed turn only retires the temporary watcher. The
+      // registered session remains the durable owner of the conversation and
+      // its synara_session tag until an explicit session stop.
       connector.registry.endTurn(String(context.session.threadId));
     };
 
@@ -1193,6 +1196,7 @@ export const makeChatGptAdapter = (dependencies: ChatGptAdapterDependencies = {}
     return {
       provider: PROVIDER,
       capabilities: {
+        preserveSessionOnIdle: true,
         sessionModelSwitch: "restart-session",
         conversationRollback: "restart-session",
         supportsRuntimeModelList: false,

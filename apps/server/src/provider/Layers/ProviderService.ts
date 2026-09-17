@@ -2822,6 +2822,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           return;
         }
         const adapter = yield* registry.getByProvider(binding.provider);
+        if (adapter.capabilities.preserveSessionOnIdle === true) {
+          // Some providers keep a durable native conversation outside the
+          // server process (ChatGPT Web keeps it in a browser tab). A turn
+          // watcher is temporary state; its terminal event must not tear down
+          // the session that owns the conversation/tag. Explicit stop calls
+          // still go through stopRuntimeSessionInternal/stopSession.
+          retireRuntimeIdleGeneration(threadId, generation);
+          return;
+        }
         const sessions = yield* adapter.listSessions();
         const session = sessions.find((entry) => entry.threadId === threadId);
         const isIdleReadySession =

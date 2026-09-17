@@ -147,6 +147,7 @@ function makeFakeCodexAdapter(
   provider: ProviderKind = "codex",
   options?: {
     readonly conversationRollback?: "native" | "restart-session";
+    readonly preserveSessionOnIdle?: boolean;
     readonly didResumeSession?: NonNullable<
       ProviderAdapterShape<ProviderAdapterError>["didResumeSession"]
     >;
@@ -305,6 +306,9 @@ function makeFakeCodexAdapter(
     capabilities: {
       sessionModelSwitch: "in-session",
       supportsTurnSteering: true,
+      ...(options?.preserveSessionOnIdle
+        ? { preserveSessionOnIdle: options.preserveSessionOnIdle }
+        : {}),
       ...(options?.conversationRollback
         ? { conversationRollback: options.conversationRollback }
         : {}),
@@ -416,6 +420,7 @@ function makeProviderServiceLayer(
   providers?: {
     readonly includeRestartRollbackDroid?: boolean;
     readonly includePi?: boolean;
+    readonly includeChatGpt?: boolean;
     readonly codexDidResumeSession?: NonNullable<
       ProviderAdapterShape<ProviderAdapterError>["didResumeSession"]
     >;
@@ -430,6 +435,7 @@ function makeProviderServiceLayer(
   const antigravity = makeFakeCodexAdapter("antigravity");
   const droid = makeFakeCodexAdapter("droid", { conversationRollback: "restart-session" });
   const pi = makeFakeCodexAdapter("pi");
+  const chatgpt = makeFakeCodexAdapter("chatgpt", { preserveSessionOnIdle: true });
   const registry: typeof ProviderAdapterRegistry.Service = {
     getByProvider: (provider) =>
       provider === "codex"
@@ -442,7 +448,9 @@ function makeProviderServiceLayer(
               ? Effect.succeed(droid.adapter)
               : provider === "pi" && providers?.includePi === true
                 ? Effect.succeed(pi.adapter)
-                : Effect.fail(new ProviderUnsupportedError({ provider })),
+                : provider === "chatgpt" && providers?.includeChatGpt === true
+                  ? Effect.succeed(chatgpt.adapter)
+                  : Effect.fail(new ProviderUnsupportedError({ provider })),
     listProviders: () =>
       Effect.succeed([
         "codex",
@@ -450,6 +458,7 @@ function makeProviderServiceLayer(
         "antigravity",
         ...(providers?.includeRestartRollbackDroid === true ? (["droid"] as const) : []),
         ...(providers?.includePi === true ? (["pi"] as const) : []),
+        ...(providers?.includeChatGpt === true ? (["chatgpt"] as const) : []),
       ] as const),
   };
 
@@ -476,6 +485,7 @@ function makeProviderServiceLayer(
     antigravity,
     droid,
     pi,
+    chatgpt,
     layer,
     rawLayer,
   };
@@ -5828,6 +5838,43 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
         "idle runtime stop after failed dispatch",
       );
       assert.deepEqual(idleCleanup.codex.stopSession.mock.calls[0]?.[0], threadId);
+    }),
+  );
+});
+
+const durableChatGptIdleCleanup = makeProviderServiceLayer(
+  { runtimeIdleStopMs: 25 },
+  { includeChatGpt: true },
+);
+durableChatGptIdleCleanup.layer("ProviderServiceLive durable ChatGPT sessions", (it) => {
+  it.effect("keeps a ChatGPT session after the temporary turn watcher settles", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-chatgpt-durable-idle");
+
+      yield* provider.startSession(threadId, {
+        provider: "chatgpt",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* durableChatGptIdleCleanup.chatgpt.waitForRuntimeSubscribers();
+      durableChatGptIdleCleanup.chatgpt.emit({
+        type: "turn.completed",
+        eventId: asEventId("chatgpt-durable-idle-completed"),
+        provider: "chatgpt",
+        threadId,
+        createdAt: new Date().toISOString(),
+        payload: { state: "failed", stopReason: "watcher_lost" },
+      });
+
+      yield* sleep(100);
+      assert.equal(durableChatGptIdleCleanup.chatgpt.stopSession.mock.calls.length, 0);
+      assert.isTrue(yield* durableChatGptIdleCleanup.chatgpt.hasSession(threadId));
+
+      // Explicit cleanup remains authoritative and is not blocked by the
+      // preserve-on-idle capability.
+      yield* provider.stopSession({ threadId });
+      assert.equal(durableChatGptIdleCleanup.chatgpt.stopSession.mock.calls.length, 1);
     }),
   );
 });
