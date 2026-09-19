@@ -154,10 +154,47 @@ function computeSha512Base64(filePath: string): Promise<string> {
   });
 }
 
+async function assertSignedZipMatchesSource(
+  sourceApp: string,
+  extractedApp: string,
+): Promise<void> {
+  const executable = runTextCommand("plutil", [
+    "-extract",
+    "CFBundleExecutable",
+    "raw",
+    "-o",
+    "-",
+    join(sourceApp, "Contents", "Info.plist"),
+  ]).trim();
+  if (
+    !executable ||
+    basename(executable) !== executable ||
+    executable === "." ||
+    executable === ".."
+  ) {
+    throw new Error("The staged macOS app has an invalid CFBundleExecutable.");
+  }
+  // Deep verification checks the sealed resources. Matching their seal, the
+  // executable and plist also rejects an older app with a valid signature.
+  for (const relativePath of [
+    "Contents/_CodeSignature/CodeResources",
+    "Contents/Info.plist",
+    `Contents/MacOS/${executable}`,
+  ]) {
+    const [sourceHash, extractedHash] = await Promise.all([
+      computeSha512Base64(join(sourceApp, relativePath)),
+      computeSha512Base64(join(extractedApp, relativePath)),
+    ]);
+    if (sourceHash !== extractedHash) {
+      throw new Error(`macOS update zip does not match the staged app: ${relativePath}`);
+    }
+  }
+}
+
 // Current electron-builder preserves macOS symlinks with native zip. Reuse its
-// bytes after the same extraction/signature checks used by the repair path.
-// Only a lost framework symlink permits repair; corrupt archives and invalid
-// signatures must still fail instead of being hidden by recompression.
+// bytes only after verifying both signatures and binding the zip to this app.
+// A lost framework symlink permits repair. Unsealed build-only apps keep the
+// previous rebuild-from-source path; archive/signature errors otherwise fail.
 export async function finalizeMacUpdateZip(
   options: FinalizeMacUpdateZipOptions,
 ): Promise<FinalizedMacUpdateZip> {
@@ -181,14 +218,22 @@ export async function finalizeMacUpdateZip(
 
   verifyMacAppSignature(appBundlePath, options.signed);
 
-  let repacked = false;
-  let zippedAppBundleName: string;
-  try {
-    zippedAppBundleName = assertMacZipFrameworkSymlinks(zipPath);
-  } catch (error) {
-    if (!(error instanceof MacZipSymlinkError)) {
-      throw error;
+  const hasSourceSignature = existsSync(
+    join(appBundlePath, "Contents", "_CodeSignature", "CodeResources"),
+  );
+  let repacked = !hasSourceSignature;
+  let zippedAppBundleName = appBundleName;
+  if (!repacked) {
+    try {
+      zippedAppBundleName = assertMacZipFrameworkSymlinks(zipPath);
+    } catch (error) {
+      if (!(error instanceof MacZipSymlinkError)) {
+        throw error;
+      }
+      repacked = true;
     }
+  }
+  if (repacked) {
     rmSync(zipPath, { force: true });
     runTextCommand(
       "ditto",
@@ -199,7 +244,6 @@ export async function finalizeMacUpdateZip(
       },
     );
     zippedAppBundleName = assertMacZipFrameworkSymlinks(zipPath);
-    repacked = true;
   }
   if (zippedAppBundleName !== appBundleName) {
     throw new Error(`macOS update zip contains ${zippedAppBundleName}, expected ${appBundleName}`);
@@ -208,7 +252,11 @@ export async function finalizeMacUpdateZip(
   const extractedZipRoot = mkdtempSync(join(tmpdir(), "synara-mac-update-zip-"));
   try {
     runTextCommand("ditto", ["-x", "-k", zipPath, extractedZipRoot], { verbose });
-    verifyMacAppSignature(join(extractedZipRoot, zippedAppBundleName), options.signed);
+    const extractedApp = join(extractedZipRoot, zippedAppBundleName);
+    verifyMacAppSignature(extractedApp, options.signed);
+    if (hasSourceSignature) {
+      await assertSignedZipMatchesSource(appBundlePath, extractedApp);
+    }
   } finally {
     rmSync(extractedZipRoot, { force: true, recursive: true });
   }

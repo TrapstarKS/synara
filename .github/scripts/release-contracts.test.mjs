@@ -21,10 +21,11 @@ function needs(name) {
   const value = job(name).match(/^    needs: (.+)$/m)?.[1];
   assert.ok(value, `${name} must have dependencies`);
   return value
-    .replace(/[\[\]]/g, "")
+    .replaceAll("[", "")
+    .replaceAll("]", "")
     .split(",")
     .map((item) => item.trim())
-    .sort();
+    .toSorted();
 }
 
 function step(source, name) {
@@ -75,7 +76,7 @@ test("the actual Turbo test graph is covered by the release matrix", () => {
     return graph.tasks
       .filter((task) => task.task === "test" && task.command !== "<NONEXISTENT>")
       .map((task) => task.taskId)
-      .sort();
+      .toSorted();
   };
   const expected = testTasks([]);
   assert.ok(expected.length > 0);
@@ -90,13 +91,13 @@ test("the actual Turbo test graph is covered by the release matrix", () => {
     }
   }
   assert.deepEqual(
-    [...owners.keys()].sort(),
+    [...owners.keys()].toSorted(),
     expected,
     "No package may disappear or be introduced by partitioning",
   );
   for (const [taskId, args] of owners) {
     assert.deepEqual(
-      args.sort(),
+      args.toSorted(),
       taskId === "@synara/cli#test" ? ["--shard=1/3", "--shard=2/3", "--shard=3/3"] : [""],
       taskId,
     );

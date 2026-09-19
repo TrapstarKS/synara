@@ -50,7 +50,7 @@ function plist(executable: string, identifier: string, kind: string): string {
 </dict></plist>`;
 }
 
-function fixture() {
+function fixture(signed = true) {
   const root = mkdtempSync(join(tmpdir(), "synara-zip-finalize-"));
   roots.push(root);
   const app = join(root, "mac", "Synara.app");
@@ -76,9 +76,11 @@ function fixture() {
   for (const name of ["Electron Framework", "Helpers", "Libraries", "Resources"]) {
     symlinkSync(`Versions/Current/${name}`, join(framework, name));
   }
-  command("codesign", ["--force", "--sign", "-", "--timestamp=none", framework]);
-  command("codesign", ["--force", "--sign", "-", "--timestamp=none", app]);
-  command("codesign", ["--verify", "--deep", "--strict", app]);
+  if (signed) {
+    command("codesign", ["--force", "--sign", "-", "--timestamp=none", framework]);
+    command("codesign", ["--force", "--sign", "-", "--timestamp=none", app]);
+    command("codesign", ["--verify", "--deep", "--strict", app]);
+  }
   const zipPath = join(root, zipFileName);
   const manifestPath = join(root, "latest-mac.yml");
   writeFileSync(manifestPath, originalManifest);
@@ -109,6 +111,32 @@ afterEach(() => {
 });
 
 describe.skipIf(process.platform !== "darwin")("macOS update archive finalization", () => {
+  it("rebuilds unsigned build-only archives directly from the staged app", async () => {
+    const { root, zipPath, manifestPath } = fixture(false);
+    writeFileSync(zipPath, "previous unsigned output");
+    const result = await finalizeMacUpdateZip({ stageDistDir: root, signed: false });
+    expect(result.repacked).toBe(true);
+    assertMacUpdateManifestZipMetadata(readFileSync(manifestPath, "utf8"), zipFileName, result);
+  }, 30_000);
+
+  it("rejects a validly signed archive from a different build", async () => {
+    const { root, app, zipPath, manifestPath } = fixture();
+    const otherRoot = mkdtempSync(join(tmpdir(), "synara-zip-other-build-"));
+    roots.push(otherRoot);
+    const otherApp = join(otherRoot, "Synara.app");
+    cpSync(app, otherApp, { recursive: true, verbatimSymlinks: true });
+    writeFileSync(join(otherApp, "Contents", "Resources", "payload.txt"), "different signed build");
+    command("codesign", ["--force", "--sign", "-", "--timestamp=none", otherApp]);
+    command("codesign", ["--verify", "--deep", "--strict", otherApp]);
+    await builderZip(zipPath, otherApp);
+    const originalZip = readFileSync(zipPath);
+    await expect(finalizeMacUpdateZip({ stageDistDir: root, signed: true })).rejects.toThrow(
+      "does not match the staged app",
+    );
+    expect(readFileSync(zipPath)).toEqual(originalZip);
+    expect(readFileSync(manifestPath, "utf8")).toBe(originalManifest);
+  }, 30_000);
+
   it("reuses byte-identical builder output after real original and extracted signature checks", async () => {
     const { root, app, zipPath, manifestPath } = fixture();
     await builderZip(zipPath, app);
