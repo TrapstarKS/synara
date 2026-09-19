@@ -189,13 +189,23 @@ function verifyReleaseWorkflowSafety(): void {
   );
   assertContains(
     workflow,
-    "  build_server_tarball:\n    name: Build server tarball\n    if: ${{ needs.preflight.outputs.publish_release == 'true' }}\n    needs: [preflight, verify, build]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: read",
-    "Expected server tarball builds to receive read-only repository access.",
+    "  test:\n    name: Test (${{ matrix.label }})\n    needs: preflight\n    runs-on: ubuntu-24.04\n    timeout-minutes: 15\n    permissions:\n      contents: read",
+    "Expected every test partition to run after source provenance with read-only access.",
+  );
+  assertNotContains(
+    workflow,
+    "  build_server_tarball:",
+    "The server tarball must reuse the shared bundle instead of rebuilding after native packaging.",
+  );
+  assertContains(
+    workflow.split("  bundle:\n")[1]?.split("  build:\n")[0] ?? "",
+    'node apps/server/scripts/cli.ts pack --out release-server --app-version "${{ needs.preflight.outputs.version }}"',
+    "Expected the read-only shared bundle job to produce the versioned server tarball.",
   );
   assertContains(
     workflow,
-    "  release:\n    name: Publish GitHub Release\n    if: ${{ needs.preflight.outputs.publish_release == 'true' }}\n    needs: [preflight, verify, build, build_server_tarball]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: write",
-    "Expected only GitHub release publication to receive contents write access.",
+    "  release:\n    name: Publish GitHub Release\n    if: ${{ needs.preflight.outputs.publish_release == 'true' }}\n    needs: [preflight, verify, test, build]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: write",
+    "Expected GitHub publication to receive write access only after every validation and build lane.",
   );
   assertContains(
     workflow,
@@ -387,7 +397,7 @@ function verifyDesktopStageLockAuthority(): void {
   assertContains(
     buildScript,
     "bun install --frozen-lockfile --ignore-scripts --linker hoisted",
-    "Expected macOS and Linux desktop staging to install from the repository's frozen workspace lockfile.",
+    "Expected Linux desktop staging to keep the existing frozen workspace install.",
   );
   assertContains(
     buildScript,
@@ -399,20 +409,25 @@ function verifyDesktopStageLockAuthority(): void {
     "bun install --omit=dev --ignore-scripts --linker hoisted",
     "Expected Windows staging to omit dev dependencies without Bun's implicitly frozen production mode.",
   );
-  assertNotContains(
+  assertContains(
     buildScript,
-    "--production --frozen-lockfile",
-    "Desktop staging must avoid Bun's divergent frozen production-workspace lockfile resolution.",
+    'else if (platform === "mac")',
+    "Expected production filtering to remain scoped to the validated macOS path.",
   );
-  assertNotContains(
+  assertContains(
     buildScript,
-    "bun install --production",
-    "Windows staging must not use Bun's production flag because it implicitly forces frozen mode.",
+    "bun install --production --frozen-lockfile --ignore-scripts --linker hoisted --filter @synara/cli --filter @synara/desktop",
+    "Expected macOS staging to install the runtime workspaces from the unchanged Bun 1.4.2 lockfile.",
   );
-  assertNotContains(
+  assertContains(
     buildScript,
-    "--filter @synara/",
-    "Desktop staging must not use Bun workspace filters because filtered hoisted installs can diverge from bun.lock.",
+    "Frozen staging install changed the repository lockfile copy.",
+    "Expected macOS staging to reject any lockfile drift even after a successful install.",
+  );
+  assertContains(
+    buildScript,
+    "collectStageRuntimePackages(stageAppDir, runtimeDependencyNames)",
+    "Expected production staging to verify the entire runtime closure before checking its patches.",
   );
   assertContains(
     buildScript,

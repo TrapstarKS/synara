@@ -33,9 +33,13 @@ Test and typecheck task results remain uncached.
 
 Release smoke shares the static runner, removing one checkout/install/runner and
 one duplicate identity scan. The platform-independent Windows boundary scanner
-runs there once; native Windows validation is not removed. Release preflight
-still installs the full workspace and runs all tests. Signing, notarization,
-source provenance, publication and production dependency staging are unchanged.
+runs there once; native Windows validation is not removed. The release workflow
+runs source preflight, then full-workspace static verification, five test
+partitions, and shared compilation. It packs the server from that shared output;
+publication still requires all verification and native-build jobs. macOS stages
+only the frozen production runtime workspaces and verifies their complete
+dependency closure and patches. Signing, notarization policy, source provenance,
+and packaged-startup checks remain required. See [release validation](../docs/release.md).
 
 ## Cross-platform setup measurements: September 14, 2026
 

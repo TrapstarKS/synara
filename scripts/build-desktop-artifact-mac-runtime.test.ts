@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,7 +14,10 @@ vi.mock("@synara/shared/managedCodexRuntime", () => ({
   },
 }));
 
-import { assertPackagedMacCodexRuntime } from "./build-desktop-artifact.ts";
+import {
+  assertPackagedMacCodexRuntime,
+  stageProductionResources,
+} from "./build-desktop-artifact.ts";
 
 it("verifies the packaged runtime alongside DMG/ZIP files and still rejects a wrong checksum", async () => {
   const root = mkdtempSync(join(tmpdir(), "synara-mac-runtime-"));
@@ -36,3 +39,31 @@ it("verifies the packaged runtime alongside DMG/ZIP files and still rejects a wr
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it.each(["mac", "linux", "win"] as const)(
+  "preserves runtime icons on %s without duplicating the separately packaged macOS runtime",
+  async (platform) => {
+    const root = mkdtempSync(join(tmpdir(), "synara-production-resources-"));
+    try {
+      const source = join(root, "resources");
+      const destination = join(root, "prod-resources");
+      mkdirSync(join(source, "nested"), { recursive: true });
+      writeFileSync(join(source, "dock-icon.png"), "dock-icon");
+      writeFileSync(join(source, "nested", "icon.png"), "nested-icon");
+      writeFileSync(join(source, "runtime.tar.gz"), "verified-runtime");
+
+      await Effect.runPromise(
+        stageProductionResources(source, destination, platform).pipe(
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+
+      expect(readFileSync(join(destination, "dock-icon.png"), "utf8")).toBe("dock-icon");
+      expect(readFileSync(join(destination, "nested", "icon.png"), "utf8")).toBe("nested-icon");
+      expect(readFileSync(join(source, "runtime.tar.gz"), "utf8")).toBe("verified-runtime");
+      expect(existsSync(join(destination, "runtime.tar.gz"))).toBe(platform !== "mac");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

@@ -1,5 +1,5 @@
 // FILE: mac-update-zip-finalize.ts
-// Purpose: Rebuilds and validates macOS Squirrel update zip artifacts before publishing.
+// Purpose: Validates macOS Squirrel update zips, repairing legacy archives that lost framework symlinks.
 // Layer: Release/build helper
 // Exports: finalizeMacUpdateZip for build scripts and smoke checks.
 
@@ -40,6 +40,7 @@ export interface FinalizedMacUpdateZip {
   readonly size: number;
   readonly updatedManifestPaths: ReadonlyArray<string>;
   readonly removedZipBlockmapPath: string | null;
+  readonly repacked: boolean;
 }
 
 function readDirectoryEntries(path: string): string[] {
@@ -113,12 +114,23 @@ function listZipEntries(zipPath: string): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+class MacZipSymlinkError extends Error {
+  constructor(entry: string) {
+    super(`macOS update zip entry must be a symlink: ${entry}`);
+  }
+}
+
 function assertMacZipFrameworkSymlinks(zipPath: string): string {
-  const appBundleName = resolveSingleTopLevelMacAppBundle(listZipEntries(zipPath));
+  const entries = listZipEntries(zipPath);
+  const appBundleName = resolveSingleTopLevelMacAppBundle(entries);
+  const entryNames = new Set(entries);
   for (const entry of buildMacUpdateZipSymlinkEntries(appBundleName)) {
+    if (!entryNames.has(entry)) {
+      throw new MacZipSymlinkError(entry);
+    }
     const zipInfo = runTextCommand("unzip", ["-Z", "-v", zipPath, entry]);
     if (!isZipInfoSymlink(zipInfo)) {
-      throw new Error(`macOS update zip entry must be a symlink: ${entry}`);
+      throw new MacZipSymlinkError(entry);
     }
   }
   return appBundleName;
@@ -142,8 +154,10 @@ function computeSha512Base64(filePath: string): Promise<string> {
   });
 }
 
-// Recreates the update zip with macOS-native metadata, then validates the same
-// extracted app shape Squirrel.Mac will hand to ShipIt during installation.
+// Current electron-builder preserves macOS symlinks with native zip. Reuse its
+// bytes after the same extraction/signature checks used by the repair path.
+// Only a lost framework symlink permits repair; corrupt archives and invalid
+// signatures must still fail instead of being hidden by recompression.
 export async function finalizeMacUpdateZip(
   options: FinalizeMacUpdateZipOptions,
 ): Promise<FinalizedMacUpdateZip> {
@@ -165,14 +179,31 @@ export async function finalizeMacUpdateZip(
   const appBundleName = basename(appBundlePath);
   const appBundleParent = dirname(appBundlePath);
 
-  rmSync(zipPath, { force: true });
-  runTextCommand("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", appBundleName, zipPath], {
-    cwd: appBundleParent,
-    verbose,
-  });
-
-  const zippedAppBundleName = assertMacZipFrameworkSymlinks(zipPath);
   verifyMacAppSignature(appBundlePath, options.signed);
+
+  let repacked = false;
+  let zippedAppBundleName: string;
+  try {
+    zippedAppBundleName = assertMacZipFrameworkSymlinks(zipPath);
+  } catch (error) {
+    if (!(error instanceof MacZipSymlinkError)) {
+      throw error;
+    }
+    rmSync(zipPath, { force: true });
+    runTextCommand(
+      "ditto",
+      ["-c", "-k", "--sequesterRsrc", "--keepParent", appBundleName, zipPath],
+      {
+        cwd: appBundleParent,
+        verbose,
+      },
+    );
+    zippedAppBundleName = assertMacZipFrameworkSymlinks(zipPath);
+    repacked = true;
+  }
+  if (zippedAppBundleName !== appBundleName) {
+    throw new Error(`macOS update zip contains ${zippedAppBundleName}, expected ${appBundleName}`);
+  }
 
   const extractedZipRoot = mkdtempSync(join(tmpdir(), "synara-mac-update-zip-"));
   try {
@@ -184,7 +215,7 @@ export async function finalizeMacUpdateZip(
 
   const zipStat = statSync(zipPath);
   if (!zipStat.isFile()) {
-    throw new Error(`Repacked macOS update zip was not created at ${zipPath}`);
+    throw new Error(`macOS update zip was not created at ${zipPath}`);
   }
   const sha512 = await computeSha512Base64(zipPath);
 
@@ -213,5 +244,6 @@ export async function finalizeMacUpdateZip(
     size: zipStat.size,
     updatedManifestPaths,
     removedZipBlockmapPath,
+    repacked,
   };
 }
