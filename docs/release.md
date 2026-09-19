@@ -75,6 +75,63 @@ observations, not hosted-runner timing guarantees. The macOS runtime archive is
 also excluded from the redundant `prod-resources` copy while remaining in its
 existing packaged runtime location; production icon copies remain available.
 
+### Verification record: September 19, 2026
+
+The [previous build-only run](https://github.com/TrapstarKS/synara/actions/runs/35435489024)
+on application commit `790f4897` took 13m38s. The
+[first candidate](https://github.com/TrapstarKS/synara/actions/runs/35464852806)
+passed in 11m48s, including the newly added server-tarball validation. Every test
+partition, native build, provenance check and packaged-startup smoke passed.
+The [final-code confirmation](https://github.com/TrapstarKS/synara/actions/runs/35465779116)
+on `be33f6981` passed in **9m00s**, with the first candidate's caches available.
+This is 4m38s (34.0%) less elapsed time than the earlier build-only run.
+This is the like-for-like workflow comparison; the earlier 21m16s publication
+also included a serial server rebuild and public release upload.
+
+| Job / workflow                 | Earlier build-only | First candidate | Final-code confirmation |
+| ------------------------------ | -----------------: | --------------: | ----------------------: |
+| Entire workflow                |             13m38s |          11m48s |                   9m00s |
+| Shared bundle                  |              2m03s |           1m52s |                     38s |
+| Slowest verification/test lane |              9m25s |           4m47s |                   3m23s |
+| macOS Intel                    |             11m19s |           9m30s |                   8m05s |
+| macOS ARM64                    |              8m20s |           4m24s |                   5m04s |
+| Windows x64                    |              9m34s |           6m08s |                   6m31s |
+
+The new shared-bundle job includes packing the server tarball; the old one did
+not. Verification/test rows compare the slowest blocking lane after partitioning,
+not summed runner time. ARM64 and Windows varied between the two candidates,
+despite reusable caches. The confirmation also includes the final ZIP identity
+check, so this is not an isolated cache benchmark or a guaranteed percentage for
+future tags. No production publication time has been measured for the candidate.
+
+The first candidate's Windows installs took 16.42s in the checkout and 13.38s
+in staging, versus 100.21s and 103.66s in the previous publication run. macOS
+staging took 1.16s on ARM64 and 3.32s on Intel. The already-generated ZIP was
+reused on both architectures. These are observed samples; runner variability
+and cache scope still affect subsequent releases.
+
+The final-code run confirmed both macOS architectures reused their validated ZIPs
+and cached AppSnap helpers. Windows dependency installs took 16.95s and 13.81s
+(30.76s combined), consistent with the first candidate's reduced installation
+cost. The native Intel packaging job remained the longest lane.
+
+Local validation used the pinned Bun 1.4.2. Typechecking all seven workspaces,
+lint, workflow contract tests, actionlint, release smoke, the desktop build and
+packing/inspecting the existing server output passed. The final ZIP regression
+suite passed 15 tests using the real builder, ZIP utilities and macOS signing
+tools, including rejecting a validly signed ZIP from another build.
+
+The complete local test run was also attempted; it was not fully green. Its
+remaining failures were in the unchanged `ProviderRuntimeIngestion.test.ts` and
+`chatgptConnector/tools/execSessions.test.ts`; a focused repeat passed the former
+and retained two command-completion failures in the latter. The corresponding
+Linux release partitions passed. Global formatting reported 16 unchanged files
+from the baseline, and the Windows boundary scanner reported existing ChatGPT
+connector violations. The release files themselves passed formatting and diff
+checks. These unrelated failures were not hidden by weakening checks or editing
+the application. No production release or notarization-service run was performed
+for this optimization.
+
 ## Desktop auto-update notes
 
 - Runtime updater: `electron-updater` in `apps/desktop/src/main.ts`.
