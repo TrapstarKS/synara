@@ -100,6 +100,7 @@ export type BrowserAutomationExpectedInput =
 
 interface PendingBrowserAutomationInput {
   readonly signal: BrowserAutomationExpectedInput;
+  readonly registrationZoom: number;
   expiresAt: number;
 }
 
@@ -379,6 +380,15 @@ function normalizeAutomationKey(value: string): string {
     return " ";
   }
   return value.toLocaleLowerCase("en-US");
+}
+
+function browserAutomationInputAtZoom(
+  expected: BrowserAutomationExpectedInput,
+  zoom: number,
+): BrowserAutomationExpectedInput {
+  if (expected.kind !== "mouse") return expected;
+  const factor = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  return { ...expected, x: expected.x * factor, y: expected.y * factor };
 }
 
 function browserAutomationInputMatches(
@@ -946,7 +956,11 @@ export class DesktopBrowserManager {
           openedTabId: tab.id,
         });
       } else {
-        this.newTab({
+        // Provenance is unknown here: the page may have scripted this open with
+        // no human involved, so it must not read as a human takeover. A human
+        // link activation still advanced the epoch through its own trusted
+        // input event before this handler ran.
+        this.createThreadTab({
           threadId: input.threadId,
           url: input.url,
           activate: true,
@@ -1109,6 +1123,13 @@ export class DesktopBrowserManager {
 
   private registerOAuthPopupWindow(popup: BrowserWindow, context: OAuthPopupContext): void {
     if (this.popupRuntimes.has(popup)) {
+      return;
+    }
+    // An embedded popup is adopted as a tab and already carries its automation
+    // runtime input listeners. Attaching the popup-window listeners to the same
+    // WebContents as well would double-publish every native event as human
+    // control, including the agent's own input.
+    if (this.findRuntimeContext(popup.webContents)) {
       return;
     }
     const runtime: OAuthPopupRuntime = {
@@ -2014,6 +2035,18 @@ export class DesktopBrowserManager {
 
   newTab(input: BrowserNewTabInput): ThreadBrowserState {
     this.markHumanControl(input.threadId);
+    return this.createThreadTab(input);
+  }
+
+  /**
+   * Creates a tab without claiming human control. A page-initiated `window.open`
+   * cannot be attributed at the handler: scripted popups and popunders look the
+   * same as a human link activation, and the trusted input event that causes a
+   * human activation already advances the human epoch by itself. Marking here
+   * would abort agent work that merely navigated into a page which opens a
+   * window on its own.
+   */
+  private createThreadTab(input: BrowserNewTabInput): ThreadBrowserState {
     const state = this.ensureWorkspace(input.threadId);
     const tab = createBrowserTab(normalizeUrlInput(input.url));
     state.tabs = [...state.tabs, tab];
@@ -3416,11 +3449,16 @@ export class DesktopBrowserManager {
   ): () => void {
     const key = buildRuntimeKey(threadId, tabId);
     const now = Date.now();
-    // CDP dispatches CSS pixels; Electron reports zoomed widget coordinates.
-    const zoom = this.runtimes.get(key)?.webContents.getZoomFactor() ?? 1;
+    // Signals stay in the CDP CSS pixel space. Electron reports zoom-scaled
+    // widget coordinates, so consumption converts with the zoom factor that is
+    // live when the native event arrives, falling back to the factor captured
+    // here when the conversion lags the change. Converting only at registration
+    // would misread the agent's own input as human whenever the page zoom
+    // changes between dispatch and delivery — resizing the floating browser,
+    // opening the sidebar, or changing the desktop zoom all do exactly that.
     const pending: PendingBrowserAutomationInput = {
-      signal:
-        signal.kind === "mouse" ? { ...signal, x: signal.x * zoom, y: signal.y * zoom } : signal,
+      signal,
+      registrationZoom: this.runtimes.get(key)?.webContents.getZoomFactor() ?? 1,
       expiresAt: now + 1_000,
     };
     const current = (this.expectedAutomationInputsByRuntimeKey.get(key) ?? [])
@@ -3489,12 +3527,29 @@ export class DesktopBrowserManager {
   ): boolean {
     const key = buildRuntimeKey(threadId, tabId);
     const now = Date.now();
+    // The native event carries zoom-scaled widget coordinates. A page zoom
+    // change can land on either side of the event conversion, so accept the
+    // factor current for this event or the one captured when the CDP command
+    // was issued; both describe the same agent input.
+    const deliveryZoom = this.runtimes.get(key)?.webContents.getZoomFactor() ?? 1;
     const pending = (this.expectedAutomationInputsByRuntimeKey.get(key) ?? []).filter(
       (entry) => entry.expiresAt > now,
     );
-    const matchedIndex = pending.findIndex((entry) =>
-      browserAutomationInputMatches(entry.signal, signal),
-    );
+    const matchedIndex = pending.findIndex((entry) => {
+      if (
+        browserAutomationInputMatches(
+          browserAutomationInputAtZoom(entry.signal, deliveryZoom),
+          signal,
+        )
+      ) {
+        return true;
+      }
+      if (deliveryZoom === entry.registrationZoom) return false;
+      return browserAutomationInputMatches(
+        browserAutomationInputAtZoom(entry.signal, entry.registrationZoom),
+        signal,
+      );
+    });
     if (matchedIndex < 0) {
       if (pending.length === 0) this.expectedAutomationInputsByRuntimeKey.delete(key);
       else this.expectedAutomationInputsByRuntimeKey.set(key, pending);

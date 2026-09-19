@@ -1327,6 +1327,62 @@ describe("DesktopBrowserManager automation runtime boundary", () => {
     },
   );
 
+  it.each([0.75, 0.5])(
+    "keeps agent input attributed when the page zoom changes around delivery (event at %s)",
+    (deliveryZoom) => {
+      const manager = new DesktopBrowserManager();
+      const prepared = manager.prepareAutomationTab({ threadId: THREAD_ID, reuse: true });
+      const tabId = prepared.activeTabId!;
+      const webContents = new FakeWebContents();
+      let zoom = 0.5;
+      webContents.getZoomFactor = () => zoom;
+      const runtime = {
+        key: `${THREAD_ID}:${tabId}`,
+        threadId: THREAD_ID,
+        tabId,
+        webContents: webContents as unknown as WebContents,
+        view: null,
+        ownsWebContents: false as const,
+        listenerDisposers: [] as Array<() => void>,
+      };
+      const access = manager as unknown as {
+        runtimes: Map<string, typeof runtime>;
+        configureRuntimeWebContents(value: typeof runtime): void;
+      };
+      access.runtimes.set(runtime.key, runtime);
+      access.configureRuntimeWebContents(runtime);
+      const visible = manager.getVisibleAutomationRuntime({ threadId: THREAD_ID, tabId });
+
+      const release = visible.expectAgentInput!({
+        kind: "mouse",
+        type: "mouseDown",
+        button: "left",
+        x: 320,
+        y: 48,
+      });
+
+      // Resizing the floating browser, opening the sidebar, or changing the
+      // desktop zoom changes the page zoom while the native event is in flight.
+      // The event can be converted with either the new or the previous widget
+      // scale and must still be attributed to the agent in both orderings.
+      zoom = 0.75;
+      webContents.emit(
+        "before-mouse-event",
+        {},
+        {
+          type: "mouseDown",
+          button: "left",
+          x: 320 * deliveryZoom,
+          y: 48 * deliveryZoom,
+        },
+      );
+      release();
+
+      expect(manager.getAutomationHumanControlEpoch(THREAD_ID)).toBe(0);
+      manager.dispose();
+    },
+  );
+
   it("expires a released native-input correlation instead of masking a later matching click", () => {
     const dateNow = vi.spyOn(Date, "now");
     let now = 10_000;
@@ -1474,14 +1530,126 @@ describe("DesktopBrowserManager automation runtime boundary", () => {
     expect(openedTabStateEmission).toHaveBeenCalledOnce();
     expect(reentrantStateEmission).not.toHaveBeenCalled();
 
+    // An ungestured window open is not evidence of human control: the page may
+    // have scripted it. It still becomes a canonical Synara tab.
     webContents.windowOpenHandler?.({
-      url: "https://manual.example/path",
+      url: "https://scripted.example/path",
       frameName: "",
       features: "",
       disposition: "foreground-tab",
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(manager.getState({ threadId: THREAD_ID }).tabs).toHaveLength(3);
+    expect(manager.getAutomationHumanControlEpoch(THREAD_ID)).toBe(0);
+
+    // The trusted input that causes a human window open is what advances the
+    // epoch, exactly once.
+    webContents.emit(
+      "before-mouse-event",
+      {},
+      {
+        type: "mouseDown",
+        button: "left",
+        x: 10,
+        y: 10,
+      },
+    );
     expect(manager.getAutomationHumanControlEpoch(THREAD_ID)).toBe(1);
+  });
+
+  it("never attributes a page-scripted window open to the human", async () => {
+    const manager = new DesktopBrowserManager();
+    const prepared = manager.prepareAutomationTab({ threadId: THREAD_ID, reuse: true });
+    const sourceTabId = prepared.activeTabId!;
+    const webContents = new FakeWebContents();
+    const runtime = {
+      key: `${THREAD_ID}:${sourceTabId}`,
+      threadId: THREAD_ID,
+      tabId: sourceTabId,
+      webContents: webContents as unknown as WebContents,
+      view: null,
+      ownsWebContents: false as const,
+      listenerDisposers: [] as Array<() => void>,
+    };
+    const access = manager as unknown as {
+      runtimes: Map<string, typeof runtime>;
+      configureRuntimeWebContents(value: typeof runtime): void;
+    };
+    access.runtimes.set(runtime.key, runtime);
+    access.configureRuntimeWebContents(runtime);
+    const takeover = vi.fn();
+    const unsubscribe = manager.subscribeAutomationHumanControl(THREAD_ID, takeover);
+
+    // Ad and auth pages script their own window.open calls. No trusted input
+    // ever reaches the guest, so nothing here is human control.
+    webContents.windowOpenHandler?.({
+      url: "https://scripted.example/popup",
+      frameName: "_blank",
+      features: "",
+      disposition: "foreground-tab",
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(manager.getState({ threadId: THREAD_ID }).tabs).toHaveLength(2);
+    expect(manager.getAutomationHumanControlEpoch(THREAD_ID)).toBe(0);
+    expect(takeover).not.toHaveBeenCalled();
+    unsubscribe();
+    manager.dispose();
+  });
+
+  it("skips popup-window listeners for an embedded popup already owned by a runtime", async () => {
+    const manager = new DesktopBrowserManager();
+    const prepared = manager.prepareAutomationTab({ threadId: THREAD_ID, reuse: true });
+    const sourceTabId = prepared.activeTabId!;
+    const webContents = new FakeWebContents();
+    const runtime = {
+      key: `${THREAD_ID}:${sourceTabId}`,
+      threadId: THREAD_ID,
+      tabId: sourceTabId,
+      webContents: webContents as unknown as WebContents,
+      view: null,
+      ownsWebContents: false as const,
+      listenerDisposers: [] as Array<() => void>,
+    };
+    const access = manager as unknown as {
+      runtimes: Map<string, typeof runtime>;
+      popupRuntimes: Map<unknown, unknown>;
+      configureRuntimeWebContents(value: typeof runtime): void;
+      registerOAuthPopupWindow(
+        popup: unknown,
+        context: { threadId: ThreadId; tabId: string },
+      ): void;
+    };
+    access.runtimes.set(runtime.key, runtime);
+    access.configureRuntimeWebContents(runtime);
+
+    // A hypothetical late popup registration for the same WebContents must not
+    // add a second set of input listeners that mark every event as human.
+    const popup = {
+      isDestroyed: () => false,
+      setMenuBarVisibility: vi.fn(),
+      webContents,
+      once: vi.fn(),
+      getBounds: () => ({ x: 0, y: 0, width: 480, height: 640 }),
+      isVisible: () => false,
+    };
+    access.registerOAuthPopupWindow(popup, { threadId: THREAD_ID, tabId: sourceTabId });
+
+    expect(access.popupRuntimes.size).toBe(0);
+    webContents.emit(
+      "before-input-event",
+      { preventDefault: vi.fn() },
+      {
+        type: "keyDown",
+        key: "a",
+        meta: false,
+        control: false,
+        shift: false,
+        alt: false,
+      },
+    );
+    expect(manager.getAutomationHumanControlEpoch(THREAD_ID)).toBe(1);
+    manager.dispose();
   });
 
   it.each(["script", "opener", "before-publish"])(
