@@ -32,6 +32,61 @@ const projectionSnapshotLayer = it.layer(
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
   it.effect(
+    "retains unanswered questions outside the message window and indexes shell attention",
+    () =>
+      Effect.gen(function* () {
+        const query = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = asThreadId("pending-async-retention");
+        yield* sql`INSERT INTO projection_projects
+        (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('pending-async-project', 'Questions', '/tmp/questions', '[]',
+          '2026-09-19T00:00:00.000Z', '2026-09-19T00:00:00.000Z')`;
+        yield* sql`INSERT INTO projection_threads
+        (thread_id, project_id, title, model_selection_json, created_at, updated_at)
+        VALUES (${threadId}, 'pending-async-project', 'Questions', '{"provider":"codex","model":"luna"}',
+          '2026-09-19T00:00:00.000Z', '2026-09-19T00:00:00.000Z')`;
+        yield* sql`INSERT INTO projection_thread_messages
+        (message_id, thread_id, role, text, is_streaming, source, sequence, created_at, updated_at, async_user_input_json)
+        VALUES ('old-question', ${threadId}, 'assistant', 'Which branch?', 0, 'native', 1,
+          '2026-09-19T00:00:00.000Z', '2026-09-19T00:00:00.000Z',
+          '{"questions":[{"title":"Which branch?"}]}')`;
+        yield* sql`WITH RECURSIVE numbers(n) AS (SELECT 2 UNION ALL SELECT n+1 FROM numbers WHERE n<2002)
+        INSERT INTO projection_thread_messages
+          (message_id, thread_id, role, text, is_streaming, source, sequence, created_at, updated_at)
+        SELECT 'message-' || n, ${threadId}, 'assistant', 'Still working', 0, 'native', n,
+          '2026-09-19T00:00:01.000Z', '2026-09-19T00:00:01.000Z' FROM numbers`;
+        const full = yield* query.getSnapshot();
+        const thread = full.threads.find((entry) => entry.id === threadId);
+        assert.equal(thread?.messages.length, 2001);
+        assert.equal(thread?.messages[0]?.id, "old-question");
+        assert.isTrue(thread?.hasPendingAsyncUserInput);
+        assert.isFalse(thread?.hasPendingUserInput);
+        const shell = yield* query.getShellSnapshot();
+        assert.isTrue(
+          shell.threads.find((entry) => entry.id === threadId)?.hasPendingAsyncUserInput,
+        );
+        const plan = yield* sql`EXPLAIN QUERY PLAN SELECT 1 FROM projection_thread_messages
+        INDEXED BY idx_projection_messages_pending_async_input
+        WHERE thread_id=${threadId} AND role='assistant' AND async_user_input_json IS NOT NULL
+        AND json_extract(async_user_input_json, '$.response') IS NULL`;
+        assert.include(JSON.stringify(plan), "idx_projection_messages_pending_async_input");
+        yield* sql`UPDATE projection_thread_messages
+        SET async_user_input_json='{"questions":[{"title":"Which branch?"}],"response":{"messageId":"answer","answers":["main"]}}'
+        WHERE thread_id=${threadId} AND message_id='old-question'`;
+        const answered = yield* query.getSnapshot();
+        assert.equal(
+          answered.threads.find((entry) => entry.id === threadId)?.messages.length,
+          2000,
+        );
+        assert.isFalse(
+          (yield* query.getShellSnapshot()).threads.find((entry) => entry.id === threadId)
+            ?.hasPendingAsyncUserInput,
+        );
+      }),
+  );
+
+  it.effect(
     "selects the latest turn per thread with stable ties and preserves historical update time",
     () =>
       Effect.gen(function* () {
@@ -503,6 +558,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           // historical activity rows alone must not resurrect stale prompts.
           hasPendingApprovals: false,
           hasPendingUserInput: false,
+          hasPendingAsyncUserInput: false,
           hasActionableProposedPlan: true,
           latestTurn: {
             turnId: asTurnId("turn-1"),
@@ -2057,6 +2113,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           latestUserMessageAt: "2026-03-03T00:00:02.500Z",
           hasPendingApprovals: true,
           hasPendingUserInput: true,
+          hasPendingAsyncUserInput: false,
           hasActionableProposedPlan: true,
           createdAt: "2026-03-03T00:00:02.000Z",
           updatedAt: "2026-03-03T00:00:03.000Z",

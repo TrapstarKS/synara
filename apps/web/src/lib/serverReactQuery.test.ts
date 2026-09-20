@@ -14,6 +14,8 @@ import {
   refreshServerConfigAfterTransportOpen,
   serverAllProviderUsageQueryOptions,
   serverLocalServersQueryOptions,
+  serverProfileStatsQueryOptions,
+  serverProfileTokenStatsQueryOptions,
   serverProviderUsageSnapshotQueryOptions,
   serverQueryKeys,
   sidebarLocalServersQueryOptions,
@@ -263,4 +265,34 @@ describe("studio thread outputs query options", () => {
     expect(options.retry(0, new Error("network"))).toBe(true);
     expect(options.retry(3, new Error("network"))).toBe(false);
   });
+});
+
+describe("profile query options", () => {
+  const capacityError = {
+    code: "RPC_EXPENSIVE_READ_CAPACITY_EXCEEDED",
+    retryable: true,
+    retryAfterMs: 375,
+  };
+
+  for (const [label, makeOptions] of [
+    ["core", serverProfileStatsQueryOptions],
+    ["token", serverProfileTokenStatsQueryOptions],
+  ] as const) {
+    it(`${label} stats use the shared expensive-read recovery policy`, () => {
+      const options = makeOptions();
+      expect(typeof options.retry).toBe("function");
+      expect(typeof options.refetchInterval).toBe("function");
+      if (typeof options.retry !== "function" || typeof options.refetchInterval !== "function") {
+        throw new Error("Expected retry and refetchInterval functions for Profile stats.");
+      }
+
+      expect(options.retry(0, capacityError as never)).toBe(false);
+      expect(options.retry(0, new Error("network"))).toBe(true);
+      expect(
+        options.refetchInterval({
+          state: { error: capacityError, errorUpdateCount: 1 },
+        } as never),
+      ).toBe(375);
+    });
+  }
 });

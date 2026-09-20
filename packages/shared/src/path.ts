@@ -7,6 +7,22 @@ export function isWindowsDrivePath(value: string): boolean {
   return /^[a-zA-Z]:[/\\]/.test(value);
 }
 
+/** Conservative alias check for operations that must not unlink a case-only rename. */
+export function nativePathsMayAlias(
+  left: string,
+  right: string,
+  platform: NodeJS.Platform,
+): boolean {
+  return platform === "win32" || platform === "darwin"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
+/** POSIX backslashes can be filename characters; normalize them only on Windows. */
+export function normalizeNativeGlobPath(value: string, platform: NodeJS.Platform): string {
+  return platform === "win32" ? value.replace(/\\/g, "/").replace(/\/+$/, "") : value;
+}
+
 export function isUncPath(value: string): boolean {
   return value.startsWith("\\\\");
 }

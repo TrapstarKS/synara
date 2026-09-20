@@ -38,6 +38,121 @@ import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE } from "./types";
 import { deriveTimelineEntries, deriveWorkLogEntries } from "./workLog";
 
 describe("store event reducer", () => {
+  it.each(["Before middle After", "Before After"])(
+    "renders authoritative completion %s after loading segmented streaming history",
+    (finalText) => {
+      const time = "2026-09-19T00:00:00.000Z";
+      const segments = ["Before ", "After"].map((text, sequence) => ({
+        text,
+        sequence,
+        startedAt: time,
+        endedAt: time,
+      }));
+      const message = {
+        id: MessageId.makeUnsafe("segmented-recovery"),
+        role: "assistant" as const,
+        text: "Before After",
+        textSegments: segments,
+        createdAt: time,
+        streaming: true,
+      };
+      const state = applyOrchestrationEventsHotPath(
+        makeState(makeThread({ messages: [message] })),
+        [
+          makeDomainEvent("thread.message-sent", {
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            messageId: message.id,
+            role: "assistant",
+            text: finalText,
+            streaming: false,
+            source: "native",
+            turnId: null,
+            createdAt: time,
+            updatedAt: time,
+          }),
+        ],
+      );
+      const completed = threadsOf(state)[0]!.messages[0]!;
+      expect(completed.text).toBe(finalText);
+      if (finalText === message.text) expect(completed.textSegments).toBe(segments);
+      else expect(completed.textSegments).toBeUndefined();
+      const visibleText = deriveTimelineEntries([completed], [], [])
+        .map((row) =>
+          row.kind === "message"
+            ? row.message.text
+            : row.kind === "message-segment"
+              ? row.message.textSegments![row.segmentIndex]!.text
+              : "",
+        )
+        .join("");
+      expect(visibleText).toBe(finalText);
+    },
+  );
+
+  it("retains an old question through new streaming output and clears attention only after answering", () => {
+    const question = {
+      id: MessageId.makeUnsafe("old-question"),
+      role: "assistant" as const,
+      text: "Choose a branch",
+      createdAt: "2026-02-13T00:00:00.000Z",
+      streaming: false,
+      asyncUserInput: { questions: [{ title: "Which branch?" }] },
+    };
+    const thread = makeThread({
+      hasPendingAsyncUserInput: true,
+      messages: [
+        question,
+        ...Array.from({ length: 2000 }, (_, index) => ({
+          id: MessageId.makeUnsafe(`message-${index}`),
+          role: "assistant" as const,
+          text: "Working",
+          createdAt: question.createdAt,
+          streaming: false,
+        })),
+      ],
+    });
+    const basePayload = {
+      threadId: thread.id,
+      role: "assistant" as const,
+      turnId: null,
+      source: "native" as const,
+      createdAt: question.createdAt,
+      updatedAt: question.createdAt,
+    };
+    let state = applyOrchestrationEventsHotPath(makeState(thread), [
+      makeDomainEvent("thread.message-sent", {
+        ...basePayload,
+        messageId: MessageId.makeUnsafe("new-output"),
+        text: "More work",
+        streaming: true,
+      }),
+    ]);
+    expect(threadsOf(state)[0]?.messages[0]?.id).toBe(question.id);
+    expect(threadsOf(state)[0]?.messages).toHaveLength(2001);
+    expect(threadsOf(state)[0]?.hasPendingAsyncUserInput).toBe(true);
+    state = applyOrchestrationEventsHotPath(state, [
+      makeDomainEvent(
+        "thread.message-sent",
+        {
+          ...basePayload,
+          messageId: question.id,
+          text: question.text,
+          streaming: false,
+          asyncUserInput: {
+            ...question.asyncUserInput,
+            response: { messageId: MessageId.makeUnsafe("answer"), answers: ["main"] },
+          },
+        },
+        { sequence: 2 },
+      ),
+    ]);
+    expect(threadsOf(state)[0]?.hasPendingAsyncUserInput).toBe(false);
+    expect(state.sidebarThreadSummaryById[thread.id]?.hasPendingAsyncUserInput).toBe(false);
+    expect(
+      threadsOf(state)[0]?.messages.find((message) => message.id === "new-output")?.streaming,
+    ).toBe(true);
+  });
+
   it("hydrates and removes Spaces while clearing matching project assignments", () => {
     const spaceId = SpaceId.makeUnsafe("space-work");
     let state = applyOrchestrationEvents(makeState(makeThread()), [

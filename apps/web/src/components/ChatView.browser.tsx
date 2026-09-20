@@ -2192,6 +2192,141 @@ describe("ChatView transcript geometry (full app)", () => {
     document.body.innerHTML = "";
   });
 
+  it("keeps Space attention visible across working threads, async answers, and completion", async () => {
+    const spaceId = SpaceId.makeUnsafe("space-status-regression");
+    const siblingId = ThreadId.makeUnsafe("status-sibling");
+    const base = createSnapshotForTargetUser({
+      targetMessageId: MessageId.makeUnsafe("status-user"),
+      targetText: "Keep working while I answer",
+      sessionStatus: "running",
+    });
+    const active = base.threads[0]!;
+    const completedTurn = {
+      turnId: TurnId.makeUnsafe("status-finished"),
+      state: "completed" as const,
+      requestedAt: NOW_ISO,
+      startedAt: NOW_ISO,
+      completedAt: NOW_ISO,
+      assistantMessageId: null,
+    };
+    let currentSnapshot: OrchestrationReadModel = {
+      ...base,
+      spaces: [
+        {
+          id: spaceId,
+          name: "Focus",
+          icon: "target",
+          sortOrder: 0,
+          createdAt: NOW_ISO,
+          updatedAt: NOW_ISO,
+          deletedAt: null,
+        },
+      ],
+      projects: base.projects.map((project) => ({ ...project, spaceId })),
+      threads: [
+        active,
+        {
+          ...active,
+          id: siblingId,
+          title: "Plan awaiting review",
+          messages: [],
+          interactionMode: "plan",
+          hasActionableProposedPlan: true,
+          latestTurn: completedTurn,
+          session: { ...active.session!, threadId: siblingId, status: "ready", activeTurnId: null },
+        },
+      ],
+    };
+    const sync = (threads: OrchestrationReadModel["threads"]) => {
+      currentSnapshot = { ...currentSnapshot, threads, snapshotSequence: nextSnapshotSequence() };
+      fixture = { ...fixture, snapshot: currentSnapshot };
+      useStore.getState().syncServerReadModel(currentSnapshot);
+    };
+    useSpacesUiStore.getState().setActiveSpaceId(spaceId);
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot: currentSnapshot });
+    try {
+      // A ready plan must not disappear behind a working sibling in the same project.
+      await expect
+        .element(page.getByRole("tab", { name: "Focus, Needs attention", exact: true }))
+        .toBeVisible();
+      const question = {
+        ...createAssistantMessage({
+          id: MessageId.makeUnsafe("status-question"),
+          text: "I can continue reviewing while you choose the branch.",
+          offsetSeconds: 140,
+        }),
+        asyncUserInput: { questions: [{ title: "Which branch?" }] },
+      };
+      const questioned = {
+        ...active,
+        hasPendingAsyncUserInput: true,
+        messages: [...active.messages, question],
+      };
+      sync([questioned]);
+      await expect
+        .element(page.getByRole("button", { name: "1 question awaits your answer" }))
+        .toBeVisible();
+      await page.getByRole("button", { name: "1 question awaits your answer" }).click();
+      await expect
+        .element(page.getByRole("textbox", { name: "Answer: Which branch?" }))
+        .toBeVisible();
+      expect(document.querySelector("form form")).toBeNull();
+      await expect
+        .element(page.getByRole("tab", { name: "Focus, Needs attention", exact: true }))
+        .toBeVisible();
+      const answered = {
+        ...questioned,
+        hasPendingAsyncUserInput: false,
+        messages: [
+          ...active.messages,
+          {
+            ...question,
+            asyncUserInput: {
+              ...question.asyncUserInput,
+              response: { messageId: MessageId.makeUnsafe("status-answer"), answers: ["main"] },
+            },
+          },
+        ],
+      };
+      sync([answered]);
+      await expect
+        .element(page.getByRole("tab", { name: "Focus, Working", exact: true }))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "1 question awaits your answer" }))
+        .not.toBeInTheDocument();
+      sync([
+        {
+          ...answered,
+          latestTurn: completedTurn,
+          session: { ...active.session!, status: "ready", activeTurnId: null },
+        },
+      ]);
+      await expect.element(page.getByRole("tab", { name: "Focus", exact: true })).toBeVisible();
+      expect(
+        document.querySelector('[data-space-tab][aria-selected="true"] [data-space-activity]'),
+      ).toBeNull();
+      sync([
+        {
+          ...answered,
+          latestTurn: { ...completedTurn, state: "error" },
+          session: {
+            ...active.session!,
+            status: "error",
+            activeTurnId: null,
+            lastError: "Disconnected",
+          },
+        },
+      ]);
+      await expect
+        .element(page.getByRole("tab", { name: "Focus, Run failed", exact: true }))
+        .toBeVisible();
+    } finally {
+      await mounted.cleanup();
+      useSpacesUiStore.getState().setActiveSpaceId(null);
+    }
+  });
+
   it("refreshes the full conversation when an approval was already answered", async () => {
     const requestId = ApprovalRequestId.makeUnsafe("approval-refresh-race");
     const snapshot = createSnapshotForTargetUser({
@@ -2846,6 +2981,7 @@ describe("ChatView transcript geometry (full app)", () => {
           getPathForFile: () => "/Users/me/Documents/Gravação de Tela 2026-09-08 às 19.51.20.mov",
         },
       });
+      await page.getByLabelText("Composer extras").click();
       const fileInput = await waitForElement(
         () => document.querySelector<HTMLInputElement>('[data-testid="composer-file-input"]'),
         "Unable to find composer file input.",
@@ -3303,7 +3439,7 @@ describe("ChatView transcript geometry (full app)", () => {
   });
 
   it.each(["completed", "interrupted", "error"] as const)(
-    "anchors a fresh send and releases empty scroll space after %s",
+    "anchors a fresh send and preserves the reading position after %s",
     async (turnState) => {
       const restoreNativeApi = installDeterministicSendNativeApi();
       let currentSnapshot = createSnapshotForTargetUser({
@@ -3467,8 +3603,10 @@ describe("ChatView transcript geometry (full app)", () => {
           ).toBeLessThanOrEqual(24);
         }
 
-        // The turn completes: release the live reserve so scrolling to the end
-        // cannot leave a viewport of empty space below a short final answer.
+        // Keep the short reply at its reading coordinate when the turn settles.
+        // The same reserve is replaced by the next send or consumed by more text.
+        const beforeCompletionOffset = anchorOffsetPx();
+        expect(beforeCompletionOffset).not.toBeNull();
         syncActiveThread((thread) => ({
           ...thread,
           messages: thread.messages.map((message) =>
@@ -3493,29 +3631,19 @@ describe("ChatView transcript geometry (full app)", () => {
         await new Promise<void>((resolve) => {
           window.setTimeout(resolve, 700);
         });
-        await expect
-          .poll(() =>
-            Number(
-              document
-                .querySelector("[data-messages-timeline-root='true']")
-                ?.getAttribute("data-anchored-end-space"),
-            ),
-          )
-          .toBe(0);
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-        await waitForLayout();
+        expect(anchorOffsetPx()).not.toBeNull();
+        expect(Math.abs(anchorOffsetPx()! - beforeCompletionOffset!)).toBeLessThanOrEqual(4);
         const finalAnswer = document.querySelector<HTMLElement>(
           `[data-message-id="${turnState === "completed" ? streamingId : sentMessageId}"]`,
         );
         expect(finalAnswer, "final answer missing after turn end").not.toBeNull();
         const composerInset =
           Number.parseFloat(getComputedStyle(scrollContainer).paddingBottom) || 0;
-        const emptyTailPx =
-          scrollContainer.getBoundingClientRect().bottom -
-          composerInset -
-          finalAnswer!.getBoundingClientRect().bottom;
-        expect(emptyTailPx, "excess empty scroll space below final answer").toBeLessThanOrEqual(
-          100,
+        expect(finalAnswer!.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+          scrollContainer.getBoundingClientRect().top - 4,
+        );
+        expect(finalAnswer!.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+          scrollContainer.getBoundingClientRect().bottom - composerInset,
         );
       } finally {
         await mounted.cleanup();
@@ -4171,6 +4299,11 @@ describe("ChatView transcript geometry (full app)", () => {
             .querySelectorAll("p, li")
             [anchorIndex]!.getBoundingClientRect().top;
         const detachedTop = readAnchorTop();
+        expect(
+          document
+            .querySelector('[data-messages-timeline-root="true"]')
+            ?.getAttribute("data-follow-live-output"),
+        ).toBe("false");
         for (let index = 0; index < 3; index += 1) {
           grow();
           await waitForLayout();

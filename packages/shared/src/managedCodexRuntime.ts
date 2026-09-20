@@ -9,6 +9,8 @@ export interface ManagedCodexRuntimeManifest {
   readonly sha256: string;
   readonly supersededSha256s?: readonly string[];
   readonly downloadUrl: string;
+  /** Content-addressed copy retained when the automatic update feed moves on. */
+  readonly pinnedDownloadUrl?: string;
 }
 
 export const MANAGED_CODEX_RUNTIME_MANIFEST: ManagedCodexRuntimeManifest = {
@@ -21,4 +23,6 @@ export const MANAGED_CODEX_RUNTIME_MANIFEST: ManagedCodexRuntimeManifest = {
   ],
   downloadUrl:
     "https://github.com/TrapstarKS/synara/releases/download/codex-luna-max-fast-latest/codex-luna-max-fast-aarch64-apple-darwin.tar.gz",
+  pinnedDownloadUrl:
+    "https://github.com/TrapstarKS/synara/releases/download/codex-luna-max-fast-latest/codex-luna-max-fast-aarch64-apple-darwin-2ba4aec433d9b6ce9f6f3402e93e427d1e73145dfb846c081f7ed27531d05d00.tar.gz",
 };

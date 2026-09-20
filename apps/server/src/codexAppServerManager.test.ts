@@ -24,6 +24,7 @@ import {
   type ProviderEvent,
   type RuntimeMode,
 } from "@synara/contracts";
+import { SYNARA_MANAGED_CODEX_BIN_DIR_ENV } from "@synara/shared/managedCodexRuntime";
 
 import {
   buildCodexProcessEnv,
@@ -1089,6 +1090,10 @@ describe("codex CLI version gate", () => {
     const homePath = path.join(dir, "codex-home");
     mkdirSync(homePath, { recursive: true });
     vi.stubEnv("SYNARA_HOME", path.join(dir, "runtime"));
+    // This test owns PATH resolution. A Synara-launched test process may inherit
+    // the managed Codex bin directory, which buildCodexProcessEnv deliberately
+    // prepends and would make the real managed binary win over this fake one.
+    vi.stubEnv(SYNARA_MANAGED_CODEX_BIN_DIR_ENV, "");
 
     const isWindows = process.platform === "win32";
     const binaryPath = path.join(dir, isWindows ? "codex.cmd" : "codex");
@@ -3005,11 +3010,7 @@ describe("CodexAppServerManager discovery", () => {
   it("serializes writes for a profile-specific Codex overlay", async () => {
     const manager = new CodexAppServerManager();
     const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-mcp-profile-queue-runtime-"));
-    const profileOverlayHome = path.join(
-      runtimeHome,
-      "codex-home-overlays",
-      "profile-1",
-    );
+    const profileOverlayHome = path.join(runtimeHome, "codex-home-overlays", "profile-1");
     mkdirSync(profileOverlayHome, { recursive: true });
 
     let releaseRefresh!: () => void;

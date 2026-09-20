@@ -2439,6 +2439,45 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it.each([
+    ["missing suffix", "Hello", "Hello world!\n"],
+    ["replayed delta", "HelloHello world!", "Hello world!"],
+    ["missing middle", "Start End", "Start middle End"],
+    ["whitespace", "answer", "  answer\n\n"],
+  ])(
+    "repairs %s from the authoritative completed Codex item",
+    async (_name, streamed, completed) => {
+      const harness = await createHarness();
+      const identity = {
+        provider: "codex" as const,
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("repair-turn"),
+        itemId: asItemId("repair-item"),
+      };
+      harness.emit({
+        ...identity,
+        type: "content.delta",
+        eventId: asEventId("repair-delta"),
+        payload: { streamKind: "assistant_text", delta: streamed },
+      });
+      harness.emit({
+        ...identity,
+        type: "item.completed",
+        eventId: asEventId("repair-complete"),
+        payload: { itemType: "assistant_message", status: "completed", detail: completed },
+      });
+      const thread = await waitForThread(harness.engine, (entry) =>
+        entry.messages.some(
+          (message) => message.id === "assistant:repair-item" && !message.streaming,
+        ),
+      );
+      expect(thread.messages.find((message) => message.id === "assistant:repair-item")?.text).toBe(
+        completed,
+      );
+    },
+  );
+
   it("does not project reasoning content deltas into transcript work rows", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -5804,6 +5843,83 @@ describe("ProviderRuntimeIngestion", () => {
         : {};
 
     expect(rawOutput.output).toBe("first line\nsecond line\n");
+  });
+
+  it("projects bounded live command-output snapshots before completion", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-live-command-started"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-live-command-output"),
+      itemId: asItemId("item-live-command-output"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Ran command",
+        detail: "bun run test",
+        data: { item: { id: "item-live-command-output", command: "bun run test" } },
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-live-command-output-1"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-live-command-output"),
+      itemId: asItemId("item-live-command-output"),
+      payload: { streamKind: "command_output", delta: "first live line\n" },
+    });
+
+    const firstThread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity) => activity.id === "evt-live-command-output-1:live-command-output",
+      ),
+    );
+    const firstActivity = firstThread.activities.find(
+      (activity) => activity.id === "evt-live-command-output-1:live-command-output",
+    );
+    expect(firstActivity).toMatchObject({
+      kind: "tool.updated",
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        data: {
+          toolCallId: "item-live-command-output",
+          rawOutput: { output: "first live line\n" },
+        },
+      },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-live-command-output-2"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-live-command-output"),
+      itemId: asItemId("item-live-command-output"),
+      payload: { streamKind: "command_output", delta: `${"x".repeat(1_024)}\n` },
+    });
+
+    const secondThread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity) => activity.id === "evt-live-command-output-2:live-command-output",
+      ),
+    );
+    const secondActivity = secondThread.activities.find(
+      (activity) => activity.id === "evt-live-command-output-2:live-command-output",
+    );
+    const secondPayload = secondActivity?.payload as Record<string, unknown> | undefined;
+    const secondData = secondPayload?.data as Record<string, unknown> | undefined;
+    const secondRawOutput = secondData?.rawOutput as Record<string, unknown> | undefined;
+    expect(String(secondRawOutput?.output ?? "").startsWith("first live line\n")).toBe(true);
+    expect(String(secondRawOutput?.output ?? "").length).toBeGreaterThan(1_024);
   });
 
   it("keeps buffered command output when completed raw streams are empty", async () => {

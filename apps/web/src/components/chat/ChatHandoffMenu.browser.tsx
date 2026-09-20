@@ -44,9 +44,7 @@ describe("provider handoff menu", () => {
       <TooltipProvider>
         <ChatHandoffMenu
           {...defaults}
-          handoffActionTargetCodexProfiles={[
-            { id: profileId, name: "Personal Codex" },
-          ]}
+          handoffActionTargetCodexProfiles={[{ id: profileId, name: "Personal Codex" }]}
           continuousHandoffEnabled
           onCreateHandoff={onCreateHandoff}
         />
@@ -57,11 +55,7 @@ describe("provider handoff menu", () => {
     await page.getByRole("menuitem", { name: "Codex profile", exact: true }).click();
     await page.getByRole("menuitem", { name: "Personal Codex", exact: true }).click();
 
-    expect(onCreateHandoff).toHaveBeenCalledWith(
-      "codex",
-      "continue",
-      profileId,
-    );
+    expect(onCreateHandoff).toHaveBeenCalledWith("codex", "continue", profileId);
   });
 
   it("keeps direct new-conversation handoffs when the setting is off", async () => {

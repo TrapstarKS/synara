@@ -73,6 +73,34 @@ const richPayload = {
 };
 
 describe("createThreadActivityAccumulator", () => {
+  it("keeps older unanswered questions when hydrating a capped transcript", () => {
+    const question = {
+      id: MessageId.makeUnsafe("old-question"),
+      role: "assistant" as const,
+      text: "Choose a branch",
+      createdAt: "2026-02-13T00:00:00.000Z",
+      updatedAt: "2026-02-13T00:00:00.000Z",
+      streaming: false,
+      source: "native" as const,
+      turnId: null,
+      asyncUserInput: { questions: [{ title: "Which branch?" }] },
+    };
+    const normal = { ...question, asyncUserInput: undefined };
+    const incoming = makeReadModelThread({
+      messages: [
+        question,
+        ...Array.from({ length: 2001 }, (_, index) => ({
+          ...normal,
+          id: MessageId.makeUnsafe(`new-${index}`),
+        })),
+      ],
+    });
+    const thread = normalizeThreadFromReadModel(incoming, undefined);
+    expect(thread.messages[0]?.id).toBe(question.id);
+    expect(thread.messages).toHaveLength(2001);
+    expect(thread.hasPendingAsyncUserInput).toBe(true);
+  });
+
   it("matches the normalizeActivities fold for appends, in-place merges and exact duplicates", () => {
     const existing = makeActivity({
       id: "activity-command",

@@ -45,7 +45,7 @@ import {
 import { Menu, MenuGroup, MenuItem } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-export type SpaceActivityTone = "attention" | "running" | "completed";
+export type SpaceActivityTone = "attention" | "error" | "running" | "completed";
 
 /** HTML5 drag payload for filing a project by dropping it onto a space tab. */
 export const PROJECT_SPACE_DRAG_MIME = "application/x-synara-project";
@@ -68,12 +68,13 @@ function isProjectDrag(event: DragEvent): boolean {
 /**
  * A tab dot is a whole space summarised into one pixel, so it has to speak the same
  * colour language as the per-thread status dots it stands in for (see the `dotClass`
- * values in Sidebar.logic.ts): amber = you are blocking something, sky = work in
- * flight, emerald = finished. Tones are per-theme because a 400-weight dot dies on
+ * values in Sidebar.logic.ts): amber = needs an answer or approval, red = failed,
+ * sky = work in flight, emerald = unread completion. Tones are per-theme because a 400-weight dot dies on
  * the light sidebar and glares on the dark one.
  */
 const SPACE_ACTIVITY_DOT_CLASS_NAME: Record<SpaceActivityTone, string> = {
   attention: "bg-amber-500 dark:bg-amber-300/90",
+  error: "bg-red-500 dark:bg-red-300/90",
   running: "bg-sky-500 dark:bg-sky-300/80",
   completed: "bg-emerald-500 dark:bg-emerald-300/90",
 };
@@ -81,8 +82,9 @@ const SPACE_ACTIVITY_DOT_CLASS_NAME: Record<SpaceActivityTone, string> = {
 /** Spoken and hover wording for a tone. The internal tone keys must never reach a user. */
 const SPACE_ACTIVITY_LABEL: Record<SpaceActivityTone, string> = {
   attention: "Needs attention",
+  error: "Run failed",
   running: "Working",
-  completed: "Done",
+  completed: "New reply",
 };
 
 /**
@@ -110,10 +112,12 @@ function SpaceActivityDot({ tone }: { tone: SpaceActivityTone }) {
   return (
     <span
       aria-hidden="true"
+      data-space-activity={tone}
       className={cn(
         // The ring punches the dot out of the tab surface beneath it.
         "pointer-events-none absolute top-0.5 right-0.5 size-1.5 rounded-full ring-2 ring-[var(--sidebar)]",
         SPACE_ACTIVITY_DOT_CLASS_NAME[tone],
+        tone === "running" && "motion-safe:animate-pulse",
       )}
     />
   );
@@ -152,7 +156,7 @@ function SpaceTab(props: {
   sortable?: SpaceTabSortable;
 }) {
   const toneLabel = props.activityTone ? SPACE_ACTIVITY_LABEL[props.activityTone] : null;
-  const detail = toneLabel ?? props.hint ?? null;
+  const detail = [toneLabel ?? "Idle", props.hint].filter(Boolean).join(" · ");
   // Counter, not a boolean: dragenter/dragleave also fire for the tab's child spans, and
   // a boolean would flicker off while the pointer crosses them.
   const dragDepthRef = useRef(0);

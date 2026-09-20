@@ -16,10 +16,8 @@ interface SmoothTextProps {
   readonly isStreaming: boolean;
 }
 
-// Large enough that the rAF loop (≤2000 chars/s, ≤100 chars per clamped frame)
-// needs many quantized commits to drain it, so partially-revealed states are
-// reliably observable between polls and a handful of stray frames cannot
-// accidentally finish the reveal before an assertion runs.
+// A large arrival skips to the live tail, which still passes through intermediate
+// prefixes. Completion and replacements must bypass even that short animation.
 const LONG_DELTA = "x".repeat(1_200);
 
 function renderSmoothText(initialProps: SmoothTextProps) {

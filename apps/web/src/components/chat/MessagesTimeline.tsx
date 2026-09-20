@@ -46,6 +46,7 @@ import {
   type WorktreeSetupStep,
 } from "../../types";
 import { AsyncUserInputCard } from "./AsyncUserInputCard";
+import { asyncQuestionDraftKey } from "./asyncUserInputDraftStore";
 import ChatMarkdown from "../ChatMarkdown";
 import type { WorkingLabel } from "../ChatView.logic";
 import { InlineLinkChip } from "../InlineLinkChip";
@@ -217,8 +218,8 @@ function scrollLegendListToEnd(listRef: RefObject<LegendListRef | null>): void {
 function scrollLegendListToIndex(
   listRef: RefObject<LegendListRef | null>,
   params: Parameters<LegendListRef["scrollToIndex"]>[0],
-): void {
-  void listRef.current?.scrollToIndex(params);
+): Promise<void> {
+  return listRef.current?.scrollToIndex(params) ?? Promise.resolve();
 }
 
 function readLegendListState(
@@ -397,6 +398,7 @@ function WorktreeSetupCard({
 }
 
 interface MessagesTimelineProps {
+  asyncUserInputScope?: string | undefined;
   hasMessages: boolean;
   isWorking: boolean;
   workingLabel?: WorkingLabel | undefined;
@@ -511,6 +513,7 @@ interface MessagesTimelineProps {
 }
 
 export const MessagesTimeline = memo(function MessagesTimeline({
+  asyncUserInputScope,
   hasMessages,
   isWorking,
   workingLabel: workingLabelProp,
@@ -949,6 +952,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (!controllerRef) {
       return;
     }
+    let navigationRequest = 0;
+    let disposed = false;
     const scrollToMessage = (
       messageId: MessageId,
       segmentIndex?: number,
@@ -976,11 +981,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         }
         return changed ? next : previous;
       });
-      scrollLegendListToIndex(resolvedListRef, {
-        index: target.rowIndex,
-        animated: true,
-        viewPosition: 0.2,
-      });
       return target;
     };
     const clearJumpHighlightAfterDelay = () => {
@@ -998,6 +998,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         findFineScrollFrameRef.current = null;
       }
     };
+    const cancelFindNavigation = () => {
+      navigationRequest = navigationRequest + 1;
+      cancelPendingFindFineScroll();
+    };
+    // Input in this pane, including its scroll-to-bottom control, takes
+    // ownership from a search jump whose measured list scroll is still pending.
+    const gestureRoot =
+      timelineRootRef.current?.closest("[data-chat-transcript-pane]") ?? timelineRootRef.current;
+    const gestureEvents = ["wheel", "pointerdown", "touchstart", "keydown"] as const;
+    for (const type of gestureEvents) {
+      gestureRoot?.addEventListener(type, cancelFindNavigation, { capture: true, passive: true });
+    }
     const applyActiveFindMatch = () => {
       const root = timelineRootRef.current;
       const match = activeFindMatchRef.current;
@@ -1057,6 +1069,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
     const controller: MessagesTimelineController = {
       scrollToMessage: (messageId, options) => {
+        navigationRequest = navigationRequest + 1;
+        const request = navigationRequest;
         cancelPendingFindFineScroll();
         const target = scrollToMessage(messageId, options?.segmentIndex);
         if (!target) {
@@ -1064,22 +1078,43 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         }
         setHighlightedMessageId(target.visibleMessageId);
         clearJumpHighlightAfterDelay();
-        if (options?.fineScrollFind || target.collapsedNarrationMessageId) {
-          scheduleFindMatchFineScroll(target);
-        }
+        // Let the list finish its measured row jump before centering the exact
+        // occurrence. Simultaneous smooth scrolls can leave the match clipped
+        // above the viewport when the list later corrects its estimated offset.
+        void scrollLegendListToIndex(resolvedListRef, {
+          index: target.rowIndex,
+          animated: true,
+          viewPosition: 0.2,
+        }).then(
+          () => {
+            if (disposed || request !== navigationRequest) return;
+            if (options?.fineScrollFind || target.collapsedNarrationMessageId) {
+              scheduleFindMatchFineScroll(target);
+            }
+          },
+          () => {
+            // A failed or disposed list must not trigger a delayed DOM jump.
+          },
+        );
       },
       setActiveFindMatch: (match) => {
+        if (match === null) cancelFindNavigation();
         activeFindMatchRef.current = match;
         applyActiveFindMatch();
       },
     };
     controllerRef.current = controller;
     return () => {
+      disposed = true;
+      cancelPendingFindFineScroll();
+      for (const type of gestureEvents) {
+        gestureRoot?.removeEventListener(type, cancelFindNavigation, { capture: true });
+      }
       if (controllerRef.current === controller) {
         controllerRef.current = null;
       }
     };
-  }, [controllerRef, onNavigate, resolvedListRef, setCollapsedWorkExpanded]);
+  }, [controllerRef, hasMessages, onNavigate, resolvedListRef, setCollapsedWorkExpanded]);
   const tailContentRowId = useMemo(() => {
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const row = rows[index]!;
@@ -2175,14 +2210,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               )}
               <div className="group min-w-0 py-0.5">
                 {renderWorkDisplay(leadingWorkDisplay, "leading")}
-                {row.message.asyncUserInput ? (
-                  <AsyncUserInputCard
-                    key={row.message.id}
-                    messageId={row.message.id}
-                    input={row.message.asyncUserInput}
-                    onRespond={onRespondToAsyncUserInput}
-                  />
-                ) : messageText !== null ? (
+                {messageText !== null &&
+                (row.message.text.length > 0 || !row.message.asyncUserInput) ? (
                   <div
                     data-assistant-message-id={row.message.id}
                     data-chat-find-document-id={row.message.id}
@@ -2198,6 +2227,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     />
                   </div>
                 ) : null}
+                {row.message.asyncUserInput && (
+                  <AsyncUserInputCard
+                    key={row.message.id}
+                    draftKey={
+                      asyncUserInputScope
+                        ? asyncQuestionDraftKey(asyncUserInputScope, row.message.id)
+                        : undefined
+                    }
+                    messageId={row.message.id}
+                    input={row.message.asyncUserInput}
+                    onRespond={onRespondToAsyncUserInput}
+                  />
+                )}
                 {renderWorkDisplay(inlineWorkDisplay, "inline")}
                 {inlineEditedFilesFromTurnSummary.length > 0 && (
                   <div className="mt-2 space-y-0.5">
@@ -2546,7 +2588,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }
 
   return (
-    <div ref={timelineRootRef} className="contents" data-messages-timeline-root="true">
+    <div
+      ref={timelineRootRef}
+      className="contents"
+      data-messages-timeline-root="true"
+      data-follow-live-output={followLiveOutput}
+    >
       <LegendList<MessagesTimelineRow>
         ref={resolvedListRef}
         data={rows}
@@ -2564,7 +2611,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         initialScrollAtEnd={tailAnchorMessageId === null || hasInheritedTailAnchor}
         {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
         maintainScrollAtEnd={followLiveOutput && !tailAnchorSlideInFlight}
-        maintainScrollAtEndThreshold={0.1}
+        // The parent already gives user gestures ownership of detachment. A
+        // large received block must not revoke live follow before its next frame.
+        maintainScrollAtEndThreshold={followLiveOutput ? Number.POSITIVE_INFINITY : 0.1}
         {...(tailAnchorMessageId !== null
           ? { maintainVisibleContentPosition: false }
           : !followLiveOutput

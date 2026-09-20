@@ -727,6 +727,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       fallbackLabel: activity.summary,
       status: toolStatus,
     }) ??
+    extractToolAppActionTitle(payload) ??
     deriveReadableToolTitle({
       title: commandActionDisplay?.title ?? title,
       fallbackLabel: activity.summary,
@@ -1654,9 +1655,7 @@ function mergeWorkLogToolTitle(
   if (!previousTitle || !nextTitle) {
     return nextTitle ?? previousTitle;
   }
-  const isAgentTask =
-    previous.itemType === "collab_agent_tool_call" || next.itemType === "collab_agent_tool_call";
-  if (isAgentTask && !isGenericToolTitle(previousTitle) && isGenericToolTitle(nextTitle)) {
+  if (!isGenericToolTitle(previousTitle) && isGenericToolTitle(nextTitle)) {
     return previousTitle;
   }
   return nextTitle;
@@ -2230,7 +2229,30 @@ function extractToolName(payload: Record<string, unknown> | null): string | null
   const data = asRecord(payload?.data);
   const item = asRecord(data?.item);
   const itemInput = asRecord(item?.input);
-  const candidates = [data?.toolName, data?.tool, item?.toolName, item?.name, itemInput?.toolName];
+  const explicitCandidates = [
+    data?.toolName,
+    data?.tool,
+    item?.toolName,
+    item?.name,
+    itemInput?.toolName,
+  ];
+  for (const candidate of explicitCandidates) {
+    const normalized = asTrimmedString(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  const nativeTool = asTrimmedString(item?.tool);
+  const nativeServer = asTrimmedString(item?.server);
+  if (nativeTool && nativeServer) {
+    // Codex v2 exposes MCP identity as separate `server` + `tool` fields. Keep a
+    // canonical MCP-style name for existing branding/classification helpers while
+    // the expanded disclosure renders the two fields separately.
+    return `mcp__${nativeServer}__${nativeTool}`;
+  }
+
+  const candidates = [nativeTool, itemInput?.tool];
   for (const candidate of candidates) {
     const normalized = asTrimmedString(candidate);
     if (normalized) {
@@ -2238,6 +2260,18 @@ function extractToolName(payload: Record<string, unknown> | null): string | null
     }
   }
   return null;
+}
+
+function extractToolAppActionTitle(payload: Record<string, unknown> | null): string | null {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const appContext = asRecord(item?.appContext ?? item?.app_context);
+  const appName = asTrimmedString(appContext?.appName ?? appContext?.app_name);
+  const actionName = asTrimmedString(appContext?.actionName ?? appContext?.action_name);
+  if (appName && actionName) {
+    return `${appName}: ${actionName}`;
+  }
+  return actionName ?? appName;
 }
 
 function extractToolCallId(payload: Record<string, unknown> | null): string | null {
@@ -2685,7 +2719,9 @@ export function deriveTimelineEntries(
     (message, index) =>
       index === 0 || compareMessagesByCausalOrder(messages[index - 1]!, message) <= 0,
   );
-  const orderedMessages = messagesOrdered ? messages : messages.toSorted(compareMessagesByCausalOrder);
+  const orderedMessages = messagesOrdered
+    ? messages
+    : messages.toSorted(compareMessagesByCausalOrder);
   for (const message of orderedMessages) {
     // Effective dispatch semantics are recorded before an emulated steer waits
     // for interruption/promotion. Fall back to turn binding for events written

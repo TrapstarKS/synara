@@ -732,16 +732,16 @@ export function resolveCodexThreadOpenMinimumVersion(input: {
   );
 }
 
-function highestCodexCliVersion(
-  versions: ReadonlyArray<string | undefined>,
-): string | undefined {
-  return versions.filter((version): version is string => version !== undefined).reduce<string | undefined>(
-    (highest, candidate) =>
-      highest === undefined || compareCodexCliVersions(candidate, highest) > 0
-        ? candidate
-        : highest,
-    undefined,
-  );
+function highestCodexCliVersion(versions: ReadonlyArray<string | undefined>): string | undefined {
+  return versions
+    .filter((version): version is string => version !== undefined)
+    .reduce<string | undefined>(
+      (highest, candidate) =>
+        highest === undefined || compareCodexCliVersions(candidate, highest) > 0
+          ? candidate
+          : highest,
+      undefined,
+    );
 }
 
 export function shouldWarnCodexFreshStartWithoutResume(input: {
@@ -1229,12 +1229,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(requiredMinimumVersion
           ? {
               minimumVersion: requiredMinimumVersion,
-              minimumVersionRequirement:
-                this.agentGatewayMcp
-                  ? "Codex native MCP gateway"
-                  : threadOpenMethodForVersion === "thread/start"
-                    ? "Auto mode"
-                    : "Codex thread resume and fork",
+              minimumVersionRequirement: this.agentGatewayMcp
+                ? "Codex native MCP gateway"
+                : threadOpenMethodForVersion === "thread/start"
+                  ? "Auto mode"
+                  : "Codex thread resume and fork",
             }
           : {}),
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
@@ -1448,7 +1447,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     } catch (error) {
       const failureError =
         context?.terminalFailure?.error ??
-        (error instanceof Error ? error : new Error("Failed to start Codex session.", { cause: error }));
+        (error instanceof Error
+          ? error
+          : new Error("Failed to start Codex session.", { cause: error }));
       const cause = context?.transportError ?? failureError;
       const message =
         context?.terminalFailure && context.transportError instanceof CodexAppServerTransportError

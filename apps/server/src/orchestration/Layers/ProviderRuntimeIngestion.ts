@@ -145,6 +145,11 @@ const MAX_PENDING_GENERATED_IMAGES_PER_TURN = 32;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_BUFFERED_PROPOSED_PLAN_CHARS = 64_000;
 const MAX_BUFFERED_TOOL_OUTPUT_CHARS = 24_000;
+// Keep expanded command disclosures feeling live without persisting one full
+// cumulative activity for every stdout chunk. The first chunk is projected
+// immediately, then snapshots advance in bounded character steps; completion
+// always carries the authoritative full buffered tail.
+const LIVE_TOOL_OUTPUT_ACTIVITY_STEP_CHARS = 1_024;
 const MAX_BUFFERED_REASONING_SUMMARY_CHARS = 8_000;
 const MAX_BUFFERED_REASONING_SUMMARY_PARTS = 24;
 const BUFFERED_TEXT_TRUNCATION_MARKER = "... [truncated]";
@@ -874,6 +879,11 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_TOOL_OUTPUT_BY_KEY_TTL,
     lookup: () => Effect.succeed(undefined),
   });
+  const liveToolOutputProjectedLengthByKey = yield* Cache.make<string, number | undefined>({
+    capacity: BUFFERED_TOOL_OUTPUT_BY_KEY_CACHE_CAPACITY,
+    timeToLive: BUFFERED_TOOL_OUTPUT_BY_KEY_TTL,
+    lookup: () => Effect.succeed(undefined),
+  });
   const bufferedReasoningSummaryByKey = yield* Cache.make<
     string,
     BufferedReasoningSummary | undefined
@@ -1137,10 +1147,11 @@ const make = Effect.gen(function* () {
         const existing = Option.getOrUndefined(existingEntry);
         const existingText = existing?.text ?? "";
         const truncated = existingText.length + delta.length > MAX_BUFFERED_TOOL_OUTPUT_CHARS;
-        return Cache.set(bufferedToolOutputByKey, key, {
+        const next = {
           text: appendCappedBufferedText(existingText, delta, MAX_BUFFERED_TOOL_OUTPUT_CHARS),
           truncated: existing?.truncated === true || truncated,
-        });
+        } satisfies BufferedToolOutput;
+        return Cache.set(bufferedToolOutputByKey, key, next).pipe(Effect.as(next));
       }),
     );
 
@@ -1463,6 +1474,7 @@ const make = Effect.gen(function* () {
     commandTag: string;
     finalDeltaCommandTag: string;
     fallbackText?: string;
+    finalText?: string;
     asyncQuestions?: import("@synara/contracts").AsyncUserInputQuestions;
   }) =>
     Effect.gen(function* () {
@@ -1496,6 +1508,7 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         messageId: input.messageId,
         ...(input.asyncQuestions ? { asyncQuestions: input.asyncQuestions } : {}),
+        ...(input.finalText !== undefined ? { finalText: input.finalText } : {}),
         ...(input.turnId ? { turnId: input.turnId } : {}),
         createdAt: input.createdAt,
       });
@@ -2415,6 +2428,7 @@ const make = Effect.gen(function* () {
       const toolOutputKey = event.itemId
         ? [event.threadId, event.turnId ?? "no-turn", event.itemId].join(":")
         : null;
+      let appendedToolOutput: BufferedToolOutput | undefined;
       if (
         toolOutputKey &&
         event.type === "content.delta" &&
@@ -2422,7 +2436,47 @@ const make = Effect.gen(function* () {
           event.payload.streamKind === "file_change_output") &&
         event.payload.delta.length > 0
       ) {
-        yield* appendBufferedToolOutput(toolOutputKey, event.payload.delta);
+        appendedToolOutput = yield* appendBufferedToolOutput(toolOutputKey, event.payload.delta);
+      }
+
+      if (
+        toolOutputKey &&
+        appendedToolOutput &&
+        event.type === "content.delta" &&
+        event.payload.streamKind === "command_output" &&
+        event.itemId
+      ) {
+        const previousLength = Option.getOrUndefined(
+          yield* Cache.getOption(liveToolOutputProjectedLengthByKey, toolOutputKey),
+        );
+        const nextLength = appendedToolOutput.text.length;
+        const shouldProjectLiveOutput =
+          previousLength === undefined ||
+          nextLength - previousLength >= LIVE_TOOL_OUTPUT_ACTIVITY_STEP_CHARS;
+        if (shouldProjectLiveOutput) {
+          yield* Cache.set(liveToolOutputProjectedLengthByKey, toolOutputKey, nextLength);
+          const liveOutputEvent: ProviderRuntimeEvent = {
+            ...event,
+            eventId: EventId.makeUnsafe(`${event.eventId}:live-command-output`),
+            type: "item.updated",
+            payload: {
+              itemType: "command_execution",
+              status: "inProgress",
+              title: "Ran command",
+              data: {
+                toolCallId: event.itemId,
+                rawOutput: {
+                  output: appendedToolOutput.text,
+                  ...(appendedToolOutput.truncated ? { truncated: true } : {}),
+                },
+              },
+            },
+          };
+          yield* Effect.forEach(
+            projectProviderRuntimeActivities(liveOutputEvent, runtimeSequence),
+            (activity) => dispatchActivityUpdate(liveOutputEvent, thread.id, activity),
+          );
+        }
       }
 
       const reasoningSummaryKey = reasoningSummaryBufferKey(event, thread.id);
@@ -2588,6 +2642,11 @@ const make = Effect.gen(function* () {
           createdAt: now,
           commandTag: "assistant-complete",
           finalDeltaCommandTag: "assistant-delta-finalize",
+          ...(event.provider === "codex" &&
+          event.itemId !== undefined &&
+          assistantCompletion.fallbackText
+            ? { finalText: assistantCompletion.fallbackText }
+            : {}),
           ...(assistantCompletion.asyncQuestions
             ? { asyncQuestions: assistantCompletion.asyncQuestions }
             : {}),
@@ -2891,6 +2950,9 @@ const make = Effect.gen(function* () {
             : event.type === "item.updated" && toolOutputKey
               ? withBufferedToolOutputData(event, yield* getBufferedToolOutput(toolOutputKey))
               : event;
+      if (event.type === "item.completed" && toolOutputKey) {
+        yield* Cache.invalidate(liveToolOutputProjectedLengthByKey, toolOutputKey);
+      }
       yield* Effect.forEach(
         projectProviderRuntimeActivities(activityEvent, runtimeSequence),
         (activity) => dispatchActivityUpdate(activityEvent, thread.id, activity),

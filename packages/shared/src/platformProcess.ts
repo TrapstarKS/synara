@@ -6,7 +6,7 @@ import { statSync } from "node:fs";
 import { win32 } from "node:path";
 
 import { hasPathSeparator, resolveExecutable } from "./executable";
-import { resolveWindowsPowerShellExecutable } from "./platformEnvironment";
+import { resolveWindowsComSpec, resolveWindowsPowerShellExecutable } from "./platformEnvironment";
 import {
   parseWindowsWslUncPath,
   prepareWindowsSafeProcess,
@@ -27,6 +27,26 @@ export interface ProcessLaunchPlan extends WindowsSafeProcessCommand {
   readonly requestedCommand: string;
   readonly resolvedCommand: string;
   readonly executionBackend: ProcessExecutionBackend;
+}
+
+/** Plans an explicitly requested shell command, preserving its shell syntax. */
+export function prepareShellProcess(
+  command: string,
+  input: ProcessLaunchInput = {},
+): ProcessLaunchPlan {
+  const platform = input.platform ?? process.platform;
+  const env = input.env ?? process.env;
+  if (platform === "win32" && !(input.cwd && parseWindowsWslUncPath(input.cwd))) {
+    const shell = resolveWindowsComSpec(env);
+    return {
+      ...prepareProcess(shell, ["/d", "/s", "/c", `"${command}"`], input),
+      // cmd consumes a command line, not C-runtime escaped arguments. Match
+      // Node's explicit shell handling while keeping that policy in this layer.
+      windowsVerbatimArguments: true,
+    };
+  }
+  const shell = platform === "win32" ? "/bin/bash" : env.SHELL || "/bin/bash";
+  return prepareProcess(shell, ["-lc", command], input);
 }
 
 export class ExecutableNotFoundError extends Error {

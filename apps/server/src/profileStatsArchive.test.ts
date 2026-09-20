@@ -560,9 +560,30 @@ describe("ProfileStatsArchive", () => {
             '2026-06-13T17:01:00.000Z'
           )
         `;
+        // The same turn can receive more than one completion projection during
+        // replay/reconciliation. Only the latest cost row may count, and the
+        // resulting lifetime amount must survive the hard purge below.
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary,
+            payload_json, sequence, created_at
+          ) VALUES
+            (
+              'cost-purge-old', 'thread-purge', 'turn-purge-1', 'info',
+              'turn.completed', 'done', '{"totalCostUsd":0.75}', 3,
+              '2026-06-13T09:06:30.000Z'
+            ),
+            (
+              'cost-purge-latest', 'thread-purge', 'turn-purge-1', 'info',
+              'turn.completed', 'done', '{"totalCostUsd":1.25}', 4,
+              '2026-06-13T09:06:31.000Z'
+            )
+        `;
 
         const statsBefore = yield* statsQuery.getProfileStats({ utcOffsetMinutes: 0 });
         const tokenStatsBefore = yield* statsQuery.getProfileTokenStats({ utcOffsetMinutes: 0 });
+        expect(tokenStatsBefore.estimatedEquivalentUsd).toBe(1.25);
+        expect(tokenStatsBefore.estimatedEquivalentUsdCoveragePercent).toBeCloseTo(33.3);
         // Half-hour offset: the 18:45Z token activity lands on the NEXT local
         // day for +05:30, so this catches any archive-side day re-bucketing drift.
         const statsBeforeIst = yield* statsQuery.getProfileStats({ utcOffsetMinutes: 330 });
@@ -638,6 +659,16 @@ describe("ProfileStatsArchive", () => {
           SELECT COUNT(*) AS count FROM orchestration_events WHERE stream_id = 'thread-purge'
         `;
         expect(remainingEvents[0]?.count).toBe(0);
+        expect(
+          yield* sql<{
+            readonly costUsd: number;
+            readonly coveredTurnCount: number;
+          }>`
+            SELECT cost_usd AS costUsd, covered_turn_count AS coveredTurnCount
+            FROM profile_stats_deleted_costs
+            WHERE thread_id = 'thread-purge'
+          `,
+        ).toEqual([{ costUsd: 1.25, coveredTurnCount: 1 }]);
         const remainingReceipts = yield* sql<{ readonly commandId: string }>`
           SELECT command_id AS commandId
           FROM orchestration_command_receipts

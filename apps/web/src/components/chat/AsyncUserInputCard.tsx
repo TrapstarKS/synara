@@ -1,5 +1,5 @@
 import type { AsyncUserInput, MessageId, UserInputQuestion } from "@synara/contracts";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { CircleQuestionIcon, CheckIcon } from "~/lib/icons";
 import {
   buildPendingUserInputAnswers,
@@ -12,15 +12,20 @@ import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Textarea } from "../ui/textarea";
 import { UserInputQuestionForm } from "./UserInputQuestionForm";
+import { useAsyncUserInputDraftStore } from "./asyncUserInputDraftStore";
 
 export function AsyncUserInputCard({
   messageId,
   input,
   onRespond,
+  draftKey: suppliedDraftKey,
+  defaultOpen = false,
 }: {
   messageId: MessageId;
   input: AsyncUserInput;
   onRespond?: ((messageId: MessageId, answers: readonly string[]) => Promise<void>) | undefined;
+  draftKey?: string | undefined;
+  defaultOpen?: boolean | undefined;
 }) {
   // Native questions have no IDs. Their positions are stable within this message.
   const questions = useMemo<ReadonlyArray<UserInputQuestion>>(
@@ -34,30 +39,47 @@ export function AsyncUserInputCard({
       })),
     [input.questions],
   );
-  const [answers, setAnswers] = useState<Record<string, PendingUserInputDraftAnswer>>(() =>
-    Object.fromEntries(
-      questions.map((question) => [
-        question.id,
-        {
-          selectedOptionLabels: question.options[0] ? [question.options[0].label] : [],
-        },
-      ]),
-    ),
+  const initialAnswers = useMemo<Record<string, PendingUserInputDraftAnswer>>(
+    () =>
+      Object.fromEntries(
+        questions.map((question) => [
+          question.id,
+          {
+            selectedOptionLabels: question.options[0] ? [question.options[0].label] : [],
+          },
+        ]),
+      ),
+    [questions],
   );
-  const [open, setOpen] = useState(false);
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [submitting, setSubmitting] = useState(false);
-  const [submittedAnswers, setSubmittedAnswers] = useState<readonly string[] | null>(null);
+  const localId = useId();
+  const draftKey = suppliedDraftKey ?? localId;
+  const draft = useAsyncUserInputDraftStore((state) => state.drafts[draftKey]);
+  const submitting = useAsyncUserInputDraftStore((state) => state.inFlight.has(draftKey));
+  const answers = draft?.answers ?? initialAnswers;
+  const questionIndex = draft?.questionIndex ?? 0;
+  const setAnswers = (update: (current: typeof answers) => typeof answers) => {
+    const store = useAsyncUserInputDraftStore.getState();
+    const current = store.drafts[draftKey] ?? { answers: initialAnswers, questionIndex: 0 };
+    store.setDraft(draftKey, { ...current, answers: update(current.answers) });
+  };
+  const setQuestionIndex = (index: number) => {
+    const store = useAsyncUserInputDraftStore.getState();
+    const current = store.drafts[draftKey] ?? { answers: initialAnswers, questionIndex: 0 };
+    store.setDraft(draftKey, { ...current, questionIndex: index });
+  };
+  const [open, setOpen] = useState(defaultOpen);
   const [error, setError] = useState<string | null>(null);
-  const inFlight = useRef(false);
-  const acceptedAnswers = input.response?.answers ?? submittedAnswers;
+  const acceptedAnswers = input.response?.answers ?? draft?.submittedAnswers ?? null;
   const answered = acceptedAnswers !== null;
   const disabled = answered || submitting || !onRespond;
   const progress = derivePendingUserInputProgress(questions, answers, questionIndex);
   const activeQuestion = progress.activeQuestion;
+  useEffect(() => {
+    if (input.response) useAsyncUserInputDraftStore.getState().clearDraft(draftKey);
+  }, [draftKey, input.response, draft?.submittedAnswers]);
 
   const advance = async () => {
-    if (disabled || inFlight.current || !progress.canAdvance) return;
+    if (disabled || !progress.canAdvance) return;
     if (!progress.isLastQuestion) {
       setQuestionIndex(progress.questionIndex + 1);
       return;
@@ -68,19 +90,18 @@ export function AsyncUserInputCard({
       const answer = resolved[question.id]!;
       return Array.isArray(answer) ? answer.join(", ") : answer;
     });
-    inFlight.current = true;
-    setSubmitting(true);
+    const store = useAsyncUserInputDraftStore.getState();
+    if (!store.claim(draftKey)) return;
     setError(null);
     try {
       await onRespond!(messageId, response);
-      setSubmittedAnswers(response);
+      store.setDraft(draftKey, { answers, questionIndex, submittedAnswers: response });
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "The answer could not be submitted. Try again.",
       );
     } finally {
-      inFlight.current = false;
-      setSubmitting(false);
+      store.release(draftKey);
     }
   };
 
@@ -114,6 +135,7 @@ export function AsyncUserInputCard({
               aria-label="Questions from Codex"
               onSubmit={(event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 void advance();
               }}
             >

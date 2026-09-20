@@ -17,6 +17,10 @@ import serverPackageJson from "../apps/server/package.json" with { type: "json" 
 
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import {
+  prepareAppSnapReleaseCache,
+  saveAppSnapReleaseCache,
+} from "./lib/appsnap-release-cache.ts";
+import {
   createDesktopPlatformBuildConfig,
   MAC_APPSNAP_HELPER_STAGE_PATH,
   MAC_CODEX_RUNTIME_RESOURCE_PATH,
@@ -29,6 +33,7 @@ import { SYNARA_PRODUCTION_BUNDLE_ID } from "@synara/shared/desktopIdentity";
 import { parseBooleanEnvValue } from "./lib/env-bool.ts";
 import { finalizeSignedMacDmg } from "./lib/mac-dmg-finalize.ts";
 import { finalizeMacUpdateZip } from "./lib/mac-update-zip-finalize.ts";
+import { collectStageRuntimePackages } from "./lib/release-stage-dependencies.ts";
 import {
   RELEASE_LOCKFILE_PATH,
   RELEASE_PATCHES_PATH,
@@ -628,113 +633,161 @@ function parsePatchAddedLines(patchContents: string): PatchFileExpectation[] {
 // Package managers can silently skip tracked patches when the staged install
 // diverges from the repo setup (that shipped broken Windows provider updates
 // in v0.5.2–v0.5.5), so fail the build unless every patched line is present.
-const verifyStagedPatchedDependencies = Effect.fn("verifyStagedPatchedDependencies")(function* (
-  repoRoot: string,
-  stageAppDir: string,
-) {
-  const path = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
-  yield* Effect.log("[desktop-artifact] Verifying staged patched dependencies...");
-  for (const [dependency, patchRelativePath] of Object.entries(
-    rootPackageJson.patchedDependencies ?? {},
-  )) {
-    const packageName = dependency.slice(0, dependency.indexOf("@", 1));
-    const patchContents = yield* fs.readFileString(path.join(repoRoot, patchRelativePath));
-    for (const expectation of parsePatchAddedLines(patchContents)) {
-      const stagedFilePath = path.join(stageAppDir, "node_modules", packageName, expectation.file);
-      const stagedContents = yield* fs.readFileString(stagedFilePath).pipe(
-        Effect.mapError(
-          (cause) =>
+export const verifyStagedPatchedDependencies = Effect.fn("verifyStagedPatchedDependencies")(
+  function* (
+    repoRoot: string,
+    stageAppDir: string,
+    runtimeDependencyNames?: ReadonlyArray<string>,
+  ) {
+    const path = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const runtimePackages = runtimeDependencyNames
+      ? yield* Effect.try({
+          try: () => collectStageRuntimePackages(stageAppDir, runtimeDependencyNames),
+          catch: (cause) =>
             new BuildScriptError({
-              message: `Patched dependency file is missing from the stage: ${stagedFilePath} (expected by ${patchRelativePath}).`,
+              message: "Staged runtime dependency verification failed.",
               cause,
             }),
-        ),
-      );
-      for (const addedLine of expectation.addedLines) {
-        if (!stagedContents.includes(addedLine)) {
-          return yield* new BuildScriptError({
-            message: `Staged dependency ${packageName} is missing patched content: ${expectation.file} does not contain "${addedLine}" from ${patchRelativePath}. The tracked patch was not applied by the staged install.`,
-          });
+        })
+      : undefined;
+    yield* Effect.log("[desktop-artifact] Verifying staged patched dependencies...");
+    for (const [dependency, patchRelativePath] of Object.entries(
+      rootPackageJson.patchedDependencies ?? {},
+    )) {
+      const packageName = dependency.slice(0, dependency.indexOf("@", 1));
+      // Shared web assets are already built with their patches. A production-only
+      // desktop stage checks every installed runtime copy, including transitive peers.
+      const packageDirectories = runtimePackages
+        ? (runtimePackages.get(packageName) ?? [])
+        : [path.join(stageAppDir, "node_modules", packageName)];
+      const patchContents = yield* fs.readFileString(path.join(repoRoot, patchRelativePath));
+      for (const packageDirectory of packageDirectories) {
+        for (const expectation of parsePatchAddedLines(patchContents)) {
+          const stagedFilePath = path.join(packageDirectory, expectation.file);
+          const stagedContents = yield* fs.readFileString(stagedFilePath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new BuildScriptError({
+                  message: `Patched dependency file is missing from the stage: ${stagedFilePath} (expected by ${patchRelativePath}).`,
+                  cause,
+                }),
+            ),
+          );
+          for (const addedLine of expectation.addedLines) {
+            if (!stagedContents.includes(addedLine)) {
+              return yield* new BuildScriptError({
+                message: `Staged dependency ${packageName} is missing patched content: ${expectation.file} does not contain "${addedLine}" from ${patchRelativePath}. The tracked patch was not applied by the staged install.`,
+              });
+            }
+          }
         }
       }
     }
-  }
-});
+  },
+);
 
-const installFrozenStageDependencies = Effect.fn("installFrozenStageDependencies")(function* (
-  repoRoot: string,
-  stageAppDir: string,
-  platform: typeof BuildPlatform.Type,
-  verbose: boolean,
-) {
-  const path = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
+export const installFrozenStageDependencies = Effect.fn("installFrozenStageDependencies")(
+  function* (
+    repoRoot: string,
+    stageAppDir: string,
+    platform: typeof BuildPlatform.Type,
+    verbose: boolean,
+    runtimeDependencyNames: ReadonlyArray<string>,
+  ) {
+    const path = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const sourceLockfileSha256 = resolveLockfileSha256(repoRoot);
 
-  for (const relativePath of RELEASE_WORKSPACE_MANIFEST_PATHS) {
-    const destination = path.join(stageAppDir, relativePath);
-    yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
-    yield* fs.copyFile(path.join(repoRoot, relativePath), destination);
-  }
-  yield* fs.copyFile(
-    path.join(repoRoot, RELEASE_LOCKFILE_PATH),
-    path.join(stageAppDir, RELEASE_LOCKFILE_PATH),
-  );
-  yield* fs.copy(
-    path.join(repoRoot, RELEASE_PATCHES_PATH),
-    path.join(stageAppDir, RELEASE_PATCHES_PATH),
-  );
-
-  yield* Effect.log(
-    "[desktop-artifact] Installing staged production dependencies from the repository lockfile...",
-  );
-  if (platform === "win") {
-    // Bun 1.3.12 needs a platform-only lockfile rewrite while resolving this
-    // copied workspace on Windows even though the repository-level frozen
-    // install already passed. Its --production flag also forces frozen mode,
-    // so use the equivalent dependency omission and allow only the temporary
-    // staging copy to update; the verified source lockfile remains untouched.
-    yield* runCommand(
-      ChildProcess.make({
-        cwd: stageAppDir,
-        ...commandOutputOptions(verbose),
-        // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
-        shell: process.platform === "win32",
-      })`bun install --omit=dev --ignore-scripts --linker hoisted`,
-    );
-  } else {
-    yield* runCommand(
-      ChildProcess.make({
-        cwd: stageAppDir,
-        ...commandOutputOptions(verbose),
-      })`bun install --frozen-lockfile --ignore-scripts --linker hoisted`,
-    );
-  }
-
-  if (platform === "linux") {
-    // node-pty's npm package does not ship Linux prebuilds. Keep the frozen
-    // install's blanket lifecycle-script block, then rebuild only node-pty so
-    // npm supplies node-gyp to its install script and compiles the native
-    // binding required by the packaged terminal.
-    yield* Effect.log("[desktop-artifact] Building staged Linux node-pty binding...");
-    yield* runCommand(
-      ChildProcess.make({
-        cwd: stageAppDir,
-        ...commandOutputOptions(verbose),
-      })`npm rebuild node-pty --foreground-scripts`,
-    );
-  }
-
-  yield* verifyStagedPatchedDependencies(repoRoot, stageAppDir);
-
-  for (const relativePath of RELEASE_WORKSPACE_MANIFEST_PATHS) {
-    if (relativePath !== "package.json") {
-      yield* fs.remove(path.join(stageAppDir, relativePath));
+    for (const relativePath of RELEASE_WORKSPACE_MANIFEST_PATHS) {
+      const destination = path.join(stageAppDir, relativePath);
+      yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
+      yield* fs.copyFile(path.join(repoRoot, relativePath), destination);
     }
-  }
-  yield* fs.remove(path.join(stageAppDir, RELEASE_LOCKFILE_PATH));
-  yield* fs.remove(path.join(stageAppDir, RELEASE_PATCHES_PATH), { recursive: true });
-});
+    yield* fs.copyFile(
+      path.join(repoRoot, RELEASE_LOCKFILE_PATH),
+      path.join(stageAppDir, RELEASE_LOCKFILE_PATH),
+    );
+    yield* fs.copy(
+      path.join(repoRoot, RELEASE_PATCHES_PATH),
+      path.join(stageAppDir, RELEASE_PATCHES_PATH),
+    );
+
+    yield* Effect.log(
+      "[desktop-artifact] Installing staged production dependencies from the repository lockfile...",
+    );
+    if (platform === "win") {
+      // Bun 1.3.12 needs a platform-only lockfile rewrite while resolving this
+      // copied workspace on Windows even though the repository-level frozen
+      // install already passed. Its --production flag also forces frozen mode,
+      // so use the equivalent dependency omission and allow only the temporary
+      // staging copy to update; the verified source lockfile remains untouched.
+      yield* runCommand(
+        ChildProcess.make({
+          cwd: stageAppDir,
+          ...commandOutputOptions(verbose),
+          // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
+          shell: process.platform === "win32",
+        })`bun install --omit=dev --ignore-scripts --linker hoisted`,
+      );
+    } else if (platform === "mac") {
+      // Bun 1.4.2 preserves the copied frozen workspace lock with production
+      // filters; keep every importer above so no dependency is re-resolved.
+      yield* runCommand(
+        ChildProcess.make({
+          cwd: stageAppDir,
+          ...commandOutputOptions(verbose),
+        })`bun install --production --frozen-lockfile --ignore-scripts --linker hoisted --filter @synara/cli --filter @synara/desktop`,
+      );
+      const stagedLockfileSha256 = resolveLockfileSha256(stageAppDir);
+      if (stagedLockfileSha256 !== sourceLockfileSha256) {
+        return yield* new BuildScriptError({
+          message: "Frozen staging install changed the repository lockfile copy.",
+        });
+      }
+    } else {
+      yield* runCommand(
+        ChildProcess.make({
+          cwd: stageAppDir,
+          ...commandOutputOptions(verbose),
+        })`bun install --frozen-lockfile --ignore-scripts --linker hoisted`,
+      );
+    }
+    if (resolveLockfileSha256(repoRoot) !== sourceLockfileSha256) {
+      return yield* new BuildScriptError({
+        message: "Repository lockfile changed during desktop staging.",
+      });
+    }
+
+    if (platform === "linux") {
+      // node-pty's npm package does not ship Linux prebuilds. Keep the frozen
+      // install's blanket lifecycle-script block, then rebuild only node-pty so
+      // npm supplies node-gyp to its install script and compiles the native
+      // binding required by the packaged terminal.
+      yield* Effect.log("[desktop-artifact] Building staged Linux node-pty binding...");
+      yield* runCommand(
+        ChildProcess.make({
+          cwd: stageAppDir,
+          ...commandOutputOptions(verbose),
+        })`npm rebuild node-pty --foreground-scripts`,
+      );
+    }
+
+    yield* verifyStagedPatchedDependencies(
+      repoRoot,
+      stageAppDir,
+      platform === "mac" ? runtimeDependencyNames : undefined,
+    );
+
+    for (const relativePath of RELEASE_WORKSPACE_MANIFEST_PATHS) {
+      if (relativePath !== "package.json") {
+        yield* fs.remove(path.join(stageAppDir, relativePath));
+      }
+    }
+    yield* fs.remove(path.join(stageAppDir, RELEASE_LOCKFILE_PATH));
+    yield* fs.remove(path.join(stageAppDir, RELEASE_PATCHES_PATH), { recursive: true });
+  },
+);
 
 const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
@@ -819,50 +872,75 @@ const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(f
   }
 });
 
-const stageManagedCodexRuntime = Effect.fn("stageManagedCodexRuntime")(function* (
+export const stageManagedCodexRuntime = Effect.fn("stageManagedCodexRuntime")(function* (
   stageResourcesDir: string,
   arch: typeof BuildArch.Type,
   verbose: boolean,
+  manifest = MANAGED_CODEX_RUNTIME_MANIFEST,
 ) {
   if (arch !== "arm64" && arch !== "universal") return;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
-  const archivePath = path.join(stageResourcesDir, MANAGED_CODEX_RUNTIME_MANIFEST.assetFileName);
-  yield* Effect.log(
-    `[desktop-artifact] Staging Codex Luna Max Fast ${MANAGED_CODEX_RUNTIME_MANIFEST.version}...`,
-  );
-  yield* runCommand(
-    ChildProcess.make({
-      ...commandOutputOptions(verbose),
-    })`/usr/bin/curl --fail --location --retry 3 --output ${archivePath} ${MANAGED_CODEX_RUNTIME_MANIFEST.downloadUrl}`,
-  );
-  const checksum = yield* Effect.tryPromise({
-    try: () => resolveFileSha256(archivePath),
-    catch: (cause) =>
-      new BuildScriptError({
-        message: `Failed to hash the bundled Codex runtime at ${archivePath}`,
-        cause,
-      }),
-  });
-  if (checksum !== MANAGED_CODEX_RUNTIME_MANIFEST.sha256) {
-    yield* fs.remove(archivePath).pipe(Effect.catch(() => Effect.void));
-    return yield* new BuildScriptError({
-      message: `Bundled Codex runtime checksum mismatch: expected ${MANAGED_CODEX_RUNTIME_MANIFEST.sha256}, received ${checksum}.`,
+  const archivePath = path.join(stageResourcesDir, manifest.assetFileName);
+  yield* Effect.log(`[desktop-artifact] Staging Codex Luna Max Fast ${manifest.version}...`);
+  const download = Effect.fn("downloadPinnedCodexRuntime")(function* (url: string) {
+    yield* runCommand(
+      ChildProcess.make({
+        ...commandOutputOptions(verbose),
+      })`/usr/bin/curl --fail --location --retry 3 --connect-timeout 10 --max-time 300 --output ${archivePath} ${url}`,
+    );
+    const checksum = yield* Effect.tryPromise({
+      try: () => resolveFileSha256(archivePath),
+      catch: (cause) =>
+        new BuildScriptError({
+          message: `Failed to hash the bundled Codex runtime at ${archivePath}`,
+          cause,
+        }),
     });
+    if (checksum !== manifest.sha256) {
+      yield* fs.remove(archivePath).pipe(Effect.catch(() => Effect.void));
+      return yield* new BuildScriptError({
+        message: `Bundled Codex runtime checksum mismatch: expected ${manifest.sha256}, received ${checksum}.`,
+      });
+    }
+  });
+  // Bootstrap compatibility before the publisher has retained the original
+  // bundle. Both sources must satisfy the same pinned digest.
+  yield* manifest.pinnedDownloadUrl
+    ? download(manifest.pinnedDownloadUrl).pipe(Effect.catch(() => download(manifest.downloadUrl)))
+    : download(manifest.downloadUrl);
+});
+
+export const stageProductionResources = Effect.fn("stageProductionResources")(function* (
+  stageResourcesDir: string,
+  productionResourcesDir: string,
+  platform: typeof BuildPlatform.Type,
+) {
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.makeDirectory(productionResourcesDir, { recursive: true });
+  for (const entry of yield* fs.readDirectory(stageResourcesDir)) {
+    // macOS ships this archive through extraFiles, outside ASAR. The icons still
+    // need their runtime copy because electron-builder omits buildResources.
+    if (platform === "mac" && entry === MANAGED_CODEX_RUNTIME_MANIFEST.assetFileName) continue;
+    yield* fs.copy(path.join(stageResourcesDir, entry), path.join(productionResourcesDir, entry));
   }
 });
 
-const stageMacAppSnapHelper = Effect.fn("stageMacAppSnapHelper")(function* (
+export const stageMacAppSnapHelper = Effect.fn("stageMacAppSnapHelper")(function* (
   stageAppDir: string,
   arch: typeof BuildArch.Type,
   verbose: boolean,
+  cacheDirectory = process.env.SYNARA_APPSNAP_CACHE_DIR,
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const buildScript = yield* AppSnapHelperBuildScript;
   const outputPath = path.join(stageAppDir, MAC_APPSNAP_HELPER_STAGE_PATH);
+  const repoRoot = yield* RepoRoot;
 
   yield* fs.makeDirectory(path.dirname(outputPath), { recursive: true });
+  const cache = prepareAppSnapReleaseCache(repoRoot, outputPath, arch, cacheDirectory);
   yield* Effect.log(`[desktop-artifact] Building native AppSnap helper (${arch})...`);
   yield* runCommand(
     ChildProcess.make({
@@ -876,6 +954,9 @@ const stageMacAppSnapHelper = Effect.fn("stageMacAppSnapHelper")(function* (
       message: `AppSnap helper build completed but output was not found at ${outputPath}`,
     });
   }
+  // Cache only the helper's own ad-hoc build. electron-builder signs the staged
+  // copy afterward, so a release identity can never mutate the cached binary.
+  if (cache) saveAppSnapReleaseCache(cache);
 });
 
 const assertPackagedMacDeviceHelper = Effect.fn("assertPackagedMacDeviceHelper")(function* (
@@ -1130,8 +1211,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     yield* stageMacAppSnapHelper(stageAppDir, options.arch, options.verbose);
   }
 
-  // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
-  yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
+  yield* stageProductionResources(
+    stageResourcesDir,
+    path.join(stageAppDir, "apps/desktop/prod-resources"),
+    options.platform,
+  );
 
   const resolvedBuildConfig = yield* createBuildConfig(
     options.platform,
@@ -1169,7 +1253,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     },
   };
 
-  yield* installFrozenStageDependencies(repoRoot, stageAppDir, options.platform, options.verbose);
+  yield* installFrozenStageDependencies(
+    repoRoot,
+    stageAppDir,
+    options.platform,
+    options.verbose,
+    Object.keys(stagePackageJson.dependencies),
+  );
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
@@ -1266,7 +1356,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   }
 
   if (options.platform === "mac") {
-    yield* Effect.log("[desktop-artifact] Repacking and validating macOS update zip...");
+    yield* Effect.log("[desktop-artifact] Validating macOS update zip...");
     const finalizedZip = yield* Effect.tryPromise({
       try: () =>
         finalizeMacUpdateZip({
@@ -1280,6 +1370,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
           cause,
         }),
     });
+    yield* Effect.log(
+      finalizedZip.repacked
+        ? "[desktop-artifact] Repacked and validated macOS update zip."
+        : "[desktop-artifact] Reused validated macOS update zip.",
+    );
     if (finalizedZip.removedZipBlockmapPath) {
       yield* Effect.log(
         `[desktop-artifact] Removed stale macOS zip blockmap (${path.basename(finalizedZip.removedZipBlockmapPath)}).`,

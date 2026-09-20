@@ -48,6 +48,18 @@ export function ToolCallDetailsContent({
         <LiveActivityMetadata activity={activity} timestampFormat={timestampFormat} />
       ) : null}
 
+      {details &&
+      (details.server ||
+        details.namespace ||
+        details.tool ||
+        details.appName ||
+        details.actionName ||
+        details.cwd ||
+        details.durationMs !== undefined ||
+        details.success !== undefined) ? (
+        <ToolCallMetadata details={details} />
+      ) : null}
+
       {details?.command ? (
         <div className="space-y-2">
           <MarkdownToolCodeBlock language="bash">
@@ -116,8 +128,72 @@ export function ToolCallDetailsContent({
         </ToolDetailSection>
       ) : null}
 
+      {details?.arguments ? (
+        <ToolDetailSection title="Arguments">
+          <MarkdownToolCodeBlock language="json">{details.arguments}</MarkdownToolCodeBlock>
+        </ToolDetailSection>
+      ) : null}
+
+      {details?.result ? (
+        <ToolDetailSection title="Result">
+          <MarkdownToolCodeBlock language="text">{details.result}</MarkdownToolCodeBlock>
+        </ToolDetailSection>
+      ) : null}
+
+      {details?.structuredResult ? (
+        <ToolDetailSection title="Structured result">
+          <MarkdownToolCodeBlock language="json">{details.structuredResult}</MarkdownToolCodeBlock>
+        </ToolDetailSection>
+      ) : null}
+
+      {details?.error ? (
+        <ToolDetailSection title="Error">
+          <LabeledCodeBlock title="Tool error" tone="error">
+            {details.error}
+          </LabeledCodeBlock>
+        </ToolDetailSection>
+      ) : null}
+
       {details?.output && !details.command ? <ToolOutputSection output={details.output} /> : null}
     </>
+  );
+}
+
+function formatDurationMs(durationMs: number): string {
+  if (durationMs < 1_000) return `${durationMs} ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`;
+  const minutes = Math.floor(durationMs / 60_000);
+  const seconds = Math.round((durationMs % 60_000) / 1_000);
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function ToolCallMetadata({ details }: { details: WorkLogToolDetails }) {
+  const rows: ReadonlyArray<readonly [string, string]> = [
+    ...(details.appName ? [["App", details.appName] as const] : []),
+    ...(details.actionName ? [["Action", details.actionName] as const] : []),
+    ...(details.server ? [["MCP server", details.server] as const] : []),
+    ...(details.namespace ? [["Namespace", details.namespace] as const] : []),
+    ...(details.tool ? [["Tool", details.tool] as const] : []),
+    ...(details.cwd ? [["Working directory", details.cwd] as const] : []),
+    ...(details.durationMs !== undefined
+      ? [["Duration", formatDurationMs(details.durationMs)] as const]
+      : []),
+    ...(details.success !== undefined
+      ? [["Status", details.success ? "Succeeded" : "Failed"] as const]
+      : []),
+  ];
+  if (rows.length === 0) return null;
+  return (
+    <ToolDetailSection title="Tool">
+      <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-lg border border-border/45 bg-background/60 px-3 py-2.5 text-[11px]">
+        {rows.map(([label, value]) => (
+          <div key={label} className="contents">
+            <dt className="text-muted-foreground/56">{label}</dt>
+            <dd className="min-w-0 break-words font-chat-code text-foreground/84">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </ToolDetailSection>
   );
 }
 

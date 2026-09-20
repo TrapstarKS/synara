@@ -136,9 +136,9 @@ const program = Effect.gen(function* () {
   // depend on that fiber staying alive.
   const handlerFiber = yield* Effect.gen(function* () {
     yield* adapter.startSession({
-      provider: 'chatgpt',
+      provider: "chatgpt",
       threadId,
-      runtimeMode: 'full-access',
+      runtimeMode: "full-access",
       cwd: process.cwd(),
       ...(process.env.SYNARA_RESUME_URL ? { resumeCursor: process.env.SYNARA_RESUME_URL } : {}),
     });

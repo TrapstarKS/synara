@@ -29,6 +29,7 @@ import { useProfileName } from "../profile/useProfileName";
 import { useProfileAvatarColor } from "../profile/useProfileAvatarColor";
 import { useProfileAvatarImage } from "../profile/useProfileAvatarImage";
 import { ProfileAvatar } from "../profile/ProfileAvatar";
+import { formatCostUsd } from "~/lib/contextWindow";
 import {
   formatCompact,
   formatDays,
@@ -38,7 +39,12 @@ import {
 
 export function ProfileSettingsPanel() {
   const coreQuery = useQuery(serverProfileStatsQueryOptions());
-  const tokenQuery = useQuery(serverProfileTokenStatsQueryOptions());
+  // Both RPCs are classified as expensive reads. Start the token/cost query only
+  // after the core profile has painted so opening Profile cannot consume both
+  // per-client expensive-read slots at once.
+  const tokenQuery = useQuery(
+    serverProfileTokenStatsQueryOptions({ enabled: coreQuery.isSuccess }),
+  );
 
   if (coreQuery.isPending) {
     return <ProfileSkeleton />;
@@ -59,6 +65,8 @@ export function ProfileSettingsPanel() {
       stats={coreQuery.data}
       tokenStats={tokenQuery.data ?? null}
       tokensPending={tokenQuery.isPending}
+      tokensError={tokenQuery.isError}
+      onRetryTokens={() => void tokenQuery.refetch()}
     />
   );
 }
@@ -67,10 +75,14 @@ function ProfileContent({
   stats,
   tokenStats,
   tokensPending,
+  tokensError,
+  onRetryTokens,
 }: {
   stats: ProfileStats;
   tokenStats: ProfileTokenStats | null;
   tokensPending: boolean;
+  tokensError: boolean;
+  onRetryTokens: () => void;
 }) {
   const [shareOpen, setShareOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -87,6 +99,10 @@ function ProfileContent({
   const modelUsage = selectProfileModelUsage(stats, tokenStats);
   const peakHourLabel = formatPeakHourLabel(stats.activeHours.startHour);
   const mostWorkedProjectLabel = formatMostWorkedProjectLabel(stats.mostWorkedProject);
+  const estimatedEquivalentUsd = tokenStats?.estimatedEquivalentUsd ?? null;
+  const estimatedEquivalentLabel =
+    estimatedEquivalentUsd === null ? "—" : `~${formatCostUsd(estimatedEquivalentUsd)}`;
+  const estimatedEquivalentTitle = formatEstimatedEquivalentTitle(tokenStats);
 
   return (
     <div className="flex min-w-0 flex-col gap-7">
@@ -124,7 +140,7 @@ function ProfileContent({
       </header>
 
       {/* Stat tiles */}
-      <div className="grid grid-cols-2 divide-x divide-y divide-border/50 overflow-hidden rounded-2xl border border-border/60 sm:grid-cols-3 lg:grid-cols-5 lg:divide-y-0">
+      <div className="grid grid-cols-2 divide-x divide-y divide-border/50 overflow-hidden rounded-2xl border border-border/60 sm:grid-cols-3 lg:grid-cols-6 lg:divide-y-0">
         <StatTile
           label="Lifetime tokens"
           value={tokensPending ? null : formatCompact(tokenStats?.lifetimeTotalTokens ?? null)}
@@ -136,7 +152,34 @@ function ProfileContent({
         <StatTile label="Total prompts" value={formatNumber(stats.activity.totalPromptsSent)} />
         <StatTile label="Current streak" value={formatDays(stats.activity.currentStreakDays)} />
         <StatTile label="Longest streak" value={formatDays(stats.activity.longestStreakDays)} />
+        <StatTile
+          label="Estimated equivalent · USD"
+          value={tokensPending ? null : estimatedEquivalentLabel}
+          title={estimatedEquivalentTitle}
+        />
       </div>
+
+      {tokensError ? (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+          <p className="text-xs text-muted-foreground">
+            Token and cost stats couldn’t load. The activity below is using prompt-based data for
+            now.
+          </p>
+          <Button variant="ghost" size="sm" onClick={onRetryTokens}>
+            Retry
+          </Button>
+        </div>
+      ) : null}
+      {tokenStats?.estimatedEquivalentUsd !== null &&
+      tokenStats?.estimatedEquivalentUsd !== undefined &&
+      tokenStats.estimatedEquivalentUsdCoveragePercent !== null &&
+      tokenStats.estimatedEquivalentUsdCoveragePercent !== undefined &&
+      tokenStats.estimatedEquivalentUsdCoveragePercent < 100 ? (
+        <p className="text-xs text-muted-foreground">
+          USD estimate currently covers {tokenStats.estimatedEquivalentUsdCoveragePercent}% of
+          recorded turns with provider-reported cost data.
+        </p>
+      ) : null}
 
       {/* Heatmap */}
       {stats.providerModels.some((entry) => entry.provider === "claudeAgent") ||
@@ -240,7 +283,7 @@ function ProfileContent({
         <h3 className="text-sm font-medium">Model usage</h3>
         {modelUsage.entries.length > 0 ? (
           <ul className="grid grid-cols-1 gap-x-12 gap-y-3 sm:grid-cols-2">
-            {modelUsage.entries.slice(0, 6).map((entry) => (
+            {modelUsage.entries.map((entry) => (
               <ModelUsageRow
                 key={`${entry.provider}:${entry.model}`}
                 provider={entry.provider}
@@ -291,15 +334,25 @@ function ProfileContent({
 
 // ── Small pieces ───────────────────────────────────────────────────────
 
-function StatTile({ label, value }: { label: string; value: string | null }) {
+function StatTile({
+  label,
+  value,
+  title,
+}: {
+  label: string;
+  value: string | null;
+  title?: string | undefined;
+}) {
   return (
-    <div className="flex flex-col items-center gap-0.5 px-3 py-3">
+    <div className="flex flex-col items-center gap-0.5 px-3 py-3" title={title}>
       {value === null ? (
         <Skeleton className="h-4 w-12" />
       ) : (
         <span className="text-sm font-normal tabular-nums text-foreground">{value}</span>
       )}
-      <span className="text-sm font-normal text-muted-foreground">{label}</span>
+      <span className="text-center text-[13px] font-normal leading-tight text-muted-foreground">
+        {label}
+      </span>
     </div>
   );
 }
@@ -332,6 +385,20 @@ function formatMostWorkedProjectLabel(project: ProfileStats["mostWorkedProject"]
   }
   const promptLabel = project.promptCount === 1 ? "prompt" : "prompts";
   return `${project.title} · ${formatNumber(project.promptCount)} ${promptLabel}`;
+}
+
+function formatEstimatedEquivalentTitle(tokenStats: ProfileTokenStats | null): string | undefined {
+  if (
+    tokenStats?.estimatedEquivalentUsd === null ||
+    tokenStats?.estimatedEquivalentUsd === undefined
+  ) {
+    return "No provider-reported USD cost has been recorded yet.";
+  }
+  const coverage = tokenStats.estimatedEquivalentUsdCoveragePercent;
+  if (coverage === null || coverage === undefined) {
+    return "Estimated from provider-reported USD cost data.";
+  }
+  return `Estimated from provider-reported USD cost data covering ${coverage}% of recorded turns.`;
 }
 
 function formatProviderLabel(provider: ProviderKind): string {

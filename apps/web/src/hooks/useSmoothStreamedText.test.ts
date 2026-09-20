@@ -8,6 +8,7 @@ import {
   createSmoothRevealState,
   MIN_EMIT_INTERVAL_MS,
   stepSmoothReveal,
+  streamedTextPrefix,
   type SmoothRevealState,
 } from "./useSmoothStreamedText";
 
@@ -80,20 +81,14 @@ describe("stepSmoothReveal", () => {
     expect(step.done).toBe(true);
   });
 
-  it("clamps the frame delta after a background-tab resume", () => {
+  it("shows received text immediately after a background-tab resume", () => {
     const state = createSmoothRevealState(0);
     // Prime one frame so velocity builds, then jump far ahead as if rAF was paused.
     stepSmoothReveal(state, 1_000, 500, 0);
     stepSmoothReveal(state, 1_008, 500, 0);
-    const shownBefore = state.shown;
-    const velocityBefore = state.velocity;
-    stepSmoothReveal(state, 61_000, 500, Math.floor(shownBefore));
-
-    // At most MAX_FRAME_SECONDS (0.05s) of reveal, not 60s of backlog dump.
-    expect(state.shown - shownBefore).toBeLessThanOrEqual(
-      Math.max(state.velocity, velocityBefore) * 0.05 + 1,
-    );
-    expect(state.shown).toBeLessThan(500);
+    const step = stepSmoothReveal(state, 61_000, 500, Math.floor(state.shown));
+    expect(step).toEqual({ emitCount: 500, done: true });
+    expect(state.shown).toBe(500);
   });
 
   it("clamps and sleeps when the target shrank below the revealed count", () => {
@@ -115,11 +110,46 @@ describe("stepSmoothReveal", () => {
     expect(next.emits.length).toBeGreaterThan(0);
   });
 
-  it("drains a large paste at the bounded ceiling instead of snapping", () => {
+  it("bounds the delay of a large flush instead of replaying seconds of artificial typing", () => {
     const run = drain(createSmoothRevealState(0), 10_000, 0);
 
-    // 10k chars at the 2000 chars/sec ceiling needs ≥5s of frames.
-    expect(run.frames * FRAME_MS).toBeGreaterThanOrEqual(5_000);
+    expect(run.frames * FRAME_MS).toBeLessThan(1_000);
+    expect(run.emits[0]!.count).toBeGreaterThanOrEqual(9_680);
     expect(run.emits.at(-1)?.count).toBe(10_000);
+  });
+
+  it.each([1, 2, 10, 100])("finishes a %i-character burst without a fractional tail", (length) => {
+    const run = drain(createSmoothRevealState(0), length, 1_000);
+    expect(run.emits.at(-1)?.count).toBe(length);
+    expect(run.frames * FRAME_MS).toBeLessThan(1_000);
+  });
+
+  it("keeps up with repeated large arrivals without losing or repeating text", () => {
+    const state = createSmoothRevealState(0);
+    let emitted = 0;
+    for (let frame = 0; frame < 120; frame += 1) {
+      const target = (Math.floor(frame / 12) + 1) * 1_000;
+      const step = stepSmoothReveal(state, 1_000 + frame * FRAME_MS, target, emitted);
+      if (step.emitCount !== null) {
+        expect(step.emitCount).toBeGreaterThanOrEqual(emitted);
+        expect(step.emitCount).toBeLessThanOrEqual(target);
+        emitted = step.emitCount;
+      }
+      expect(target - state.shown).toBeLessThanOrEqual(320);
+    }
+    expect(drain(state, 10_000, 1_960).emits.at(-1)?.count).toBe(10_000);
+  });
+});
+
+describe("streamedTextPrefix", () => {
+  it("reveals Unicode code points intact and preserves the exact final text", () => {
+    const text = "Olá 👩🏽‍💻!\n```lua\nprint('🚀')\n```";
+    for (let count = 0; count <= text.length; count += 1) {
+      const prefix = streamedTextPrefix(text, count);
+      expect(text.startsWith(prefix)).toBe(true);
+      expect(prefix).not.toMatch(/[\uD800-\uDFFF]/u);
+      expect(prefix.length).toBeLessThanOrEqual(count);
+    }
+    expect(streamedTextPrefix(text, text.length)).toBe(text);
   });
 });

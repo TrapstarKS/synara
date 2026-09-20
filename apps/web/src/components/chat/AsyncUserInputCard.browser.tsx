@@ -1,9 +1,10 @@
 import "../../index.css";
 import { MessageId } from "@synara/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { userEvent } from "vitest/browser";
 import { AsyncUserInputCard } from "./AsyncUserInputCard";
+import { useAsyncUserInputDraftStore } from "./asyncUserInputDraftStore";
 
 const messageId = MessageId.makeUnsafe("async-question");
 const input = {
@@ -14,6 +15,93 @@ const input = {
 };
 
 describe("AsyncUserInputCard", () => {
+  afterEach(() => useAsyncUserInputDraftStore.setState({ drafts: {}, inFlight: new Set() }));
+
+  it("clears a shared draft when the server acknowledgement precedes the submission response", async () => {
+    let accept!: () => void;
+    const onRespond = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          accept = resolve;
+        }),
+    );
+    const draftKey = "accepted-before-rpc";
+    const props = {
+      messageId,
+      input: { questions: [{ title: "Which branch?" }] },
+      draftKey,
+      defaultOpen: true,
+      onRespond,
+    };
+    const screen = await render(<AsyncUserInputCard {...props} />);
+    await screen.getByRole("textbox").fill("main");
+    await screen.getByRole("button", { name: "Send answer" }).click();
+    await screen.rerender(
+      <AsyncUserInputCard
+        {...props}
+        input={{
+          ...props.input,
+          response: { messageId: MessageId.makeUnsafe("accepted-answer"), answers: ["main"] },
+        }}
+      />,
+    );
+    await expect.element(screen.getByText("Answered", { exact: true })).toBeVisible();
+    accept();
+    await expect
+      .poll(() => useAsyncUserInputDraftStore.getState().inFlight.has(draftKey))
+      .toBe(false);
+    await expect
+      .poll(() => useAsyncUserInputDraftStore.getState().drafts[draftKey])
+      .toBeUndefined();
+  });
+
+  it("shares drafts and prevents duplicate delivery between composer and transcript", async () => {
+    let accept!: () => void;
+    const onRespond = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          accept = resolve;
+        }),
+    );
+    const props = {
+      messageId,
+      input: { questions: [{ title: "Which branch?" }] },
+      onRespond,
+      draftKey: "shared-question",
+      defaultOpen: true,
+    };
+    const screen = await render(
+      <>
+        <AsyncUserInputCard {...props} />
+        <AsyncUserInputCard {...props} />
+      </>,
+    );
+    await screen.getByRole("textbox", { name: "Answer: Which branch?" }).nth(0).fill("main");
+    await expect
+      .element(screen.getByRole("textbox", { name: "Answer: Which branch?" }).nth(1))
+      .toHaveValue("main");
+    await screen.getByRole("button", { name: "Send answer" }).nth(0).click();
+    await expect.element(screen.getByRole("button", { name: "Submitting…" }).nth(1)).toBeDisabled();
+    expect(onRespond).toHaveBeenCalledExactlyOnceWith(messageId, ["main"]);
+    accept();
+    await expect.element(screen.getByText("Answered", { exact: true }).nth(1)).toBeVisible();
+  });
+
+  it("restores an unfinished draft when returning to the chat", async () => {
+    const props = {
+      messageId,
+      input: { questions: [{ title: "Details?" }] },
+      onRespond: vi.fn(),
+      draftKey: "navigation-question",
+      defaultOpen: true,
+    };
+    const screen = await render(<AsyncUserInputCard {...props} />);
+    await screen.getByRole("textbox").fill("It fails after reconnecting");
+    await screen.rerender(<div>Another chat</div>);
+    await screen.rerender(<AsyncUserInputCard {...props} />);
+    await expect.element(screen.getByRole("textbox")).toHaveValue("It fails after reconnecting");
+  });
+
   it("requires an explicit submission, allows free text, and prevents double clicks", async () => {
     let accept!: () => void;
     const onRespond = vi.fn(

@@ -1,4 +1,8 @@
 import { isProviderHandoffActivity } from "@synara/shared/providerHandoff";
+import {
+  hasPendingAsyncUserInput,
+  retainMessagesWithPendingAsyncInputs,
+} from "@synara/shared/asyncUserInput";
 // FILE: storeNormalization.ts
 // Purpose: Normalizes orchestration projects, threads, messages, and activities with stable identity.
 // Exports: Pure normalization and equality helpers consumed by projection and event reduction.
@@ -187,6 +191,7 @@ export function threadShellsEqual(left: ThreadShell | undefined, right: ThreadSh
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
+    left.hasPendingAsyncUserInput === right.hasPendingAsyncUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
     left.pendingInteractions === right.pendingInteractions &&
     left.lastVisitedAt === right.lastVisitedAt
@@ -606,9 +611,9 @@ function normalizeChatMessages(
   previous: ChatMessage[] | undefined,
 ): ChatMessage[] {
   const previousById = new Map(previous?.map((message) => [message.id, message] as const));
-  const nextMessages = incoming
-    .slice(-MAX_THREAD_MESSAGES)
-    .map((message) => normalizeChatMessage(message, previousById.get(message.id)));
+  const nextMessages = retainMessagesWithPendingAsyncInputs(incoming, MAX_THREAD_MESSAGES).map(
+    (message) => normalizeChatMessage(message, previousById.get(message.id)),
+  );
   return arraysShallowEqual(previous, nextMessages) ? previous : nextMessages;
 }
 
@@ -1662,6 +1667,7 @@ export function normalizeThreadFromReadModel(
     typeof incoming.hasPendingApprovals === "boolean" ? incoming.hasPendingApprovals : undefined;
   const resolvedHasPendingUserInput =
     typeof incoming.hasPendingUserInput === "boolean" ? incoming.hasPendingUserInput : undefined;
+  const resolvedHasPendingAsyncUserInput = messages.some(hasPendingAsyncUserInput);
   const resolvedHasActionableProposedPlan =
     typeof incoming.hasActionableProposedPlan === "boolean"
       ? incoming.hasActionableProposedPlan
@@ -1729,6 +1735,7 @@ export function normalizeThreadFromReadModel(
     previous.latestUserMessageAt === resolvedLatestUserMessageAt &&
     previous.hasPendingApprovals === resolvedHasPendingApprovals &&
     previous.hasPendingUserInput === resolvedHasPendingUserInput &&
+    previous.hasPendingAsyncUserInput === resolvedHasPendingAsyncUserInput &&
     previous.hasActionableProposedPlan === resolvedHasActionableProposedPlan &&
     (previous.forkSourceThreadId ?? null) === (incoming.forkSourceThreadId ?? null) &&
     (previous.sidechatSourceThreadId ?? null) === (incoming.sidechatSourceThreadId ?? null) &&
@@ -1805,6 +1812,7 @@ export function normalizeThreadFromReadModel(
     ...(resolvedHasPendingUserInput !== undefined
       ? { hasPendingUserInput: resolvedHasPendingUserInput }
       : {}),
+    hasPendingAsyncUserInput: resolvedHasPendingAsyncUserInput,
     ...(resolvedHasActionableProposedPlan !== undefined
       ? { hasActionableProposedPlan: resolvedHasActionableProposedPlan }
       : {}),
@@ -1918,6 +1926,9 @@ export function normalizeThreadShellSnapshot(
       : {}),
     ...(incoming.hasPendingUserInput !== undefined
       ? { hasPendingUserInput: incoming.hasPendingUserInput }
+      : {}),
+    ...(incoming.hasPendingAsyncUserInput !== undefined
+      ? { hasPendingAsyncUserInput: incoming.hasPendingAsyncUserInput }
       : {}),
     ...(incoming.hasActionableProposedPlan !== undefined
       ? { hasActionableProposedPlan: incoming.hasActionableProposedPlan }
@@ -2034,6 +2045,7 @@ export function resolveThreadSidebarMetadata(
   | "latestUserMessageAt"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "hasPendingAsyncUserInput"
   | "hasActionableProposedPlan"
   | "hasLiveTailWork"
 > {
@@ -2057,6 +2069,8 @@ export function resolveThreadSidebarMetadata(
       thread.hasPendingApprovals ?? derivedMetadata?.hasPendingApprovals ?? false,
     hasPendingUserInput:
       thread.hasPendingUserInput ?? derivedMetadata?.hasPendingUserInput ?? false,
+    hasPendingAsyncUserInput:
+      thread.hasPendingAsyncUserInput ?? thread.messages.some(hasPendingAsyncUserInput),
     hasActionableProposedPlan:
       thread.hasActionableProposedPlan ?? derivedMetadata?.hasActionableProposedPlan ?? false,
     hasLiveTailWork: Boolean(

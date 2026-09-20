@@ -21,15 +21,15 @@ import { useMediaQuery } from "./useMediaQuery";
 // Drain the current backlog over this window. Kept above the ~100ms network flush so a
 // small backlog cushion always remains and the reveal tracks inflow without running dry.
 const DRAIN_WINDOW_SECONDS = 0.16;
-// Hard ceiling so a single huge flush (e.g. a pasted code block) reveals fast but bounded
-// rather than snapping in all at once.
+// Animate only the live tail. Reconnects and large tool-followup messages must not
+// leave already-received text waiting behind seconds of artificial typing.
 const MAX_CHARS_PER_SECOND = 2000;
-// Low-pass factor: how aggressively the live velocity chases the target velocity each
-// frame. Smaller is smoother but laggier; ~0.15 ≈ a ~110ms time constant at 60fps.
-const VELOCITY_LERP = 0.15;
-// Clamp per-frame delta so returning from a backgrounded tab (rAF paused) does not dump
-// the whole backlog in a single frame.
+const MAX_BUFFERED_CHARACTERS = MAX_CHARS_PER_SECOND * DRAIN_WINDOW_SECONDS;
+const MIN_CHARS_PER_SECOND = 80;
+// Time-based damping behaves the same on 60 Hz and 120 Hz displays.
+const VELOCITY_TIME_CONSTANT_SECONDS = 0.05;
 const MAX_FRAME_SECONDS = 0.05;
+const RESUME_SNAP_AFTER_MS = 1000;
 // Minimum spacing between React commits. The reveal float still advances every frame at
 // the smoothed velocity; this only batches how often the grown prefix is pushed to state.
 export const MIN_EMIT_INTERVAL_MS = 40;
@@ -76,10 +76,20 @@ export function stepSmoothReveal(
   emittedCount: number,
 ): SmoothRevealStep {
   const previousFrameAt = state.lastFrameAt;
-  const dt = previousFrameAt ? Math.min((nowMs - previousFrameAt) / 1000, MAX_FRAME_SECONDS) : 0;
+  const elapsedMs = previousFrameAt ? Math.max(0, nowMs - previousFrameAt) : 0;
+  const dt = Math.min(elapsedMs / 1000, MAX_FRAME_SECONDS);
   state.lastFrameAt = nowMs;
 
+  if (previousFrameAt && elapsedMs >= RESUME_SNAP_AFTER_MS) {
+    state.shown = targetLength;
+    state.velocity = 0;
+    state.lastFrameAt = 0;
+    state.lastEmitAt = nowMs;
+    return { emitCount: targetLength !== emittedCount ? targetLength : null, done: true };
+  }
+
   if (state.shown > targetLength) state.shown = targetLength;
+  state.shown = Math.max(state.shown, targetLength - MAX_BUFFERED_CHARACTERS);
 
   const backlog = targetLength - state.shown;
   if (backlog <= 0) {
@@ -88,8 +98,12 @@ export function stepSmoothReveal(
     return { emitCount: null, done: true };
   }
 
-  const targetVelocity = Math.min(MAX_CHARS_PER_SECOND, backlog / DRAIN_WINDOW_SECONDS);
-  state.velocity += (targetVelocity - state.velocity) * VELOCITY_LERP;
+  const targetVelocity = Math.max(
+    MIN_CHARS_PER_SECOND,
+    Math.min(MAX_CHARS_PER_SECOND, backlog / DRAIN_WINDOW_SECONDS),
+  );
+  const velocityBlend = 1 - Math.exp(-dt / VELOCITY_TIME_CONSTANT_SECONDS);
+  state.velocity += (targetVelocity - state.velocity) * velocityBlend;
   state.shown = Math.min(targetLength, state.shown + state.velocity * dt);
 
   const nextCount = Math.floor(state.shown);
@@ -107,6 +121,14 @@ export function stepSmoothReveal(
     state.lastFrameAt = 0;
   }
   return { emitCount: emitDue ? nextCount : null, done };
+}
+
+/** A reveal boundary must not render half of a UTF-16 surrogate pair as a replacement glyph. */
+export function streamedTextPrefix(text: string, count: number): string {
+  let end = Math.max(0, Math.min(text.length, Math.floor(count)));
+  const lastCodeUnit = text.charCodeAt(end - 1);
+  if (end < text.length && lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end -= 1;
+  return end === text.length ? text : text.slice(0, end);
 }
 
 /**
@@ -168,8 +190,9 @@ export function useSmoothStreamedText(text: string, isStreaming: boolean): strin
       const target = targetRef.current;
       const step = stepSmoothReveal(stateRef.current, now, target.length, emittedRef.current);
       if (step.emitCount !== null) {
-        emittedRef.current = step.emitCount;
-        setRevealed(step.emitCount >= target.length ? target : target.slice(0, step.emitCount));
+        const prefix = streamedTextPrefix(target, step.emitCount);
+        emittedRef.current = prefix.length;
+        setRevealed(prefix);
       }
       if (!step.done) {
         scheduleFrame();

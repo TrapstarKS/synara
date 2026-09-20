@@ -274,6 +274,7 @@ export function ChatTranscriptPane({
             {...(onOpenAutomation ? { onOpenAutomation } : {})}
             revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
             onRevertUserMessage={onRevertUserMessage}
+            asyncUserInputScope={activeThreadId}
             {...(onUndoTurnFiles ? { onUndoTurnFiles } : {})}
             {...(onEditUserMessage ? { onEditUserMessage } : {})}
             {...(onRespondToAsyncUserInput ? { onRespondToAsyncUserInput } : {})}

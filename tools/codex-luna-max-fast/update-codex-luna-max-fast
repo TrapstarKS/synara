@@ -15,7 +15,7 @@ readonly code_mode_host="${bin_dir}/codex-code-mode-host"
 readonly installed_checksum="${state_dir}/archive.sha256"
 readonly installed_version="${state_dir}/version"
 readonly last_check="${state_dir}/last-check"
-readonly lock_dir="${state_dir}/update.lock.d"
+readonly lock_file="${state_dir}/update.lock"
 
 force=0
 if [[ "${1:-}" == "--force" ]]; then
@@ -40,19 +40,33 @@ readonly checksum_url="${release_base}/${asset}.sha256"
 readonly archive_url="${release_base}/${asset}"
 
 /bin/mkdir -p "${state_dir}" "${bin_dir}"
-if ! /bin/mkdir "${lock_dir}" 2>/dev/null; then
-  exit 0
+zmodload zsh/system
+/usr/bin/touch "${lock_file}"
+# Kernel-owned locks disappear even after SIGKILL; never unlink the lock file,
+# since simultaneous updaters must continue to lock the same inode.
+if zsystem flock -t 0.01 -f update_lock_fd "${lock_file}"; then
+  :
+else
+  lock_result=$?
+  if (( lock_result == 2 )); then
+    exit 0
+  fi
+  print -u2 "Could not lock the Codex updater."
+  exit "${lock_result}"
 fi
 
 temp_dir="$(/usr/bin/mktemp -d "${state_dir}/update.XXXXXX")"
 cleanup() {
-  /bin/rm -rf "${temp_dir}" "${lock_dir}"
+  /bin/rm -rf "${temp_dir}"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 checksum_file="${temp_dir}/${asset}.sha256"
 archive_file="${temp_dir}/${asset}"
 /usr/bin/curl --fail --silent --show-error --location --retry 3 \
+  --connect-timeout 10 --max-time 60 --retry-max-time 120 \
   --output "${checksum_file}" "${checksum_url}"
 
 expected_checksum="$(/usr/bin/awk 'NR == 1 { print $1 }' "${checksum_file}")"
@@ -61,17 +75,18 @@ if [[ ! "${expected_checksum}" =~ '^[0-9A-Fa-f]{64}$' ]]; then
   exit 1
 fi
 expected_checksum="${expected_checksum:l}"
-/usr/bin/touch "${last_check}"
 
 if (( ! force )) && \
   [[ -x "${real_binary}" && -x "${code_mode_host}" && \
     -x "${synara_home}/codex-path/rg" && \
     -x "${synara_home}/codex-resources/zsh/bin/zsh" ]] && \
   [[ "$(/bin/cat "${installed_checksum}" 2>/dev/null || true)" == "${expected_checksum}" ]]; then
+  /usr/bin/touch "${last_check}"
   exit 0
 fi
 
 /usr/bin/curl --fail --silent --show-error --location --retry 3 \
+  --connect-timeout 10 --max-time 300 --retry-max-time 600 \
   --output "${archive_file}" "${archive_url}"
 actual_checksum="$(/usr/bin/shasum -a 256 "${archive_file}" | /usr/bin/awk '{ print $1 }')"
 if [[ "${actual_checksum}" != "${expected_checksum}" ]]; then
@@ -124,6 +139,23 @@ if [[ "$("${payload}/bin/codex-luna-max-fast.real" --version)" != "codex-cli ${v
   exit 1
 fi
 
+# A locally verified stable build can precede the fixed release feed. Never
+# replace it with an older stable bundle while the publishing job catches up.
+if [[ -x "${real_binary}" ]]; then
+  current_version="$("${real_binary}" --version 2>/dev/null || true)"
+  current_version="${current_version#codex-cli }"
+  if [[ "${current_version}" != "${version}" && \
+    "${current_version}" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' && \
+    "${version}" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]]; then
+    autoload -Uz is-at-least
+    if is-at-least "${version}" "${current_version}"; then
+      /usr/bin/touch "${last_check}"
+      print "Keeping newer Codex ${current_version}; release feed has ${version}."
+      exit 0
+    fi
+  fi
+fi
+
 install_file() {
   local source="$1"
   local destination="$2"
@@ -154,4 +186,5 @@ print -r -- "${expected_checksum}" >"${installed_checksum}.next"
 /bin/mv -f "${installed_checksum}.next" "${installed_checksum}"
 print -r -- "${version}" >"${installed_version}.next"
 /bin/mv -f "${installed_version}.next" "${installed_version}"
+/usr/bin/touch "${last_check}"
 print "Codex ${version} with Luna Max Fast is ready."

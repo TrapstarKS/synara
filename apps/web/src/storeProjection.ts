@@ -12,6 +12,7 @@ import {
   type TurnId,
 } from "@synara/contracts";
 import { deriveThreadSummaryMetadata } from "@synara/shared/threadSummary";
+import { hasPendingAsyncUserInput } from "@synara/shared/asyncUserInput";
 
 import {
   clearThreadDetailResumeCursor,
@@ -124,6 +125,9 @@ function toThreadShell(thread: Thread): ThreadShell {
       : {}),
     ...(thread.hasPendingUserInput !== undefined
       ? { hasPendingUserInput: thread.hasPendingUserInput }
+      : {}),
+    ...(thread.hasPendingAsyncUserInput !== undefined
+      ? { hasPendingAsyncUserInput: thread.hasPendingAsyncUserInput }
       : {}),
     ...(thread.hasActionableProposedPlan !== undefined
       ? { hasActionableProposedPlan: thread.hasActionableProposedPlan }
@@ -352,6 +356,7 @@ function sidebarThreadSummariesEqual(
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
+    left.hasPendingAsyncUserInput === right.hasPendingAsyncUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
     left.hasLiveTailWork === right.hasLiveTailWork &&
     (left.forkSourceThreadId ?? null) === (right.forkSourceThreadId ?? null) &&
@@ -397,6 +402,7 @@ function buildSidebarThreadSummary(
     latestUserMessageAt: metadata.latestUserMessageAt,
     hasPendingApprovals: metadata.hasPendingApprovals,
     hasPendingUserInput: metadata.hasPendingUserInput,
+    hasPendingAsyncUserInput: metadata.hasPendingAsyncUserInput ?? false,
     hasActionableProposedPlan: metadata.hasActionableProposedPlan,
     hasLiveTailWork: metadata.hasLiveTailWork,
     forkSourceThreadId: thread.forkSourceThreadId ?? null,
@@ -759,7 +765,8 @@ function writeThreadState(state: AppState, nextThread: Thread, previousThread?: 
         previousById,
       ),
       {
-        preserveTurnId: nextThread.latestTurn?.state === "running" ? nextThread.latestTurn.turnId : null,
+        preserveTurnId:
+          nextThread.latestTurn?.state === "running" ? nextThread.latestTurn.turnId : null,
       },
     );
     const slice = buildNormalizedSlice(
@@ -1185,6 +1192,7 @@ function deriveThreadStateSignals(
   | "latestUserMessageAt"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "hasPendingAsyncUserInput"
   | "hasActionableProposedPlan"
 > {
   const metadata = deriveThreadSummaryMetadata({
@@ -1204,6 +1212,10 @@ function deriveThreadStateSignals(
     hasPendingUserInput:
       actionableInteractions?.some((interaction) => interaction.interactionKind === "userInput") ??
       metadata.hasPendingUserInput,
+    // A shell-only thread may have pending questions without loaded messages.
+    // Message updates and full hydration maintain this signal explicitly.
+    hasPendingAsyncUserInput:
+      thread.hasPendingAsyncUserInput ?? thread.messages.some(hasPendingAsyncUserInput),
     hasActionableProposedPlan: metadata.hasActionableProposedPlan,
   };
 }
@@ -1214,6 +1226,7 @@ function withDerivedThreadStateSignals(thread: Thread): Thread {
     thread.latestUserMessageAt === nextSignals.latestUserMessageAt &&
     thread.hasPendingApprovals === nextSignals.hasPendingApprovals &&
     thread.hasPendingUserInput === nextSignals.hasPendingUserInput &&
+    (thread.hasPendingAsyncUserInput ?? false) === nextSignals.hasPendingAsyncUserInput &&
     thread.hasActionableProposedPlan === nextSignals.hasActionableProposedPlan
   ) {
     return thread;

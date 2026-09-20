@@ -820,7 +820,11 @@ describe("sidebar subagent activity", () => {
 
   it("rolls up nested work regardless of row order and preserves unrelated rows", () => {
     const middle = { ...child, session: makeSession("ready") };
-    const grandchild = { ...child, id: ThreadId.makeUnsafe("grandchild"), parentThreadId: child.id };
+    const grandchild = {
+      ...child,
+      id: ThreadId.makeUnsafe("grandchild"),
+      parentThreadId: child.id,
+    };
     const unrelated = makeThread({ id: "unrelated" });
     const threads = deriveSidebarThreadActivity([grandchild, unrelated, middle, parent]);
     expect(
@@ -878,7 +882,11 @@ describe("sidebar subagent activity", () => {
   });
 
   it("keeps a parent with a ready plan in the running group until its child finishes", () => {
-    const planParent = { ...parent, interactionMode: "plan" as const, hasActionableProposedPlan: true };
+    const planParent = {
+      ...parent,
+      interactionMode: "plan" as const,
+      hasActionableProposedPlan: true,
+    };
     const threads = deriveSidebarThreadActivity([planParent, child]);
     expect(resolveActivityStatusGroup(threads[0]!)).toBe("running");
     expect(statusFor(threads[0]!)).toMatchObject({ label: "Working" });

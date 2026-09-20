@@ -107,6 +107,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
+    hasPendingAsyncUserInput: Schema.Number,
     createBranchFlowCompleted: Schema.Number,
     isPinned: Schema.Number,
     handoff: Schema.NullOr(Schema.fromJsonString(ThreadHandoff)),
@@ -126,6 +127,7 @@ const {
 } = ProjectionThread.fields;
 const ProjectionThreadShellDbRowSchema = Schema.Struct(ProjectionThreadShellFields).mapFields(
   Struct.assign({
+    hasPendingAsyncUserInput: Schema.Number,
     createBranchFlowCompleted: Schema.Number,
     isPinned: Schema.Number,
     handoff: Schema.NullOr(Schema.fromJsonString(ThreadHandoff)),
@@ -691,6 +693,7 @@ function toProjectedThreadShellFromStoredSummary(input: {
     latestUserMessageAt: threadRow.latestUserMessageAt,
     hasPendingApprovals: threadRow.pendingApprovalCount > 0,
     hasPendingUserInput: threadRow.pendingUserInputCount > 0,
+    hasPendingAsyncUserInput: threadRow.hasPendingAsyncUserInput > 0,
     hasActionableProposedPlan: threadRow.hasActionableProposedPlan > 0,
     createdAt: threadRow.createdAt,
     updatedAt: threadRow.updatedAt,
@@ -756,6 +759,7 @@ function toProjectedThread(input: {
     latestUserMessageAt: summary.latestUserMessageAt,
     hasPendingApprovals: summary.hasPendingApprovals,
     hasPendingUserInput: summary.hasPendingUserInput,
+    hasPendingAsyncUserInput: threadRow.hasPendingAsyncUserInput > 0,
     hasActionableProposedPlan: summary.hasActionableProposedPlan,
     messages: input.messages,
     proposedPlans: input.proposedPlans,
@@ -921,6 +925,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          EXISTS (
+            SELECT 1 FROM projection_thread_messages AS pending
+              INDEXED BY idx_projection_messages_pending_async_input
+            WHERE pending.thread_id = projection_threads.thread_id
+              AND pending.role = 'assistant' AND pending.async_user_input_json IS NOT NULL
+              AND json_extract(pending.async_user_input_json, '$.response') IS NULL
+          ) AS "hasPendingAsyncUserInput",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -975,6 +986,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          EXISTS (
+            SELECT 1 FROM projection_thread_messages AS pending
+              INDEXED BY idx_projection_messages_pending_async_input
+            WHERE pending.thread_id = projection_threads.thread_id
+              AND pending.role = 'assistant' AND pending.async_user_input_json IS NOT NULL
+              AND json_extract(pending.async_user_input_json, '$.response') IS NULL
+          ) AS "hasPendingAsyncUserInput",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1084,6 +1102,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ) AS ranks
         JOIN projection_thread_messages USING (thread_id, message_id)
         WHERE message_rank <= ${MAX_THREAD_MESSAGES}
+          OR (role = 'assistant' AND async_user_input_json IS NOT NULL
+            AND json_extract(async_user_input_json, '$.response') IS NULL)
         ORDER BY
           thread_id ASC,
           CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
@@ -1694,6 +1714,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          EXISTS (
+            SELECT 1 FROM projection_thread_messages AS pending
+              INDEXED BY idx_projection_messages_pending_async_input
+            WHERE pending.thread_id = projection_threads.thread_id
+              AND pending.role = 'assistant' AND pending.async_user_input_json IS NOT NULL
+              AND json_extract(pending.async_user_input_json, '$.response') IS NULL
+          ) AS "hasPendingAsyncUserInput",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1753,6 +1780,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          EXISTS (
+            SELECT 1 FROM projection_thread_messages AS pending
+              INDEXED BY idx_projection_messages_pending_async_input
+            WHERE pending.thread_id = projection_threads.thread_id
+              AND pending.role = 'assistant' AND pending.async_user_input_json IS NOT NULL
+              AND json_extract(pending.async_user_input_json, '$.response') IS NULL
+          ) AS "hasPendingAsyncUserInput",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1809,7 +1843,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ) AS ranks
         JOIN projection_thread_messages USING (thread_id, message_id)
         WHERE thread_id = ${threadId}
-          AND (${maxMessages} IS NULL OR message_rank <= ${maxMessages})
+          AND (${maxMessages} IS NULL OR message_rank <= ${maxMessages}
+            OR (role = 'assistant' AND async_user_input_json IS NOT NULL
+              AND json_extract(async_user_input_json, '$.response') IS NULL))
         ORDER BY
           CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
           sequence ASC,

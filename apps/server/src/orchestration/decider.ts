@@ -2691,7 +2691,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           messageId: command.messageId,
           role: "assistant",
-          text: existingMessage?.text ?? "",
+          text: command.finalText ?? existingMessage?.text ?? "",
           ...(command.asyncQuestions
             ? {
                 asyncUserInput: existingMessage?.asyncUserInput ?? {

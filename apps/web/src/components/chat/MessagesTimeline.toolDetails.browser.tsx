@@ -5,7 +5,10 @@
 import "../../index.css";
 
 import { MessageId, TurnId } from "@synara/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { HttpResponse, http } from "msw";
+import { setupWorker } from "msw/browser";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { WorkspaceFileOpenerContext } from "../../lib/workspaceFileOpener";
@@ -13,6 +16,24 @@ import { formatTimestamp } from "../../timestampFormat";
 import { deriveTimelineEntries, type TimelineEntry } from "../../workLog";
 import { MessagesTimeline } from "./MessagesTimeline";
 import { TimelineWorkEntryRow } from "./TimelineWorkEntryRow";
+
+const imageWorker = setupWorker(
+  http.get(
+    "*/api/local-image",
+    () =>
+      new HttpResponse(
+        Uint8Array.from(
+          atob(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==",
+          ),
+          (char) => char.charCodeAt(0),
+        ),
+        { headers: { "Content-Type": "image/png" } },
+      ),
+  ),
+);
+beforeAll(() => imageWorker.start({ quiet: true, onUnhandledRequest: "bypass" }));
+afterAll(() => imageWorker.stop());
 
 function ToolDetailsTimeline({ entries }: { entries?: TimelineEntry[] }) {
   return (
@@ -311,31 +332,104 @@ describe("MessagesTimeline tool details", () => {
     }
   });
 
-  it("reveals the generated image preview inside expanded activity details", async () => {
-    const onImageExpand = vi.fn();
+  it("keeps MCP calls compact by default and reveals native Codex v2 identity, arguments, and results", async () => {
     const host = createTimelineHost();
     const screen = await render(
       <TimelineWorkEntryRow
         workEntry={{
-          id: "generated-image-activity",
+          id: "mcp-native-details",
           createdAt: "2026-03-17T19:12:28.000Z",
-          label: "Generated image",
+          label: "MCP tool call",
           tone: "tool",
-          itemType: "image_generation",
-          detail: "/tmp/synara/generated/pose_HAYMAKER_orig.png",
+          itemType: "mcp_tool_call",
+          toolName: "mcp__computer-use__get_app_state",
+          toolTitle: "Computer: Get app state",
+          toolStatus: "completed",
           liveActivity: {
             state: "completed",
-            label: "Generated image",
-            lastActivityAt: "2026-03-17T19:12:29.000Z",
+            label: "Computer: Get app state",
+            startedAt: "2026-03-17T19:12:28.000Z",
+            lastActivityAt: "2026-03-17T19:12:30.000Z",
+          },
+          toolDetails: {
+            kind: "tool-call",
+            title: "Computer: Get app state",
+            appName: "Computer",
+            actionName: "Get app state",
+            server: "computer-use",
+            tool: "get_app_state",
+            arguments: '{\n  "app": "Safari",\n  "includeDom": false\n}',
+            result: "Safari is focused",
+            structuredResult: '{\n  "focused": true\n}',
+            durationMs: 2_000,
           },
         }}
         chatMetaFontSizePx={12}
         textFontSizePx={13}
         density="compact"
-        onImageExpand={onImageExpand}
+        onImageExpand={() => {}}
         markdownCwd={undefined}
         timestampFormat="locale"
       />,
+      { container: host },
+    );
+
+    try {
+      expect(document.body.textContent ?? "").toContain("Computer: Get app state");
+      expect(document.body.textContent ?? "").not.toContain("computer-use");
+      expect(document.body.textContent ?? "").not.toContain('"includeDom"');
+      expect(document.body.textContent ?? "").not.toContain("Safari is focused");
+
+      const trigger = document.querySelector<HTMLButtonElement>(
+        '[data-tool-detail-trigger="true"]',
+      );
+      expect(trigger?.getAttribute("aria-expanded")).toBe("false");
+      trigger?.click();
+
+      await expect.poll(() => document.body.textContent ?? "").toContain("MCP server");
+      const expandedText = document.body.textContent ?? "";
+      expect(expandedText).toContain("computer-use");
+      expect(expandedText).toContain("get_app_state");
+      expect(expandedText).toContain("Arguments");
+      expect(expandedText).toContain("includeDom");
+      expect(expandedText).toContain("Safari is focused");
+      expect(expandedText).toContain("Structured result");
+      expect(expandedText).toContain("2.0 s");
+    } finally {
+      await screen.unmount();
+      host.remove();
+      await settleLayout();
+    }
+  });
+
+  it("reveals the generated image preview inside expanded activity details", async () => {
+    const onImageExpand = vi.fn();
+    const host = createTimelineHost();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <TimelineWorkEntryRow
+          workEntry={{
+            id: "generated-image-activity",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            label: "Generated image",
+            tone: "tool",
+            itemType: "image_generation",
+            detail: "/tmp/synara/generated/pose_HAYMAKER_orig.png",
+            liveActivity: {
+              state: "completed",
+              label: "Generated image",
+              lastActivityAt: "2026-03-17T19:12:29.000Z",
+            },
+          }}
+          chatMetaFontSizePx={12}
+          textFontSizePx={13}
+          density="compact"
+          onImageExpand={onImageExpand}
+          markdownCwd={undefined}
+          timestampFormat="locale"
+        />
+      </QueryClientProvider>,
       { container: host },
     );
 
@@ -351,6 +445,7 @@ describe("MessagesTimeline tool details", () => {
         .not.toBeNull();
       const image = document.querySelector<HTMLImageElement>('img[alt="Generated image"]');
       expect(image?.src).toContain("pose_HAYMAKER_orig.png");
+      await expect.poll(() => image?.naturalWidth).toBe(1);
       document.querySelector<HTMLButtonElement>('[aria-label="Expand generated image"]')?.click();
       expect(onImageExpand).toHaveBeenCalledWith({
         images: [
@@ -362,6 +457,7 @@ describe("MessagesTimeline tool details", () => {
       });
     } finally {
       await screen.unmount();
+      queryClient.clear();
       host.remove();
       await settleLayout();
     }

@@ -864,6 +864,38 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect(
+    "maps native v2 MCP progress by item id without replacing tool identity with progress text",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+        lifecycleManager.emit("event", {
+          id: asEventId("evt-mcp-progress-v2"),
+          kind: "notification",
+          provider: "codex",
+          createdAt: new Date().toISOString(),
+          method: "item/mcpToolCall/progress",
+          threadId: asThreadId("thread-1"),
+          payload: {
+            threadId: "provider-thread-1",
+            turnId: "turn-1",
+            itemId: "mcp-call-1",
+            message: "Fetched 20 of 40 records",
+          },
+        } satisfies ProviderEvent);
+
+        const firstEvent = yield* Fiber.join(firstEventFiber);
+        assert.equal(firstEvent._tag, "Some");
+        if (firstEvent._tag !== "Some" || firstEvent.value.type !== "tool.progress") return;
+        assert.equal(firstEvent.value.turnId, "turn-1");
+        assert.equal(firstEvent.value.itemId, "mcp-call-1");
+        assert.equal(firstEvent.value.payload.toolUseId, "mcp-call-1");
+        assert.equal(firstEvent.value.payload.summary, "Fetched 20 of 40 records");
+      }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -903,6 +935,36 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps the native v2 thread status object without inventing active work", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      for (const [status, expected] of [
+        [{ type: "idle" }, "idle"],
+        [{ type: "active", activeFlags: ["waitingOnApproval"] }, "active"],
+        [{ type: "systemError" }, "error"],
+        [{ type: "notLoaded" }, "closed"],
+      ] as const) {
+        const resultFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+        lifecycleManager.emit("event", {
+          id: asEventId(`status-${status.type}`),
+          kind: "notification",
+          provider: "codex",
+          createdAt: new Date().toISOString(),
+          method: "thread/status/changed",
+          threadId: asThreadId("thread-1"),
+          payload: { threadId: "thread-1", status },
+        } satisfies ProviderEvent);
+        const result = yield* Fiber.join(resultFiber);
+        assert.equal(result._tag, "Some");
+        if (result._tag !== "Some" || result.value.type !== "thread.state.changed") {
+          assert.fail("Expected a thread state event");
+          return;
+        }
+        assert.equal(result.value.payload.state, expected);
+      }
+    }),
+  );
+
   it.effect("preserves async questions without emitting a blocking request", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -922,6 +984,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             type: "agentMessage",
             id: "msg_1",
             delivery: "async",
+            text: "  Context before the question.\n\n",
             questions: [
               { title: "Which action?", options: ["Click", "Scroll"] },
               { title: "Anything else?", options: null },
@@ -948,6 +1011,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         { title: "Which action?", options: ["Click", "Scroll"] },
         { title: "Anything else?" },
       ]);
+      assert.equal(firstEvent.value.payload.detail, "  Context before the question.\n\n");
     }),
   );
 

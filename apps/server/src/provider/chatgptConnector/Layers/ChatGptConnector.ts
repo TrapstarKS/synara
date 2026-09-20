@@ -7,7 +7,7 @@
 // variables and un-granted provider credentials never reach it, and the
 // OpenAI tunnel key travels only as an environment variable, never argv.
 
-import { spawn } from "node:child_process";
+import { spawnProcess } from "@synara/shared/processRuntime";
 
 import { Cause, Effect, Exit, FileSystem, Layer, Path, Ref, Scope, Stream } from "effect";
 
@@ -49,7 +49,7 @@ export const spawnChatGptTunnelChild: ChatGptTunnelDependencies["spawn"] = (
   args,
   options,
 ) =>
-  spawn(command, [...args], {
+  spawnProcess(command, args, {
     env: buildProviderChildEnvironment({ provider: "chatgpt", overrides: options.env }),
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     stdio: ["ignore", "pipe", "pipe"],

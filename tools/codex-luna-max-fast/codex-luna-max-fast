@@ -17,7 +17,7 @@ if [[ "${SYNARA_CODEX_AUTO_UPDATE:-1}" != "0" && -x "${updater}" ]]; then
   if [[ -f "${last_check}" ]]; then
     checked_at="$(/usr/bin/stat -f %m "${last_check}" 2>/dev/null || echo 0)"
     now="$(/bin/date +%s)"
-    if (( now - checked_at < 21600 )); then
+    if (( now >= checked_at && now - checked_at < 21600 )); then
       should_check=0
     fi
   fi

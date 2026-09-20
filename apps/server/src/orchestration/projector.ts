@@ -1,4 +1,8 @@
 import { retainProviderHandoffHistory } from "@synara/shared/providerHandoff";
+import {
+  hasPendingAsyncUserInput,
+  retainMessagesWithPendingAsyncInputs,
+} from "@synara/shared/asyncUserInput";
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@synara/contracts";
 import {
   OrchestrationCheckpointSummary,
@@ -1040,28 +1044,25 @@ export function projectEvent(
                   updatedAt: payload.updatedAt,
                 })
               : undefined;
-          cappedMessages =
-            thread.messages.length >= MAX_THREAD_MESSAGES
-              ? [
-                  ...thread.messages.slice(thread.messages.length - MAX_THREAD_MESSAGES + 1),
-                  {
-                    ...message,
-                    ...(nextSegments !== undefined ? { textSegments: nextSegments } : {}),
-                  },
-                ]
-              : [
-                  ...thread.messages,
-                  {
-                    ...message,
-                    ...(nextSegments !== undefined ? { textSegments: nextSegments } : {}),
-                  },
-                ];
+          cappedMessages = retainMessagesWithPendingAsyncInputs(
+            [
+              ...thread.messages,
+              {
+                ...message,
+                ...(nextSegments !== undefined ? { textSegments: nextSegments } : {}),
+              },
+            ],
+            MAX_THREAD_MESSAGES,
+          );
         }
 
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            ...(payload.asyncUserInput
+              ? { hasPendingAsyncUserInput: cappedMessages.some(hasPendingAsyncUserInput) }
+              : {}),
             updatedAt: event.occurredAt,
           }),
         };
@@ -1264,11 +1265,10 @@ export function projectEvent(
             .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
             .slice(-MAX_THREAD_CHECKPOINTS);
           const retainedTurnIds = new Set(checkpoints.map((checkpoint) => checkpoint.turnId));
-          const messages = retainThreadMessagesAfterRevert(
-            thread.messages,
-            retainedTurnIds,
-            payload.turnCount,
-          ).slice(-MAX_THREAD_MESSAGES);
+          const messages = retainMessagesWithPendingAsyncInputs(
+            retainThreadMessagesAfterRevert(thread.messages, retainedTurnIds, payload.turnCount),
+            MAX_THREAD_MESSAGES,
+          );
           const proposedPlans = retainThreadProposedPlansAfterRevert(
             thread.proposedPlans,
             retainedTurnIds,
@@ -1293,6 +1293,7 @@ export function projectEvent(
             threads: updateThread(nextBase.threads, payload.threadId, {
               checkpoints,
               messages,
+              hasPendingAsyncUserInput: messages.some(hasPendingAsyncUserInput),
               proposedPlans,
               activities,
               latestTurn,
@@ -1339,7 +1340,11 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               checkpoints,
-              messages: rollback.messages.slice(-MAX_THREAD_MESSAGES),
+              messages: retainMessagesWithPendingAsyncInputs(
+                rollback.messages,
+                MAX_THREAD_MESSAGES,
+              ),
+              hasPendingAsyncUserInput: rollback.messages.some(hasPendingAsyncUserInput),
               proposedPlans,
               activities,
               latestTurn:

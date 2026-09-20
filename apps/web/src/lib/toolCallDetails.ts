@@ -24,14 +24,26 @@ export interface WorkLogToolEditDetails {
 }
 
 export interface WorkLogToolDetails {
-  kind: "command" | "file-change";
+  kind: "command" | "file-change" | "tool-call";
   title: string;
   command?: string;
+  cwd?: string;
+  durationMs?: number;
   output?: WorkLogToolOutputDetails;
   diff?: string;
   content?: string;
   edits?: ReadonlyArray<WorkLogToolEditDetails>;
   files?: ReadonlyArray<string>;
+  server?: string;
+  namespace?: string;
+  tool?: string;
+  appName?: string;
+  actionName?: string;
+  arguments?: string;
+  result?: string;
+  structuredResult?: string;
+  error?: string;
+  success?: boolean;
 }
 
 export interface DeriveWorkLogToolDetailsInput {
@@ -106,6 +118,45 @@ function firstNumber(...values: unknown[]): number | undefined {
   return undefined;
 }
 
+const MAX_TOOL_DETAIL_TEXT_CHARS = 12_000;
+
+function boundedToolDetailText(value: string): string {
+  if (value.length <= MAX_TOOL_DETAIL_TEXT_CHARS) {
+    return value;
+  }
+  return `${value.slice(0, MAX_TOOL_DETAIL_TEXT_CHARS - 24).trimEnd()}\n… output truncated …`;
+}
+
+function serializeToolDetailValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value.length > 0 ? boundedToolDetailText(value) : undefined;
+  }
+  try {
+    const serialized = JSON.stringify(value, null, 2);
+    return serialized && serialized !== "null" ? boundedToolDetailText(serialized) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function toolResultContent(value: unknown): string | undefined {
+  if (!Array.isArray(value) || value.length === 0) {
+    return serializeToolDetailValue(value);
+  }
+  const textParts = value.flatMap((entry) => {
+    const record = asRecord(entry);
+    const text = record?.type === "text" ? firstOutputText(record.text) : undefined;
+    return text === undefined ? [] : [text];
+  });
+  if (textParts.length === value.length) {
+    return boundedToolDetailText(textParts.join("\n"));
+  }
+  return serializeToolDetailValue(value);
+}
+
 function outputText(value: unknown): string | undefined {
   if (typeof value !== "string" || value.trim().length === 0) {
     return undefined;
@@ -161,6 +212,8 @@ function extractToolOutputDetails(input: {
       rawOutput?.output,
       rawOutput?.content,
       data?.output,
+      item?.aggregatedOutput,
+      item?.aggregated_output,
       itemResult?.output,
       itemResult?.content,
       result?.output,
@@ -183,6 +236,8 @@ function extractToolOutputDetails(input: {
     rawOutput?.exitCode,
     rawOutput?.code,
     data?.exitCode,
+    item?.exitCode,
+    item?.exit_code,
     itemResult?.exitCode,
     result?.exitCode,
     outputExitCode(input.detail),
@@ -197,6 +252,76 @@ function extractToolOutputDetails(input: {
     ...(stderr ? { stderr } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(truncated ? { truncated } : {}),
+  };
+}
+
+function extractToolCallDetails(
+  input: DeriveWorkLogToolDetailsInput,
+): WorkLogToolDetails | undefined {
+  if (input.itemType !== "mcp_tool_call" && input.itemType !== "dynamic_tool_call") {
+    return undefined;
+  }
+  const data = asRecord(input.payload?.data);
+  const item = asRecord(data?.item) ?? data;
+  if (!item) {
+    return undefined;
+  }
+
+  const resultRecord = asRecord(item.result);
+  const errorRecord = asRecord(item.error);
+  const appContext = asRecord(item.appContext ?? item.app_context);
+  const argumentsText = serializeToolDetailValue(item.arguments);
+  const result =
+    toolResultContent(resultRecord?.content) ??
+    toolResultContent(item.contentItems ?? item.content_items) ??
+    serializeToolDetailValue(item.result);
+  const structuredResult = serializeToolDetailValue(
+    resultRecord?.structuredContent ?? resultRecord?.structured_content,
+  );
+  const error = firstString(errorRecord?.message, item.error);
+  const durationMs = firstNumber(item.durationMs, item.duration_ms);
+  const success = typeof item.success === "boolean" ? item.success : undefined;
+  const server = firstString(item.server, data?.server, data?.serverName);
+  const namespace = firstString(item.namespace, data?.namespace);
+  const tool = firstString(item.tool, data?.tool, data?.toolName);
+  const appName = firstString(appContext?.appName, appContext?.app_name);
+  const actionName = firstString(appContext?.actionName, appContext?.action_name);
+  const hasPayloadDetails = Boolean(
+    argumentsText ||
+    result ||
+    structuredResult ||
+    error ||
+    durationMs !== undefined ||
+    success !== undefined,
+  );
+  const hasIdentityDetails =
+    input.itemType === "mcp_tool_call"
+      ? Boolean(server || appName || actionName)
+      : Boolean(namespace || appName || actionName);
+
+  // A generic dynamic-tool row that only carries its already-visible toolName
+  // gains nothing from an empty disclosure, and near the activity retention cap
+  // manufacturing thousands of those detail objects adds measurable render cost.
+  // Native MCP server identity and namespaced dynamic tools remain inspectable,
+  // as do calls with actual arguments/results/errors/runtime metadata.
+  if (!hasIdentityDetails && !hasPayloadDetails) {
+    return undefined;
+  }
+
+  return {
+    kind: "tool-call",
+    title: detailsTitle(input),
+    ...(server ? { server } : {}),
+    ...(namespace ? { namespace } : {}),
+    ...(tool ? { tool } : {}),
+    ...(appName ? { appName } : {}),
+    ...(actionName ? { actionName } : {}),
+    ...(argumentsText ? { arguments: argumentsText } : {}),
+    ...(result ? { result } : {}),
+    ...(structuredResult ? { structuredResult } : {}),
+    ...(error ? { error } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(success !== undefined ? { success } : {}),
   };
 }
 
@@ -350,6 +475,10 @@ export function deriveWorkLogToolDetails(
 ): WorkLogToolDetails | undefined {
   const command = input.rawCommand ?? input.command;
   if (shouldBuildCommandDetails(input)) {
+    const data = asRecord(input.payload?.data);
+    const item = asRecord(data?.item);
+    const cwd = firstString(item?.cwd, data?.cwd);
+    const durationMs = firstNumber(item?.durationMs, item?.duration_ms, data?.durationMs);
     const output = extractToolOutputDetails({
       payload: input.payload,
       detail: input.detail,
@@ -362,8 +491,15 @@ export function deriveWorkLogToolDetails(
       kind: "command",
       title: detailsTitle(input),
       ...(command ? { command } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
       ...(output ? { output } : {}),
     };
+  }
+
+  const toolCallDetails = extractToolCallDetails(input);
+  if (toolCallDetails) {
+    return toolCallDetails;
   }
 
   if (!shouldBuildFileChangeDetails(input)) {
@@ -429,10 +565,34 @@ export function mergeWorkLogToolDetails(
     kind: right.kind,
     title: right.title || left.title,
     ...((right.command ?? left.command) ? { command: right.command ?? left.command } : {}),
+    ...((right.cwd ?? left.cwd) ? { cwd: right.cwd ?? left.cwd } : {}),
+    ...(right.durationMs !== undefined || left.durationMs !== undefined
+      ? { durationMs: right.durationMs ?? left.durationMs }
+      : {}),
     ...(output ? { output } : {}),
     ...((right.diff ?? left.diff) ? { diff: right.diff ?? left.diff } : {}),
     ...((right.content ?? left.content) ? { content: right.content ?? left.content } : {}),
     ...((right.edits ?? left.edits) ? { edits: right.edits ?? left.edits } : {}),
     ...(files ? { files } : {}),
+    ...((right.server ?? left.server) ? { server: right.server ?? left.server } : {}),
+    ...((right.namespace ?? left.namespace)
+      ? { namespace: right.namespace ?? left.namespace }
+      : {}),
+    ...((right.tool ?? left.tool) ? { tool: right.tool ?? left.tool } : {}),
+    ...((right.appName ?? left.appName) ? { appName: right.appName ?? left.appName } : {}),
+    ...((right.actionName ?? left.actionName)
+      ? { actionName: right.actionName ?? left.actionName }
+      : {}),
+    ...((right.arguments ?? left.arguments)
+      ? { arguments: right.arguments ?? left.arguments }
+      : {}),
+    ...((right.result ?? left.result) ? { result: right.result ?? left.result } : {}),
+    ...((right.structuredResult ?? left.structuredResult)
+      ? { structuredResult: right.structuredResult ?? left.structuredResult }
+      : {}),
+    ...((right.error ?? left.error) ? { error: right.error ?? left.error } : {}),
+    ...(right.success !== undefined || left.success !== undefined
+      ? { success: right.success ?? left.success }
+      : {}),
   };
 }

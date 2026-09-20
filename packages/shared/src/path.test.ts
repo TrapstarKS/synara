@@ -4,8 +4,29 @@ import {
   isLocalAbsolutePath,
   isWorkspaceRelativePathSafe,
   joinWorkspaceRelativePath,
+  nativePathsMayAlias,
+  normalizeNativeGlobPath,
   workspaceRelativePathOf,
 } from "./path";
+
+describe("native path policy", () => {
+  it.each(["darwin", "win32", "linux"] as const)(
+    "preserves case-alias policy on %s",
+    (platform) => {
+      expect(nativePathsMayAlias("/project/File.ts", "/project/file.ts", platform)).toBe(
+        platform !== "linux",
+      );
+      expect(nativePathsMayAlias("a\\b", "a/b", platform)).toBe(false);
+      expect(nativePathsMayAlias(" file ", "file", platform)).toBe(false);
+    },
+  );
+
+  it("normalizes native glob separators without changing POSIX filenames", () => {
+    expect(normalizeNativeGlobPath("src\\*.ts/", "win32")).toBe("src/*.ts");
+    expect(normalizeNativeGlobPath("src\\*.ts/", "darwin")).toBe("src\\*.ts/");
+    expect(normalizeNativeGlobPath("src\\*.ts/", "linux")).toBe("src\\*.ts/");
+  });
+});
 
 describe("isWorkspaceRelativePathSafe", () => {
   it("accepts plain workspace-relative paths", () => {

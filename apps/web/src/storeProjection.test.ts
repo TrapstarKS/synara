@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyShellEvent,
+  applyThreadUpdate,
   clearThreadDetailSyncFailureInClientState,
   evictThreadDetailFromClientState,
   markThreadDetailSyncFailedInClientState,
@@ -45,6 +46,23 @@ import {
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
 
 describe("store projection", () => {
+  it("preserves shell-only question attention through metadata updates until full hydration clears it", () => {
+    const incoming = makeReadModelThread({ hasPendingAsyncUserInput: true, messages: [] });
+    const shell = syncServerShellSnapshot(makeState(makeThread()), makeShellSnapshot(incoming));
+    const updated = applyThreadUpdate(shell, incoming.id, (thread) => ({
+      ...thread,
+      title: "Renamed",
+    }));
+    expect(threadsOf(updated)[0]?.messages).toHaveLength(0);
+    expect(threadsOf(updated)[0]?.hasPendingAsyncUserInput).toBe(true);
+    expect(updated.sidebarThreadSummaryById[incoming.id]?.hasPendingAsyncUserInput).toBe(true);
+    const hydrated = syncServerReadModel(updated, {
+      ...makeReadModel({ ...incoming, hasPendingAsyncUserInput: false }),
+      snapshotSequence: 3,
+    });
+    expect(threadsOf(hydrated)[0]?.hasPendingAsyncUserInput).toBe(false);
+  });
+
   it("preserves a semantic branch when a temp worktree branch arrives from the read model", () => {
     const initialThread = makeThread({
       branch: "feature/semantic-branch",

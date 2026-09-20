@@ -1200,6 +1200,48 @@ describe("resolveThreadStatusPill", () => {
     },
   };
 
+  it.each(["running", "ready", "closed", "error"] as const)(
+    "keeps asynchronous questions actionable while the session is %s",
+    (status) => {
+      const input = { hasPendingApprovals: false, hasPendingUserInput: false };
+      expect(
+        resolveThreadStatusPill({
+          ...input,
+          thread: {
+            ...baseThread,
+            session: { ...baseThread.session, status },
+            hasPendingAsyncUserInput: true,
+            lastVisitedAt: "2026-03-09T12:00:00.000Z",
+          },
+        }),
+      ).toMatchObject({ label: "Needs Answer", dismissible: false, pulse: false });
+      expect(
+        resolveThreadStatusPill({
+          ...input,
+          thread: {
+            ...baseThread,
+            hasPendingAsyncUserInput: false,
+          },
+        }),
+      ).toMatchObject({ label: "Working" });
+    },
+  );
+
+  it.each(["error", "interrupted"] as const)("never labels a %s turn as completed", (state) => {
+    const status = resolveThreadStatusPill({
+      thread: {
+        ...baseThread,
+        latestTurn: { ...makeLatestTurn()!, state },
+        interactionMode: "default",
+        session: { ...baseThread.session, status: "ready", orchestrationStatus: "ready" },
+      },
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+    });
+    if (state === "error") expect(status?.label).toBe("Error");
+    else expect(status).toBeNull();
+  });
+
   it("shows pending approval before all other statuses", () => {
     expect(
       resolveThreadStatusPill({

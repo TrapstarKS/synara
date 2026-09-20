@@ -1698,9 +1698,7 @@ const make = Effect.gen(function* () {
       : undefined;
     const requestedModelSelection = options?.modelSelection;
     const requestedCodexProfileId =
-      requestedModelSelection?.provider === "codex"
-        ? requestedModelSelection.profileId
-        : undefined;
+      requestedModelSelection?.provider === "codex" ? requestedModelSelection.profileId : undefined;
     const currentCodexProfileId =
       thread.modelSelection.provider === "codex" ? thread.modelSelection.profileId : undefined;
     const requestedChangesCodexProfile =

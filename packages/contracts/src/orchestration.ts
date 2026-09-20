@@ -854,6 +854,7 @@ export const OrchestrationThread = Schema.Struct({
   latestUserMessageAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   hasPendingApprovals: Schema.optional(Schema.Boolean),
   hasPendingUserInput: Schema.optional(Schema.Boolean),
+  hasPendingAsyncUserInput: Schema.optional(Schema.Boolean),
   hasActionableProposedPlan: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -945,6 +946,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   latestUserMessageAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   hasPendingApprovals: Schema.optional(Schema.Boolean),
   hasPendingUserInput: Schema.optional(Schema.Boolean),
+  hasPendingAsyncUserInput: Schema.optional(Schema.Boolean),
   hasActionableProposedPlan: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -1643,6 +1645,8 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
 
 const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   asyncQuestions: Schema.optional(AsyncUserInputQuestions),
+  // A provider's completed item can repair missing or replayed streaming deltas.
+  finalText: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
   type: Schema.Literal("thread.message.assistant.complete"),
   commandId: CommandId,
   threadId: ThreadId,

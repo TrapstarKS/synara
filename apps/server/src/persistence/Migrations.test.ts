@@ -312,6 +312,8 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [108, "MindTextRevisions"],
         [109, "MindProfiles"],
         [110, "MindProjectionDecoupling"],
+        [111, "PendingAsyncUserInputIndex"],
+        [112, "ProfileStatsDeletedCosts"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -374,6 +376,8 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 108, name: "MindTextRevisions" },
           { migration_id: 109, name: "MindProfiles" },
           { migration_id: 110, name: "MindProjectionDecoupling" },
+          { migration_id: 111, name: "PendingAsyncUserInputIndex" },
+          { migration_id: 112, name: "ProfileStatsDeletedCosts" },
         ],
       );
       const preserved = yield* sql<{ readonly count: number }>`
@@ -470,13 +474,15 @@ agentGatewayRetentionLegacyLayer(
           [101, "RemoveTranscriptMarkers"],
           [102, "ProjectionThreadMessagesTurnBoundary"],
           [103, "ClaudeTokenAccounting"],
-        [104, "RecoverCodexThreadProfiles"],
-        [105, "AsyncUserInput"],
-        [106, "Mind"],
-        [107, "MindRuntimeIntegrity"],
-        [108, "MindTextRevisions"],
-        [109, "MindProfiles"],
-        [110, "MindProjectionDecoupling"],
+          [104, "RecoverCodexThreadProfiles"],
+          [105, "AsyncUserInput"],
+          [106, "Mind"],
+          [107, "MindRuntimeIntegrity"],
+          [108, "MindTextRevisions"],
+          [109, "MindProfiles"],
+          [110, "MindProjectionDecoupling"],
+          [111, "PendingAsyncUserInputIndex"],
+          [112, "ProfileStatsDeletedCosts"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -582,6 +588,8 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [108, "MindTextRevisions"],
         [109, "MindProfiles"],
         [110, "MindProjectionDecoupling"],
+        [111, "PendingAsyncUserInputIndex"],
+        [112, "ProfileStatsDeletedCosts"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -621,13 +629,15 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [101, "RemoveTranscriptMarkers"],
           [102, "ProjectionThreadMessagesTurnBoundary"],
           [103, "ClaudeTokenAccounting"],
-        [104, "RecoverCodexThreadProfiles"],
-        [105, "AsyncUserInput"],
-        [106, "Mind"],
-        [107, "MindRuntimeIntegrity"],
-        [108, "MindTextRevisions"],
-        [109, "MindProfiles"],
-        [110, "MindProjectionDecoupling"],
+          [104, "RecoverCodexThreadProfiles"],
+          [105, "AsyncUserInput"],
+          [106, "Mind"],
+          [107, "MindRuntimeIntegrity"],
+          [108, "MindTextRevisions"],
+          [109, "MindProfiles"],
+          [110, "MindProjectionDecoupling"],
+          [111, "PendingAsyncUserInputIndex"],
+          [112, "ProfileStatsDeletedCosts"],
         ],
       );
 
@@ -728,6 +738,8 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [108, "MindTextRevisions"],
         [109, "MindProfiles"],
         [110, "MindProjectionDecoupling"],
+        [111, "PendingAsyncUserInputIndex"],
+        [112, "ProfileStatsDeletedCosts"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -763,13 +775,15 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [101, "RemoveTranscriptMarkers"],
           [102, "ProjectionThreadMessagesTurnBoundary"],
           [103, "ClaudeTokenAccounting"],
-        [104, "RecoverCodexThreadProfiles"],
-        [105, "AsyncUserInput"],
-        [106, "Mind"],
-        [107, "MindRuntimeIntegrity"],
-        [108, "MindTextRevisions"],
-        [109, "MindProfiles"],
-        [110, "MindProjectionDecoupling"],
+          [104, "RecoverCodexThreadProfiles"],
+          [105, "AsyncUserInput"],
+          [106, "Mind"],
+          [107, "MindRuntimeIntegrity"],
+          [108, "MindTextRevisions"],
+          [109, "MindProfiles"],
+          [110, "MindProjectionDecoupling"],
+          [111, "PendingAsyncUserInputIndex"],
+          [112, "ProfileStatsDeletedCosts"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -950,6 +964,8 @@ mindMigrationLayer("Mind migration", (it) => {
         [108, "MindTextRevisions"],
         [109, "MindProfiles"],
         [110, "MindProjectionDecoupling"],
+        [111, "PendingAsyncUserInputIndex"],
+        [112, "ProfileStatsDeletedCosts"],
       ]);
 
       yield* sql`INSERT INTO mind_memories (id, project_id, text, type, text_hash, peak_weight, created_at, last_accessed_at) VALUES ('m1', 'p1', 'delete me', 'semantic', 'hash', 0.6, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`;
@@ -991,6 +1007,8 @@ mindRuntimeIntegrityLayer("Mind runtime integrity migration", (it) => {
           [108, "MindTextRevisions"],
           [109, "MindProfiles"],
           [110, "MindProjectionDecoupling"],
+          [111, "PendingAsyncUserInputIndex"],
+          [112, "ProfileStatsDeletedCosts"],
         ]);
         const rows = yield* sql<{
           readonly id: string;
@@ -1070,6 +1088,8 @@ mindTextRevisionsLayer("Mind text revisions migration", (it) => {
         [108, "MindTextRevisions"],
         [109, "MindProfiles"],
         [110, "MindProjectionDecoupling"],
+        [111, "PendingAsyncUserInputIndex"],
+        [112, "ProfileStatsDeletedCosts"],
       ]);
 
       const columns = yield* sql<{ readonly name: string }>`
@@ -1112,6 +1132,8 @@ mindProfileLayer("Mind profiles migration", (it) => {
       assert.deepStrictEqual(executed, [
         [109, "MindProfiles"],
         [110, "MindProjectionDecoupling"],
+        [111, "PendingAsyncUserInputIndex"],
+        [112, "ProfileStatsDeletedCosts"],
       ]);
 
       // Profiles are decoupled from the projection: deleting the project row
@@ -1169,6 +1191,8 @@ mindDecouplingLayer("Mind projection decoupling migration", (it) => {
       const executed = yield* runMigrations();
       assert.deepStrictEqual(executed, [
         [110, "MindProjectionDecoupling"],
+        [111, "PendingAsyncUserInputIndex"],
+        [112, "ProfileStatsDeletedCosts"],
       ]);
 
       const profileFks = yield* sql<{ readonly referenced: string }>`

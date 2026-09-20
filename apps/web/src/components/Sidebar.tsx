@@ -1720,8 +1720,7 @@ export default function Sidebar() {
     () =>
       sidebarThreads.filter(
         (thread) =>
-          thread.archivedAt == null &&
-          isSidebarThreadVisible(thread, { hideAutomationRunThreads }),
+          thread.archivedAt == null && isSidebarThreadVisible(thread, { hideAutomationRunThreads }),
       ),
     [hideAutomationRunThreads, sidebarThreads],
   );
@@ -4060,30 +4059,41 @@ export default function Sidebar() {
   );
   const spaceActivityById = useMemo(() => {
     const priority: Record<SpaceActivityTone, number> = {
-      attention: 3,
+      attention: 4,
+      error: 3,
       running: 2,
       completed: 1,
     };
     const activity = new Map<SpaceId | null, SpaceActivityTone>();
     for (const project of allStandardProjectsBase) {
-      const status = resolveProjectStatusIndicator(
-        (sidebarThreadsByProjectId.get(project.id) ?? []).map(resolveThreadStatusForSidebar),
-      );
-      if (!status) continue;
-      const tone: SpaceActivityTone =
-        status.label === "Working" || status.label === "Connecting"
-          ? "running"
-          : status.label === "Completed"
-            ? "completed"
-            : "attention";
-      const projectSpaceId = project.spaceId ?? null;
-      const current = activity.get(projectSpaceId);
-      if (!current || priority[tone] > priority[current]) {
-        activity.set(projectSpaceId, tone);
+      // Reduce thread states directly. The project pill prefers work over a
+      // ready plan; using it here used to hide attention in the same project.
+      for (const thread of sidebarThreadsByProjectId.get(project.id) ?? []) {
+        const status = resolveThreadStatusForSidebar(thread);
+        if (!status || (status.label === "Completed" && thread.id === activeSidebarThreadId))
+          continue;
+        const tone: SpaceActivityTone =
+          status.label === "Working" || status.label === "Connecting"
+            ? "running"
+            : status.label === "Completed"
+              ? "completed"
+              : status.label === "Error"
+                ? "error"
+                : "attention";
+        const projectSpaceId = project.spaceId ?? null;
+        const current = activity.get(projectSpaceId);
+        if (!current || priority[tone] > priority[current]) {
+          activity.set(projectSpaceId, tone);
+        }
       }
     }
     return activity;
-  }, [allStandardProjectsBase, resolveThreadStatusForSidebar, sidebarThreadsByProjectId]);
+  }, [
+    activeSidebarThreadId,
+    allStandardProjectsBase,
+    resolveThreadStatusForSidebar,
+    sidebarThreadsByProjectId,
+  ]);
   const standardProjectsBase = useMemo(
     () => allStandardProjectsBase.filter((project) => (project.spaceId ?? null) === activeSpaceId),
     [activeSpaceId, allStandardProjectsBase],
@@ -4586,10 +4596,10 @@ export default function Sidebar() {
             }),
             {
               fastModeOverride: isLunaFastSubagent({
-              provider: thread.modelSelection.provider,
-              model: thread.modelSelection.model,
-              parentThreadId: thread.parentThreadId ?? null,
-            }),
+                provider: thread.modelSelection.provider,
+                model: thread.modelSelection.model,
+                parentThreadId: thread.parentThreadId ?? null,
+              }),
             },
           )}
           status={hoverStatus}

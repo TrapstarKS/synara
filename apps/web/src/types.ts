@@ -274,6 +274,7 @@ export interface Thread extends ThreadWorkspaceState {
   latestUserMessageAt?: string | null;
   hasPendingApprovals?: boolean;
   hasPendingUserInput?: boolean;
+  hasPendingAsyncUserInput?: boolean;
   hasActionableProposedPlan?: boolean;
   pendingInteractions?: OrchestrationPendingInteraction[];
   turnDiffSummaries: TurnDiffSummary[];
@@ -320,6 +321,7 @@ export interface ThreadShell extends ThreadWorkspaceState {
   latestUserMessageAt?: string | null;
   hasPendingApprovals?: boolean;
   hasPendingUserInput?: boolean;
+  hasPendingAsyncUserInput?: boolean;
   hasActionableProposedPlan?: boolean;
   pendingInteractions?: OrchestrationPendingInteraction[];
   lastVisitedAt?: string | undefined;
@@ -359,6 +361,7 @@ export interface SidebarThreadSummary {
   latestUserMessageAt: string | null;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
+  hasPendingAsyncUserInput?: boolean;
   hasActionableProposedPlan: boolean;
   hasLiveTailWork: boolean;
   /** Sidebar-only activity rollup; never changes the parent session or turn. */

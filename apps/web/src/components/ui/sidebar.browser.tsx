@@ -76,9 +76,7 @@ it("opens from the left edge and closes with an outward swipe", async () => {
     dispatchPointer(threadButton, "pointermove", 220, 402);
     dispatchPointer(threadButton, "pointerup", 220, 402);
     await vi.waitFor(() => {
-      expect(
-        document.querySelector('[data-mobile="true"][data-sidebar-side="left"]'),
-      ).toBeNull();
+      expect(document.querySelector('[data-mobile="true"][data-sidebar-side="left"]')).toBeNull();
     });
   } finally {
     await mounted.unmount();
@@ -92,9 +90,7 @@ it("keeps vertical scrolling gestures from opening the sidebar", async () => {
     dispatchPointer(document, "pointerdown", 8, 400);
     dispatchPointer(document, "pointermove", 10, 500);
     dispatchPointer(document, "pointerup", 10, 500);
-    expect(
-      document.querySelector('[data-mobile="true"][data-sidebar-side="left"]'),
-    ).toBeNull();
+    expect(document.querySelector('[data-mobile="true"][data-sidebar-side="left"]')).toBeNull();
   } finally {
     await mounted.unmount();
   }

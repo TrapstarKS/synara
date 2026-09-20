@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
   type MouseEvent,
+  type PointerEvent,
   type WheelEvent,
 } from "react";
 import { flushSync } from "react-dom";
@@ -29,6 +30,13 @@ interface ChatTranscriptScrollInput {
   hasStreamingAssistantText: boolean;
   composerTranscriptInsetPx: number;
   isInactiveSplitPane: boolean;
+}
+
+interface TranscriptScrollGesture {
+  container: HTMLElement;
+  scrollTop: number;
+  wasFollowing: boolean;
+  keyboard?: boolean;
 }
 
 export function useChatTranscriptScroll({
@@ -78,13 +86,16 @@ export function useChatTranscriptScroll({
     isUserScrollDetachedRef.current = detached;
     setIsUserScrollDetached(detached);
   }, []);
-  const pendingScrollGestureRef = useRef<{
-    container: HTMLElement;
-    scrollTop: number;
-    wasFollowing: boolean;
-    keyboard?: boolean;
+  const pendingScrollGestureRef = useRef<TranscriptScrollGesture | null>(null);
+  const capturedWheelGestureRef = useRef<{
+    event: globalThis.WheelEvent;
+    gesture: TranscriptScrollGesture;
   } | null>(null);
   const pendingScrollGestureFrameRef = useRef<number | null>(null);
+  const pendingBlankPointerGestureRef = useRef<{
+    container: HTMLElement;
+    scrollTop: number;
+  } | null>(null);
   const cancelPendingScrollGesture = useCallback(() => {
     const frameId = pendingScrollGestureFrameRef.current;
     if (frameId !== null) window.cancelAnimationFrame(frameId);
@@ -118,8 +129,11 @@ export function useChatTranscriptScroll({
     [cancelPendingScrollGesture, setTranscriptScrollDetached],
   );
   const clearTranscriptAutoFollow = useCallback(
-    (synchronous = false) => {
+    (synchronous = false, gesture: TranscriptScrollGesture | null = null) => {
       cancelPendingScrollGesture();
+      // Install the input barrier before flushSync can trigger the list's
+      // previous at-end notification while projecting detached state.
+      pendingScrollGestureRef.current = gesture;
       const scrollTarget = settledScrollInFlightRef.current ? legendListRef.current : null;
       autoFollowThreadIdRef.current = null;
       animateNextAutoFollowScrollRef.current = false;
@@ -172,9 +186,13 @@ export function useChatTranscriptScroll({
     (isAtEnd: boolean) => {
       const container = legendListRef.current?.getScrollableNode();
       const pending = pendingScrollGestureRef.current;
-      if (pending?.keyboard && container === pending.container) {
-        // Native key scrolling can begin after keyup and after multiple frames.
-        if (container.scrollTop >= pending.scrollTop || isScrollContainerNearBottom(container, 1))
+      if (pending && container === pending.container) {
+        // Key and wheel scrolling can begin after their input event. A stale
+        // at-end notification cannot revoke ownership before movement settles.
+        if (
+          container.scrollTop >= pending.scrollTop - 1 ||
+          isScrollContainerNearBottom(container, 1)
+        )
           return;
         pendingScrollGestureRef.current = null;
       }
@@ -273,15 +291,52 @@ export function useChatTranscriptScroll({
     },
     [legendListRef, cancelPendingInteractionAnchorAdjustment],
   );
-  const onMessagesPointerDownBase = useCallback(() => {
-    clearTranscriptAutoFollow(true);
-  }, [clearTranscriptAutoFollow]);
+  const onMessagesPointerDownBase = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const container = legendListRef.current?.getScrollableNode();
+      const wasFollowing =
+        isAtEndRef.current &&
+        !isUserScrollDetachedRef.current &&
+        !settledScrollInFlightRef.current &&
+        !tailAnchorScrollInFlightRef.current;
+      pendingBlankPointerGestureRef.current =
+        wasFollowing && container instanceof HTMLElement && event.target === container
+          ? { container, scrollTop: container.scrollTop }
+          : null;
+      clearTranscriptAutoFollow(true);
+    },
+    [clearTranscriptAutoFollow, legendListRef],
+  );
   const releaseTranscriptScrollGesture = useCallback(() => {
     const state = legendListRef.current?.getState();
     if (state) onIsAtEndChange(state.isAtEnd);
   }, [legendListRef, onIsAtEndChange]);
-  const onMessagesPointerCancelBase = releaseTranscriptScrollGesture;
-  const onMessagesPointerUpBase = releaseTranscriptScrollGesture;
+  const onMessagesPointerCancelBase = useCallback(() => {
+    pendingBlankPointerGestureRef.current = null;
+    releaseTranscriptScrollGesture();
+  }, [releaseTranscriptScrollGesture]);
+  const onMessagesPointerUpBase = useCallback(() => {
+    const origin = pendingBlankPointerGestureRef.current;
+    pendingBlankPointerGestureRef.current = null;
+    if (
+      origin &&
+      legendListRef.current?.getScrollableNode() === origin.container &&
+      origin.container.scrollTop >= origin.scrollTop &&
+      window.getSelection()?.isCollapsed !== false
+    ) {
+      setTranscriptScrollDetached(false);
+      onIsAtEndChange(true);
+      scrollToEnd();
+      return;
+    }
+    releaseTranscriptScrollGesture();
+  }, [
+    legendListRef,
+    onIsAtEndChange,
+    releaseTranscriptScrollGesture,
+    scrollToEnd,
+    setTranscriptScrollDetached,
+  ]);
   const onMessagesScrollBase = useCallback(() => {}, []);
   const onMessagesTouchEndBase = releaseTranscriptScrollGesture;
   const onMessagesTouchMoveBase = useCallback(() => {
@@ -291,7 +346,7 @@ export function useChatTranscriptScroll({
     clearTranscriptAutoFollow(true);
   }, [clearTranscriptAutoFollow]);
   const onMessagesScrollGesture = useCallback(
-    (upward: boolean) => {
+    (upward: boolean, capturedOrigin?: TranscriptScrollGesture) => {
       const container = legendListRef.current?.getScrollableNode();
       if (!(container instanceof HTMLElement)) return;
       if (!upward && isAtEndRef.current && isScrollContainerNearBottom(container, 1)) return;
@@ -299,33 +354,44 @@ export function useChatTranscriptScroll({
       const origin =
         pending?.container === container
           ? pending
-          : {
+          : (capturedOrigin ?? {
               container,
               scrollTop: container.scrollTop,
+              // A just-received block can grow before the list follows it. Keep
+              // ownership from before the gesture; transient distance is not a
+              // user's decision to leave the live edge.
               wasFollowing:
                 isAtEndRef.current &&
                 !isUserScrollDetachedRef.current &&
-                (!upward || isScrollContainerNearBottom(container, 1)),
-            };
-      clearTranscriptAutoFollow(true);
-      pendingScrollGestureRef.current = origin;
+                !settledScrollInFlightRef.current &&
+                !tailAnchorScrollInFlightRef.current,
+            });
+      clearTranscriptAutoFollow(true, origin);
       // Native scrolling can settle on the next rendering pass. Keep one
       // pending check per gesture burst, preserving ownership from its first event.
-      pendingScrollGestureFrameRef.current = window.requestAnimationFrame(() => {
-        pendingScrollGestureFrameRef.current = window.requestAnimationFrame(() => {
-          pendingScrollGestureFrameRef.current = null;
-          pendingScrollGestureRef.current = null;
-          if (origin.wasFollowing && container.scrollTop >= origin.scrollTop) {
-            // A nested or no-op wheel must not strand follow, even if new text
-            // increased the distance from the bottom while the gesture settled.
-            setTranscriptScrollDetached(false);
-            onIsAtEndChange(true);
-            scrollToEnd();
-          } else {
-            releaseTranscriptScrollGesture();
-          }
-        });
-      });
+      // Wheel scrolling can begin after the input event and more than two frames
+      // later. Restore a no-op only after that native input window, like keyup.
+      const deadline = performance.now() + 150;
+      const checkGesture = () => {
+        pendingScrollGestureFrameRef.current = null;
+        if (pendingScrollGestureRef.current !== origin) return;
+        const movedUp = container.scrollTop < origin.scrollTop - 1;
+        if (!movedUp && performance.now() < deadline) {
+          pendingScrollGestureFrameRef.current = window.requestAnimationFrame(checkGesture);
+          return;
+        }
+        pendingScrollGestureRef.current = null;
+        if (origin.wasFollowing && !movedUp) {
+          // A nested or no-op wheel must not strand follow, even if new text
+          // increased the distance from the bottom while the gesture settled.
+          setTranscriptScrollDetached(false);
+          onIsAtEndChange(true);
+          scrollToEnd();
+        } else {
+          releaseTranscriptScrollGesture();
+        }
+      };
+      pendingScrollGestureFrameRef.current = window.requestAnimationFrame(checkGesture);
     },
     [
       legendListRef,
@@ -338,12 +404,50 @@ export function useChatTranscriptScroll({
   );
   const onMessagesWheelBase = useCallback(
     (event: WheelEvent<HTMLDivElement>) => {
+      const captured = capturedWheelGestureRef.current;
+      capturedWheelGestureRef.current = null;
       // Horizontal scroll, zoom, and scrolling down at the end do not leave it.
       if (event.ctrlKey || event.deltaY === 0) return;
-      onMessagesScrollGesture(event.deltaY < 0);
+      onMessagesScrollGesture(
+        event.deltaY < 0,
+        captured?.event === event.nativeEvent ? captured.gesture : undefined,
+      );
     },
     [onMessagesScrollGesture],
   );
+  useEffect(() => {
+    // React's passive wheel listener may run after compositor scrolling. Capture
+    // the actual pre-scroll offset before native scrolling can change it, so an
+    // upward wheel is not mistaken for a no-op that should resume live follow.
+    const captureWheelOrigin = (event: globalThis.WheelEvent) => {
+      const container = legendListRef.current?.getScrollableNode();
+      if (
+        !(container instanceof HTMLElement) ||
+        !(event.target instanceof Node) ||
+        !container.contains(event.target) ||
+        event.ctrlKey ||
+        event.deltaY === 0
+      )
+        return;
+      capturedWheelGestureRef.current = {
+        event,
+        gesture: {
+          container,
+          scrollTop: container.scrollTop,
+          wasFollowing:
+            isAtEndRef.current &&
+            !isUserScrollDetachedRef.current &&
+            !settledScrollInFlightRef.current &&
+            !tailAnchorScrollInFlightRef.current,
+        },
+      };
+    };
+    window.addEventListener("wheel", captureWheelOrigin, { capture: true, passive: false });
+    return () => {
+      window.removeEventListener("wheel", captureWheelOrigin, { capture: true });
+      capturedWheelGestureRef.current = null;
+    };
+  }, [legendListRef]);
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       const container = legendListRef.current?.getScrollableNode();
@@ -378,8 +482,7 @@ export function useChatTranscriptScroll({
                 wasFollowing: isAtEndRef.current && !isUserScrollDetachedRef.current,
                 keyboard: true,
               };
-        clearTranscriptAutoFollow(true);
-        pendingScrollGestureRef.current = origin;
+        clearTranscriptAutoFollow(true, origin);
         isAtEndRef.current = false;
         showScrollDebouncer.current.maybeExecute();
       } else {
@@ -540,6 +643,7 @@ export function useChatTranscriptScroll({
   }, [legendListRef, cancelPendingScrollGesture, setTranscriptScrollDetached]);
   useEffect(() => {
     isAtEndRef.current = true;
+    pendingBlankPointerGestureRef.current = null;
     settledScrollRequestRef.current += 1;
     settledScrollInFlightRef.current = false;
     programmaticScrollUntilRef.current = 0;

@@ -7,12 +7,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ExecSessionManager, type ExecSessionManagerOptions } from "./execSessions.ts";
 
 const temporaryRoots: string[] = [];
 const managers: ExecSessionManager[] = [];
+
+// Exercise shell sessions without sourcing the operator's zsh/fish startup hooks.
+beforeEach(() => vi.stubEnv("SHELL", "/bin/sh"));
 
 async function tempRoot(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "synara-exec-sessions-"));
@@ -27,6 +30,7 @@ function manager(options: Partial<ExecSessionManagerOptions> = {}): ExecSessionM
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const instance of managers.splice(0)) instance.killAll();
   await Promise.all(
     temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),

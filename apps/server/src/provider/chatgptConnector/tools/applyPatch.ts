@@ -24,6 +24,7 @@
 
 import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
+import { nativePathsMayAlias } from "@synara/shared/path";
 
 import type { WorkspaceToolContext } from "../types.ts";
 
@@ -718,10 +719,7 @@ function resolveTarget(workspaceRoot: string, spelledPath: string): ResolvedPath
  * the destination and then unlink the one file it shares an inode with.
  */
 function sameTargetPath(left: string, right: string): boolean {
-  if (process.platform === "win32" || process.platform === "darwin") {
-    return left.toLowerCase() === right.toLowerCase();
-  }
-  return left === right;
+  return nativePathsMayAlias(left, right, process.platform);
 }
 
 async function commitWrites(

@@ -8,7 +8,10 @@ import type {
 } from "@synara/contracts";
 import { mutationOptions, queryOptions, type QueryClient } from "@tanstack/react-query";
 import { ensureNativeApi } from "~/nativeApi";
-import { EXPENSIVE_READ_RETRY_OPTIONS } from "./expensiveReadRetry";
+import {
+  EXPENSIVE_READ_RETRY_OPTIONS,
+  expensiveReadErrorRefetchInterval,
+} from "./expensiveReadRetry";
 
 export const LOCAL_SERVERS_VISIBLE_REFETCH_INTERVAL_MS = 10_000;
 const LOCAL_SERVERS_DEFAULT_STALE_TIME_MS = 3_000;
@@ -329,7 +332,8 @@ export function serverProfileStatsQueryOptions(input: { enabled?: boolean } = {}
     enabled: input.enabled ?? true,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    retry: false,
+    refetchInterval: expensiveReadErrorRefetchInterval,
+    ...EXPENSIVE_READ_RETRY_OPTIONS,
     queryFn: async () => {
       const api = ensureNativeApi();
       return api.stats.getProfileStats({
@@ -348,7 +352,8 @@ export function serverProfileTokenStatsQueryOptions(input: { enabled?: boolean }
     enabled: input.enabled ?? true,
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
-    retry: false,
+    refetchInterval: expensiveReadErrorRefetchInterval,
+    ...EXPENSIVE_READ_RETRY_OPTIONS,
     queryFn: async () => {
       const api = ensureNativeApi();
       return api.stats.getProfileTokenStats({

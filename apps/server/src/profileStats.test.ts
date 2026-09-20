@@ -12,6 +12,7 @@ import { ServerConfig } from "./config";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite";
 import recoverClaudeUsage from "./persistence/Migrations/103_ClaudeTokenAccounting";
 import {
+  aggregateReportedCostRows,
   aggregateProfileSkillUsageRows,
   heatmapIntensity,
   ProfileStatsQuery,
@@ -66,6 +67,39 @@ describe("heatmapIntensity", () => {
   it("gives tied days the same level and renders a uniform window at full intensity", () => {
     const active = sorted([500, 500, 500, 500]);
     expect(active.map((count) => heatmapIntensity(count, active))).toEqual([4, 4, 4, 4]);
+  });
+});
+
+describe("aggregateReportedCostRows", () => {
+  it("adds turn deltas and cumulative session deltas without double-counting resets", () => {
+    const row = (
+      activityId: string,
+      provider: string,
+      totalCostUsd: number | null,
+      cumulativeCostUsd: number | null,
+    ) => ({
+      threadId: "thread-cost",
+      turnId: `turn-${activityId}`,
+      provider,
+      totalCostUsd,
+      cumulativeCostUsd,
+      sequence: Number(activityId),
+      createdAt: `2026-09-19T12:00:0${activityId}.000Z`,
+      activityId,
+    });
+
+    const result = aggregateReportedCostRows([
+      row("1", "cursor", null, 1),
+      row("2", "cursor", null, 1.25),
+      row("3", "cursor", null, 0.4),
+      row("4", "opencode", 0.2, null),
+      // Cumulative wins when a provider reports both shapes for one turn.
+      row("5", "cursor", 99, 0.5),
+      row("6", "opencode", -1, null),
+    ]);
+
+    expect(result.coveredTurns).toBe(5);
+    expect(result.costUsd).toBeCloseTo(1.95);
   });
 });
 

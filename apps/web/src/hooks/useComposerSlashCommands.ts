@@ -946,7 +946,11 @@ export function useComposerSlashCommands(input: {
         if (kickoffPrompt !== null) {
           return kickoffPrompt;
         }
-        editorActions.clearComposerSlashDraft();
+        // Editing replaces the command with the saved goal. Keep that new draft
+        // instead of clearing it as if this invocation had submitted a goal.
+        if (parseGoalSlashCommandArgs(slashInvocation.args).action !== "edit") {
+          editorActions.clearComposerSlashDraft();
+        }
         return true;
       }
       if (slashInvocation.command === "rename") {

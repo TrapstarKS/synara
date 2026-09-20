@@ -89,6 +89,27 @@ interface TokenDayRow {
   readonly tokens: number;
 }
 
+export interface ReportedCostActivityRow {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly provider: string | null;
+  readonly totalCostUsd: number | bigint | null;
+  readonly cumulativeCostUsd: number | bigint | null;
+  readonly sequence: number | bigint | null;
+  readonly createdAt: string;
+  readonly activityId: string;
+}
+
+interface ArchivedCostRow {
+  readonly costUsd: number | bigint | null;
+  readonly coveredTurnCount: number | bigint | null;
+}
+
+export interface ReportedCostAggregate {
+  readonly costUsd: number;
+  readonly coveredTurns: number;
+}
+
 type UsageKind = "skill" | "agent";
 
 interface UsageCount {
@@ -123,6 +144,46 @@ function num(value: unknown): number {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function nonNegativeFiniteNumber(value: number | bigint | null): number | null {
+  const parsed = typeof value === "bigint" ? Number(value) : value;
+  return parsed !== null && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+/**
+ * Aggregates provider-reported USD signals without mixing per-turn deltas with
+ * session-cumulative snapshots. Rows must be ordered chronologically inside a
+ * thread/provider pair. A cumulative value lower than the prior snapshot marks
+ * a provider-session reset and starts a new cumulative series.
+ */
+export function aggregateReportedCostRows(
+  rows: ReadonlyArray<ReportedCostActivityRow>,
+): ReportedCostAggregate {
+  const previousCumulativeByThreadProvider = new Map<string, number>();
+  let costUsd = 0;
+  let coveredTurns = 0;
+
+  for (const row of rows) {
+    const cumulative = nonNegativeFiniteNumber(row.cumulativeCostUsd);
+    if (cumulative !== null) {
+      const key = `${row.threadId}\u0000${row.provider ?? "unknown"}`;
+      const previous = previousCumulativeByThreadProvider.get(key);
+      costUsd +=
+        previous === undefined || cumulative < previous ? cumulative : cumulative - previous;
+      previousCumulativeByThreadProvider.set(key, cumulative);
+      coveredTurns += 1;
+      continue;
+    }
+
+    const turnCost = nonNegativeFiniteNumber(row.totalCostUsd);
+    if (turnCost !== null) {
+      costUsd += turnCost;
+      coveredTurns += 1;
+    }
+  }
+
+  return { costUsd, coveredTurns };
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -617,6 +678,103 @@ export function turnModelSelectionCte(
   `;
 }
 
+// Returns one trustworthy cost row per completed user turn. Providers expose
+// either a turn-local USD delta (`totalCostUsd`) or a session-cumulative USD
+// snapshot (`cumulativeCostUsd`); aggregation happens in TS so reset semantics
+// are shared with the delete-time archive path.
+export function reportedCostActivityCte(
+  sql: SqlClient.SqlClient,
+  scope?: { readonly threadId: string },
+) {
+  const activityScope = scope ? sql`AND a.thread_id = ${scope.threadId}` : sql.literal("");
+  return sql`
+    WITH turn_model AS (
+      ${turnModelSelectionCte(sql, scope)}
+    ),
+    ranked_cost AS (
+      SELECT
+        a.thread_id AS threadId,
+        a.turn_id AS turnId,
+        COALESCE(
+          tm.provider,
+          json_extract(a.payload_json, '$.provider'),
+          CASE
+            WHEN th.model_selection_json IS NOT NULL AND json_valid(th.model_selection_json)
+            THEN json_extract(th.model_selection_json, '$.provider')
+          END,
+          'unknown'
+        ) AS provider,
+        CASE
+          WHEN json_type(a.payload_json, '$.totalCostUsd') IN ('integer', 'real')
+            AND CAST(json_extract(a.payload_json, '$.totalCostUsd') AS REAL) >= 0
+          THEN CAST(json_extract(a.payload_json, '$.totalCostUsd') AS REAL)
+          ELSE NULL
+        END AS totalCostUsd,
+        CASE
+          WHEN json_type(a.payload_json, '$.cumulativeCostUsd') IN ('integer', 'real')
+            AND CAST(json_extract(a.payload_json, '$.cumulativeCostUsd') AS REAL) >= 0
+          THEN CAST(json_extract(a.payload_json, '$.cumulativeCostUsd') AS REAL)
+          ELSE NULL
+        END AS cumulativeCostUsd,
+        a.sequence AS sequence,
+        a.created_at AS createdAt,
+        a.activity_id AS activityId,
+        ROW_NUMBER() OVER (
+          PARTITION BY a.thread_id, a.turn_id
+          ORDER BY
+            CASE WHEN a.sequence IS NULL THEN 0 ELSE 1 END DESC,
+            a.sequence DESC,
+            a.created_at DESC,
+            a.activity_id DESC
+        ) AS costRank
+      FROM projection_thread_activities a
+      JOIN projection_threads th ON th.thread_id = a.thread_id
+      LEFT JOIN turn_model tm
+        ON tm.thread_id = a.thread_id
+       AND tm.turn_id = a.turn_id
+      LEFT JOIN projection_turns pt
+        ON pt.thread_id = a.thread_id
+       AND pt.turn_id = a.turn_id
+      LEFT JOIN projection_thread_messages pm
+        ON pm.thread_id = pt.thread_id
+       AND pm.message_id = pt.pending_message_id
+      WHERE a.kind = 'turn.completed'
+        ${activityScope}
+        AND a.turn_id IS NOT NULL
+        AND (pm.dispatch_origin IS NULL OR pm.dispatch_origin = 'user')
+        AND NOT (th.parent_thread_id IS NOT NULL AND th.creation_source = 'provider_native')
+        AND (
+          (
+            json_type(a.payload_json, '$.totalCostUsd') IN ('integer', 'real')
+            AND CAST(json_extract(a.payload_json, '$.totalCostUsd') AS REAL) >= 0
+          )
+          OR (
+            json_type(a.payload_json, '$.cumulativeCostUsd') IN ('integer', 'real')
+            AND CAST(json_extract(a.payload_json, '$.cumulativeCostUsd') AS REAL) >= 0
+          )
+        )
+    )
+    SELECT
+      threadId,
+      turnId,
+      provider,
+      totalCostUsd,
+      cumulativeCostUsd,
+      sequence,
+      createdAt,
+      activityId
+    FROM ranked_cost
+    WHERE costRank = 1
+    ORDER BY
+      threadId ASC,
+      provider ASC,
+      CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
+      sequence ASC,
+      createdAt ASC,
+      activityId ASC
+  `;
+}
+
 // ── Service ────────────────────────────────────────────────────────────
 
 export interface ProfileStatsQueryShape {
@@ -914,6 +1072,25 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       `,
     );
 
+  const queryReportedCosts = () =>
+    legacyCompatibleQuery(
+      "profileStats.reportedCosts",
+      sql<ReportedCostActivityRow>`
+        ${reportedCostActivityCte(sql)}
+      `,
+    );
+
+  const queryArchivedCosts = () =>
+    legacyCompatibleQuery(
+      "profileStats.archivedCosts",
+      sql<ArchivedCostRow>`
+        SELECT
+          SUM(cost_usd) AS costUsd,
+          SUM(covered_turn_count) AS coveredTurnCount
+        FROM profile_stats_deleted_costs
+      `,
+    );
+
   const queryTotalThreads = () =>
     legacyCompatibleQuery(
       "profileStats.totalThreads",
@@ -1185,7 +1362,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
           compareNullableText(left.model, right.model),
       );
       const totalModelTurns = providerModelRows.reduce((sum, row) => sum + num(row.count), 0);
-      const providerModels: ProviderModelUsage[] = providerModelRows.slice(0, 8).map((row) => {
+      const providerModels: ProviderModelUsage[] = providerModelRows.map((row) => {
         const count = num(row.count);
         return {
           provider: normalizeProviderKind(row.provider),
@@ -1287,8 +1464,21 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       const todayKey = localToday(input.utcOffsetMinutes);
       const rows = yield* queryTokenActivity(tz);
       const turnInsightRows = yield* queryTurnInsights();
+      const reportedCostRows = yield* queryReportedCosts();
+      const archivedCostRows = yield* queryArchivedCosts();
       const { tokensByDay, tokensByProvider, tokensByProviderModel, lifetime } =
         aggregateTokenActivity(rows);
+      const liveCost = aggregateReportedCostRows(reportedCostRows);
+      const archivedCostUsd = nonNegativeFiniteNumber(archivedCostRows[0]?.costUsd ?? null) ?? 0;
+      const archivedCoveredTurns = num(archivedCostRows[0]?.coveredTurnCount);
+      const coveredCostTurns = liveCost.coveredTurns + archivedCoveredTurns;
+      const totalRecordedTurns = turnInsightRows.reduce((sum, row) => sum + num(row.count), 0);
+      const estimatedEquivalentUsd =
+        coveredCostTurns > 0 ? liveCost.costUsd + archivedCostUsd : null;
+      const estimatedEquivalentUsdCoveragePercent =
+        coveredCostTurns > 0 && totalRecordedTurns > 0
+          ? percent1(Math.min(coveredCostTurns, totalRecordedTurns), totalRecordedTurns)
+          : null;
 
       let peakDay: string | null = null;
       let peakDayTokens: number | null = null;
@@ -1331,7 +1521,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
           ? percent1(tokensByProvider.get(topProvider) ?? 0, totalProviderTokens)
           : null;
 
-      // Token-based model mix, same shape/cap as the turn-based providerModels.
+      // Token-based model mix mirrors the complete turn-based providerModels list.
       // Percent is the share of ALL counted tokens (lifetime), unknowns included,
       // so the list always sums to ~100%.
       const models = [...tokensByProviderModel.values()]
@@ -1342,7 +1532,6 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             compareNullableText(left.provider, right.provider) ||
             compareNullableText(left.model, right.model),
         )
-        .slice(0, 8)
         .map((row) => ({
           provider: row.provider,
           model: row.model,
@@ -1355,6 +1544,8 @@ const makeProfileStatsQuery = Effect.gen(function* () {
         lifetimeTotalTokens: available ? lifetime : null,
         peakDayTokens,
         peakDay,
+        estimatedEquivalentUsd,
+        estimatedEquivalentUsdCoveragePercent,
         providers,
         unavailableProviders,
         topProvider,

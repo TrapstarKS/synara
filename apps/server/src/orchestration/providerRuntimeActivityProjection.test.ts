@@ -399,6 +399,34 @@ describe("provider runtime activity projection", () => {
     expect(providerActivityUpdateFingerprint(activity!)).toContain('"kind":"tool.updated"');
   });
 
+  it("keeps native MCP progress text in detail when the notification has no tool name", () => {
+    const [activity] = projectProviderRuntimeActivities(
+      runtimeEvent({
+        type: "tool.progress",
+        eventId: "tool-progress-v2",
+        turnId: TURN_ID,
+        itemId: RuntimeItemId.makeUnsafe("mcp-call-1"),
+        payload: {
+          toolUseId: "mcp-call-1",
+          summary: "Fetched 20 of 40 records",
+        },
+      }),
+    );
+
+    expect(activity).toMatchObject({
+      kind: "tool.updated",
+      summary: "MCP tool call",
+      payload: {
+        itemType: "mcp_tool_call",
+        detail: "Fetched 20 of 40 records",
+        data: {
+          toolUseId: "mcp-call-1",
+          summary: "Fetched 20 of 40 records",
+        },
+      },
+    });
+  });
+
   it("keeps the fast JSON fingerprint byte-identical to the legacy JSON-like serializer", () => {
     const [activity] = projectProviderRuntimeActivities(
       runtimeEvent({

@@ -10,7 +10,9 @@
 // tail behind an omission marker. Polls drain what has arrived since the previous call, so no
 // byte is delivered twice.
 
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { prepareShellProcess } from "@synara/shared/platformProcess";
+import { spawnPlannedProcess } from "@synara/shared/processRuntime";
 
 export interface ExecSessionManagerOptions {
   /** Retained (still-running) sessions allowed at once. */
@@ -161,24 +163,6 @@ interface ExecSession {
   readonly onClose: () => void;
 }
 
-interface ShellPlan {
-  readonly file: string;
-  readonly args: readonly string[];
-}
-
-function shellCommandPlan(command: string): ShellPlan {
-  if (process.platform === "win32") {
-    return {
-      file: process.env.ComSpec ?? "cmd.exe",
-      args: ["/d", "/s", "/c", command],
-    };
-  }
-  return {
-    file: process.env.SHELL || "/bin/bash",
-    args: ["-lc", command],
-  };
-}
-
 export class ExecSessionManager {
   private readonly options: ExecSessionManagerOptions;
   private readonly sessions = new Map<number, ExecSession>();
@@ -207,14 +191,14 @@ export class ExecSessionManager {
       throw new Error("exec aborted");
     }
 
-    const plan = shellCommandPlan(input.command);
+    const env = { ...process.env, ...input.env };
     let child: ChildProcess;
     try {
-      child = spawn(plan.file, [...plan.args], {
+      const plan = prepareShellProcess(input.command, { cwd: input.cwd, env });
+      child = spawnPlannedProcess(plan, {
         cwd: input.cwd,
-        env: { ...process.env, ...input.env },
+        env,
         stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
       });
     } catch (error) {
       throw new Error(`failed to start command: ${errorText(error)}`, { cause: error });

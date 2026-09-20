@@ -14,6 +14,7 @@ import type { Dirent, Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { normalizeNativeGlobPath } from "@synara/shared/path";
 
 import {
   isContainedPath,
@@ -185,8 +186,7 @@ type GlobClassification =
   | { readonly kind: "invalid"; readonly message: string };
 
 function classifyGlobPath(inputPath: string): GlobClassification {
-  const normalized =
-    process.platform === "win32" ? inputPath.replace(/\\/g, "/").replace(/\/+$/, "") : inputPath;
+  const normalized = normalizeNativeGlobPath(inputPath, process.platform);
   if (!normalized.includes("*")) return { kind: "none" };
   if (normalized === "**" || normalized.endsWith("/**")) {
     const basePath = normalized.slice(0, normalized.length - 2).replace(/\/+$/, "");

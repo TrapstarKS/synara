@@ -8,6 +8,10 @@ import {
   type ThreadId,
 } from "@synara/contracts";
 import { resolveThreadBranchRegressionGuard } from "@synara/shared/git";
+import {
+  hasPendingAsyncUserInput,
+  retainMessagesWithPendingAsyncInputs,
+} from "@synara/shared/asyncUserInput";
 import { deriveTurnStartModelSelection } from "@synara/shared/model";
 import {
   addPinnedMessage,
@@ -657,10 +661,20 @@ function mergeStreamingMessage(
   // position is the first event that created it. Never move the row forward to
   // the last delta sequence.
   const nextSequence = existingMessage.sequence ?? incomingMessage.sequence;
+  // A reconnect can hydrate segmented history before the authoritative completion
+  // repairs the text. Obsolete segments must not render over that repaired body.
+  const previousSegments = existingMessage.textSegments;
+  const nextSegments =
+    !incomingMessage.streaming &&
+    previousSegments &&
+    previousSegments.map((segment) => segment.text).join("") !== nextText
+      ? undefined
+      : previousSegments;
 
   if (
     existingMessage.text === nextText &&
     existingMessage.sequence === nextSequence &&
+    previousSegments === nextSegments &&
     existingMessage.asyncUserInput === nextAsyncUserInput &&
     existingMessage.streaming === incomingMessage.streaming &&
     existingMessage.attachments === nextAttachments &&
@@ -676,8 +690,10 @@ function mergeStreamingMessage(
     return null;
   }
 
+  const { textSegments: _previousSegments, ...messageWithoutSegments } = existingMessage;
   return {
-    ...existingMessage,
+    ...messageWithoutSegments,
+    ...(nextSegments !== undefined ? { textSegments: nextSegments } : {}),
     ...(nextSequence !== undefined ? { sequence: nextSequence } : {}),
     text: nextText,
     ...(nextAsyncUserInput ? { asyncUserInput: nextAsyncUserInput } : {}),
@@ -737,7 +753,10 @@ function applyThreadMessageSentEvent(thread: Thread, event: ThreadMessageSentEve
       messages = thread.messages.with(existingIndex, mergedMessage);
     }
   } else {
-    messages = [...thread.messages, incomingMessage].slice(-MAX_THREAD_MESSAGES);
+    messages = retainMessagesWithPendingAsyncInputs(
+      [...thread.messages, incomingMessage],
+      MAX_THREAD_MESSAGES,
+    );
   }
 
   const turnDiffSummaries =
@@ -788,6 +807,9 @@ function applyThreadMessageSentEvent(thread: Thread, event: ThreadMessageSentEve
   return {
     ...thread,
     messages,
+    ...(payload.asyncUserInput
+      ? { hasPendingAsyncUserInput: messages.some(hasPendingAsyncUserInput) }
+      : {}),
     turnDiffSummaries,
     latestTurn,
     updatedAt,
@@ -1500,11 +1522,14 @@ function applyOrchestrationEvent(
                 (right.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER),
             );
           const retainedTurnIds = new Set(turnDiffSummaries.map((entry) => entry.turnId));
-          const messages = retainThreadMessagesAfterRevert(
-            thread.messages,
-            retainedTurnIds,
-            event.payload.turnCount,
-          ).slice(-MAX_THREAD_MESSAGES);
+          const messages = retainMessagesWithPendingAsyncInputs(
+            retainThreadMessagesAfterRevert(
+              thread.messages,
+              retainedTurnIds,
+              event.payload.turnCount,
+            ),
+            MAX_THREAD_MESSAGES,
+          );
           const proposedPlans = retainThreadProposedPlansAfterRevert(
             thread.proposedPlans,
             retainedTurnIds,
@@ -1516,6 +1541,7 @@ function applyOrchestrationEvent(
             ...thread,
             turnDiffSummaries,
             messages,
+            hasPendingAsyncUserInput: messages.some(hasPendingAsyncUserInput),
             proposedPlans,
             activities,
             pendingSourceProposedPlan: undefined,
@@ -1580,7 +1606,8 @@ function applyOrchestrationEvent(
           return {
             ...thread,
             turnDiffSummaries,
-            messages: rollback.messages.slice(-MAX_THREAD_MESSAGES),
+            messages: retainMessagesWithPendingAsyncInputs(rollback.messages, MAX_THREAD_MESSAGES),
+            hasPendingAsyncUserInput: rollback.messages.some(hasPendingAsyncUserInput),
             proposedPlans,
             activities,
             pendingSourceProposedPlan: undefined,
@@ -1659,8 +1686,7 @@ function applyThreadActivityEventBatch(
       // One accumulator for the whole batch: appending N activities used to re-normalize the
       // full activity list N times (O(batch x activities)); it is now O(batch) amortised.
       const activityAccumulator = createThreadActivityAccumulator(thread.activities, {
-        preserveTurnId:
-          thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : null,
+        preserveTurnId: thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : null,
       });
       let nextPendingInteractions = thread.pendingInteractions;
       let updatedAt = thread.updatedAt ?? thread.createdAt;

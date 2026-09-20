@@ -172,6 +172,7 @@ export function createShellSnapshotFromReadModel(
         latestUserMessageAt: thread.latestUserMessageAt ?? null,
         hasPendingApprovals: thread.hasPendingApprovals ?? false,
         hasPendingUserInput: thread.hasPendingUserInput ?? false,
+        hasPendingAsyncUserInput: thread.hasPendingAsyncUserInput ?? false,
         hasActionableProposedPlan: thread.hasActionableProposedPlan ?? false,
         createdAt: thread.createdAt,
         updatedAt: thread.updatedAt,

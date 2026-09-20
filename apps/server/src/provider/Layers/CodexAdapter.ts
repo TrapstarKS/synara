@@ -591,17 +591,19 @@ function toCanonicalUserInputAnswers(
 function toThreadState(
   value: unknown,
 ): "active" | "idle" | "archived" | "closed" | "compacted" | "error" {
-  switch (value) {
+  switch (asObject(value)?.type ?? value) {
     case "idle":
       return "idle";
     case "archived":
       return "archived";
     case "closed":
+    case "notLoaded":
       return "closed";
     case "compacted":
       return "compacted";
     case "error":
     case "failed":
+    case "systemError":
       return "error";
     default:
       return "active";
@@ -657,8 +659,23 @@ function codexEventBase(
 ): Omit<ProviderRuntimeEvent, "type" | "payload"> {
   const payload = asObject(event.payload);
   const msg = codexEventMessage(payload);
-  const turnId = event.turnId ?? toTurnId(asString(msg?.turn_id) ?? asString(msg?.turnId));
-  const itemId = event.itemId ?? toProviderItemId(asString(msg?.item_id) ?? asString(msg?.itemId));
+  const turnId =
+    event.turnId ??
+    toTurnId(
+      asString(payload?.turnId) ??
+        asString(payload?.turn_id) ??
+        asString(msg?.turn_id) ??
+        asString(msg?.turnId),
+    );
+  const itemId =
+    event.itemId ??
+    toProviderItemId(
+      asString(payload?.itemId) ??
+        asString(payload?.item_id) ??
+        asString(payload?.targetItemId) ??
+        asString(msg?.item_id) ??
+        asString(msg?.itemId),
+    );
   const requestId = asString(msg?.request_id) ?? asString(msg?.requestId);
   const base = runtimeEventBase(event, canonicalThreadId);
   const providerRefs = base.providerRefs
@@ -922,7 +939,11 @@ function mapItemLifecycle(
   // Only the provider-authored summary is user-visible reasoning. Raw content
   // may contain model trace data and must not leak into transcript activities.
   const detail =
-    itemType === "reasoning" ? reasoningSummaryDetail(source) : itemDetail(source, payload ?? {});
+    itemType === "reasoning"
+      ? reasoningSummaryDetail(source)
+      : itemType === "assistant_message" && typeof source.text === "string"
+        ? source.text
+        : itemDetail(source, payload ?? {});
   const status = itemStatus(lifecycle, source.status);
   const asyncQuestions =
     itemType === "assistant_message" && Array.isArray(source.questions)
@@ -954,7 +975,7 @@ function mapItemLifecycle(
       ...(itemTitle(canonicalItemType) ? { title: itemTitle(canonicalItemType) } : {}),
       ...(generatedImageReference
         ? { detail: generatedImageReference.path }
-        : detail
+        : detail !== undefined
           ? { detail }
           : {}),
       ...(generatedImageReference
@@ -1324,7 +1345,9 @@ function mapToRuntimeEvents(
                 ? "closed"
                 : event.method === "thread/compacted"
                   ? "compacted"
-                  : toThreadState(asObject(payload?.thread)?.state ?? payload?.state),
+                  : toThreadState(
+                      payload?.status ?? asObject(payload?.thread)?.state ?? payload?.state,
+                    ),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },
@@ -1553,14 +1576,16 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "item/mcpToolCall/progress") {
+    const toolUseId = asString(payload?.toolUseId) ?? asString(payload?.itemId) ?? event.itemId;
+    const summary = asString(payload?.summary) ?? asString(payload?.message);
     return [
       {
-        ...runtimeEventBase(event, canonicalThreadId),
+        ...codexEventBase(event, canonicalThreadId),
         type: "tool.progress",
         payload: {
-          ...(asString(payload?.toolUseId) ? { toolUseId: asString(payload?.toolUseId) } : {}),
+          ...(toolUseId ? { toolUseId } : {}),
           ...(asString(payload?.toolName) ? { toolName: asString(payload?.toolName) } : {}),
-          ...(asString(payload?.summary) ? { summary: asString(payload?.summary) } : {}),
+          ...(summary ? { summary } : {}),
           ...(asNumber(payload?.elapsedSeconds) !== undefined
             ? { elapsedSeconds: asNumber(payload?.elapsedSeconds) }
             : {}),

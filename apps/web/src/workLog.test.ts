@@ -3322,6 +3322,91 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("collapses native Codex v2 MCP lifecycle/progress into one inspectable tool row", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "mcp-started-v2",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "MCP tool call started",
+        payload: {
+          itemType: "mcp_tool_call",
+          status: "inProgress",
+          title: "MCP tool call",
+          data: {
+            item: {
+              type: "mcpToolCall",
+              id: "mcp-native-1",
+              server: "computer-use",
+              tool: "get_app_state",
+              status: "inProgress",
+              arguments: { app: "Safari" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "mcp-progress-v2",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.updated",
+        summary: "MCP tool call",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          detail: "Reading the current application state",
+          data: {
+            toolUseId: "mcp-native-1",
+            summary: "Reading the current application state",
+          },
+        },
+      }),
+      makeActivity({
+        id: "mcp-completed-v2",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "MCP tool call",
+        payload: {
+          itemType: "mcp_tool_call",
+          status: "completed",
+          title: "MCP tool call",
+          data: {
+            item: {
+              type: "mcpToolCall",
+              id: "mcp-native-1",
+              server: "computer-use",
+              tool: "get_app_state",
+              status: "completed",
+              arguments: { app: "Safari" },
+              appContext: { appName: "Computer", actionName: "Get app state" },
+              result: { content: [{ type: "text", text: "Safari is focused" }] },
+              durationMs: 2_000,
+            },
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      itemType: "mcp_tool_call",
+      toolCallId: "mcp-native-1",
+      toolName: "mcp__computer-use__get_app_state",
+      toolTitle: "Computer: Get app state",
+      toolStatus: "completed",
+      toolDetails: {
+        kind: "tool-call",
+        server: "computer-use",
+        tool: "get_app_state",
+        appName: "Computer",
+        actionName: "Get app state",
+        arguments: '{\n  "app": "Safari"\n}',
+        result: "Safari is focused",
+        durationMs: 2_000,
+      },
+    });
+  });
+
   it("presents Synara MCP activity consistently across provider item shapes", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -3425,6 +3510,59 @@ describe("deriveWorkLogEntries", () => {
 
     const [entry] = deriveWorkLogEntries(activities, undefined);
     expect(entry?.toolTitle).toBe("Searching");
+  });
+
+  it("merges live command output without losing the running command identity", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "command-live-start",
+          kind: "tool.started",
+          summary: "Ran command started",
+          payload: {
+            itemType: "command_execution",
+            status: "inProgress",
+            title: "Ran command",
+            detail: 'rg -n "stream" apps/web/src',
+            data: {
+              item: {
+                id: "command-live-1",
+                type: "commandExecution",
+                command: 'rg -n "stream" apps/web/src',
+                status: "inProgress",
+              },
+            },
+          },
+        }),
+        makeActivity({
+          id: "command-live-output",
+          kind: "tool.updated",
+          summary: "Ran command",
+          payload: {
+            itemType: "command_execution",
+            status: "inProgress",
+            title: "Ran command",
+            data: {
+              toolCallId: "command-live-1",
+              rawOutput: { output: "apps/web/src/workLog.ts:1: stream\n" },
+            },
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      toolCallId: "command-live-1",
+      toolTitle: "Searching",
+      command: 'rg -n "stream" apps/web/src',
+      toolStatus: "running",
+      toolDetails: {
+        kind: "command",
+        output: { output: "apps/web/src/workLog.ts:1: stream\n" },
+      },
+    });
   });
 
   it("collapses Claude-style partial tool-input updates into the final lifecycle row", () => {

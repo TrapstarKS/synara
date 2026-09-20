@@ -1094,10 +1094,11 @@ export function projectProviderRuntimeActivities(
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.updated",
-          summary:
-            nonEmptyTrimmed(event.payload.toolName) ??
-            nonEmptyTrimmed(event.payload.summary) ??
-            "MCP tool call",
+          // Progress text belongs in `detail`, not in the row identity. Codex v2
+          // progress notifications carry only `itemId` + `message`, so using the
+          // message as the summary would overwrite the tool name established by
+          // item/started when work-log lifecycle rows collapse together.
+          summary: nonEmptyTrimmed(event.payload.toolName) ?? "MCP tool call",
           payload: buildToolProgressActivityPayload(event),
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

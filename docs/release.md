@@ -6,25 +6,131 @@ This document covers build-only native validation and publishing desktop release
 
 - Triggers:
   - Manual dispatch defaults to build-only validation and uploads workflow artifacts without publishing anything.
-  - A pushed tag matching `v*.*.*` publishes after successful builds.
-  - Manual publication requires the explicit `publish_release=true` input.
-- Runs quality gates first: lint, typecheck, test.
-- Builds four artifacts in parallel:
+  - Pushing a tag alone does not start this workflow.
+  - Publication requires dispatching against the exact release tag with `publish_release=true`.
+- Verifies source provenance first, then runs static verification, five test partitions,
+  and shared compilation in parallel. Every verification and test partition gates publication.
+- Builds three native targets from the shared desktop/server/web bundle:
   - macOS `arm64` DMG
   - macOS `x64` DMG
-  - Linux `x64` AppImage
   - Windows `x64` NSIS installer
+- Packs the server tarball in the shared bundle job, including in build-only runs.
+  The optional npm publication job consumes the same compiled server instead of rebuilding it.
 - Publishes one versioned GitHub Release with all produced files.
   - Versions with a suffix after `X.Y.Z` (for example `1.2.3-alpha.1`) are published as GitHub prereleases.
   - Stable clean-lane releases are GitHub Latest; the 0.4.x compatibility release remains historical.
 - Publishes default `latest*.yml` metadata plus byte-identical `synara*.yml` aliases on every stable release so existing packaged binaries keep working.
 - Keeps the historical 0.4.x compatibility release unchanged; current stable payloads stay on their own GitHub Latest release.
 - Publishes prerelease installers only on their versioned GitHub prerelease; prereleases never replace the stable `synara` update manifests.
-- Publishes the CLI package (`apps/server`, npm package `@synara/cli`) with OIDC trusted publishing.
+- Optionally publishes the CLI package (`apps/server`, npm package `@synara/cli`) with npm trusted publishing.
 - Published macOS artifacts must be signed. Windows publication currently uses
   an explicit version-scoped unsigned exception; otherwise Azure signing is
   required. Build-only runs may produce unsigned artifacts when signing secrets
   are unavailable.
+
+## Release latency
+
+The [v0.8.61 publication run](https://github.com/TrapstarKS/synara/actions/runs/35436163991)
+on September 19, 2026 took 21m16s before these changes. Its shared bundle job took
+2m05s, macOS Intel took 16m01s, the subsequent server tarball job took 1m48s,
+and publication took 55s. Verification ran concurrently and took 11m02s, including
+9m38s in tests. These overlapping job durations must not be added together.
+
+The release now packs the server from existing output, removes the serial server
+rebuild after native packaging, and distributes tests across core, web and three
+server shards. The core filter owns all other workspaces, including future ones;
+`.github/scripts/release-contracts.test.mjs` checks the actual Turbo task graph for
+omissions and duplicate ownership. Test results remain uncached.
+
+Verification reuses the existing workspace setup caches. Shared compilation has
+an OS/architecture/toolchain-input-scoped Turbo and React compiler cache; Turbo
+still validates task inputs. Cache availability follows GitHub's branch/tag
+scope: a new tag cannot reuse a different tag's cache, but can reuse the default
+branch's cache. Build-only validation on the default branch can populate it.
+See the [cache access restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
+
+Windows uses `RUNNER_TEMP` for both the Bun cache and temporary staging, matching
+the hosted checkout volume. Already-compressed installers and tarballs use
+`compression-level: 0` when uploaded as workflow artifacts. These changes remove
+repeated work; the before-run timings are not a measured after-run speedup or a
+two-minute end-to-end guarantee.
+
+On macOS, staging uses Bun 1.4.2's frozen production install for the CLI and
+desktop workspaces. It verifies the source and staging lockfile hashes, follows
+all required runtime dependencies and peers inside the stage, and checks every
+reachable copy of patched dependencies. Windows keeps its existing temporary
+lockfile workaround; Linux keeps its original frozen install. A local macOS
+probe installed 363 packages instead of the 1,622 logged by the old Intel stage,
+then verified 20 runtime roots, 341 reachable packages, isolated imports, and
+rejection of a deliberately damaged dependency patch. Package counts are not
+elapsed-time measurements.
+
+`SYNARA_APPSNAP_CACHE_DIR` enables the release helper cache. Its key includes
+architecture, Swift/SDK identity, build script and Swift sources. The original
+helper still checks its source fingerprint and signature before reusing a cached
+binary; publication signs a separate staging copy. A local Apple Silicon probe
+measured 98.08s for a cold build and 0.69s for a cache hit, with byte-identical
+outputs. Corrupt-cache recovery rebuilt and verified the helper. These are local
+observations, not hosted-runner timing guarantees. The macOS runtime archive is
+also excluded from the redundant `prod-resources` copy while remaining in its
+existing packaged runtime location; production icon copies remain available.
+
+### Verification record: September 19, 2026
+
+The [previous build-only run](https://github.com/TrapstarKS/synara/actions/runs/35435489024)
+on application commit `790f4897` took 13m38s. The
+[first candidate](https://github.com/TrapstarKS/synara/actions/runs/35464852806)
+passed in 11m48s, including the newly added server-tarball validation. Every test
+partition, native build, provenance check and packaged-startup smoke passed.
+The [final-code confirmation](https://github.com/TrapstarKS/synara/actions/runs/35465779116)
+on `be33f6981` passed in **9m00s**, with the first candidate's caches available.
+This is 4m38s (34.0%) less elapsed time than the earlier build-only run.
+This is the like-for-like workflow comparison; the earlier 21m16s publication
+also included a serial server rebuild and public release upload.
+
+| Job / workflow                 | Earlier build-only | First candidate | Final-code confirmation |
+| ------------------------------ | -----------------: | --------------: | ----------------------: |
+| Entire workflow                |             13m38s |          11m48s |                   9m00s |
+| Shared bundle                  |              2m03s |           1m52s |                     38s |
+| Slowest verification/test lane |              9m25s |           4m47s |                   3m23s |
+| macOS Intel                    |             11m19s |           9m30s |                   8m05s |
+| macOS ARM64                    |              8m20s |           4m24s |                   5m04s |
+| Windows x64                    |              9m34s |           6m08s |                   6m31s |
+
+The new shared-bundle job includes packing the server tarball; the old one did
+not. Verification/test rows compare the slowest blocking lane after partitioning,
+not summed runner time. ARM64 and Windows varied between the two candidates,
+despite reusable caches. The confirmation also includes the final ZIP identity
+check, so this is not an isolated cache benchmark or a guaranteed percentage for
+future tags. No production publication time has been measured for the candidate.
+
+The first candidate's Windows installs took 16.42s in the checkout and 13.38s
+in staging, versus 100.21s and 103.66s in the previous publication run. macOS
+staging took 1.16s on ARM64 and 3.32s on Intel. The already-generated ZIP was
+reused on both architectures. These are observed samples; runner variability
+and cache scope still affect subsequent releases.
+
+The final-code run confirmed both macOS architectures reused their validated ZIPs
+and cached AppSnap helpers. Windows dependency installs took 16.95s and 13.81s
+(30.76s combined), consistent with the first candidate's reduced installation
+cost. The native Intel packaging job remained the longest lane.
+
+Local validation used the pinned Bun 1.4.2. Typechecking all seven workspaces,
+lint, workflow contract tests, actionlint, release smoke, the desktop build and
+packing/inspecting the existing server output passed. The final ZIP regression
+suite passed 15 tests using the real builder, ZIP utilities and macOS signing
+tools, including rejecting a validly signed ZIP from another build.
+
+The complete local test run was also attempted; it was not fully green. Its
+remaining failures were in the unchanged `ProviderRuntimeIngestion.test.ts` and
+`chatgptConnector/tools/execSessions.test.ts`; a focused repeat passed the former
+and retained two command-completion failures in the latter. The corresponding
+Linux release partitions passed. Global formatting reported 16 unchanged files
+from the baseline, and the Windows boundary scanner reported existing ChatGPT
+connector violations. The release files themselves passed formatting and diff
+checks. These unrelated failures were not hidden by weakening checks or editing
+the application. No production release or notarization-service run was performed
+for this optimization.
 
 ## Desktop auto-update notes
 
@@ -40,12 +146,12 @@ This document covers build-only native validation and publishing desktop release
   - `SYNARA_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
   - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
 - Required Synara release assets for updater:
-  - platform installers (`.exe`, `.dmg`, `.AppImage`, plus macOS `.zip` for Squirrel.Mac update payloads)
-  - `synara-mac.yml`, `synara.yml`, and `synara-linux.yml` metadata
-  - every stable release includes both `synara-mac.yml`, `synara.yml`, `synara-linux.yml` and `latest-mac.yml`, `latest.yml`, `latest-linux.yml`
-  - `*.blockmap` files, except the macOS update `.zip.blockmap` removed after zip repack
+  - platform installers (`.exe`, `.dmg`, plus macOS `.zip` for Squirrel.Mac update payloads)
+  - `synara-mac.yml` and `synara.yml` metadata
+  - the current macOS/Windows matrix includes `synara-mac.yml`, `synara.yml`, `latest-mac.yml`, and `latest.yml`; Linux publication is not enabled in this workflow
+  - `*.blockmap` files, except the macOS update `.zip.blockmap` removed during zip finalization
 - Enforced upgrade path:
-  - Stable clean Synara releases are created with `make_latest=true` and carry both six-manifest filenames in the versioned release.
+  - Stable clean Synara releases are created with `make_latest=true` and carry both manifest names for each published platform in the versioned release.
   - The historical 0.4.x compatibility release remains available for predecessor migration and is never overwritten by a clean-lane release.
   - Clean releases do not mirror payloads onto the historical compatibility release, so the 0.4.x line remains immutable.
   - Clean-release publication fails closed if either the default Latest manifests or the dedicated `synara` aliases are missing.
@@ -53,7 +159,7 @@ This document covers build-only native validation and publishing desktop release
 - macOS metadata note:
   - The build initially emits `latest-mac.yml` for both Intel and Apple Silicon.
   - The workflow merges the per-arch macOS metadata, then keeps the merged manifest as `latest-mac.yml` and copies it to `synara-mac.yml` for stable releases.
-  - The desktop build script repacks the macOS update `.zip` with `ditto`, verifies Electron framework symlinks, extracts the zip, validates the extracted app signature, patches the matching `latest-mac*.yml` hash/size, and removes the stale `.zip.blockmap`.
+  - The desktop build script reuses the builder's `.zip` when its Electron framework symlinks are intact and both the original and extracted app signatures are valid. Matching the resource seal, signed executable, and plist also rejects a validly signed ZIP from another build. It patches the matching `latest-mac*.yml` hash/size and removes `.zip.blockmap` to retain full-archive updates. Legacy ZIPs with missing or flattened framework symlinks are rebuilt with `ditto` and pass the same checks. Unsealed build-only apps retain the previous rebuild-from-source behavior. Archive read/extraction errors and invalid or mismatched signatures otherwise fail the build.
   - macOS updater downloads intentionally use the full zip payload so Squirrel.Mac installs the exact signed archive validated by release build.
 - Local smoke test:
   - Run `bun run release:smoke:mac-update -- --skip-build --build-version 0.1.5` on macOS after local desktop/server/web dist files exist.
@@ -62,8 +168,9 @@ This document covers build-only native validation and publishing desktop release
 
 ## 0) npm OIDC trusted publishing setup (CLI)
 
-The workflow publishes the CLI with `bun publish` from `apps/server` after bumping
-the package version to the release tag version.
+When `SYNARA_PUBLISH_CLI=1`, the workflow restores the shared compiled bundle and
+publishes with `npm publish` from an isolated distribution stage. Source package
+versions must already match the release tag; publication does not rewrite them.
 
 Checklist:
 
@@ -74,10 +181,10 @@ Checklist:
    - Workflow file: `.github/workflows/release.yml`
    - Environment (if used): match your npm trusted publishing config
 3. Ensure npm account and org policies allow trusted publishing for the package.
-4. Create release tag `vX.Y.Z` and push; workflow will:
-   - set `apps/server/package.json` version to `X.Y.Z`
-   - build web + server
-   - run `bun publish --access public`
+4. Create and push release tag `vX.Y.Z`, then dispatch `release.yml` against that
+   tag with `version=X.Y.Z` and `publish_release=true`. After successful validation
+   and builds, the optional job runs `npm publish --access public --tag latest`
+   from its isolated stage.
 
 ## Synara notes
 
@@ -90,20 +197,25 @@ Checklist:
 
 ## 1) Build-only native CI validation
 
-Use this before publication to validate the real native macOS, Linux, and Windows build matrix. Build-only mode does not create a tag, GitHub Release, npm package, updater manifest, or version-bump commit.
+Use this before publication to validate both macOS architectures and Windows.
+Build-only mode uploads installers, updater metadata, provenance, and the server
+tarball as workflow artifacts. It does not create a tag, publish a GitHub Release
+or npm package, expose a public updater feed, or make a version-bump commit.
 
 1. Push the release-candidate branch so GitHub Actions can check it out.
 2. Start the workflow in build-only mode:
    - `gh workflow run release.yml --ref BRANCH -f version=X.Y.Z -f publish_release=false`
 3. Wait for `.github/workflows/release.yml` to finish.
-4. Confirm preflight and all four native matrix builds pass.
+4. Confirm preflight, static verification, all five test partitions, shared bundle/server tarball, and all three native builds pass.
 5. Download the workflow artifacts and sanity-check installation on each OS.
 
-To publish from a manual dispatch instead of a tag push, pass `publish_release=true`. This is intentionally opt-in.
+To publish, select the exact release tag for the dispatch and pass `publish_release=true`. This is intentionally opt-in.
 
 ## 2) Apple signing + notarization setup (macOS)
 
-Required secrets used by the workflow:
+The fork can use the persistent `MAC_CERT_P12` / `MAC_CERT_PASSWORD` identity
+validated by the workflow. That signing mode does not perform Apple notarization.
+Without that pair, the Developer ID path requires the following secrets:
 
 - `CSC_LINK`
 - `CSC_KEY_PASSWORD`
@@ -182,12 +294,13 @@ full subject distinguished name.
 3. Bump app version as needed.
 4. Run `node scripts/resolve-release-update-policy.ts X.Y.Z` and confirm it reports the expected lane, `make_latest`, and `mirror_to_stable_channel` values before creating the tag.
 5. Create release tag: `vX.Y.Z`.
-6. Push tag.
+6. Push the tag, then dispatch `release.yml` against it with `version=X.Y.Z` and `publish_release=true`.
 7. Verify workflow steps:
    - preflight passes
+   - static verification and every test partition pass
    - all matrix builds pass
    - release job uploads expected files
-8. For a stable clean-lane release, confirm the new versioned release is GitHub Latest, contains all three default `latest` manifests plus all three `synara` aliases, and left the historical compatibility release unchanged.
+8. For a stable clean-lane release, confirm the new versioned release is GitHub Latest, contains the default `latest` manifests plus their `synara` aliases for macOS and Windows, and left the historical compatibility release unchanged.
 9. Smoke test downloaded artifacts.
 
 ## 5) Troubleshooting

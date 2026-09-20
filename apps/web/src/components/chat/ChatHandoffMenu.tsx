@@ -36,37 +36,36 @@ export function ChatHandoffMenu({
     codexProfileId?: CodexProfileId,
   ) => void;
 }) {
-  const renderHandoffTargetItems = (mode: ProviderHandoffMode) =>
-    [
-      ...handoffActionTargetProviders.map((provider) => (
-        <MenuItem key={provider} onClick={() => onCreateHandoff(provider, mode)}>
-          {/* opacity-100 opts brand icons out of the option row's 80% icon dim. */}
-          <ProviderIcon provider={provider} className="size-3.5 shrink-0 opacity-100" />
-          <span>{PROVIDER_DISPLAY_NAMES[provider]}</span>
-        </MenuItem>
-      )),
-      ...(handoffActionTargetCodexProfiles.length > 0
-        ? [
-            <MenuSub key="codex-profiles">
-              <MenuSubTrigger>
-                <ProviderIcon provider="codex" className="size-3.5 shrink-0 opacity-100" />
-                <span>Codex profile</span>
-              </MenuSubTrigger>
-              <ComposerPickerMenuSubPopup className="w-56 min-w-56">
-                {handoffActionTargetCodexProfiles.map((profile) => (
-                  <MenuItem
-                    key={profile.id}
-                    onClick={() => onCreateHandoff("codex", mode, profile.id)}
-                  >
-                    <ProviderIcon provider="codex" className="size-3.5 shrink-0 opacity-100" />
-                    <span className="truncate">{profile.name}</span>
-                  </MenuItem>
-                ))}
-              </ComposerPickerMenuSubPopup>
-            </MenuSub>,
-          ]
-        : []),
-    ];
+  const renderHandoffTargetItems = (mode: ProviderHandoffMode) => [
+    ...handoffActionTargetProviders.map((provider) => (
+      <MenuItem key={provider} onClick={() => onCreateHandoff(provider, mode)}>
+        {/* opacity-100 opts brand icons out of the option row's 80% icon dim. */}
+        <ProviderIcon provider={provider} className="size-3.5 shrink-0 opacity-100" />
+        <span>{PROVIDER_DISPLAY_NAMES[provider]}</span>
+      </MenuItem>
+    )),
+    ...(handoffActionTargetCodexProfiles.length > 0
+      ? [
+          <MenuSub key="codex-profiles">
+            <MenuSubTrigger>
+              <ProviderIcon provider="codex" className="size-3.5 shrink-0 opacity-100" />
+              <span>Codex profile</span>
+            </MenuSubTrigger>
+            <ComposerPickerMenuSubPopup className="w-56 min-w-56">
+              {handoffActionTargetCodexProfiles.map((profile) => (
+                <MenuItem
+                  key={profile.id}
+                  onClick={() => onCreateHandoff("codex", mode, profile.id)}
+                >
+                  <ProviderIcon provider="codex" className="size-3.5 shrink-0 opacity-100" />
+                  <span className="truncate">{profile.name}</span>
+                </MenuItem>
+              ))}
+            </ComposerPickerMenuSubPopup>
+          </MenuSub>,
+        ]
+      : []),
+  ];
 
   return (
     <Menu modal={false}>

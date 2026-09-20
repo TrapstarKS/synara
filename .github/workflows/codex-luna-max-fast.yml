@@ -2,7 +2,7 @@ name: Publish Codex Luna Max Fast
 
 on:
   schedule:
-    - cron: "41 8 * * *"
+    - cron: "41 */6 * * *"
   workflow_dispatch:
     inputs:
       codex_version:
@@ -24,6 +24,7 @@ concurrency:
 env:
   RELEASE_TAG: codex-luna-max-fast-latest
   VERSION_ASSET: codex-luna-max-fast-version.txt
+  SOURCE_ASSET: codex-luna-max-fast-source.txt
 
 jobs:
   resolve:
@@ -35,7 +36,9 @@ jobs:
     outputs:
       should_build: ${{ steps.version.outputs.should_build }}
       version: ${{ steps.version.outputs.version }}
+      source_revision: ${{ steps.version.outputs.source_revision }}
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -44,6 +47,7 @@ jobs:
         env:
           REQUESTED_VERSION: ${{ inputs.codex_version }}
           FORCE_BUILD: ${{ inputs.force }}
+          SOURCE_REVISION: ${{ hashFiles('tools/codex-luna-max-fast/**', '.github/workflows/codex-luna-max-fast.yml') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -56,12 +60,14 @@ jobs:
             exit 1
           fi
 
-          current="$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${VERSION_ASSET}" 2>/dev/null || true)"
+          current="$(curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${VERSION_ASSET}" 2>/dev/null || true)"
+          current_source="$(curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${SOURCE_ASSET}" 2>/dev/null || true)"
           should_build=false
-          if [[ "$FORCE_BUILD" == "true" || "$current" != "$version" ]]; then
+          if [[ "$FORCE_BUILD" == "true" || "$current" != "$version" || "$current_source" != "$SOURCE_REVISION" ]]; then
             should_build=true
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_revision=$SOURCE_REVISION" >> "$GITHUB_OUTPUT"
           echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
           echo "Published: ${current:-none}; upstream: $version; build: $should_build"
 
@@ -75,6 +81,7 @@ jobs:
       contents: write
     env:
       CODEX_VERSION: ${{ needs.resolve.outputs.version }}
+      SOURCE_REVISION: ${{ needs.resolve.outputs.source_revision }}
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
@@ -84,6 +91,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+
+      - name: Test the portable updater
+        run: tools/codex-luna-max-fast/test.sh
 
       - name: Check out and patch Codex
         shell: bash
@@ -123,9 +133,17 @@ jobs:
         working-directory: ${{ runner.temp }}/codex/codex-rs
         env:
           RUST_MIN_STACK: "8388608"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_INCREMENTAL: "0"
         run: |
-          cargo test --release --locked -p codex-core --lib spawn_agent_service_tier_forces_fast_for_luna_at_any_effort
-          cargo test --release --locked -p codex-core --test all luna_subagent_uses_priority_service_tier
+          # Release tags can bump workspace.package.version while leaving the
+          # source-less workspace lock entries at 0.0.0. Update only workspace
+          # packages; retain --locked for all tests and the shipped binary.
+          cargo update --workspace
+          # The behavioral fixtures do not need whole-harness release/LTO builds.
+          # The shipped CLI below still uses the pinned release profile.
+          cargo test --locked -p codex-core --lib spawn_agent_service_tier_forces_fast_for_luna_at_any_effort
+          cargo test --locked -p codex-core --test all luna_subagent_uses_priority_service_tier
           cargo build --release --locked -p codex-cli --bin codex
 
       - name: Download matching official runtime files
@@ -144,6 +162,7 @@ jobs:
             "$RUNNER_TEMP/codex-npm/package/vendor/aarch64-apple-darwin" \
             "$RUNNER_TEMP/release"
           print -r -- "$CODEX_VERSION" >"$RUNNER_TEMP/release/$VERSION_ASSET"
+          print -r -- "$SOURCE_REVISION" >"$RUNNER_TEMP/release/$SOURCE_ASSET"
 
       - name: Publish fixed prerelease feed
         env:
@@ -160,6 +179,18 @@ jobs:
               --prerelease \
               --latest=false
           fi
+          # Retain the previous feed bundle by content hash before overwriting
+          # it: desktop releases keep a pinned checksum for their bootstrap.
+          asset="codex-luna-max-fast-aarch64-apple-darwin.tar.gz"
+          published_assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          if grep -Fxq "$asset" <<< "$published_assets"; then
+            mkdir -p "$RUNNER_TEMP/previous-codex"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$asset" --pattern "$asset.sha256" --dir "$RUNNER_TEMP/previous-codex"
+            previous_archive="$(tools/codex-luna-max-fast/retain-bundle.sh "$RUNNER_TEMP/previous-codex/$asset")"
+            gh release upload "$RELEASE_TAG" "$previous_archive" --repo "$GITHUB_REPOSITORY" --clobber
+          fi
+          tools/codex-luna-max-fast/retain-bundle.sh "$RUNNER_TEMP/release/$asset"
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/release/"* \
             --repo "$GITHUB_REPOSITORY" \
             --clobber

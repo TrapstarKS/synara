@@ -127,10 +127,14 @@ failure checks.
 ## Codex asynchronous questions
 
 On Codex versions and models that expose `request_user_input_async`, Synara shows
-a question-mark capsule labeled with the number of questions. Opening it reuses
+a persistent pending-question panel above the composer, plus a question-mark
+capsule in the transcript. The panel counts unanswered questions, including those
+from earlier turns and older than the ordinary transcript window. Opening a question reuses
 the same question form as blocking prompts: numbered choices, previous/next
 navigation, and a separate text answer. Closing the capsule preserves the current
-answer draft. A suggested answer is never submitted automatically. The composer
+answer draft. The composer and transcript share that draft, including navigation
+between chats in the same window, and cannot submit the same answer simultaneously.
+A suggested answer is never submitted automatically. The composer
 remains available and the agent can continue working while the question is unanswered.
 
 The shared form keeps blocking prompts' existing auto-advance behavior. Async
@@ -139,13 +143,63 @@ opened form, so separate questions and the main composer cannot consume each
 other's input.
 
 Questions and submitted answers are stored with the assistant message. Refreshing
-or restarting Synara restores that state. Concurrent submissions are admitted once
+or restarting Synara restores that state; unfinished drafts are local to the current
+window. Finishing or interrupting a turn does not dismiss an unanswered asynchronous
+question. Concurrent submissions are admitted once
 by the server; a second client refreshes the accepted answer. Normal turn-delivery
 errors remain visible on the conversation, as for any other user message.
 
+Space badges aggregate individual thread states. An unanswered question or approval
+has priority over another thread's ongoing work, including within the same project.
+Amber means attention is needed, red means a run failed, blue pulses while work is
+active, and green means an unread completed reply. The currently opened thread does
+not contribute an unread-completion badge. A Space without a badge is idle; its
+tooltip spells out the current status. Asynchronous questions use **Needs Answer**
+without treating the provider as blocked.
+
+### Streaming delivery
+
+Text deltas remain visible while the provider works. A completed, identified Codex
+agent-message item supplies the authoritative final text, repairing missing or
+replayed deltas while preserving whitespace. Legacy completions without item IDs
+retain their existing fallback behavior. Text accompanying a question remains
+visible alongside its question form.
+
+The presentation animation buffers at most 320 received characters. Large arrivals
+skip to that live tail instead of replaying many seconds of simulated typing.
+Completion, reduced motion, and returning after a paused animation show the received
+text immediately. Intermediate reveals do not split UTF-16 surrogate pairs.
+
+Codex command/tool activity follows the same live transcript model without turning
+every provider chunk into a new row. Running tool runs stay individually visible;
+settled adjacent runs may collapse behind a summary disclosure. Command output is
+projected while the command is still running using bounded cumulative snapshots,
+then reconciled with the completed item. Expanding a command shows its raw command,
+working directory when available, output, exit code, and duration.
+
+Native v2 MCP and dynamic-tool items preserve the provider's exact identity and
+payload for inspection. The compact row uses the app/action label when Codex supplies
+`appContext`, otherwise the MCP server/tool or namespace/tool identity. Expanding it
+shows server/namespace, exact tool name, arguments, textual/structured result, error,
+and duration when present. MCP progress messages update the existing call by item id
+instead of replacing its identity or creating an unrelated progress row.
+
+Live following stays enabled across large incoming blocks until the user scrolls
+away. A wheel gesture that does not move the transcript does not detach it; moving
+up to read earlier output still does. Wheel ownership is captured before native
+scrolling, including when the browser would otherwise deliver React's passive
+wheel callback after the viewport has moved. Returning to the bottom or using the
+scroll arrow restores follow. Scrolling inside an independent nested panel keeps
+the transcript's existing ownership. Completed text also replaces stale hydrated
+segments, so the displayed response matches the provider's authoritative message.
+
+Search waits for the list's measured message jump before centering the exact match.
+A newer jump, user input in the transcript pane, closing search, or unmounting the
+conversation cancels that pending centering step instead of moving the reader later.
+
 ### App-server protocol
 
-Verified with codex-cli **0.154.0**, its generated experimental TypeScript schemas,
+Verified with codex-cli **0.155.1**, its generated experimental TypeScript schemas,
 and an isolated native app-server session:
 
 - `request_user_input_async` is a model-facing tool, not a client RPC. It emits

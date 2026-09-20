@@ -100,7 +100,8 @@ import { stripDiffSearchParams } from "../diffRouteSearch";
 import { isElectron } from "../env";
 import { useFeatureFlags } from "../featureFlags";
 import { useComposerCommandMenuItems } from "../hooks/useComposerCommandMenuItems";
-import { splitComposerDropzoneFiles, useComposerDropzone } from "../hooks/useComposerDropzone";
+import { useComposerDropzone } from "../hooks/useComposerDropzone";
+import { splitDroppedComposerFiles } from "../lib/composerDropPaths";
 import { useComposerImageIntake } from "../hooks/useComposerImageIntake";
 import { useComposerSlashCommands } from "../hooks/useComposerSlashCommands";
 import { useDiffRouteSearch } from "../hooks/useDiffRouteSearch";
@@ -240,6 +241,7 @@ import { ChatComposerFooter } from "./chat/ChatComposerFooter";
 import { ChatHeader, type ProviderHandoffMode } from "./chat/ChatHeader";
 import { ChatSurfaceHeader } from "./chat/ChatSurfaceHeader";
 import { useAsyncUserInputResponse } from "./chat/useAsyncUserInputResponse";
+import { ComposerAsyncUserInputPanel } from "./chat/ComposerAsyncUserInputPanel";
 import { ChatTranscriptPane } from "./chat/ChatTranscriptPane";
 import { ComposerActiveTaskListCard } from "./chat/ComposerActiveTaskListCard";
 import { ComposerBranchMismatchBanner } from "./chat/ComposerBranchMismatchBanner";
@@ -3566,7 +3568,19 @@ export default function ChatView({
 
   const addComposerAttachments = useCallback(
     (files: readonly File[]) => {
-      const { imageFiles, genericFiles } = splitComposerDropzoneFiles(files);
+      if (!activeThreadId || files.length === 0 || isSidechatExpired) return;
+      if (pendingUserInputs.length > 0) {
+        toastManager.add({ type: "error", title: "Attach files after answering plan questions." });
+        return;
+      }
+      // The file picker and OS drops share the same large-file path fallback.
+      const { pathMentions, imageFiles, genericFiles } = splitDroppedComposerFiles({ files });
+      if (pathMentions.length > 0) {
+        setThreadError(activeThreadId, null);
+        for (const absolutePath of pathMentions) {
+          appendComposerPromptText(activeThreadId, formatComposerMentionToken(absolutePath));
+        }
+      }
       if (imageFiles.length > 0) {
         addComposerImages(imageFiles);
       }
@@ -3574,7 +3588,14 @@ export default function ChatView({
         addComposerFiles(genericFiles);
       }
     },
-    [addComposerFiles, addComposerImages],
+    [
+      activeThreadId,
+      isSidechatExpired,
+      pendingUserInputs.length,
+      setThreadError,
+      addComposerFiles,
+      addComposerImages,
+    ],
   );
 
   const removeComposerFile = (fileId: string) => {
@@ -5075,6 +5096,16 @@ export default function ChatView({
         className={cn(isCenteredEmptyLanding ? "w-full overflow-visible" : "contents")}
         data-empty-landing-composer-block={isCenteredEmptyLanding ? "true" : undefined}
       >
+        {activeThread && (
+          <ComposerColumnFrame>
+            <ComposerAsyncUserInputPanel
+              key={threadId}
+              threadId={threadId}
+              messages={activeThread.messages}
+              onRespond={onRespondToAsyncUserInput}
+            />
+          </ComposerColumnFrame>
+        )}
         <form
           ref={composerFormRef}
           onSubmit={onSend}

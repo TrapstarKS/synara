@@ -347,6 +347,8 @@ export interface ThreadStatusPill {
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
+    | "Needs Answer"
+    | "Error"
     | "Plan Ready";
   colorClass: string;
   dotClass: string;
@@ -388,6 +390,8 @@ export function resolveThreadStatusTrailingIndicator(input: {
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   "Pending Approval": 5,
   "Awaiting Input": 4,
+  "Needs Answer": 4,
+  Error: 4,
   Working: 3,
   Connecting: 3,
   "Plan Ready": 2,
@@ -402,6 +406,7 @@ type ThreadStatusInput = Pick<
   hasActionableProposedPlan?: boolean | undefined;
   hasLiveTailWork?: boolean | undefined;
   hasWorkingSubagents?: boolean | undefined;
+  hasPendingAsyncUserInput?: boolean | undefined;
   dismissedStatusKey?: string | undefined;
 };
 
@@ -673,6 +678,18 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // These are ordinary-message replies, so they remain actionable even after
+  // the provider finishes or disconnects. They never block the running turn.
+  if (thread.hasPendingAsyncUserInput) {
+    return {
+      label: "Needs Answer",
+      colorClass: "text-amber-600 dark:text-amber-300/90",
+      dotClass: "bg-amber-500 dark:bg-amber-300/90",
+      pulse: false,
+      dismissible: false,
+    };
+  }
+
   if (isThreadActivelyWorking(thread)) {
     return {
       label: "Working",
@@ -694,6 +711,8 @@ export function resolveThreadStatusPill(input: {
   }
 
   const hasPlanReadyPrompt =
+    thread.session?.status !== "error" &&
+    thread.latestTurn?.state !== "error" &&
     !hasPendingUserInput &&
     !thread.hasLiveTailWork &&
     thread.interactionMode === "plan" &&
@@ -717,7 +736,27 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (!thread.hasLiveTailWork && hasUnseenCompletion(thread)) {
+  if (
+    thread.session?.status === "error" ||
+    (thread.latestTurn?.state === "error" && hasUnseenCompletion(thread))
+  ) {
+    const dismissalKey = `Error:${thread.session?.updatedAt ?? thread.latestTurn?.completedAt ?? thread.updatedAt}`;
+    if (thread.dismissedStatusKey === dismissalKey) return null;
+    return {
+      label: "Error",
+      colorClass: "text-red-600 dark:text-red-300/90",
+      dotClass: "bg-red-500 dark:bg-red-300/90",
+      pulse: false,
+      dismissible: true,
+      dismissalKey,
+    };
+  }
+
+  if (
+    !thread.hasLiveTailWork &&
+    thread.latestTurn?.state === "completed" &&
+    hasUnseenCompletion(thread)
+  ) {
     const dismissalKey = createCompletedDismissalKey(thread);
     if (dismissalKey && thread.dismissedStatusKey === dismissalKey) {
       return null;

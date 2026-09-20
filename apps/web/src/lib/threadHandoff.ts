@@ -290,7 +290,10 @@ export function resolveThreadHandoffModelSelection(input: {
   readonly targetCodexProfileId?: CodexProfileId;
 }): ModelSelection {
   if (input.targetCodexProfileId !== undefined) {
-    if (input.targetProvider !== "codex" || input.sourceThread.modelSelection.provider !== "codex") {
+    if (
+      input.targetProvider !== "codex" ||
+      input.sourceThread.modelSelection.provider !== "codex"
+    ) {
       throw new Error("A Codex profile handoff requires a Codex source thread.");
     }
     return {

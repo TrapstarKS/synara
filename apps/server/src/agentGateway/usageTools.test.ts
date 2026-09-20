@@ -90,9 +90,7 @@ describe("makeAgentGatewayUsageTools", () => {
       },
     });
 
-    await Effect.runPromise(
-      tool!.handler({}, { ...context, callerProfileId: "codex-profile-b" }),
-    );
+    await Effect.runPromise(tool!.handler({}, { ...context, callerProfileId: "codex-profile-b" }));
 
     expect(requestedProfile).toBe("codex-profile-b");
   });

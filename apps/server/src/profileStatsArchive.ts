@@ -24,7 +24,13 @@ import {
   isManagedCheckpointRefForThread,
   resolveProjectCwdForKind,
 } from "./checkpointing/Utils";
-import { aggregateProfileSkillUsageRows, turnModelSelectionCte } from "./profileStats";
+import {
+  aggregateProfileSkillUsageRows,
+  aggregateReportedCostRows,
+  reportedCostActivityCte,
+  turnModelSelectionCte,
+  type ReportedCostActivityRow,
+} from "./profileStats";
 import { PROVIDER_COMMAND_REACTOR_CONSUMER } from "./persistence/Services/OrchestrationEventDeliveries";
 import { isProviderIntentEventType } from "./orchestration/providerIntentClassification";
 import { THREAD_RETENTION_COMMAND_ID_PREFIX } from "./threadRetention";
@@ -191,12 +197,14 @@ function hasProfileStatsContribution(input: {
   readonly turnRows: ReadonlyArray<ThreadTurnSnapshotRow>;
   readonly tokenRows: ReadonlyArray<ThreadTokenSnapshotRow>;
   readonly skillRows: ReturnType<typeof aggregateProfileSkillUsageRows>;
+  readonly coveredCostTurns: number;
 }): boolean {
   return (
     input.promptRows.length > 0 ||
     input.turnRows.some((row) => row.turnCount > 0) ||
     input.tokenRows.length > 0 ||
-    input.skillRows.some((row) => row.runCount > 0)
+    input.skillRows.some((row) => row.runCount > 0) ||
+    input.coveredCostTurns > 0
   );
 }
 
@@ -650,6 +658,28 @@ const makeProfileStatsArchive = Effect.gen(function* () {
           a.created_at ASC,
           a.activity_id ASC
       `;
+      const reportedCostRows = yield* sql<ReportedCostActivityRow>`
+        WITH reported_costs AS (
+          ${reportedCostActivityCte(sql, { threadId })}
+        )
+        SELECT
+          threadId,
+          turnId,
+          provider,
+          totalCostUsd,
+          cumulativeCostUsd,
+          sequence,
+          createdAt,
+          activityId
+        FROM reported_costs
+        ORDER BY
+          threadId ASC,
+          provider ASC,
+          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
+          sequence ASC,
+          createdAt ASC,
+          activityId ASC
+      `;
       const skillMessageRows = yield* sql<SkillMessageRow>`
         SELECT
           message_id AS messageId,
@@ -679,12 +709,14 @@ const makeProfileStatsArchive = Effect.gen(function* () {
         FROM claude_token_rows
       `;
       tokenRows.push(...claudeTokenRows);
+      const reportedCost = aggregateReportedCostRows(reportedCostRows);
       const skillRows = aggregateProfileSkillUsageRows(skillMessageRows);
       const hasStatsContribution = hasProfileStatsContribution({
         promptRows: skillMessageRows,
         turnRows,
         tokenRows,
         skillRows,
+        coveredCostTurns: reportedCost.coveredTurns,
       });
 
       // Snapshot writes are idempotent per thread so an interrupted purge can
@@ -694,6 +726,7 @@ const makeProfileStatsArchive = Effect.gen(function* () {
       yield* sql`DELETE FROM profile_stats_deleted_turns WHERE thread_id = ${threadId}`;
       yield* sql`DELETE FROM profile_stats_deleted_skills WHERE thread_id = ${threadId}`;
       yield* sql`DELETE FROM profile_stats_deleted_tokens WHERE thread_id = ${threadId}`;
+      yield* sql`DELETE FROM profile_stats_deleted_costs WHERE thread_id = ${threadId}`;
 
       if (hasStatsContribution) {
         yield* sql`
@@ -735,6 +768,13 @@ const makeProfileStatsArchive = Effect.gen(function* () {
           `,
           { concurrency: 1, discard: true },
         );
+        if (reportedCost.coveredTurns > 0) {
+          yield* sql`
+            INSERT INTO profile_stats_deleted_costs
+              (thread_id, cost_usd, covered_turn_count)
+            VALUES (${threadId}, ${reportedCost.costUsd}, ${reportedCost.coveredTurns})
+          `;
+        }
       }
 
       // Hard delete: every table that stores rows for this thread. The delete
