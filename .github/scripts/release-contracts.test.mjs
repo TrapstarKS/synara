@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const workflow = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
+const setupWorkspace = readFileSync(
+  join(repoRoot, ".github/actions/setup-workspace/action.yml"),
+  "utf8",
+);
 
 function job(name) {
   const source = workflow.match(
@@ -161,5 +165,13 @@ test("Windows dependency cache and temporary staging use the runner volume", () 
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("workspace lifecycle scripts are serialized during dependency installation", () => {
+  const installCommands = setupWorkspace.match(/bun install --frozen-lockfile[^\n]*/g) ?? [];
+  assert.equal(installCommands.length, 3);
+  for (const command of installCommands) {
+    assert.match(command, /--concurrent-scripts=1/);
   }
 });
