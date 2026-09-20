@@ -156,9 +156,9 @@ export const ProfileTokenStats = Schema.Struct({
   lifetimeTotalTokens: Schema.NullOr(NonNegativeInt),
   peakDayTokens: Schema.NullOr(NonNegativeInt),
   peakDay: Schema.NullOr(TrimmedNonEmptyString),
-  // Best-effort lifetime USD equivalent from provider-reported turn/session costs.
-  // Null means no trustworthy USD signal has been recorded. Coverage communicates
-  // how much of the recorded turn history contributed to the estimate.
+  // Best-effort lifetime USD equivalent using current published token rates.
+  // This is a rate-card equivalent, not the user's subscription bill. Coverage
+  // is the share of recorded token volume with enough pricing evidence.
   estimatedEquivalentUsd: Schema.optional(
     Schema.NullOr(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   ),
@@ -167,6 +167,7 @@ export const ProfileTokenStats = Schema.Struct({
       Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)).check(Schema.isLessThanOrEqualTo(100)),
     ),
   ),
+  estimatedEquivalentUsdPricingAsOf: Schema.optional(TrimmedNonEmptyString),
   providers: Schema.Array(ProviderKind),
   // Providers with recorded turns but no token telemetry (their adapters never
   // emit context-window updates); excluded from token-based rankings.

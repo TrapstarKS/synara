@@ -162,7 +162,7 @@ function ProfileContent({
       {tokensError ? (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
           <p className="text-xs text-muted-foreground">
-            Token and cost stats couldn’t load. The activity below is using prompt-based data for
+            Token and pricing stats couldn’t load. The activity below is using prompt-based data for
             now.
           </p>
           <Button variant="ghost" size="sm" onClick={onRetryTokens}>
@@ -176,8 +176,8 @@ function ProfileContent({
       tokenStats.estimatedEquivalentUsdCoveragePercent !== undefined &&
       tokenStats.estimatedEquivalentUsdCoveragePercent < 100 ? (
         <p className="text-xs text-muted-foreground">
-          USD estimate currently covers {tokenStats.estimatedEquivalentUsdCoveragePercent}% of
-          recorded turns with provider-reported cost data.
+          USD equivalent currently covers {tokenStats.estimatedEquivalentUsdCoveragePercent}% of
+          recorded token volume with published Codex pricing and complete mode/context evidence.
         </p>
       ) : null}
 
@@ -392,13 +392,15 @@ function formatEstimatedEquivalentTitle(tokenStats: ProfileTokenStats | null): s
     tokenStats?.estimatedEquivalentUsd === null ||
     tokenStats?.estimatedEquivalentUsd === undefined
   ) {
-    return "No provider-reported USD cost has been recorded yet.";
+    return "No recorded token usage currently has enough published pricing evidence for a USD equivalent.";
   }
   const coverage = tokenStats.estimatedEquivalentUsdCoveragePercent;
+  const pricingAsOf = tokenStats.estimatedEquivalentUsdPricingAsOf;
+  const rateDate = pricingAsOf ? ` Rates checked ${pricingAsOf}.` : "";
   if (coverage === null || coverage === undefined) {
-    return "Estimated from provider-reported USD cost data.";
+    return `Current token-rate equivalent; this is not your subscription bill.${rateDate}`;
   }
-  return `Estimated from provider-reported USD cost data covering ${coverage}% of recorded turns.`;
+  return `Current token-rate equivalent covering ${coverage}% of recorded token volume; this is not your subscription bill.${rateDate}`;
 }
 
 function formatProviderLabel(provider: ProviderKind): string {

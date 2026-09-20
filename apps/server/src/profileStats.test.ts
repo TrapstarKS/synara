@@ -14,6 +14,7 @@ import recoverClaudeUsage from "./persistence/Migrations/103_ClaudeTokenAccounti
 import {
   aggregateReportedCostRows,
   aggregateProfileSkillUsageRows,
+  aggregateTokenPricingActivityRows,
   heatmapIntensity,
   ProfileStatsQuery,
   ProfileStatsQueryLive,
@@ -103,7 +104,156 @@ describe("aggregateReportedCostRows", () => {
   });
 });
 
+describe("aggregateTokenPricingActivityRows", () => {
+  const row = (
+    activityId: string,
+    usageSessionId: string | null,
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+    lastInputTokens: number | null = 100,
+  ) => ({
+    threadId: "thread-pricing",
+    activityId,
+    usageSessionId,
+    provider: "codex",
+    model,
+    inputTokens,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens,
+    fastMode: 0,
+    lastInputTokens,
+  });
+
+  it("uses cumulative session deltas and ignores repeated stale last-usage snapshots", () => {
+    expect(
+      aggregateTokenPricingActivityRows([
+        row("a", "session-a", "gpt-5.6-sol", 100, 10),
+        row("b", "session-a", "gpt-5.6-sol", 100, 10),
+        row("c", "session-a", "gpt-5.6-sol", 250, 25),
+      ]),
+    ).toMatchObject([
+      { inputTokens: 100, outputTokens: 10 },
+      { inputTokens: 150, outputTokens: 15 },
+    ]);
+  });
+
+  it("keeps one baseline across model switches and starts fresh for a new provider session", () => {
+    expect(
+      aggregateTokenPricingActivityRows([
+        row("a", "session-a", "gpt-5.6-sol", 100, 10),
+        row("b", "session-a", "gpt-5.4", 160, 16),
+        row("c", "session-b", "gpt-5.4", 500, 50),
+      ]),
+    ).toMatchObject([
+      { model: "gpt-5.6-sol", inputTokens: 100, outputTokens: 10 },
+      { model: "gpt-5.4", inputTokens: 60, outputTokens: 6 },
+      { model: "gpt-5.4", inputTokens: 500, outputTokens: 50 },
+    ]);
+  });
+
+  it("treats a lower cumulative counter in the same session as a reset", () => {
+    expect(
+      aggregateTokenPricingActivityRows([
+        row("a", "session-a", "gpt-5.6-sol", 500, 50),
+        row("b", "session-a", "gpt-5.6-sol", 120, 12),
+      ]),
+    ).toMatchObject([
+      { inputTokens: 500, outputTokens: 50 },
+      { inputTokens: 120, outputTokens: 12 },
+    ]);
+  });
+});
+
 describe("ProfileStatsQuery", () => {
+  it("recovers canonical Codex cumulative pricing evidence from the durable provider event", async () => {
+    await runProfileStatsTest(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const statsQuery = yield* ProfileStatsQuery;
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id, title, workspace_root, scripts_json, created_at, updated_at, deleted_at
+          ) VALUES (
+            'project-canonical-pricing', 'Canonical pricing', '/work/canonical-pricing', '{}',
+            '2026-09-20T10:00:00.000Z', '2026-09-20T10:00:00.000Z', NULL
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model_selection_json, runtime_mode,
+            interaction_mode, env_mode, created_at, updated_at, deleted_at
+          ) VALUES (
+            'thread-canonical-pricing', 'project-canonical-pricing', 'Canonical pricing',
+            '{"provider":"codex","model":"gpt-5.6-sol","options":{"fastMode":false}}',
+            'full-access', 'default', 'local',
+            '2026-09-20T10:00:00.000Z', '2026-09-20T10:00:00.000Z', NULL
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, is_streaming, source,
+            dispatch_origin, created_at, updated_at
+          ) VALUES (
+            'message-canonical-pricing', 'thread-canonical-pricing', 'turn-canonical-pricing',
+            'user', 'price this', 0, 'native', 'user',
+            '2026-09-20T10:00:01.000Z', '2026-09-20T10:00:01.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_turn_count,
+            checkpoint_ref, checkpoint_status, checkpoint_files_json
+          ) VALUES (
+            'thread-canonical-pricing', 'turn-canonical-pricing',
+            'message-canonical-pricing', NULL, 'completed',
+            '2026-09-20T10:00:01.000Z', '2026-09-20T10:00:02.000Z',
+            '2026-09-20T10:00:03.000Z', 0, NULL, 'disabled', '[]'
+          )
+        `;
+        yield* sql`
+          INSERT INTO orchestration_events (
+            event_id, aggregate_kind, stream_id, stream_version, event_type,
+            occurred_at, command_id, actor_kind, payload_json, metadata_json
+          ) VALUES (
+            'event-canonical-pricing', 'thread', 'thread-canonical-pricing', 1,
+            'thread.turn-start-requested', '2026-09-20T10:00:01.000Z', NULL, 'client',
+            '{"threadId":"thread-canonical-pricing","messageId":"message-canonical-pricing","modelSelection":{"provider":"codex","model":"gpt-5.6-sol","options":{"fastMode":false}}}',
+            '{}'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary,
+            payload_json, sequence, created_at
+          ) VALUES (
+            'activity-canonical-pricing', 'thread-canonical-pricing',
+            'turn-canonical-pricing', 'info', 'context-window.updated', 'usage',
+            '{"totalProcessedTokens":3100,"provider":"codex"}', 1,
+            '2026-09-20T10:00:03.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO provider_runtime_events (
+            event_id, thread_id, turn_id, lifecycle_generation, event_type,
+            event_json, persisted_at
+          ) VALUES (
+            'activity-canonical-pricing', 'thread-canonical-pricing',
+            'turn-canonical-pricing', 'generation-1', 'thread.token-usage.updated',
+            '{"provider":"codex","providerRefs":{"providerThreadId":"provider-session"},"lifecycleGeneration":"generation-1","raw":{"payload":{"tokenUsage":{"total":{"inputTokens":3000,"cachedInputTokens":2000,"cacheWriteInputTokens":500,"outputTokens":100},"last":{"inputTokens":3000}}}}}',
+            '2026-09-20T10:00:03.000Z'
+          )
+        `;
+        const stats = yield* statsQuery.getProfileTokenStats({ utcOffsetMinutes: 0 });
+        expect(stats.lifetimeTotalTokens).toBe(3100);
+        expect(stats.estimatedEquivalentUsd).toBeCloseTo(0.0048);
+        expect(stats.estimatedEquivalentUsdCoveragePercent).toBe(100);
+      }),
+    );
+  });
+
   it("uses versioned Claude results once, recovers retained main usage, and excludes unverifiable history", async () => {
     await runProfileStatsTest(
       Effect.gen(function* () {

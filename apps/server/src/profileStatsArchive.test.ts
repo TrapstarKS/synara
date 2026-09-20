@@ -163,7 +163,7 @@ const seedTwoThreadsWithActivity = Effect.gen(function* () {
       (
         'event-purge-1', 'thread', 'thread-purge', 2, 'thread.turn-start-requested',
         '2026-06-13T09:05:00.000Z', 'cmd-purge-turn', 'client',
-        '{"threadId":"thread-purge","modelSelection":{"provider":"codex","model":"gpt-5-codex","options":{"reasoningEffort":"high"}}}',
+        '{"threadId":"thread-purge","messageId":"message-purge-1","modelSelection":{"provider":"codex","model":"gpt-5-codex","options":{"reasoningEffort":"high","fastMode":false}}}',
         '{}'
       ),
       (
@@ -216,7 +216,8 @@ const seedTwoThreadsWithActivity = Effect.gen(function* () {
       (
         'activity-purge-1', 'thread-purge', 'turn-purge-1', 'info',
         'context-window.updated', 'tokens updated',
-        '{"totalProcessedTokens":3000}', 1, '2026-06-13T09:06:00.000Z'
+        '{"totalProcessedTokens":3000,"provider":"codex","usageSessionId":"provider-session","cumulativeUsage":{"inputTokens":2500,"cachedInputTokens":2000,"cacheCreationInputTokens":100,"outputTokens":500},"lastInputTokens":2500}',
+        1, '2026-06-13T09:06:00.000Z'
       ),
       (
         'activity-purge-2', 'thread-purge', 'turn-purge-2', 'info',
@@ -582,8 +583,8 @@ describe("ProfileStatsArchive", () => {
 
         const statsBefore = yield* statsQuery.getProfileStats({ utcOffsetMinutes: 0 });
         const tokenStatsBefore = yield* statsQuery.getProfileTokenStats({ utcOffsetMinutes: 0 });
-        expect(tokenStatsBefore.estimatedEquivalentUsd).toBe(1.25);
-        expect(tokenStatsBefore.estimatedEquivalentUsdCoveragePercent).toBeCloseTo(33.3);
+        expect(tokenStatsBefore.estimatedEquivalentUsd).toBeCloseTo(0.00575);
+        expect(tokenStatsBefore.estimatedEquivalentUsdCoveragePercent).toBe(100);
         // Half-hour offset: the 18:45Z token activity lands on the NEXT local
         // day for +05:30, so this catches any archive-side day re-bucketing drift.
         const statsBeforeIst = yield* statsQuery.getProfileStats({ utcOffsetMinutes: 330 });
@@ -669,6 +670,36 @@ describe("ProfileStatsArchive", () => {
             WHERE thread_id = 'thread-purge'
           `,
         ).toEqual([{ costUsd: 1.25, coveredTurnCount: 1 }]);
+        expect(
+          yield* sql<{
+            readonly inputTokens: number;
+            readonly cachedInputTokens: number;
+            readonly cacheWriteInputTokens: number;
+            readonly outputTokens: number;
+            readonly fastMode: number | null;
+            readonly lastInputTokens: number | null;
+          }>`
+            SELECT
+              input_tokens AS inputTokens,
+              cached_input_tokens AS cachedInputTokens,
+              cache_write_input_tokens AS cacheWriteInputTokens,
+              output_tokens AS outputTokens,
+              fast_mode AS fastMode,
+              last_input_tokens AS lastInputTokens
+            FROM profile_stats_deleted_token_pricing
+            WHERE thread_id = 'thread-purge'
+            ORDER BY row_index ASC
+          `,
+        ).toEqual([
+          {
+            inputTokens: 2500,
+            cachedInputTokens: 2000,
+            cacheWriteInputTokens: 100,
+            outputTokens: 500,
+            fastMode: 0,
+            lastInputTokens: 2500,
+          },
+        ]);
         const remainingReceipts = yield* sql<{ readonly commandId: string }>`
           SELECT command_id AS commandId
           FROM orchestration_command_receipts

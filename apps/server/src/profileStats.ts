@@ -22,6 +22,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "./config";
 import { claudeTokenActivityCtes } from "./claudeTokenStats";
+import {
+  estimateProfileTokenCost,
+  PROFILE_TOKEN_PRICING_AS_OF,
+  type ProfileTokenPricingUsage,
+} from "./profileTokenPricing";
 
 const HEATMAP_WINDOW_DAYS = 274; // ~9 months, GitHub-style contribution grid.
 const SKILL_RESULT_LIMIT = 12;
@@ -100,9 +105,29 @@ export interface ReportedCostActivityRow {
   readonly activityId: string;
 }
 
-interface ArchivedCostRow {
-  readonly costUsd: number | bigint | null;
-  readonly coveredTurnCount: number | bigint | null;
+export interface TokenPricingActivityRow {
+  readonly threadId: string;
+  readonly activityId: string;
+  readonly usageSessionId: string | null;
+  readonly provider: string | null;
+  readonly model: string | null;
+  readonly inputTokens: number | bigint | null;
+  readonly cachedInputTokens: number | bigint | null;
+  readonly cacheWriteInputTokens: number | bigint | null;
+  readonly outputTokens: number | bigint | null;
+  readonly fastMode: number | bigint | boolean | null;
+  readonly lastInputTokens: number | bigint | null;
+}
+
+interface ArchivedTokenPricingRow {
+  readonly provider: string | null;
+  readonly model: string | null;
+  readonly inputTokens: number | bigint;
+  readonly cachedInputTokens: number | bigint;
+  readonly cacheWriteInputTokens: number | bigint;
+  readonly outputTokens: number | bigint;
+  readonly fastMode: number | bigint | boolean | null;
+  readonly lastInputTokens: number | bigint | null;
 }
 
 export interface ReportedCostAggregate {
@@ -184,6 +209,85 @@ export function aggregateReportedCostRows(
   }
 
   return { costUsd, coveredTurns };
+}
+
+interface CumulativePricingSnapshot {
+  readonly inputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly cacheWriteInputTokens: number;
+  readonly outputTokens: number;
+}
+
+function pricingCounterDelta(current: number, previous: number | undefined): number {
+  return previous === undefined || current < previous ? current : Math.max(0, current - previous);
+}
+
+function normalizeFastMode(value: TokenPricingActivityRow["fastMode"]): boolean | null {
+  if (value === true || value === 1 || value === 1n) {
+    return true;
+  }
+  if (value === false || value === 0 || value === 0n) {
+    return false;
+  }
+  return null;
+}
+
+/**
+ * Converts provider-session cumulative token snapshots into request deltas.
+ * Rows must be ordered by thread and activity chronology. The cumulative
+ * baseline is keyed only by thread + provider session: a model switch within
+ * one Codex session still advances the same counters, while a new session or a
+ * counter reset starts a fresh series.
+ */
+export function aggregateTokenPricingActivityRows(
+  rows: ReadonlyArray<TokenPricingActivityRow>,
+): ReadonlyArray<ProfileTokenPricingUsage> {
+  const previousBySession = new Map<string, CumulativePricingSnapshot>();
+  const usages: ProfileTokenPricingUsage[] = [];
+
+  for (const row of rows) {
+    const usageSessionId = nonEmptyString(row.usageSessionId);
+    const inputTokens = nonNegativeFiniteNumber(row.inputTokens);
+    const outputTokens = nonNegativeFiniteNumber(row.outputTokens);
+    if (!usageSessionId || inputTokens === null || outputTokens === null) {
+      continue;
+    }
+    const cachedInputTokens = nonNegativeFiniteNumber(row.cachedInputTokens) ?? 0;
+    const cacheWriteInputTokens = nonNegativeFiniteNumber(row.cacheWriteInputTokens) ?? 0;
+    const current = {
+      inputTokens,
+      cachedInputTokens,
+      cacheWriteInputTokens,
+      outputTokens,
+    } satisfies CumulativePricingSnapshot;
+    const key = row.threadId + "\u0000" + usageSessionId;
+    const previous = previousBySession.get(key);
+    previousBySession.set(key, current);
+
+    const inputDelta = pricingCounterDelta(inputTokens, previous?.inputTokens);
+    const cachedInputDelta = pricingCounterDelta(cachedInputTokens, previous?.cachedInputTokens);
+    const cacheWriteInputDelta = pricingCounterDelta(
+      cacheWriteInputTokens,
+      previous?.cacheWriteInputTokens,
+    );
+    const outputDelta = pricingCounterDelta(outputTokens, previous?.outputTokens);
+    if (inputDelta + outputDelta <= 0) {
+      continue;
+    }
+
+    usages.push({
+      provider: row.provider,
+      model: row.model,
+      inputTokens: inputDelta,
+      cachedInputTokens: cachedInputDelta,
+      cacheWriteInputTokens: cacheWriteInputDelta,
+      outputTokens: outputDelta,
+      fastMode: normalizeFastMode(row.fastMode),
+      lastInputTokens: nonNegativeFiniteNumber(row.lastInputTokens),
+    });
+  }
+
+  return usages;
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -665,7 +769,14 @@ export function turnModelSelectionCte(
       pt.thread_id AS thread_id,
       pt.turn_id AS turn_id,
       MAX(json_extract(e.payload_json, '$.modelSelection.provider')) AS provider,
-      MAX(json_extract(e.payload_json, '$.modelSelection.model')) AS model
+      MAX(json_extract(e.payload_json, '$.modelSelection.model')) AS model,
+      MAX(
+        CASE json_type(e.payload_json, '$.modelSelection.options.fastMode')
+          WHEN 'true' THEN 1
+          WHEN 'false' THEN 0
+          ELSE NULL
+        END
+      ) AS fast_mode
     FROM orchestration_events e
     JOIN projection_turns pt
       ON pt.thread_id = ${turnThreadMatch}
@@ -772,6 +883,49 @@ export function reportedCostActivityCte(
       sequence ASC,
       createdAt ASC,
       activityId ASC
+  `;
+}
+
+export function tokenPricingActivityCte(
+  sql: SqlClient.SqlClient,
+  scope?: { readonly threadId: string },
+) {
+  const activityScope = scope ? sql`AND a.thread_id = ${scope.threadId}` : sql.literal("");
+  return sql`
+    WITH turn_model AS (${turnModelSelectionCte(sql, scope)})
+    SELECT
+      a.thread_id AS threadId,
+      a.activity_id AS activityId,
+      COALESCE(
+        json_extract(a.payload_json, '$.usageSessionId'),
+        CASE WHEN json_type(pre.event_json, '$.providerRefs.providerThreadId') = 'text'
+          THEN json_extract(pre.event_json, '$.providerRefs.providerThreadId') ||
+            CASE WHEN json_type(pre.event_json, '$.lifecycleGeneration') IN ('text', 'integer')
+              THEN ':' || CAST(json_extract(pre.event_json, '$.lifecycleGeneration') AS TEXT)
+              ELSE '' END
+          ELSE NULL END
+      ) AS usageSessionId,
+      COALESCE(tm.provider, json_extract(a.payload_json, '$.provider'), json_extract(pre.event_json, '$.provider')) AS provider,
+      tm.model AS model,
+      COALESCE(CAST(json_extract(a.payload_json, '$.cumulativeUsage.inputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.total.inputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.total.input_tokens') AS INTEGER)) AS inputTokens,
+      COALESCE(CAST(json_extract(a.payload_json, '$.cumulativeUsage.cachedInputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.total.cachedInputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.total.cached_input_tokens') AS INTEGER), 0) AS cachedInputTokens,
+      COALESCE(CAST(json_extract(a.payload_json, '$.cumulativeUsage.cacheCreationInputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.total.cacheWriteInputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.total.cache_write_input_tokens') AS INTEGER), 0) AS cacheWriteInputTokens,
+      COALESCE(CAST(json_extract(a.payload_json, '$.cumulativeUsage.outputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.total.outputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.total.output_tokens') AS INTEGER)) AS outputTokens,
+      tm.fast_mode AS fastMode,
+      COALESCE(CAST(json_extract(a.payload_json, '$.lastInputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.last.inputTokens') AS INTEGER), CAST(json_extract(pre.event_json, '$.raw.payload.tokenUsage.last.input_tokens') AS INTEGER)) AS lastInputTokens
+    FROM projection_thread_activities a
+    JOIN projection_threads th ON th.thread_id = a.thread_id
+    LEFT JOIN turn_model tm ON tm.thread_id = a.thread_id AND tm.turn_id = a.turn_id
+    LEFT JOIN projection_turns pt ON pt.thread_id = a.thread_id AND pt.turn_id = a.turn_id
+    LEFT JOIN projection_thread_messages pm ON pm.thread_id = pt.thread_id AND pm.message_id = pt.pending_message_id
+    LEFT JOIN provider_runtime_events pre ON pre.event_id = a.activity_id AND pre.thread_id = a.thread_id
+    WHERE a.kind = 'context-window.updated'
+      ${activityScope}
+      AND (pm.dispatch_origin IS NULL OR pm.dispatch_origin = 'user')
+      AND NOT (th.parent_thread_id IS NOT NULL AND th.creation_source = 'provider_native')
+    ORDER BY a.thread_id ASC,
+      CASE WHEN a.sequence IS NULL THEN 0 ELSE 1 END ASC,
+      a.sequence ASC, a.created_at ASC, a.activity_id ASC
   `;
 }
 
@@ -1072,22 +1226,29 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       `,
     );
 
-  const queryReportedCosts = () =>
+  const queryTokenPricingActivity = () =>
     legacyCompatibleQuery(
-      "profileStats.reportedCosts",
-      sql<ReportedCostActivityRow>`
-        ${reportedCostActivityCte(sql)}
+      "profileStats.tokenPricingActivity",
+      sql<TokenPricingActivityRow>`
+        ${tokenPricingActivityCte(sql)}
       `,
     );
 
-  const queryArchivedCosts = () =>
+  const queryArchivedTokenPricing = () =>
     legacyCompatibleQuery(
-      "profileStats.archivedCosts",
-      sql<ArchivedCostRow>`
+      "profileStats.archivedTokenPricing",
+      sql<ArchivedTokenPricingRow>`
         SELECT
-          SUM(cost_usd) AS costUsd,
-          SUM(covered_turn_count) AS coveredTurnCount
-        FROM profile_stats_deleted_costs
+          provider,
+          model,
+          input_tokens AS inputTokens,
+          cached_input_tokens AS cachedInputTokens,
+          cache_write_input_tokens AS cacheWriteInputTokens,
+          output_tokens AS outputTokens,
+          fast_mode AS fastMode,
+          last_input_tokens AS lastInputTokens
+        FROM profile_stats_deleted_token_pricing
+        ORDER BY thread_id ASC, row_index ASC
       `,
     );
 
@@ -1464,20 +1625,46 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       const todayKey = localToday(input.utcOffsetMinutes);
       const rows = yield* queryTokenActivity(tz);
       const turnInsightRows = yield* queryTurnInsights();
-      const reportedCostRows = yield* queryReportedCosts();
-      const archivedCostRows = yield* queryArchivedCosts();
+      const tokenPricingRows = yield* queryTokenPricingActivity();
+      const archivedTokenPricingRows = yield* queryArchivedTokenPricing();
       const { tokensByDay, tokensByProvider, tokensByProviderModel, lifetime } =
         aggregateTokenActivity(rows);
-      const liveCost = aggregateReportedCostRows(reportedCostRows);
-      const archivedCostUsd = nonNegativeFiniteNumber(archivedCostRows[0]?.costUsd ?? null) ?? 0;
-      const archivedCoveredTurns = num(archivedCostRows[0]?.coveredTurnCount);
-      const coveredCostTurns = liveCost.coveredTurns + archivedCoveredTurns;
-      const totalRecordedTurns = turnInsightRows.reduce((sum, row) => sum + num(row.count), 0);
+      const livePricingUsages = aggregateTokenPricingActivityRows(tokenPricingRows);
+      const archivedPricingUsages = archivedTokenPricingRows.flatMap((row) => {
+        const inputTokens = nonNegativeFiniteNumber(row.inputTokens);
+        const cachedInputTokens = nonNegativeFiniteNumber(row.cachedInputTokens);
+        const cacheWriteInputTokens = nonNegativeFiniteNumber(row.cacheWriteInputTokens);
+        const outputTokens = nonNegativeFiniteNumber(row.outputTokens);
+        if (
+          inputTokens === null ||
+          cachedInputTokens === null ||
+          cacheWriteInputTokens === null ||
+          outputTokens === null
+        ) {
+          return [];
+        }
+        return [
+          {
+            provider: row.provider,
+            model: row.model,
+            inputTokens,
+            cachedInputTokens,
+            cacheWriteInputTokens,
+            outputTokens,
+            fastMode: normalizeFastMode(row.fastMode),
+            lastInputTokens: nonNegativeFiniteNumber(row.lastInputTokens),
+          },
+        ];
+      });
+      const pricingEstimate = estimateProfileTokenCost([
+        ...livePricingUsages,
+        ...archivedPricingUsages,
+      ]);
       const estimatedEquivalentUsd =
-        coveredCostTurns > 0 ? liveCost.costUsd + archivedCostUsd : null;
+        pricingEstimate.pricedTokens > 0 ? pricingEstimate.costUsd : null;
       const estimatedEquivalentUsdCoveragePercent =
-        coveredCostTurns > 0 && totalRecordedTurns > 0
-          ? percent1(Math.min(coveredCostTurns, totalRecordedTurns), totalRecordedTurns)
+        pricingEstimate.pricedTokens > 0 && lifetime > 0
+          ? percent1(Math.min(pricingEstimate.pricedTokens, lifetime), lifetime)
           : null;
 
       let peakDay: string | null = null;
@@ -1546,6 +1733,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
         peakDay,
         estimatedEquivalentUsd,
         estimatedEquivalentUsdCoveragePercent,
+        estimatedEquivalentUsdPricingAsOf: PROFILE_TOKEN_PRICING_AS_OF,
         providers,
         unavailableProviders,
         topProvider,
