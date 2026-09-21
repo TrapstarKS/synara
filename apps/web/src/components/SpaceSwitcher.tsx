@@ -68,9 +68,11 @@ function isProjectDrag(event: DragEvent): boolean {
 /**
  * A tab dot is a whole space summarised into one pixel, so it has to speak the same
  * colour language as the per-thread status dots it stands in for (see the `dotClass`
- * values in Sidebar.logic.ts): amber = needs an answer or approval, red = failed,
- * sky = work in flight, emerald = unread completion. Tones are per-theme because a 400-weight dot dies on
- * the light sidebar and glares on the dark one.
+ * values in Sidebar.logic.ts): amber = needs an approval or a plan review, red = failed,
+ * sky = work in flight, emerald = unread completion. A pending question is deliberately
+ * absent — it is answered in the chat, never from the tab (see `isThreadQuestionStatus`).
+ * Tones are per-theme because a 400-weight dot dies on the light sidebar and glares on
+ * the dark one.
  */
 const SPACE_ACTIVITY_DOT_CLASS_NAME: Record<SpaceActivityTone, string> = {
   attention: "bg-amber-500 dark:bg-amber-300/90",

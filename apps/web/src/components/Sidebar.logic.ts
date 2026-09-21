@@ -774,6 +774,17 @@ export function resolveThreadStatusPill(input: {
   return null;
 }
 
+/**
+ * The two pills in which the agent is asking the user something rather than reporting
+ * state. Both are answered inside the chat (the pending-request form and the composer's
+ * async question panel), so a surface that only summarises a whole Space skips them
+ * instead of promising a question it cannot answer itself — see the Space tab roll-up
+ * in Sidebar.tsx. Approvals are not questions and stay visible everywhere.
+ */
+export function isThreadQuestionStatus(status: ThreadStatusPill): boolean {
+  return status.label === "Awaiting Input" || status.label === "Needs Answer";
+}
+
 export function resolveProjectStatusIndicator(
   statuses: ReadonlyArray<ThreadStatusPill | null>,
 ): ThreadStatusPill | null {

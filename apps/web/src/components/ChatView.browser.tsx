@@ -2192,7 +2192,7 @@ describe("ChatView transcript geometry (full app)", () => {
     document.body.innerHTML = "";
   });
 
-  it("keeps Space attention visible across working threads, async answers, and completion", async () => {
+  it("keeps Space attention for plans and approvals while a pending question stays chat-only", async () => {
     const spaceId = SpaceId.makeUnsafe("space-status-regression");
     const siblingId = ThreadId.makeUnsafe("status-sibling");
     const base = createSnapshotForTargetUser({
@@ -2249,6 +2249,11 @@ describe("ChatView transcript geometry (full app)", () => {
       await expect
         .element(page.getByRole("tab", { name: "Focus, Needs attention", exact: true }))
         .toBeVisible();
+      // An approval is not a question either, so it keeps claiming the tab dot.
+      sync([{ ...active, hasPendingApprovals: true }]);
+      await expect
+        .element(page.getByRole("tab", { name: "Focus, Needs attention", exact: true }))
+        .toBeVisible();
       const question = {
         ...createAssistantMessage({
           id: MessageId.makeUnsafe("status-question"),
@@ -2271,9 +2276,12 @@ describe("ChatView transcript geometry (full app)", () => {
         .element(page.getByRole("textbox", { name: "Answer: Which branch?" }))
         .toBeVisible();
       expect(document.querySelector("form form")).toBeNull();
-      await expect
-        .element(page.getByRole("tab", { name: "Focus, Needs attention", exact: true }))
-        .toBeVisible();
+      // A pending question is answered in the chat, so the Space tab stays unbadged
+      // even though the thread is also running.
+      await expect.element(page.getByRole("tab", { name: "Focus", exact: true })).toBeVisible();
+      expect(
+        document.querySelector('[data-space-tab][aria-selected="true"] [data-space-activity]'),
+      ).toBeNull();
       const answered = {
         ...questioned,
         hasPendingAsyncUserInput: false,

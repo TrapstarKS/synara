@@ -323,6 +323,7 @@ import {
   partitionSidebarThreadsByProjectIds,
   isLatestPinnedProjectMutation,
   isProjectsSidebarSurface,
+  isThreadQuestionStatus,
   pruneProjectThreadListPagingForCollapsedProjects,
   recoverExistingAddProjectTarget,
   runExclusiveProjectAddition,
@@ -4072,6 +4073,10 @@ export default function Sidebar() {
         const status = resolveThreadStatusForSidebar(thread);
         if (!status || (status.label === "Completed" && thread.id === activeSidebarThreadId))
           continue;
+        // A pending question is answered in the chat, so it never claims the tab's
+        // single dot; the count and the answer box already live there. Approvals and
+        // ready plans still badge the tab.
+        if (isThreadQuestionStatus(status)) continue;
         const tone: SpaceActivityTone =
           status.label === "Working" || status.label === "Connecting"
             ? "running"

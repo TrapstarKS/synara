@@ -20,6 +20,7 @@ import {
   groupSidebarThreadsByProjectId,
   isLatestPinnedProjectMutation,
   isProjectsSidebarSurface,
+  isThreadQuestionStatus,
   getUnpinnedThreadsForSidebar,
   getProjectSortTimestamp,
   hasUnseenCompletion,
@@ -1151,6 +1152,26 @@ describe("pin helpers", () => {
 function statusPill(label: ThreadStatusPill["label"]): ThreadStatusPill {
   return { label, colorClass: "", dotClass: "", pulse: false };
 }
+
+describe("isThreadQuestionStatus", () => {
+  it("treats both pending-question pills as questions", () => {
+    expect(isThreadQuestionStatus(statusPill("Awaiting Input"))).toBe(true);
+    expect(isThreadQuestionStatus(statusPill("Needs Answer"))).toBe(true);
+  });
+
+  it("keeps approvals, plans and live work out of the question set", () => {
+    for (const label of [
+      "Pending Approval",
+      "Plan Ready",
+      "Working",
+      "Connecting",
+      "Error",
+      "Completed",
+    ] as const) {
+      expect(isThreadQuestionStatus(statusPill(label))).toBe(false);
+    }
+  });
+});
 
 describe("resolveThreadStatusTrailingIndicator", () => {
   it("shows nothing when there is no status", () => {
