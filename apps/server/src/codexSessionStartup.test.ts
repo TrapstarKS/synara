@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexAppServerManager } from "./codexAppServerManager.ts";
 import { CodexSessionStartError } from "./codexErrorClassification.ts";
 import { ServerConfig } from "./config.ts";
+import { AGENT_GATEWAY_NO_CAPABILITIES } from "./agentGateway/sessionLease.ts";
 import { classifyProviderAttemptOutcome } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { makeCodexAdapterLive } from "./provider/Layers/CodexAdapter.ts";
 import { CodexAdapter } from "./provider/Services/CodexAdapter.ts";
@@ -74,6 +75,10 @@ function createStartupHarness(
     return { escalated: false, signalErrors: [], capturedBeforeRootExit };
   });
   const manager = new CodexAppServerManager(undefined, { teardownProcessTree });
+  const errorMethods: string[] = [];
+  manager.on("event", (event) => {
+    if (event.kind === "error") errorMethods.push(event.method);
+  });
   const internals = manager as unknown as {
     assertSupportedCodexCliVersion: () => Promise<void>;
     buildSessionProcessEnv: () => Promise<NodeJS.ProcessEnv>;
@@ -85,10 +90,24 @@ function createStartupHarness(
     cwd: process.cwd(),
     runtimeMode: "full-access" as const,
     ...(resumeExistingThread ? { resumeCursor: { threadId: "codex-existing-thread" } } : {}),
+    agentGatewayCapabilityInput: AGENT_GATEWAY_NO_CAPABILITIES,
   };
   const expectedErrorMessage =
     failure === "exit" ? "codex app-server exited (code=0, signal=null)." : transportError.message;
-  return { manager, child, input, requests, teardownProcessTree, expectedErrorMessage };
+  const expectedThrownMessage =
+    failure === "error" && failingMethod
+      ? `Codex app-server transport failed: ${transportError.message} Operation: ${failingMethod}.`
+      : expectedErrorMessage;
+  return {
+    manager,
+    child,
+    input,
+    requests,
+    teardownProcessTree,
+    errorMethods,
+    expectedErrorMessage,
+    expectedThrownMessage,
+  };
 }
 
 afterEach(() => {
@@ -97,6 +116,14 @@ afterEach(() => {
 });
 
 describe("Codex session startup failures", () => {
+  it("fails fast when the gateway capability input is omitted", async () => {
+    const { manager, input } = createStartupHarness();
+    await expect(
+      manager.startSession({ ...input, agentGatewayCapabilityInput: undefined as never }),
+    ).rejects.toThrow(/agentGatewayCapabilityInput/);
+    expect(manager.listSessions()).toEqual([]);
+  });
+
   it("allows a slow historical resume to outlive the ordinary request deadline", async () => {
     vi.useFakeTimers();
     const { manager, input, requests } = createStartupHarness("thread/resume", "delayed-response");
@@ -152,8 +179,16 @@ describe("Codex session startup failures", () => {
   ] as const)(
     "preserves the cause during %s/%s and requires pre-exit capture for a safe rejection",
     async (method, failure) => {
-      const { manager, child, input, requests, teardownProcessTree, expectedErrorMessage } =
-        createStartupHarness(method, failure);
+      const {
+        manager,
+        child,
+        input,
+        requests,
+        teardownProcessTree,
+        errorMethods,
+        expectedErrorMessage,
+        expectedThrownMessage,
+      } = createStartupHarness(method, failure);
       let proveExit: (() => void) | undefined;
       const exitProof = new Promise<void>((resolve) => {
         proveExit = resolve;
@@ -180,9 +215,16 @@ describe("Codex session startup failures", () => {
       expect(error).toBeInstanceOf(Error);
       expect(error instanceof CodexSessionStartError).toBe(failure === "error");
       expect(error).toMatchObject({
-        message: expectedErrorMessage,
+        message: expectedThrownMessage,
         cause: { message: expectedErrorMessage },
       });
+      expect(errorMethods).toEqual(
+        failure === "error"
+          ? ["protocol/transportError"]
+          : method === "thread/resume"
+            ? ["session/threadResumeFailed", "session/startFailed"]
+            : ["session/startFailed"],
+      );
       expect(requests).not.toContain("turn/start");
       expect(requests).not.toContain("thread/start");
       expect(manager.listSessions()).toEqual([]);
@@ -192,7 +234,7 @@ describe("Codex session startup failures", () => {
   it.each(["error", "exit"] as const)(
     "keeps failed cleanup and failed replacement barriers uncertain after %s",
     async (failure) => {
-      const { manager, child, input, teardownProcessTree } = createStartupHarness(
+      const { manager, child, input, teardownProcessTree, errorMethods } = createStartupHarness(
         "initialize",
         failure,
       );
@@ -209,6 +251,19 @@ describe("Codex session startup failures", () => {
           });
         }
         expect(spawnProcess).toHaveBeenCalledTimes(1);
+        expect(errorMethods.filter((method) => method === "protocol/transportError")).toHaveLength(
+          failure === "error" ? 1 : 0,
+        );
+        if (failure === "error") {
+          const sessions = (
+            manager as unknown as {
+              sessions: Map<ThreadId, { terminalFailure?: { message: string } }>;
+            }
+          ).sessions;
+          expect(sessions.get(input.threadId)?.terminalFailure?.message).toBe(
+            "Codex app-server transport failed: Codex pipe failed during startup: ECONNRESET Operation: initialize.",
+          );
+        }
       } finally {
         teardownProcessTree.mockImplementation(async () => {
           child.exit();

@@ -1,14 +1,17 @@
 import type { ProviderKind } from "@synara/contracts";
 
+import { computerToolInstructions } from "./computerGuidance.ts";
+
 import { AUTOMATION_AUTHORING_GUIDANCE } from "./automationAuthoringGuidance.ts";
 
 /** Canonical, versioned host policy delivered to every supported provider. */
-export const SYNARA_HARNESS_POLICY_VERSION = "2026-09-13.1";
+export const SYNARA_HARNESS_POLICY_VERSION = "2026-09-20.1";
 export const SYNARA_HARNESS_POLICY_MARKER = `[Synara harness policy ${SYNARA_HARNESS_POLICY_VERSION}]`;
 
 export interface SynaraHarnessCapabilities {
   readonly gatewayControlAvailable: boolean;
   readonly automationAuthoring?: "tool-descriptions";
+  readonly enableComputerControl?: boolean | undefined;
 }
 
 /**
@@ -24,8 +27,8 @@ export function renderSynaraHarnessPolicy(capabilities: SynaraHarnessCapabilitie
         "Give a completion report: outcome, checks, limitations. Inspect browser_screenshot({kind:'proof'}); embed artifactPath as ![Result description](/absolute/path.png), also for generated images. No secrets or invented proof; skip open-only proof.",
         "When explicitly asked for E2E/end-to-end tests, call synara_e2e_review. Do not load it for unrelated work.",
         "Use synara_get_usage for usage budgets; only fresh, available quotaWindows count.",
-        "For any-language requests involving Synara's integrated, embedded, or in-app browser, use browser_* autonomously as its canonical, complete control surface; never substitute Chrome, Computer Use, Playwright, OS-automation tools/skills, or change the user's active chat. Detailed rules live in each tool description.",
-        "For any-language iOS app or simulator request, call device_* directly and autonomously as the canonical, complete control surface; never use xcrun simctl, AppleScript, Appium, idb, open Simulator.app, or substitute mobile/OS-automation tools/skills, because the user watches the streamed pane. Detailed rules live in each tool description.",
+        "For any-language Synara browser requests, use browser_* autonomously as the canonical, complete control surface; never substitute Chrome, Computer Use, Playwright, OS-automation tools/skills, or change the user's active chat. Detailed rules live in each tool description.",
+        "For any-language iOS app or simulator request, call device_* directly and autonomously; never use xcrun simctl, AppleScript, Appium, idb, open Simulator.app, or substitute mobile/OS-automation tools/skills. The user watches the streamed pane; see each tool description.",
         "For thread discovery or diagnosis, use synara_list_threads, synara_read_thread, synara_read_thread_activity, synara_read_thread_events, synara_read_thread_runtime_events, and synara_diagnose_thread before SQLite/logs; use host storage only when required evidence is unavailable.",
         "After successfully creating a pull request for the current thread's own deliverable, call synara_set_thread_pull_request with its URL. Never associate a pull request that the thread only reviews, references, or discusses.",
         "Provider-native subagent or Task tools are implementation details: they do not create Synara threads and must not substitute for an explicit request to create Synara threads.",
@@ -38,7 +41,7 @@ export function renderSynaraHarnessPolicy(capabilities: SynaraHarnessCapabilitie
         "Synara automations support heartbeat, standalone, and dedicated modes plus interval, once, daily, weekdays, weekly, and cron schedules. Existing everyMinutes heartbeat calls remain supported. Use fastInterval: true only when the user explicitly accepts a sub-minute bounded loop.",
         "Mode controls execution: heartbeat appends to an idle target thread; standalone opens a fresh thread per independent run; dedicated reuses one automation-owned thread so runs build on each other without writing into another thread.",
         "Prefer dedicated for ongoing observation or tracking: standalone runs cannot see prior runs beyond memory, while dedicated keeps one growing thread.",
-        'Mode does not restrict stop conditions. completionPolicy {"type":"ai-evaluated","stopWhen":"..."} works in both modes and disables the automation when the clause matches a successful run; prefer it over encoding the stop condition in the prompt. maxIterations remains the backstop, and an automation-dispatched run may always call synara_cancel_automation on its own automation.',
+        'Stop conditions work in both modes: completionPolicy {"type":"ai-evaluated","stopWhen":"..."} disables a successful match; prefer it over encoding the stop condition in the prompt. maxIterations is the backstop; automation-dispatched runs may always call synara_cancel_automation on their own automation.',
         // Claude discovers these same instructions on create/update tool schemas.
         ...(capabilities.automationAuthoring === "tool-descriptions"
           ? []
@@ -57,10 +60,13 @@ export function renderSynaraHarnessPolicy(capabilities: SynaraHarnessCapabilitie
   return [
     SYNARA_HARNESS_POLICY_MARKER,
     "You are running inside Synara. Synara is the host and harness for this session.",
-    "For known local files in user-facing Markdown, use readable labels and absolute file URLs, such as [config.ts](file:///absolute/path/config.ts). Relative links are only for the session working directory; otherwise use plain text and never invent a path.",
-    'Synara collapses progress and tools under "Worked for...". Final responses must restate every needed scope, plan, decision, result, caveat, instruction, or question. Never request approval using "this", "the above", or another referent available only in collapsed content.',
+    "For known local files in user-facing Markdown, use readable labels and absolute file URLs, e.g. [config.ts](file:///absolute/path/config.ts). Relative links are only for the session working directory; otherwise use plain text and never invent a path.",
+    'Synara collapses progress and tools under "Worked for...". Final responses must restate every needed scope, plan, decision, result, caveat, instruction, or question. Never request approval using "this", "the above", or another collapsed referent.',
     "When a structured user-input tool is available for a genuine decision, prefer it and include all decision context in its question or card.",
     ...controlPolicy,
+    ...(capabilities.gatewayControlAvailable && capabilities.enableComputerControl === true
+      ? [computerToolInstructions()]
+      : []),
   ].join("\n");
 }
 
@@ -70,6 +76,7 @@ export const SYNARA_GATEWAY_HARNESS_POLICY = renderSynaraHarnessPolicy({
 
 export interface SynaraHarnessPolicyDeliveryState {
   harnessPolicyDelivered?: boolean | undefined;
+  enableComputerControl?: boolean | undefined;
 }
 
 const PROVIDERS_WITH_THREAD_SCOPED_SYNARA_MCP = new Set<ProviderKind>([
@@ -121,6 +128,7 @@ export function takeSynaraHarnessPolicyForProviderSession(
 ): string | null {
   return takeSynaraHarnessPolicyForSession(state, {
     gatewayControlAvailable: providerHasSynaraGatewayControl(input),
+    enableComputerControl: state.enableComputerControl === true,
   });
 }
 

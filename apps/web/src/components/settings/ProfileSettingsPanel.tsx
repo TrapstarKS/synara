@@ -22,6 +22,7 @@ import {
   selectProfileModelUsage,
   selectProfileTopProvider,
 } from "../profile/profileSelectors";
+import { ProfileUsageCoverage } from "../profile/ProfileUsageCoverage";
 import { ShareDialog } from "../profile/ShareDialog";
 import { EditProfileDialog } from "../profile/EditProfileDialog";
 import { useProfileHandle } from "../profile/useProfileHandle";
@@ -34,6 +35,8 @@ import {
   formatCompact,
   formatDays,
   formatNumber,
+  formatProviderLabel,
+  formatProfileUsageBasis,
   toDisplayName,
 } from "../profile/profileFormatting";
 
@@ -52,7 +55,9 @@ export function ProfileSettingsPanel() {
   if (coreQuery.isError || !coreQuery.data) {
     return (
       <div className="flex flex-col items-center gap-3 py-24 text-center">
-        <p className="text-sm text-muted-foreground">Couldn’t load your local stats.</p>
+        <p className="text-ui leading-snug text-muted-foreground">
+          Couldn’t load your local stats.
+        </p>
         <Button variant="outline" size="sm" onClick={() => void coreQuery.refetch()}>
           Try again
         </Button>
@@ -129,10 +134,10 @@ function ProfileContent({
         />
         <div className="flex flex-col items-center gap-1.5">
           <h2 className="text-2xl font-semibold tracking-tight">{name}</h2>
-          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-ui leading-snug text-muted-foreground">
             <span>{handle}</span>
             <span aria-hidden>·</span>
-            <span className="rounded-full border px-1.5 py-px text-xs text-muted-foreground">
+            <span className="rounded-full border px-1.5 py-px text-ui leading-snug text-muted-foreground">
               Synara
             </span>
           </div>
@@ -161,7 +166,7 @@ function ProfileContent({
 
       {tokensError ? (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-          <p className="text-xs text-muted-foreground">
+          <p className="text-ui-sm leading-snug text-muted-foreground">
             Token and pricing stats couldn’t load. The activity below is using prompt-based data for
             now.
           </p>
@@ -175,7 +180,7 @@ function ProfileContent({
       tokenStats.estimatedEquivalentUsdCoveragePercent !== null &&
       tokenStats.estimatedEquivalentUsdCoveragePercent !== undefined &&
       tokenStats.estimatedEquivalentUsdCoveragePercent < 100 ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-ui-sm leading-snug text-muted-foreground">
           USD equivalent currently covers {tokenStats.estimatedEquivalentUsdCoveragePercent}% of
           recorded token volume with published Codex pricing and complete mode/context evidence.
         </p>
@@ -184,13 +189,13 @@ function ProfileContent({
       {/* Heatmap */}
       {stats.providerModels.some((entry) => entry.provider === "claudeAgent") ||
       tokenStats?.providers.includes("claudeAgent") ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-ui leading-snug text-muted-foreground">
           Claude token totals use verifiable records. Older history and unfinished turns may be
           incomplete.
         </p>
       ) : null}
       <section className="flex min-w-0 flex-col gap-3">
-        <h3 className="text-sm font-medium">Activity</h3>
+        <h3 className="text-ui-lg font-medium">Activity</h3>
         {tokensPending ? (
           <Skeleton className="h-28 w-full rounded-lg" />
         ) : (
@@ -210,14 +215,16 @@ function ProfileContent({
       {/* Insights + plugins */}
       <div className="grid gap-x-12 gap-y-7 md:grid-cols-2">
         <section className="flex flex-col gap-3">
-          <h3 className="text-sm font-medium">Activity insights</h3>
+          <h3 className="text-ui-lg font-medium">Activity insights</h3>
           <dl className="flex flex-col gap-2.5">
             <InsightRow
               label="Most used provider"
               value={
                 topProvider.provider
                   ? `${formatProviderLabel(topProvider.provider)}${
-                      topProvider.percent !== null ? ` · ${topProvider.percent}%` : ""
+                      topProvider.percent !== null
+                        ? ` · ${topProvider.percent}% of ${formatProfileUsageBasis(topProvider.metric)}`
+                        : ""
                     }`
                   : "—"
               }
@@ -246,10 +253,11 @@ function ProfileContent({
             />
             <InsightRow label="Total threads" value={formatNumber(stats.activity.totalThreads)} />
           </dl>
+          <ProfileUsageCoverage unavailableProviders={topProvider.unavailableProviders} />
         </section>
 
         <section className="flex flex-col gap-3">
-          <h3 className="text-sm font-medium">Most used plugins</h3>
+          <h3 className="text-ui-lg font-medium">Most used plugins</h3>
           {stats.skills.length > 0 ? (
             <ul className="flex flex-col gap-2.5">
               {stats.skills.slice(0, 6).map((skill) => (
@@ -264,23 +272,28 @@ function ProfileContent({
                         className="size-3"
                       />
                     </span>
-                    <span className="truncate text-sm">{skill.displayName}</span>
+                    <span className="truncate text-ui leading-snug">{skill.displayName}</span>
                   </span>
-                  <span className="shrink-0 text-sm tabular-nums text-muted-foreground">
+                  <span className="shrink-0 text-ui leading-snug tabular-nums text-muted-foreground">
                     {formatNumber(skill.runCount)} runs
                   </span>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-muted-foreground">No skills or agents used yet.</p>
+            <p className="text-ui leading-snug text-muted-foreground">
+              No skills or agents used yet.
+            </p>
           )}
         </section>
       </div>
 
       {/* Model usage */}
       <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-medium">Model usage</h3>
+        <h3 className="text-ui-lg font-medium">Model usage</h3>
+        <p className="text-ui leading-snug text-muted-foreground">
+          Share of {formatProfileUsageBasis(modelUsage.metric)}.
+        </p>
         {modelUsage.entries.length > 0 ? (
           <ul className="grid grid-cols-1 gap-x-12 gap-y-3 sm:grid-cols-2">
             {modelUsage.entries.map((entry) => (
@@ -293,8 +306,9 @@ function ProfileContent({
             ))}
           </ul>
         ) : (
-          <p className="text-sm text-muted-foreground">No model activity yet.</p>
+          <p className="text-ui leading-snug text-muted-foreground">No model activity yet.</p>
         )}
+        <ProfileUsageCoverage unavailableProviders={modelUsage.unavailableProviders} />
       </section>
 
       <ShareDialog
@@ -348,9 +362,11 @@ function StatTile({
       {value === null ? (
         <Skeleton className="h-4 w-12" />
       ) : (
-        <span className="text-sm font-normal tabular-nums text-foreground">{value}</span>
+        <span className="text-ui-lg leading-snug font-normal tabular-nums text-foreground">
+          {value}
+        </span>
       )}
-      <span className="text-center text-[13px] font-normal leading-tight text-muted-foreground">
+      <span className="text-center text-ui leading-tight font-normal text-muted-foreground">
         {label}
       </span>
     </div>
@@ -360,8 +376,8 @@ function StatTile({
 function InsightRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <dt className="shrink-0 text-sm text-muted-foreground">{label}</dt>
-      <dd className="truncate text-sm font-normal tabular-nums" title={value}>
+      <dt className="shrink-0 text-ui leading-snug text-muted-foreground">{label}</dt>
+      <dd className="truncate text-ui leading-snug font-normal tabular-nums" title={value}>
         {value}
       </dd>
     </div>
@@ -403,31 +419,6 @@ function formatEstimatedEquivalentTitle(tokenStats: ProfileTokenStats | null): s
   return `Current token-rate equivalent covering ${coverage}% of recorded token volume; this is not your subscription bill.${rateDate}`;
 }
 
-function formatProviderLabel(provider: ProviderKind): string {
-  switch (provider) {
-    case "codex":
-      return "Codex";
-    case "claudeAgent":
-      return "Claude";
-    case "cursor":
-      return "Cursor";
-    case "devin":
-      return "Devin";
-    case "antigravity":
-      return "Antigravity";
-    case "grok":
-      return "Grok";
-    case "droid":
-      return "Droid";
-    case "opencode":
-      return "OpenCode";
-    case "pi":
-      return "Pi";
-    case "chatgpt":
-      return "ChatGPT (Web)";
-  }
-}
-
 function ModelUsageRow({
   provider,
   model,
@@ -439,7 +430,7 @@ function ModelUsageRow({
 }) {
   return (
     <li className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between gap-3 text-sm">
+      <div className="flex items-center justify-between gap-3 text-ui leading-snug">
         <span className="flex min-w-0 items-center gap-2">
           {provider !== "unknown" ? (
             <ProviderIcon provider={provider} className="size-3.5 shrink-0" />

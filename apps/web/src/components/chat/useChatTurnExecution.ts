@@ -27,20 +27,30 @@ import {
 } from "~/projectInstructionsStore";
 import { dispatchThreadGoal } from "~/threadGoal";
 import { collapseExpandedComposerCursor, detectComposerTrigger } from "../../composer-logic";
-import { type DraftThreadEnvMode, type QueuedComposerChatTurn } from "../../composerDraftStore";
+import {
+  useComposerDraftStore,
+  type DraftThreadEnvMode,
+  type QueuedComposerChatTurn,
+} from "../../composerDraftStore";
 import {
   cloneComposerImageAttachment,
   stageUploadComposerAttachments,
 } from "../../lib/composerSend";
 import { armQueuedComposerSteerGate } from "../../lib/queuedComposerDrain";
 import { clearPendingTurnDispatch } from "../../pendingTurnDispatch";
+import { useStore } from "../../store";
+import { getThreadFromState } from "../../threadDerivation";
 import { buildModelSelection } from "../../providerModelOptions";
 import { type Thread } from "../../types";
 import {
   WorktreeSetupCancelledError,
   createWorktreeSetupResolution,
+  resolveQueuedTurnDispatchSettings,
   revokeUserMessagePreviewUrls,
   runWorktreeCreationFlow,
+  threadSettingsDispatchFields,
+  turnStartDispatchFields,
+  type TurnDispatchSettings,
 } from "../ChatView.logic";
 import type { ChatTurnSubmissionInput } from "./chatSendTypes";
 import { waitForSetupScriptTerminalActivity } from "./projectScriptRuntime";
@@ -81,6 +91,8 @@ interface PreparedChatTurn {
   shouldResumeSettledLocalThread: boolean;
   currentActiveGitBranchForSend: string | null;
   queuedChatTurn: QueuedComposerChatTurn | null;
+  turnDispatchSettings: TurnDispatchSettings;
+  computerControlSequenceForSend: number;
   promptForSend: string;
   composerImagesSnapshot: ChatTurnSubmissionInput["composerImages"];
   composerFilesSnapshot: ChatTurnSubmissionInput["composerFiles"];
@@ -105,7 +117,8 @@ type ChatTurnExecutionInput = Pick<
   | "runProjectScript"
   | "persistThreadSettingsForNextTurn"
   | "rememberCustomBinaryPathForDispatch"
-  | "assistantDeliveryMode"
+  | "computerControlChangeSequence"
+  | "setComposerDraftComputerControlMode"
   | "setSettledThreadBranchWarningDismissedThreadId"
   | "armLocalDispatchAckFallback"
   | "setQueuedSteerGate"
@@ -155,7 +168,8 @@ export function useChatTurnExecution({
   runProjectScript,
   persistThreadSettingsForNextTurn,
   rememberCustomBinaryPathForDispatch,
-  assistantDeliveryMode,
+  computerControlChangeSequence,
+  setComposerDraftComputerControlMode,
   setSettledThreadBranchWarningDismissedThreadId,
   armLocalDispatchAckFallback,
   setQueuedSteerGate,
@@ -232,6 +246,8 @@ export function useChatTurnExecution({
         shouldResumeSettledLocalThread,
         currentActiveGitBranchForSend,
         queuedChatTurn,
+        turnDispatchSettings: preparedTurnDispatchSettings,
+        computerControlSequenceForSend,
         promptForSend,
         composerImagesSnapshot,
         composerFilesSnapshot,
@@ -245,6 +261,10 @@ export function useChatTurnExecution({
         composerMentionsSnapshot,
       } = preparedTurn;
 
+      const dispatchSettings = resolveQueuedTurnDispatchSettings(
+        preparedTurnDispatchSettings,
+        queuedChatTurn,
+      );
       let createdServerThreadForLocalDraft = false;
       let createdWorktreeForSendPath: string | null = null;
       let switchedToLocalCheckout = false;
@@ -516,11 +536,9 @@ export function useChatTurnExecution({
 
         if (isServerThread) {
           await persistThreadSettingsForNextTurn({
+            ...threadSettingsDispatchFields(dispatchSettings),
             threadId: threadIdForSend,
             createdAt: messageCreatedAt,
-            modelSelection: selectedModelSelectionForSend,
-            runtimeMode: nextRuntimeModeForSend,
-            interactionMode: interactionModeForSend,
           });
         }
 
@@ -572,36 +590,45 @@ export function useChatTurnExecution({
         });
         rememberCustomBinaryPathForDispatch({
           threadId: threadIdForSend,
-          provider: selectedModelSelectionForSend.provider,
-          providerOptions: providerOptionsForDispatchForSend,
+          provider: dispatchSettings.modelSelection.provider,
+          providerOptions: dispatchSettings.providerOptions,
         });
-        await stagedTurnAttachments.runWithDispatch((turnAttachments) =>
-          api.orchestration.dispatchCommand({
-            type: "thread.turn.start",
-            commandId: newCommandId(),
-            threadId: threadIdForSend,
-            message: {
-              messageId: messageIdForSend,
-              role: "user",
-              text: outgoingMessageText,
-              attachments: turnAttachments,
-              ...(mentionedSkillsForSend.length > 0 ? { skills: mentionedSkillsForSend } : {}),
-              ...(mentionedPluginMentionsForSend.length > 0
-                ? { mentions: mentionedPluginMentionsForSend }
+        await stagedTurnAttachments.runWithDispatch(async (turnAttachments) => {
+          if (getThreadFromState(useStore.getState(), threadIdForSend)?.claudeCacheReview != null) {
+            throw new Error(
+              "Choose how to resume the held message before sending another message.",
+            );
+          }
+          await api.orchestration
+            .dispatchCommand({
+              type: "thread.turn.start",
+              commandId: newCommandId(),
+              threadId: threadIdForSend,
+              message: {
+                messageId: messageIdForSend,
+                role: "user",
+                text: outgoingMessageText,
+                attachments: turnAttachments,
+                ...(mentionedSkillsForSend.length > 0 ? { skills: mentionedSkillsForSend } : {}),
+                ...(mentionedPluginMentionsForSend.length > 0
+                  ? { mentions: mentionedPluginMentionsForSend }
+                  : {}),
+              },
+              ...turnStartDispatchFields(dispatchSettings, dispatchMode),
+              ...(sourceProposedPlanForSend
+                ? { sourceProposedPlan: sourceProposedPlanForSend }
                 : {}),
-            },
-            modelSelection: selectedModelSelectionForSend,
-            ...(providerOptionsForDispatchForSend
-              ? { providerOptions: providerOptionsForDispatchForSend }
-              : {}),
-            assistantDeliveryMode,
-            dispatchMode,
-            runtimeMode: nextRuntimeModeForSend,
-            interactionMode: interactionModeForSend,
-            ...(sourceProposedPlanForSend ? { sourceProposedPlan: sourceProposedPlanForSend } : {}),
-            createdAt: messageCreatedAt,
-          }),
-        );
+              createdAt: messageCreatedAt,
+            })
+            .catch((error: unknown) => {
+              if (
+                getThreadFromState(useStore.getState(), threadIdForSend)?.claudeCacheReview
+                  ?.messageId !== messageIdForSend
+              ) {
+                throw error;
+              }
+            });
+        });
         turnStartSucceeded = true;
         if (
           shouldResumeSettledLocalThread &&
@@ -818,7 +845,6 @@ export function useChatTurnExecution({
       runProjectScript,
       persistThreadSettingsForNextTurn,
       rememberCustomBinaryPathForDispatch,
-      assistantDeliveryMode,
       setSettledThreadBranchWarningDismissedThreadId,
       armLocalDispatchAckFallback,
       setQueuedSteerGate,

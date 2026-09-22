@@ -18,6 +18,55 @@ import { AutomationCompletionPolicy, AutomationMode, AutomationSchedule } from "
 export const SERVER_VOICE_TRANSCRIPTION_MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const SERVER_VOICE_TRANSCRIPTION_MAX_AUDIO_BASE64_CHARS = 14_000_000;
 
+/** Owner-only diagnostic pages reuse the provider diagnostic readers and sanitizer. */
+export const ServerReadThreadDiagnosticsInput = Schema.Struct({
+  source: Schema.Literals(["events", "runtime"]),
+  threadId: ThreadId.check(Schema.isMaxLength(256)),
+  cursor: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))),
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+  eventTypes: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(128))).check(
+      Schema.isMaxLength(64),
+    ),
+  ),
+  turnId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+  payloadMode: Schema.optional(Schema.Literals(["none", "summary", "full"])),
+  includeDetails: Schema.optional(Schema.Boolean),
+});
+export type ServerReadThreadDiagnosticsInput = typeof ServerReadThreadDiagnosticsInput.Type;
+
+/**
+ * RPC JSON codecs must describe JSON values explicitly. `Schema.Unknown`
+ * has no JSON representation and encodes successful pages as null.
+ * The existing diagnostic readers own payload redaction and bounded detail.
+ */
+export const ServerReadThreadDiagnosticsResult = Schema.Struct({
+  threadId: ThreadId.check(Schema.isMaxLength(256)),
+  events: Schema.Array(Schema.Json).check(Schema.isMaxLength(200)),
+  coverage: Schema.Union([
+    Schema.Struct({
+      source: Schema.Literal("orchestration_events"),
+      highWaterSequence: NonNegativeInt,
+      durableSourceComplete: Schema.Literal(true),
+      pageHasOlder: Schema.Boolean,
+      coalescingScanTruncated: Schema.optional(Schema.Boolean),
+    }),
+    Schema.Struct({
+      source: Schema.Literal("provider_runtime_events"),
+      highWaterSequence: NonNegativeInt,
+      oldestRetainedSequence: Schema.NullOr(NonNegativeInt),
+      retainedForThread: NonNegativeInt,
+      globalAcceptedEventCap: PositiveInt,
+      sourceComplete: Schema.Literal(false),
+      pageHasOlder: Schema.Boolean,
+    }),
+  ]),
+  nextCursor: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))),
+  requestedLimit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+  appliedLimit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+});
+export type ServerReadThreadDiagnosticsResult = typeof ServerReadThreadDiagnosticsResult.Type;
+
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
   message: TrimmedNonEmptyString,
@@ -146,6 +195,52 @@ export type ServerProviderUsageLine = typeof ServerProviderUsageLine.Type;
 export const ProviderUsageStatus = Schema.Literals(["ok", "needs-auth", "unsupported", "error"]);
 export type ProviderUsageStatus = typeof ProviderUsageStatus.Type;
 
+export const ServerCodexResetCreditStatus = Schema.Literals([
+  "available",
+  "redeeming",
+  "redeemed",
+  "unknown",
+]);
+export type ServerCodexResetCreditStatus = typeof ServerCodexResetCreditStatus.Type;
+
+export const ServerCodexResetCredit = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  status: Schema.optional(ServerCodexResetCreditStatus),
+  grantedAt: Schema.optional(IsoDateTime),
+  expiresAt: Schema.optional(IsoDateTime),
+  title: Schema.optional(TrimmedNonEmptyString),
+  description: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerCodexResetCredit = typeof ServerCodexResetCredit.Type;
+
+export const ServerCodexResetCredits = Schema.Struct({
+  accountId: Schema.optional(TrimmedNonEmptyString),
+  canUse: Schema.optional(Schema.Boolean),
+  availableCount: NonNegativeInt,
+  credits: Schema.optional(Schema.Array(ServerCodexResetCredit)),
+});
+export type ServerCodexResetCredits = typeof ServerCodexResetCredits.Type;
+
+export const CodexResetCreditOutcome = Schema.Literals([
+  "reset",
+  "nothingToReset",
+  "noCredit",
+  "alreadyRedeemed",
+]);
+export type CodexResetCreditOutcome = typeof CodexResetCreditOutcome.Type;
+
+export const ServerConsumeCodexResetCreditInput = Schema.Struct({
+  accountId: TrimmedNonEmptyString,
+  idempotencyKey: TrimmedNonEmptyString,
+  creditId: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerConsumeCodexResetCreditInput = typeof ServerConsumeCodexResetCreditInput.Type;
+
+export const ServerConsumeCodexResetCreditResult = Schema.Struct({
+  outcome: CodexResetCreditOutcome,
+});
+export type ServerConsumeCodexResetCreditResult = typeof ServerConsumeCodexResetCreditResult.Type;
+
 export const ServerProviderUsageSnapshot = Schema.Struct({
   provider: ProviderKind,
   profileId: Schema.optional(CodexProfileId),
@@ -157,6 +252,7 @@ export const ServerProviderUsageSnapshot = Schema.Struct({
   status: Schema.optional(ProviderUsageStatus),
   planName: Schema.optional(TrimmedNonEmptyString),
   detail: Schema.optional(TrimmedNonEmptyString),
+  resetCredits: Schema.optional(ServerCodexResetCredits),
   // True when this is a re-served last-good snapshot (e.g. the provider is rate-limiting live
   // fetches) rather than a fresh read; `updatedAt` then still reflects the original fetch time.
   stale: Schema.optional(Schema.Boolean),

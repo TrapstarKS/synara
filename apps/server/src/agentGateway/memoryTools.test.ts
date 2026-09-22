@@ -126,6 +126,7 @@ function makeContext(
       turnId: turnId ?? "turn-1",
     },
     callerThreadId: threadId,
+    callerThreadLabel: null,
     callerSessionKey: "gateway-session:test",
     callerProvider: "codex",
     callerCapabilities: new Set(["memory:use"]),

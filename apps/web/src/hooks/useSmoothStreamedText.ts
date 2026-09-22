@@ -105,6 +105,12 @@ export function stepSmoothReveal(
   const velocityBlend = 1 - Math.exp(-dt / VELOCITY_TIME_CONSTANT_SECONDS);
   state.velocity += (targetVelocity - state.velocity) * velocityBlend;
   state.shown = Math.min(targetLength, state.shown + state.velocity * dt);
+  // At high refresh rates the damped tail can approach the target without ever
+  // reaching it, leaving the last character hidden and rAF running indefinitely.
+  // Settle a remainder below 1/1000 character; preserve the reveal cadence.
+  if (targetLength - state.shown < 0.001) {
+    state.shown = targetLength;
+  }
 
   const nextCount = Math.floor(state.shown);
   const caughtUp = nextCount >= targetLength;

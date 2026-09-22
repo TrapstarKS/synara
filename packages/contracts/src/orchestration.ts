@@ -1,5 +1,11 @@
 import { Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
 import {
+  ImportProjectInput,
+  ImportProjectResult,
+  ListProjectImportsInput,
+  ListProjectImportsResult,
+} from "./projectImport";
+import {
   AntigravityModelOptions,
   ChatGptModelOptions,
   ClaudeModelOptions,
@@ -14,6 +20,7 @@ import {
 import { ProviderMentionReference, ProviderSkillReference } from "./providerDiscovery";
 import { AsyncUserInput, AsyncUserInputQuestions, AsyncUserInputResponse } from "./asyncUserInput";
 import { ProjectKind } from "./project";
+import { ClaudeCacheObservation } from "./claudeCache";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -38,6 +45,8 @@ export const ORCHESTRATION_WS_METHODS = {
   getThreadDetailSnapshot: "orchestration.getThreadDetailSnapshot",
   dispatchCommand: "orchestration.dispatchCommand",
   importThread: "orchestration.importThread",
+  listProjectImports: "orchestration.listProjectImports",
+  importProject: "orchestration.importProject",
   regenerateThreadTitle: "orchestration.regenerateThreadTitle",
   repairState: "orchestration.repairState",
   getTurnDiff: "orchestration.getTurnDiff",
@@ -208,6 +217,7 @@ export const ClaudeProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   permissionMode: Schema.optional(TrimmedNonEmptyString),
   maxThinkingTokens: Schema.optional(NonNegativeInt),
+  enableArtifacts: Schema.optional(Schema.Boolean),
 });
 
 export const AntigravityProviderStartOptions = Schema.Struct({
@@ -279,6 +289,7 @@ export const ProviderRequestKind = Schema.Literals([
   "file-read",
   "file-change",
   "permissions",
+  "tool",
 ]);
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
 export const AssistantDeliveryMode = Schema.Literals(["buffered", "streaming"]);
@@ -332,6 +343,7 @@ export type ThreadEnvironmentMode = typeof ThreadEnvironmentMode.Type;
 
 export const OrchestrationMessageSource = Schema.Literals([
   "native",
+  "async-user-input",
   "handoff-import",
   "fork-import",
 ]);
@@ -788,7 +800,23 @@ export const OrchestrationPendingInteraction = Schema.Struct({
 });
 export type OrchestrationPendingInteraction = typeof OrchestrationPendingInteraction.Type;
 
+export const PendingClaudeCacheReview = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  messageId: MessageId,
+  sourceEventSequence: PositiveInt,
+  assessment: ClaudeCacheObservation,
+  status: Schema.Literals(["pending", "responding", "compacting", "failed", "uncertain"]),
+  compactionTurnId: Schema.optional(TurnId),
+  compactionResponseEventSequence: Schema.optional(PositiveInt),
+  sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  requestedAt: Schema.optional(IsoDateTime),
+  error: Schema.optional(Schema.String),
+  createdAt: IsoDateTime,
+});
+export type PendingClaudeCacheReview = typeof PendingClaudeCacheReview.Type;
+
 export const OrchestrationThread = Schema.Struct({
+  claudeCacheReview: Schema.optional(Schema.NullOr(PendingClaudeCacheReview)),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -852,6 +880,7 @@ export const OrchestrationThread = Schema.Struct({
   ),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   latestUserMessageAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  latestHumanMessageAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   hasPendingApprovals: Schema.optional(Schema.Boolean),
   hasPendingUserInput: Schema.optional(Schema.Boolean),
   hasPendingAsyncUserInput: Schema.optional(Schema.Boolean),
@@ -881,6 +910,7 @@ export const OrchestrationThread = Schema.Struct({
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
 export const OrchestrationThreadShell = Schema.Struct({
+  claudeCacheReview: Schema.optional(Schema.NullOr(PendingClaudeCacheReview)),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -944,6 +974,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   ),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   latestUserMessageAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  latestHumanMessageAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   hasPendingApprovals: Schema.optional(Schema.Boolean),
   hasPendingUserInput: Schema.optional(Schema.Boolean),
   hasPendingAsyncUserInput: Schema.optional(Schema.Boolean),
@@ -1083,6 +1114,8 @@ export const ProjectCreateCommand = Schema.Struct({
   kind: Schema.optional(ProjectKind).pipe(Schema.withDecodingDefault(() => "project")),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
+  /** Importing into an existing folder must preserve even an empty project shell. */
+  preserveExistingProject: Schema.optional(Schema.Boolean),
   createWorkspaceRootIfMissing: Schema.optional(Schema.Boolean).pipe(
     Schema.withDecodingDefault(() => false),
   ),
@@ -1347,6 +1380,9 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ComputerControlMode = Schema.Literals(["off", "request", "chat"]);
+export type ComputerControlMode = typeof ComputerControlMode.Type;
+
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   asyncUserInputResponse: Schema.optional(AsyncUserInputResponse),
@@ -1362,6 +1398,9 @@ export const ThreadTurnStartCommand = Schema.Struct({
   }).check(TurnMessageContentCheck),
   modelSelection: Schema.optional(ModelSelection),
   providerOptions: Schema.optional(ProviderStartOptions),
+  enableComputerControl: Schema.optional(Schema.Boolean),
+  computerControlMode: Schema.optional(ComputerControlMode),
+  computerControlGeneration: Schema.optional(NonNegativeInt),
   reviewTarget: Schema.optional(ProviderReviewTarget),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
   dispatchMode: Schema.optional(TurnDispatchMode).pipe(
@@ -1404,6 +1443,9 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   }).check(TurnMessageContentCheck),
   modelSelection: Schema.optional(ModelSelection),
   providerOptions: Schema.optional(ProviderStartOptions),
+  enableComputerControl: Schema.optional(Schema.Boolean),
+  computerControlMode: Schema.optional(ComputerControlMode),
+  computerControlGeneration: Schema.optional(NonNegativeInt),
   reviewTarget: Schema.optional(ProviderReviewTarget),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
   dispatchMode: Schema.optional(TurnDispatchMode).pipe(
@@ -1412,6 +1454,37 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  createdAt: IsoDateTime,
+});
+
+const ThreadClaudeCacheRespondCommand = Schema.Struct({
+  type: Schema.Literal("thread.claude-cache.respond"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  reviewId: TrimmedNonEmptyString,
+  decision: Schema.Literals(["continue", "compact", "cancel"]),
+  createdAt: IsoDateTime,
+});
+
+const ThreadClaudeCacheSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.claude-cache.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  review: Schema.NullOr(PendingClaudeCacheReview),
+  expectedReviewId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  hold: Schema.optional(
+    Schema.Struct({ sourceEventSequence: PositiveInt, session: OrchestrationSession }),
+  ),
+  createdAt: IsoDateTime,
+});
+
+const ThreadClaudeCacheCompactedCommand = Schema.Struct({
+  type: Schema.Literal("thread.claude-cache.compacted"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  reviewId: TrimmedNonEmptyString,
+  turnId: TurnId,
   createdAt: IsoDateTime,
 });
 
@@ -1446,6 +1519,9 @@ const ThreadDispatchQueuedTurnCommand = Schema.Struct({
   messageId: MessageId,
   modelSelection: Schema.optional(ModelSelection),
   providerOptions: Schema.optional(ProviderStartOptions),
+  enableComputerControl: Schema.optional(Schema.Boolean),
+  computerControlMode: Schema.optional(ComputerControlMode),
+  computerControlGeneration: Schema.optional(NonNegativeInt),
   reviewTarget: Schema.optional(ProviderReviewTarget),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
   dispatchMode: Schema.optional(TurnDispatchMode).pipe(
@@ -1506,6 +1582,9 @@ const ThreadMessageEditAndResendCommand = Schema.Struct({
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
   modelSelection: Schema.optional(ModelSelection),
   providerOptions: Schema.optional(ProviderStartOptions),
+  enableComputerControl: Schema.optional(Schema.Boolean),
+  computerControlMode: Schema.optional(ComputerControlMode),
+  computerControlGeneration: Schema.optional(NonNegativeInt),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -1520,6 +1599,7 @@ const ThreadSessionStopCommand = Schema.Struct({
 });
 
 const ThreadActivityAppendCommand = Schema.Struct({
+  requireUnarchived: Schema.optional(Schema.Boolean),
   type: Schema.Literal("thread.activity.append"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1551,6 +1631,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadClaudeCacheRespondCommand,
   ThreadTurnInterruptCommand,
   ThreadTaskStopCommand,
   ThreadTaskBackgroundCommand,
@@ -1588,6 +1669,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ThreadClaudeCacheRespondCommand,
   ThreadTurnInterruptCommand,
   ThreadTaskStopCommand,
   ThreadTaskBackgroundCommand,
@@ -1732,6 +1814,8 @@ const ThreadSidechatExpireCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadClaudeCacheCompactedCommand,
+  ThreadClaudeCacheSetCommand,
   ThreadSessionSetCommand,
   ThreadProviderHandoffCompleteCommand,
   ThreadGoalContinueCommand,
@@ -1779,8 +1863,11 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
+  "thread.async-user-input-answered",
   "thread.turn-queued",
   "thread.turn-start-requested",
+  "thread.claude-cache-set",
+  "thread.claude-cache-response-requested",
   "thread.goal-continuation-requested",
   "thread.turn-interrupt-requested",
   "thread.task-stop-requested",
@@ -2049,11 +2136,32 @@ export const ThreadMessageSentPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const ThreadAsyncUserInputAnsweredPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  response: AsyncUserInputResponse,
+});
+
+export const ThreadClaudeCacheSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  review: Schema.NullOr(PendingClaudeCacheReview),
+  updatedAt: IsoDateTime,
+});
+export const ThreadClaudeCacheResponseRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  review: PendingClaudeCacheReview,
+  decision: Schema.Literals(["continue", "compact", "cancel"]),
+  createdAt: IsoDateTime,
+});
+
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   modelSelection: Schema.optional(ModelSelection),
   providerOptions: Schema.optional(ProviderStartOptions),
+  enableComputerControl: Schema.optional(Schema.Boolean),
+  computerControlMode: Schema.optional(ComputerControlMode),
+  computerControlGeneration: Schema.optional(NonNegativeInt),
   reviewTarget: Schema.optional(ProviderReviewTarget),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
   dispatchMode: TurnDispatchMode.pipe(Schema.withDecodingDefault(() => DEFAULT_TURN_DISPATCH_MODE)),
@@ -2147,6 +2255,9 @@ export const ThreadMessageEditResendRequestedPayload = Schema.Struct({
   removedTurnIds: Schema.optional(Schema.Array(TurnId)),
   modelSelection: Schema.optional(ModelSelection),
   providerOptions: Schema.optional(ProviderStartOptions),
+  enableComputerControl: Schema.optional(Schema.Boolean),
+  computerControlMode: Schema.optional(ComputerControlMode),
+  computerControlGeneration: Schema.optional(NonNegativeInt),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -2308,6 +2419,21 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.message-sent"),
     payload: ThreadMessageSentPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.async-user-input-answered"),
+    payload: ThreadAsyncUserInputAnsweredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.claude-cache-set"),
+    payload: ThreadClaudeCacheSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.claude-cache-response-requested"),
+    payload: ThreadClaudeCacheResponseRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -2708,6 +2834,8 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationImportThreadInput,
     output: OrchestrationImportThreadResult,
   },
+  listProjectImports: { input: ListProjectImportsInput, output: ListProjectImportsResult },
+  importProject: { input: ImportProjectInput, output: ImportProjectResult },
   regenerateThreadTitle: {
     input: OrchestrationRegenerateThreadTitleInput,
     output: OrchestrationRegenerateThreadTitleResult,

@@ -541,6 +541,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       case "thread.handoff.create":
       case "thread.fork.create":
         return loadThreadDetailForDecider(command, commandReadModel, command.sourceThreadId);
+      case "thread.claude-cache.set":
+        return command.hold
+          ? loadThreadDetailForDecider(command, commandReadModel, command.threadId)
+          : Effect.succeed(commandReadModel);
       case "thread.turn.start":
         if (command.asyncUserInputResponse) {
           return messageRepository
@@ -780,6 +784,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
       let command: OrchestrationCommand = envelope.command;
       if (command.type === "thread.turn.start") {
+        const pendingImport = yield* sql<{ readonly thread_id: string }>`
+          SELECT thread_id FROM project_import_origins
+          WHERE thread_id = ${command.threadId} AND status = 'pending'
+          LIMIT 1
+        `.pipe(Effect.mapError(toPersistenceSqlError("OrchestrationEngine.pendingProjectImport")));
+        if (pendingImport.length > 0) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail:
+              "This conversation is still being imported. Finish or retry its import before sending a message.",
+          });
+        }
         const startCommand = command;
         const attachments = yield* Effect.forEach(
           startCommand.message.attachments,
@@ -849,6 +865,36 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
             detail: `Thread '${command.threadId}' title changed before the conditional update.`,
+          });
+        }
+      }
+
+      if (command.type === "thread.claude-cache.set" && command.hold) {
+        // Admission runs in the command worker, so a stop cannot slip between
+        // this durable fence and the atomic review/session events below.
+        const cancellation = yield* Stream.runHead(
+          eventStore.readThreadEventsFromSequence(
+            command.threadId,
+            command.hold.sourceEventSequence,
+            1,
+            commandReadModel.snapshotSequence,
+            [
+              "thread.session-stop-requested",
+              "thread.archived",
+              "thread.deleted",
+              "thread.sidechat-expired",
+              "thread.conversation-rolled-back",
+            ],
+          ),
+        ).pipe(
+          Effect.mapError(() =>
+            makeCommandInternalError(command, "Could not verify Claude cache hold authorization."),
+          ),
+        );
+        if (Option.isSome(cancellation)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Command produced no events.",
           });
         }
       }

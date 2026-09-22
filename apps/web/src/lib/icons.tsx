@@ -7,6 +7,7 @@ import { cn } from "./utils";
 import { CentralIcon, type CentralIconVariant } from "./central-icons";
 import {
   IconAlertCircle,
+  IconAlertOctagon,
   IconAlertTriangle,
   IconArchive,
   IconArrowBackUp,
@@ -18,6 +19,7 @@ import {
   IconArrowUpRight,
   IconBolt,
   IconBrain,
+  IconBulb,
   IconBug,
   IconCamera,
   IconCheck,
@@ -45,6 +47,7 @@ import {
   IconMaximize,
   IconMinimize,
   IconMinus,
+  IconDeviceDesktop,
   IconDeviceLaptop,
   IconDeviceMobileRotated,
   IconPlugOff,
@@ -100,6 +103,7 @@ export const AppsIcon: LucideIcon = (props) => (
 // Composer stacked-panel glyphs (subagent strip / workflow run card).
 export const BackgroundTrayIcon: LucideIcon = centralIconWrapper("arrow-down-wall");
 export const ContextCompactionIcon: LucideIcon = centralIconWrapper("arrows-hide");
+export const ComputerUseIcon: LucideIcon = centralIconWrapper("cursor-1");
 export const PanelExpandIcon: LucideIcon = centralIconWrapper("expand-45");
 export const PanelCollapseIcon: LucideIcon = centralIconWrapper("minimize-45");
 export const BackToParentIcon: LucideIcon = centralIconWrapper("arrow-share-left");
@@ -110,6 +114,12 @@ export const HANDOFF_ICON_NAME = "arrow-left-right";
 export const HandoffIcon: LucideIcon = centralIconWrapper(HANDOFF_ICON_NAME);
 export const SkillCubeIcon: LucideIcon = centralIconWrapper("building-blocks");
 export const NewThreadIcon: LucideIcon = centralIconWrapper("compose-pencil");
+// Command palette (⌘K) action glyphs: one Central outline set so the rows read as a family.
+export const FolderAddIcon: LucideIcon = centralIconWrapper("folder-add-left");
+export const FolderOpenFrontIcon: LucideIcon = centralIconWrapper("folder-open-front");
+export const ImportThreadIcon: LucideIcon = centralIconWrapper("import");
+export const UsageGaugeIcon: LucideIcon = centralIconWrapper("gauge");
+export const BugReportIcon: LucideIcon = centralIconWrapper("bug");
 /** The "+" affordance behind every add/create action (Add project, activity header). */
 export const AddPlusIcon: LucideIcon = centralIconWrapper("plus-medium");
 /** 2x3 dot grip for drag-to-reorder handles (provider rows, sidebar nav customize). */
@@ -131,6 +141,7 @@ export const SortIcon: LucideIcon = centralIconWrapper("arrow-top-bottom");
 export const AGENT_ROBOT_ICON_NAME = "robot";
 export const BotIcon: LucideIcon = centralIconWrapper(AGENT_ROBOT_ICON_NAME);
 export const BookIcon: LucideIcon = centralIconWrapper("book-simple");
+export const BookOpenIcon: LucideIcon = centralIconWrapper("newspaper-2");
 export const BugIcon = adaptIcon(IconBug);
 export const CameraIcon = adaptIcon(IconCamera);
 export const CheckIcon = adaptIcon(IconCheck);
@@ -140,6 +151,7 @@ export const ChevronRightIcon = adaptIcon(IconChevronRight);
 export const ChevronUpIcon = adaptIcon(IconChevronUp);
 export const ChevronsUpDownIcon = adaptIcon(IconSelector);
 export const CircleAlertIcon = adaptIcon(IconAlertCircle);
+export const OctagonAlertIcon = adaptIcon(IconAlertOctagon);
 export const CircleCheckIcon = adaptIcon(IconCircleCheck);
 // User-input rows: a question-mark circle while the agent waits for an answer,
 // and an up-arrow circle once the answer is submitted. Sourced from the Central
@@ -151,7 +163,13 @@ export const Columns2Icon = adaptIcon(IconColumns2);
 export const ChangesIcon = centralIconWrapper("changes");
 export const COPY_ICON_NAME = "square-behind-square-6";
 export const CopyIcon = centralIconWrapper(COPY_ICON_NAME);
+export const LightbulbIcon = adaptIcon(IconBulb);
 export const LinkIcon = centralIconWrapper("chain-link-3");
+// Pull request menu glyphs: a text page for "View PR", the Central GitHub mark for the
+// inline "Open in GitHub" button, and a plus bubble for "Add to chat".
+export const PageTextIcon: LucideIcon = centralIconWrapper("page-text");
+export const GitHubMarkIcon: LucideIcon = centralIconWrapper("github");
+export const ChatBubblePlusIcon: LucideIcon = centralIconWrapper("bubble-plus");
 export const DiffIcon = centralIconWrapper("difference-modified");
 export const DownloadIcon = adaptIcon(IconDownload);
 // The clock doubles as the automation glyph everywhere it appears (meta chip,
@@ -234,6 +252,8 @@ export const HistoryIcon = adaptIcon(IconHistory);
 export const InfoIcon = adaptIcon(IconInfoCircle);
 export const KanbanIcon = centralIconWrapper("columns-3-wide");
 export const KeyboardIcon: LucideIcon = centralIconWrapper("keyboard");
+/** Take-control affordance for the computer dock pane. */
+export const CursorClickIcon: LucideIcon = centralIconWrapper("cursor-click");
 export const ListChecksIcon = adaptIcon(IconListCheck);
 export const ListTodoIcon = adaptIcon(IconListDetails);
 export const Loader2Icon = adaptIcon(IconLoader2);
@@ -283,6 +303,7 @@ export const StarFilledIcon = adaptIcon(IconStarFilled);
 export const SunIcon = adaptIcon(IconSun);
 export const MoonIcon = adaptIcon(IconMoon);
 export const DeviceLaptopIcon = adaptIcon(IconDeviceLaptop);
+export const MonitorIcon = adaptIcon(IconDeviceDesktop);
 export const StopIcon: LucideIcon = centralIconWrapper("stop", "fill");
 export const StopFilledIcon: LucideIcon = centralIconWrapper("stop", "fill");
 export const SquareSplitHorizontal: LucideIcon = (props) => (

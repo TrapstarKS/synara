@@ -5,6 +5,7 @@ export type AsyncQuestionDraft = {
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
   submittedAnswers?: readonly string[];
+  submittedResponseSequence?: number;
 };
 
 export function asyncQuestionDraftKey(threadId: string, messageId: string): string {

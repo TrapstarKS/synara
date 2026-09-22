@@ -39,6 +39,7 @@ interface ChatComposerFooterProps {
     busy: boolean;
     connecting: boolean;
     expired: boolean;
+    hasPendingCacheReview?: boolean;
     preparingImages: boolean;
     preparingWorktree: boolean;
     hasContent: boolean;
@@ -89,7 +90,7 @@ export function ChatComposerFooter({
             {interactionMode !== "default" ? (
               <Button
                 variant="ghost"
-                className="shrink-0 whitespace-nowrap px-2 text-[length:var(--app-font-size-ui-sm,11px)] sm:text-[length:var(--app-font-size-ui-sm,11px)] font-normal text-[var(--color-text-foreground-secondary)] hover:bg-[var(--color-background-button-secondary-hover)] hover:text-[var(--color-text-foreground)] sm:px-3"
+                className="shrink-0 whitespace-nowrap px-2 text-ui-sm sm:text-ui-sm font-normal text-[var(--color-text-foreground-secondary)] hover:bg-[var(--color-background-button-secondary-hover)] hover:text-[var(--color-text-foreground)] sm:px-3"
                 size="sm"
                 type="button"
                 onClick={resetInteractionMode}
@@ -109,7 +110,7 @@ export function ChatComposerFooter({
             {sidebarAction ? (
               <Button
                 variant="ghost"
-                className="shrink-0 whitespace-nowrap px-2 text-[length:var(--app-font-size-ui-sm,11px)] sm:text-[length:var(--app-font-size-ui-sm,11px)] font-normal sm:px-3"
+                className="shrink-0 whitespace-nowrap px-2 text-ui-sm sm:text-ui-sm font-normal sm:px-3"
                 size="sm"
                 type="button"
                 onClick={sidebarAction.onClick}
@@ -164,7 +165,7 @@ export function ChatComposerFooter({
                 ? "Submit answers"
                 : "Next question"}
           </Button>
-        ) : submission.phase === "running" ? (
+        ) : submission.phase === "running" || submission.connecting ? (
           <Button
             type="button"
             variant="prominent"
@@ -183,7 +184,12 @@ export function ChatComposerFooter({
                 type="submit"
                 size="sm"
                 className="h-9 rounded-full px-4 sm:h-8"
-                disabled={submission.busy || submission.connecting || submission.expired}
+                disabled={
+                  submission.busy ||
+                  submission.connecting ||
+                  submission.expired ||
+                  submission.hasPendingCacheReview
+                }
               >
                 {submission.connecting || submission.busy ? "Sending..." : "Refine"}
               </Button>
@@ -193,7 +199,12 @@ export function ChatComposerFooter({
                   type="submit"
                   size="sm"
                   className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
-                  disabled={submission.busy || submission.connecting || submission.expired}
+                  disabled={
+                    submission.busy ||
+                    submission.connecting ||
+                    submission.expired ||
+                    submission.hasPendingCacheReview
+                  }
                 >
                   {submission.connecting || submission.busy ? "Sending..." : "Implement"}
                 </Button>
@@ -205,7 +216,12 @@ export function ChatComposerFooter({
                         variant="default"
                         className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
                         aria-label="Implementation actions"
-                        disabled={submission.busy || submission.connecting || submission.expired}
+                        disabled={
+                          submission.busy ||
+                          submission.connecting ||
+                          submission.expired ||
+                          submission.hasPendingCacheReview
+                        }
                       />
                     }
                   >
@@ -213,7 +229,12 @@ export function ChatComposerFooter({
                   </MenuTrigger>
                   <ComposerPickerMenuPopup align="end" side="top">
                     <MenuItem
-                      disabled={submission.busy || submission.connecting || submission.expired}
+                      disabled={
+                        submission.busy ||
+                        submission.connecting ||
+                        submission.expired ||
+                        submission.hasPendingCacheReview
+                      }
                       onClick={() => void submission.onImplementInNewThread()}
                     >
                       Implement in a new thread
@@ -242,6 +263,7 @@ export function ChatComposerFooter({
                   submission.busy ||
                   submission.connecting ||
                   submission.expired ||
+                  submission.hasPendingCacheReview ||
                   voice.transcribing ||
                   submission.preparingImages ||
                   !submission.hasContent
@@ -258,6 +280,11 @@ export function ChatComposerFooter({
                           : submission.busy
                             ? "Sending"
                             : "Send message"
+                }
+                title={
+                  submission.hasPendingCacheReview
+                    ? "Choose how to resume the held message above"
+                    : undefined
                 }
               >
                 {submission.connecting || submission.busy || submission.preparingImages ? (

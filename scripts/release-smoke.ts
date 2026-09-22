@@ -144,43 +144,27 @@ function verifyReleaseWorkflowSafety(): void {
   );
   assertContains(
     workflow,
-    "  verify:\n    name: Verify\n    needs: preflight\n    runs-on: ubuntu-24.04\n    timeout-minutes: 15\n    permissions:\n      contents: read",
-    "Expected verification to run after source provenance with read-only repository access.",
+    "  build:\n    name: Build ${{ matrix.label }}\n    needs: [preflight, build_mac_icon]\n    runs-on: ${{ matrix.runner }}\n    timeout-minutes: 60\n    permissions:\n      contents: read",
+    "Expected artifact builds to receive read-only repository access.",
   );
   assertContains(
     workflow,
-    "  bundle:\n    name: Build shared desktop bundle\n    needs: preflight\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    permissions:\n      contents: read",
-    "Expected the reusable desktop bundle to build after the short source preflight.",
+    "- label: macOS arm64\n            runner: macos-15",
+    "Expected the arm64 native release runner to retain the macOS 15 SDK.",
   );
+  for (const toolchain of [
+    "native_developer_dir=/Applications/Xcode_16.4.app/Contents/Developer",
+    "DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer",
+    "runs-on: macos-26",
+    "name: mac-icon-catalog",
+    'echo "SYNARA_MAC_ICON_CATALOG=$RUNNER_TEMP/mac-icon/Assets.car" >> "$GITHUB_ENV"',
+  ]) {
+    assertContains(workflow, toolchain, "Expected separate native and icon release toolchains.");
+  }
   assertContains(
     workflow,
-    "  build:\n    name: Build ${{ matrix.label }}\n    needs: [preflight, bundle]\n    runs-on: ${{ matrix.runner }}\n    timeout-minutes: 30\n    permissions:\n      contents: read",
-    "Expected artifact builds to consume the shared desktop bundle.",
-  );
-  assertContains(
-    workflow,
-    'echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/electron-builder-cache" >> "$GITHUB_ENV"',
-    "Expected artifact builds to reuse the Electron download cache.",
-  );
-  assertContains(
-    workflow,
-    "uses: actions/cache@v6",
-    "Expected release jobs to reuse Electron download caches.",
-  );
-  assertContains(
-    workflow,
-    "uses: actions/upload-artifact@v7",
-    "Expected the shared build to use the pinned artifact uploader.",
-  );
-  assertContains(
-    workflow,
-    "uses: actions/download-artifact@v8",
-    "Expected artifact builds to use the pinned artifact downloader.",
-  );
-  assertContains(
-    workflow,
-    "            --skip-build",
-    "Expected platform packaging to reuse the shared desktop build.",
+    "pkg-config libssl-dev libx11-dev libxtst-dev libxrandr-dev libxfixes-dev libxrender-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev",
+    "Expected the Linux release to install the native driver's build dependencies.",
   );
   assertContains(
     workflow,

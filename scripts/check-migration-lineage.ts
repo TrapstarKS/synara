@@ -64,6 +64,16 @@ const HANDLED_RELEASED_DIVERGENCES: readonly MigrationLineageAllowance[] = [
   // renames the tracker row back to the canonical name whenever the rows below
   // it are canonical, which is the only way this pair can occur.
   { id: 32, name: "ReconcileLegacyT3SchemaImport" },
+  // The personal fork shipped its own append-only 104-113 lineage before the
+  // upstream v0.9.0 release reused four of those numeric slots. Runtime
+  // reconciliation treats the official v0.9.0 tracker as a known divergent
+  // lineage above LAST_SHARED_LINEAGE_MIGRATION_ID, truncates from 104, and
+  // safely replays the idempotent fork migrations before applying the upstream
+  // schema additions at their new append-only 114-117 slots.
+  { id: 104, name: "ProjectionThreadsClaudeCacheReview" },
+  { id: 106, name: "ProjectImportOrigins" },
+  { id: 107, name: "ProjectionThreadsHumanMessage" },
+  { id: 108, name: "GatewayCompletions" },
 ];
 
 const entriesBlockPattern = /export const migrationEntries\s*=\s*\[([\s\S]*?)\]\s*as const;/u;

@@ -9,7 +9,9 @@ import {
 } from "@synara/contracts";
 import { resolveThreadBranchRegressionGuard } from "@synara/shared/git";
 import {
+  clearRemovedAsyncUserInputResponses,
   hasPendingAsyncUserInput,
+  mergeAsyncUserInput,
   retainMessagesWithPendingAsyncInputs,
 } from "@synara/shared/asyncUserInput";
 import { deriveTurnStartModelSelection } from "@synara/shared/model";
@@ -19,6 +21,7 @@ import {
   setPinnedMessageDone,
   setPinnedMessageLabel,
 } from "@synara/shared/pinnedMessages";
+import { deriveThreadSummaryMetadata, resolveHumanMessageAt } from "@synara/shared/threadSummary";
 import { isPendingInteractionResponseClaimable } from "@synara/shared/pendingInteractions";
 
 import { isSessionRunningTurn } from "./session-logic";
@@ -630,7 +633,10 @@ function mergeStreamingMessage(
     nextText = incomingMessage.text;
   }
   const nextAttachments = incomingMessage.attachments ?? existingMessage.attachments;
-  const nextAsyncUserInput = incomingMessage.asyncUserInput ?? existingMessage.asyncUserInput;
+  const nextAsyncUserInput = mergeAsyncUserInput(
+    existingMessage.asyncUserInput,
+    incomingMessage.asyncUserInput,
+  );
   const nextSkills =
     incomingMessage.skills && incomingMessage.skills.length > 0
       ? incomingMessage.skills
@@ -642,6 +648,8 @@ function mergeStreamingMessage(
   const nextCompletedAt = incomingMessage.streaming
     ? existingMessage.completedAt
     : (incomingMessage.completedAt ?? existingMessage.completedAt);
+  const nextUpdatedAt =
+    incomingMessage.updatedAt ?? existingMessage.updatedAt ?? incomingMessage.createdAt;
   const nextTurnId =
     incomingMessage.turnId !== undefined ? incomingMessage.turnId : existingMessage.turnId;
   const nextDispatchMode =
@@ -657,12 +665,11 @@ function mergeStreamingMessage(
       ? incomingMessage.startsNewTurn
       : existingMessage.startsNewTurn;
   const nextSource = incomingMessage.source ?? existingMessage.source;
-  // Streaming deltas advance the event sequence, but a message's causal
-  // position is the first event that created it. Never move the row forward to
-  // the last delta sequence.
+  // Streaming deltas advance the event sequence, but the message stays at the
+  // causal position where it was first created.
   const nextSequence = existingMessage.sequence ?? incomingMessage.sequence;
-  // A reconnect can hydrate segmented history before the authoritative completion
-  // repairs the text. Obsolete segments must not render over that repaired body.
+  // A reconnect may hydrate segmented history before the authoritative completion
+  // repairs the text. Drop stale segments when they no longer describe the body.
   const previousSegments = existingMessage.textSegments;
   const nextSegments =
     !incomingMessage.streaming &&
@@ -681,6 +688,7 @@ function mergeStreamingMessage(
     providerReferenceArraysEqual(existingMessage.skills, nextSkills) &&
     providerReferenceArraysEqual(existingMessage.mentions, nextMentions) &&
     existingMessage.completedAt === nextCompletedAt &&
+    existingMessage.updatedAt === nextUpdatedAt &&
     existingMessage.turnId === nextTurnId &&
     existingMessage.dispatchMode === nextDispatchMode &&
     existingMessage.dispatchOrigin === nextDispatchOrigin &&
@@ -696,6 +704,7 @@ function mergeStreamingMessage(
     ...(nextSegments !== undefined ? { textSegments: nextSegments } : {}),
     ...(nextSequence !== undefined ? { sequence: nextSequence } : {}),
     text: nextText,
+    updatedAt: nextUpdatedAt,
     ...(nextAsyncUserInput ? { asyncUserInput: nextAsyncUserInput } : {}),
     streaming: incomingMessage.streaming,
     ...(nextAttachments ? { attachments: nextAttachments } : {}),
@@ -793,12 +802,18 @@ function applyThreadMessageSentEvent(thread: Thread, event: ThreadMessageSentEve
     });
   }
 
+  const humanMessageAt = resolveHumanMessageAt(incomingMessage);
+  const latestHumanMessageAt =
+    humanMessageAt !== null && humanMessageAt > (thread.latestHumanMessageAt ?? "")
+      ? humanMessageAt
+      : thread.latestHumanMessageAt;
   const updatedAt =
     thread.updatedAt && thread.updatedAt > payload.updatedAt ? thread.updatedAt : payload.updatedAt;
   if (
     messages === thread.messages &&
     turnDiffSummaries === thread.turnDiffSummaries &&
     latestTurn === thread.latestTurn &&
+    latestHumanMessageAt === thread.latestHumanMessageAt &&
     updatedAt === thread.updatedAt
   ) {
     return thread;
@@ -812,6 +827,7 @@ function applyThreadMessageSentEvent(thread: Thread, event: ThreadMessageSentEve
       : {}),
     turnDiffSummaries,
     latestTurn,
+    ...(latestHumanMessageAt !== undefined ? { latestHumanMessageAt } : {}),
     updatedAt,
   };
 }
@@ -1159,6 +1175,28 @@ function applyOrchestrationEvent(
         { ...options, updateSidebarSummary: false },
       );
 
+    case "thread.async-user-input-answered":
+      return applyThreadUpdate(
+        state,
+        event.payload.threadId,
+        (thread) => ({
+          ...thread,
+          messages: thread.messages.map((message) =>
+            message.id === event.payload.messageId && message.asyncUserInput
+              ? {
+                  ...message,
+                  asyncUserInput: mergeAsyncUserInput(message.asyncUserInput, {
+                    ...message.asyncUserInput,
+                    response: event.payload.response,
+                    responseSequence: event.sequence,
+                  }),
+                }
+              : message,
+          ),
+        }),
+        { ...options, updateSidebarSummary: false },
+      );
+
     case "thread.message-sent":
       return applyThreadUpdate(
         state,
@@ -1170,6 +1208,30 @@ function applyOrchestrationEvent(
           updateSidebarSummary:
             options?.updateSidebarSummary === true || threadMessageUpdatesSidebarSummary(event),
         },
+      );
+
+    case "thread.claude-cache-set":
+      return applyThreadUpdate(
+        state,
+        event.payload.threadId,
+        (thread) => {
+          if (
+            event.sequence <=
+            Math.max(thread.claudeCacheReviewSequence ?? 0, state.shellSnapshotSequence ?? 0)
+          ) {
+            return thread;
+          }
+          const updatedAt = resolveEventUpdatedAt(thread, event.payload.updatedAt);
+          return {
+            ...thread,
+            claudeCacheReview: deepEqualJson(thread.claudeCacheReview ?? null, event.payload.review)
+              ? (thread.claudeCacheReview ?? null)
+              : event.payload.review,
+            claudeCacheReviewSequence: event.sequence,
+            updatedAt,
+          };
+        },
+        options,
       );
 
     case "thread.session-set":
@@ -1522,11 +1584,16 @@ function applyOrchestrationEvent(
                 (right.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER),
             );
           const retainedTurnIds = new Set(turnDiffSummaries.map((entry) => entry.turnId));
+          const retainedMessages = retainThreadMessagesAfterRevert(
+            thread.messages,
+            retainedTurnIds,
+            event.payload.turnCount,
+          );
           const messages = retainMessagesWithPendingAsyncInputs(
-            retainThreadMessagesAfterRevert(
-              thread.messages,
-              retainedTurnIds,
-              event.payload.turnCount,
+            clearRemovedAsyncUserInputResponses(
+              retainedMessages,
+              new Set(retainedMessages.map((message) => message.id)),
+              event.sequence,
             ),
             MAX_THREAD_MESSAGES,
           );
@@ -1545,6 +1612,8 @@ function applyOrchestrationEvent(
             proposedPlans,
             activities,
             pendingSourceProposedPlan: undefined,
+            latestHumanMessageAt: deriveThreadSummaryMetadata({ ...thread, messages })
+              .latestHumanMessageAt,
             latestTurn:
               latestCheckpoint === null
                 ? null
@@ -1603,14 +1672,26 @@ function applyOrchestrationEvent(
           );
           const latestCheckpoint = turnDiffSummaries.at(-1) ?? null;
 
+          const messages = retainMessagesWithPendingAsyncInputs(
+            clearRemovedAsyncUserInputResponses(
+              rollback.messages,
+              new Set(rollback.messages.map((message) => message.id)),
+              event.sequence,
+            ),
+            MAX_THREAD_MESSAGES,
+          );
           return {
             ...thread,
             turnDiffSummaries,
-            messages: retainMessagesWithPendingAsyncInputs(rollback.messages, MAX_THREAD_MESSAGES),
-            hasPendingAsyncUserInput: rollback.messages.some(hasPendingAsyncUserInput),
+            messages,
+            hasPendingAsyncUserInput: messages.some(hasPendingAsyncUserInput),
             proposedPlans,
             activities,
             pendingSourceProposedPlan: undefined,
+            latestHumanMessageAt: deriveThreadSummaryMetadata({
+              ...thread,
+              messages: rollback.messages,
+            }).latestHumanMessageAt,
             latestTurn:
               latestCheckpoint === null
                 ? null

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { MessageId } from "@synara/contracts";
-import { hasPendingAsyncUserInput, retainMessagesWithPendingAsyncInputs } from "./asyncUserInput";
+import {
+  clearRemovedAsyncUserInputResponses,
+  hasPendingAsyncUserInput,
+  mergeAsyncUserInput,
+  retainMessagesWithPendingAsyncInputs,
+} from "./asyncUserInput";
 
 describe("pending asynchronous questions", () => {
   it("retains every unanswered question outside the transcript window in causal order", () => {
@@ -30,5 +35,41 @@ describe("pending asynchronous questions", () => {
     ];
     expect(messages.some(hasPendingAsyncUserInput)).toBe(false);
     expect(retainMessagesWithPendingAsyncInputs(messages, 1)).toEqual([messages[2]]);
+  });
+
+  it("only clears answers removed by a history edit", () => {
+    const questions = [{ title: "Which option?" }];
+    const answered = {
+      questions,
+      response: { messageId: MessageId.makeUnsafe("answer"), answers: ["A"] },
+      responseSequence: 5,
+    };
+    const messages = [{ id: "question", asyncUserInput: answered }];
+    expect(
+      clearRemovedAsyncUserInputResponses(messages, new Set(["question", "answer"]), 10)[0],
+    ).toBe(messages[0]);
+    expect(
+      clearRemovedAsyncUserInputResponses(messages, new Set(["question"]), 10)[0]?.asyncUserInput,
+    ).toEqual({ questions, responseSequence: 10 });
+  });
+
+  it("orders answer and rollback metadata independently of message text", () => {
+    const pending = { questions: [{ title: "Which option?" }] };
+    const answered = {
+      ...pending,
+      response: { messageId: MessageId.makeUnsafe("answer"), answers: ["A"] },
+      responseSequence: 5,
+    };
+    const reopened = { ...pending, responseSequence: 10 };
+    expect(mergeAsyncUserInput(answered, pending)).toBe(answered);
+    expect(mergeAsyncUserInput(answered, reopened)).toBe(reopened);
+    expect(mergeAsyncUserInput(reopened, answered)).toBe(reopened);
+    const replacement = {
+      ...answered,
+      response: { ...answered.response, answers: ["B"] },
+      responseSequence: 15,
+    };
+    expect(mergeAsyncUserInput(reopened, replacement)).toBe(replacement);
+    expect(mergeAsyncUserInput(replacement, answered)).toBe(replacement);
   });
 });

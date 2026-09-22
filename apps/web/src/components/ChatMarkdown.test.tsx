@@ -18,13 +18,7 @@ vi.mock("../hooks/useTheme", () => ({
   useTheme: () => ({ resolvedTheme: "light" }),
 }));
 
-// ChatMarkdown pulls a heavy module graph (markdown, math, highlighting). The
-// first cold `import()` can exceed the default 5s test timeout while the full
-// suite runs packages in parallel, which flaked the first assertion below.
-// Warm the module once so every test measures the behavior, not module load.
-beforeAll(async () => {
-  await import("./ChatMarkdown");
-}, 30_000);
+const HEAVY_MODULE_TEST_TIMEOUT_MS = 30_000;
 
 function renderWithQueryClient(ui: ReactElement) {
   const client = new QueryClient({
@@ -48,22 +42,47 @@ async function renderUserMarkdown(text: string) {
 }
 
 describe("streamingCodeHighlightIntervalMs", () => {
-  it("keeps the base cadence for small blocks and stretches it with block size", async () => {
-    const { streamingCodeHighlightIntervalMs } = await import("./ChatMarkdown");
-    expect(streamingCodeHighlightIntervalMs(0)).toBe(160);
-    expect(streamingCodeHighlightIntervalMs(8_000)).toBe(160);
-    expect(streamingCodeHighlightIntervalMs(44_000)).toBe(580);
-    expect(streamingCodeHighlightIntervalMs(80_000)).toBe(1_000);
-    expect(streamingCodeHighlightIntervalMs(500_000)).toBe(1_000);
-  });
+  it(
+    "keeps the base cadence for small blocks and stretches it with block size",
+    async () => {
+      const { streamingCodeHighlightIntervalMs } = await import("./ChatMarkdown");
+      expect(streamingCodeHighlightIntervalMs(0)).toBe(160);
+      expect(streamingCodeHighlightIntervalMs(8_000)).toBe(160);
+      expect(streamingCodeHighlightIntervalMs(44_000)).toBe(580);
+      expect(streamingCodeHighlightIntervalMs(80_000)).toBe(1_000);
+      expect(streamingCodeHighlightIntervalMs(500_000)).toBe(1_000);
+    },
+    HEAVY_MODULE_TEST_TIMEOUT_MS,
+  );
 });
 
 describe("ChatMarkdown", () => {
-  it("uses the theme foreground token for markdown text", async () => {
-    const markup = await renderMarkdown("Theme-aware text");
+  it(
+    "uses the theme foreground token for markdown text",
+    async () => {
+      const markup = await renderMarkdown("Theme-aware text");
 
-    expect(markup).toContain("text-foreground");
-    expect(markup).not.toContain("text-neutral-900");
+      expect(markup).toContain("text-foreground");
+      expect(markup).not.toContain("text-neutral-900");
+    },
+    HEAVY_MODULE_TEST_TIMEOUT_MS,
+  );
+
+  it("renders GitHub alert blockquotes with a title and strips the marker", async () => {
+    const markup = await renderMarkdown("> [!NOTE]\n> **Medium Risk**\n> Details");
+
+    expect(markup).toContain('data-github-alert="note"');
+    expect(markup).toContain('class="markdown-alert-title"');
+    expect(markup).toContain(">Note</p>");
+    expect(markup).not.toContain("[!NOTE]");
+    expect(markup).toContain("<strong>Medium Risk</strong>");
+  });
+
+  it("leaves blockquotes with inline text after the marker as plain quotes", async () => {
+    const markup = await renderMarkdown("> [!NOTE] not an alert");
+
+    expect(markup).not.toContain("data-github-alert");
+    expect(markup).toContain("[!NOTE] not an alert");
   });
 
   it("renders inline math with KaTeX", async () => {
@@ -539,6 +558,23 @@ it("opens Obsidian aliases relative to the vault and leaves code unchanged", asy
   expect(markup).not.toContain("[[03-Resources");
 });
 
+it.each(["\n", "\r\n"])(
+  "keeps wiki links on the first line of a GitHub alert (%j)",
+  async (eol) => {
+    const { default: ChatMarkdown } = await import("./ChatMarkdown");
+    const markup = renderWithQueryClient(
+      <ChatMarkdown
+        text={`> [!NOTE]${eol}> See [[My note]] now`}
+        cwd="/vault"
+        wikiLinkRoot="/vault"
+      />,
+    );
+    expect(markup).toContain('data-github-alert="note"');
+    expect(markup).toContain('href="/vault/My%20note.md"');
+    expect(markup).not.toContain("[[My note]]");
+  },
+);
+
 describe("workspace Wiki links", () => {
   it.each([
     ["/vault/root #1", "/vault/root%20%231/My%20%2520%20note.md", "/vault/root #1/My %20 note.md"],
@@ -569,6 +605,8 @@ describe("workspace Wiki links", () => {
     "First line\r\nBefore [[note]] after",
     "> First line\r\n> [[note]] after",
     "> First line\n> [[note]] after",
+    "> [!NOTE]\n> Before [[note]] after",
+    "> [!TIP]\r\n>   Before [[note]] after",
     "- First line\n  [[note]] after",
     "[[note]] &amp; \\* after",
     "[[note|after]]",

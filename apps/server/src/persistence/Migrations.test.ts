@@ -315,6 +315,10 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [111, "PendingAsyncUserInputIndex"],
         [112, "ProfileStatsDeletedCosts"],
         [113, "ProfileStatsDeletedTokenPricing"],
+        [114, "ProjectionThreadsClaudeCacheReview"],
+        [115, "ProjectImportOrigins"],
+        [116, "ProjectionThreadsHumanMessage"],
+        [117, "GatewayCompletions"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -380,6 +384,10 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 111, name: "PendingAsyncUserInputIndex" },
           { migration_id: 112, name: "ProfileStatsDeletedCosts" },
           { migration_id: 113, name: "ProfileStatsDeletedTokenPricing" },
+          { migration_id: 114, name: "ProjectionThreadsClaudeCacheReview" },
+          { migration_id: 115, name: "ProjectImportOrigins" },
+          { migration_id: 116, name: "ProjectionThreadsHumanMessage" },
+          { migration_id: 117, name: "GatewayCompletions" },
         ],
       );
       const preserved = yield* sql<{ readonly count: number }>`
@@ -486,6 +494,10 @@ agentGatewayRetentionLegacyLayer(
           [111, "PendingAsyncUserInputIndex"],
           [112, "ProfileStatsDeletedCosts"],
           [113, "ProfileStatsDeletedTokenPricing"],
+          [114, "ProjectionThreadsClaudeCacheReview"],
+          [115, "ProjectImportOrigins"],
+          [116, "ProjectionThreadsHumanMessage"],
+          [117, "GatewayCompletions"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -594,6 +606,10 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [111, "PendingAsyncUserInputIndex"],
         [112, "ProfileStatsDeletedCosts"],
         [113, "ProfileStatsDeletedTokenPricing"],
+        [114, "ProjectionThreadsClaudeCacheReview"],
+        [115, "ProjectImportOrigins"],
+        [116, "ProjectionThreadsHumanMessage"],
+        [117, "GatewayCompletions"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -643,6 +659,10 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [111, "PendingAsyncUserInputIndex"],
           [112, "ProfileStatsDeletedCosts"],
           [113, "ProfileStatsDeletedTokenPricing"],
+          [114, "ProjectionThreadsClaudeCacheReview"],
+          [115, "ProjectImportOrigins"],
+          [116, "ProjectionThreadsHumanMessage"],
+          [117, "GatewayCompletions"],
         ],
       );
 
@@ -746,6 +766,10 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [111, "PendingAsyncUserInputIndex"],
         [112, "ProfileStatsDeletedCosts"],
         [113, "ProfileStatsDeletedTokenPricing"],
+        [114, "ProjectionThreadsClaudeCacheReview"],
+        [115, "ProjectImportOrigins"],
+        [116, "ProjectionThreadsHumanMessage"],
+        [117, "GatewayCompletions"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -791,6 +815,10 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [111, "PendingAsyncUserInputIndex"],
           [112, "ProfileStatsDeletedCosts"],
           [113, "ProfileStatsDeletedTokenPricing"],
+          [114, "ProjectionThreadsClaudeCacheReview"],
+          [115, "ProjectImportOrigins"],
+          [116, "ProjectionThreadsHumanMessage"],
+          [117, "GatewayCompletions"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -974,6 +1002,10 @@ mindMigrationLayer("Mind migration", (it) => {
         [111, "PendingAsyncUserInputIndex"],
         [112, "ProfileStatsDeletedCosts"],
         [113, "ProfileStatsDeletedTokenPricing"],
+        [114, "ProjectionThreadsClaudeCacheReview"],
+        [115, "ProjectImportOrigins"],
+        [116, "ProjectionThreadsHumanMessage"],
+        [117, "GatewayCompletions"],
       ]);
 
       yield* sql`INSERT INTO mind_memories (id, project_id, text, type, text_hash, peak_weight, created_at, last_accessed_at) VALUES ('m1', 'p1', 'delete me', 'semantic', 'hash', 0.6, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`;
@@ -1018,6 +1050,10 @@ mindRuntimeIntegrityLayer("Mind runtime integrity migration", (it) => {
           [111, "PendingAsyncUserInputIndex"],
           [112, "ProfileStatsDeletedCosts"],
           [113, "ProfileStatsDeletedTokenPricing"],
+          [114, "ProjectionThreadsClaudeCacheReview"],
+          [115, "ProjectImportOrigins"],
+          [116, "ProjectionThreadsHumanMessage"],
+          [117, "GatewayCompletions"],
         ]);
         const rows = yield* sql<{
           readonly id: string;
@@ -1100,6 +1136,10 @@ mindTextRevisionsLayer("Mind text revisions migration", (it) => {
         [111, "PendingAsyncUserInputIndex"],
         [112, "ProfileStatsDeletedCosts"],
         [113, "ProfileStatsDeletedTokenPricing"],
+        [114, "ProjectionThreadsClaudeCacheReview"],
+        [115, "ProjectImportOrigins"],
+        [116, "ProjectionThreadsHumanMessage"],
+        [117, "GatewayCompletions"],
       ]);
 
       const columns = yield* sql<{ readonly name: string }>`
@@ -1145,6 +1185,10 @@ mindProfileLayer("Mind profiles migration", (it) => {
         [111, "PendingAsyncUserInputIndex"],
         [112, "ProfileStatsDeletedCosts"],
         [113, "ProfileStatsDeletedTokenPricing"],
+        [114, "ProjectionThreadsClaudeCacheReview"],
+        [115, "ProjectImportOrigins"],
+        [116, "ProjectionThreadsHumanMessage"],
+        [117, "GatewayCompletions"],
       ]);
 
       // Profiles are decoupled from the projection: deleting the project row
@@ -1205,6 +1249,10 @@ mindDecouplingLayer("Mind projection decoupling migration", (it) => {
         [111, "PendingAsyncUserInputIndex"],
         [112, "ProfileStatsDeletedCosts"],
         [113, "ProfileStatsDeletedTokenPricing"],
+        [114, "ProjectionThreadsClaudeCacheReview"],
+        [115, "ProjectImportOrigins"],
+        [116, "ProjectionThreadsHumanMessage"],
+        [117, "GatewayCompletions"],
       ]);
 
       const profileFks = yield* sql<{ readonly referenced: string }>`

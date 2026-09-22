@@ -31,6 +31,10 @@ export interface FinalizeMacUpdateZipOptions {
   readonly stageDistDir: string;
   readonly signed: boolean;
   readonly verbose?: boolean;
+  /** Scripted-update flavors have no updater feed; artifact checks still run. */
+  readonly requireUpdateManifest?: boolean;
+  /** Also require a sealed app with this code and Info.plist identity. */
+  readonly expectedBundleIdentifier?: string;
 }
 
 export interface FinalizedMacUpdateZip {
@@ -136,12 +140,32 @@ function assertMacZipFrameworkSymlinks(zipPath: string): string {
   return appBundleName;
 }
 
-function verifyMacAppSignature(appBundlePath: string, requireSignature: boolean): void {
+export function verifyMacAppSignature(
+  appBundlePath: string,
+  requireSignature: boolean,
+  expectedBundleIdentifier?: string,
+): void {
   const codeResourcesPath = join(appBundlePath, "Contents", "_CodeSignature", "CodeResources");
+  if (expectedBundleIdentifier && !existsSync(codeResourcesPath)) {
+    throw new Error(`Expected a sealed macOS app signature for ${expectedBundleIdentifier}.`);
+  }
   if (!requireSignature && !existsSync(codeResourcesPath)) {
     return;
   }
-  runTextCommand("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appBundlePath]);
+  const identityRequirement = expectedBundleIdentifier
+    ? [
+        "--test-requirement",
+        `=identifier ${JSON.stringify(expectedBundleIdentifier)} and info[CFBundleIdentifier] = ${JSON.stringify(expectedBundleIdentifier)}`,
+      ]
+    : [];
+  runTextCommand("codesign", [
+    "--verify",
+    "--deep",
+    "--strict",
+    "--verbose=4",
+    ...identityRequirement,
+    appBundlePath,
+  ]);
 }
 
 function computeSha512Base64(filePath: string): Promise<string> {
@@ -216,8 +240,7 @@ export async function finalizeMacUpdateZip(
   const appBundleName = basename(appBundlePath);
   const appBundleParent = dirname(appBundlePath);
 
-  verifyMacAppSignature(appBundlePath, options.signed);
-
+  verifyMacAppSignature(appBundlePath, options.signed, options.expectedBundleIdentifier);
   const hasSourceSignature = existsSync(
     join(appBundlePath, "Contents", "_CodeSignature", "CodeResources"),
   );
@@ -253,7 +276,7 @@ export async function finalizeMacUpdateZip(
   try {
     runTextCommand("ditto", ["-x", "-k", zipPath, extractedZipRoot], { verbose });
     const extractedApp = join(extractedZipRoot, zippedAppBundleName);
-    verifyMacAppSignature(extractedApp, options.signed);
+    verifyMacAppSignature(extractedApp, options.signed, options.expectedBundleIdentifier);
     if (hasSourceSignature) {
       await assertSignedZipMatchesSource(appBundlePath, extractedApp);
     }
@@ -268,7 +291,9 @@ export async function finalizeMacUpdateZip(
   const sha512 = await computeSha512Base64(zipPath);
 
   const updatedManifestPaths: string[] = [];
-  for (const manifestName of resolveMacUpdateManifestFileNames(distEntries)) {
+  for (const manifestName of resolveMacUpdateManifestFileNames(distEntries, {
+    required: options.requireUpdateManifest ?? true,
+  })) {
     const manifestPath = join(options.stageDistDir, manifestName);
     const manifest = readFileSync(manifestPath, "utf8");
     const nextManifest = updateMacUpdateManifestZipEntry(manifest, zipFileName, {

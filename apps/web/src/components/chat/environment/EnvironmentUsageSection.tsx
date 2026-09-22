@@ -85,7 +85,7 @@ export function EnvironmentUsageSection({
             trailing={
               <span className="flex items-center gap-1.5">
                 {summary.rows.length > 0 ? (
-                  <span className="flex flex-col items-end gap-0.5 text-[length:var(--app-font-size-chat-meta,10px)] leading-none">
+                  <span className="flex flex-col items-end gap-0.5 text-chat-meta leading-none">
                     {summary.rows.map((row) => (
                       <span key={row.id} className="flex items-baseline gap-1.5">
                         <span className="text-[var(--color-text-foreground-secondary)]">
@@ -98,7 +98,7 @@ export function EnvironmentUsageSection({
                     ))}
                   </span>
                 ) : (
-                  <span className="text-[length:var(--app-font-size-chat-meta,10px)] text-[var(--color-text-foreground-secondary)]">
+                  <span className="text-chat-meta text-[var(--color-text-foreground-secondary)]">
                     {summary.statusLabel}
                   </span>
                 )}

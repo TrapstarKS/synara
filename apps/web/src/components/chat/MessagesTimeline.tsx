@@ -104,6 +104,8 @@ import {
 import {
   canSubmitUserMessageEdit,
   capOpenWorkEntryRenderChunks,
+  isFoldedWorkEntryChunk,
+  resolveWorkEntryChunkFold,
   chunkCollapsedTurnItems,
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
@@ -269,7 +271,7 @@ function UserDispatchModeChip({
   return (
     <div
       className={cn(
-        "inline-flex items-center gap-1.5 self-end px-0 text-[11px] font-normal tracking-[0.01em] text-muted-foreground/78",
+        "inline-flex items-center gap-1.5 self-end px-0 text-ui-sm font-normal tracking-[0.01em] text-muted-foreground/78",
         hasLeadingMedia ? "mb-3" : "mb-1.5",
       )}
     >
@@ -332,7 +334,7 @@ function WorktreeSetupCard({
         <WorktreeIcon className="size-3.5 shrink-0 text-[var(--color-text-foreground-tertiary)]" />
         <span
           ref={syncAnimationsToTimelineOrigin}
-          className="shimmer text-[13px] font-medium text-[var(--color-text-foreground-secondary)]"
+          className="shimmer text-ui-lg font-medium text-[var(--color-text-foreground-secondary)]"
         >
           Preparing worktree...
         </span>
@@ -358,7 +360,7 @@ function WorktreeSetupCard({
               </span>
               <span
                 className={cn(
-                  "text-[13px] leading-5",
+                  "text-ui-lg leading-5",
                   step.status === "active" || step.status === "done"
                     ? "text-[var(--color-text-foreground)]"
                     : step.status === "error"
@@ -456,6 +458,10 @@ interface MessagesTimelineProps {
   onOpenThread?: (threadId: ThreadId) => void;
   /** Open an automation's detail page from a "created automation" transcript card. */
   onOpenAutomation?: (automationId: string) => void;
+  /** Whether the composer currently has computer control on; flips denial cards to their confirmed state. */
+  computerControlEnabled?: boolean;
+  /** Switch computer control on from a "computer control denied" transcript card. */
+  onEnableComputerControl?: () => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onUndoTurnFiles?: (turnCounts: readonly number[]) => void;
@@ -546,6 +552,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   onOpenThread,
   onOpenAutomation,
+  computerControlEnabled,
+  onEnableComputerControl,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
   onUndoTurnFiles,
@@ -1421,6 +1429,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               timestampFormat={timestampFormat}
               {...(onOpenAgentActivity ? { onOpenAgentActivity } : {})}
               {...(onOpenAutomation ? { onOpenAutomation } : {})}
+              {...(computerControlEnabled !== undefined ? { computerControlEnabled } : {})}
+              {...(onEnableComputerControl ? { onEnableComputerControl } : {})}
             />
           );
           const isLiveGroup =
@@ -1433,27 +1443,32 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             expanded: isExpanded,
             maxVisibleEntries: MAX_VISIBLE_WORK_LOG_ENTRIES,
             keep: "last",
+            // The capability-denied card carries the only affordance to unblock
+            // the agent, so it must never disappear behind the "Show more" cap.
+            shouldCapEntry: (workEntry) =>
+              !workEntry.computerControlDenied && !workEntry.computerSetupRequired,
           });
           const renderChunks = cappedRenderPlan.chunks;
-          const hasCollapsedChunk = renderChunks.some((chunk) => chunk.summary !== null);
+          const hasCollapsedChunk = renderChunks.some(isFoldedWorkEntryChunk);
           if (hasCollapsedChunk) {
             return (
               <div>
                 <div className="space-y-0.5">
                   {renderChunks.map((chunk) => {
-                    if (!chunk.summary) return chunk.entries.map(renderEntryRow);
-                    const summary = chunk.summary;
-                    const summaryKey = `${groupId}:${chunk.id}`;
+                    const fold = resolveWorkEntryChunkFold(chunk);
+                    if (!fold) return chunk.entries.map(renderEntryRow);
+                    const summaryKey = `${groupId}:${chunk.id}${fold.keySuffix}`;
                     return (
                       <ToolCallGroupSummaryRow
-                        key={`tool-summary:${summaryKey}`}
-                        summary={summary}
+                        key={`tool-summary:${groupId}:${chunk.id}`}
+                        summary={fold.summary}
+                        liveEntry={chunk.liveEntry}
                         open={toolGroupSummaryOverrides[summaryKey] ?? false}
                         onToggle={(open) => setToolGroupSummaryOpen(summaryKey, open)}
                         fontSizePx={normalizedChatFontSizePx}
                         renderChildren={() => (
                           <div className="space-y-0.5 pt-0.5">
-                            {chunk.entries.map(renderEntryRow)}
+                            {fold.entries.map(renderEntryRow)}
                           </div>
                         )}
                       />
@@ -1918,8 +1933,27 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               ),
             ).values(),
           ];
+          // Computer setup/denied cards carry the only affordance to unblock the
+          // agent, so a settled turn shows the latest of each after the answer
+          // instead of burying it inside the closed "Worked for" disclosure.
+          const collapsedComputerActionEntries = [
+            ...new Map(
+              (row.collapsedTurnItems ?? []).flatMap((item) =>
+                item.kind === "work" &&
+                (item.entry.computerSetupRequired || item.entry.computerControlDenied)
+                  ? [[item.entry.computerSetupRequired ? "setup" : "denied", item.entry] as const]
+                  : [],
+              ),
+            ).values(),
+          ];
           const collapsedTurnItems = row.collapsedTurnItems?.filter(
-            (item) => item.kind !== "work" || !item.entry.synaraThreadCreation,
+            (item) =>
+              item.kind !== "work" ||
+              !(
+                item.entry.synaraThreadCreation ||
+                item.entry.computerSetupRequired ||
+                item.entry.computerControlDenied
+              ),
           );
           const hasCollapsedWork = Boolean(collapsedTurnItems && collapsedTurnItems.length > 0);
           const isCollapsedWorkExpanded = hasCollapsedWork
@@ -1947,6 +1981,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 timestampFormat={timestampFormat}
                 {...(onOpenAgentActivity ? { onOpenAgentActivity } : {})}
                 {...(onOpenAutomation ? { onOpenAutomation } : {})}
+                {...(computerControlEnabled !== undefined ? { computerControlEnabled } : {})}
+                {...(onEnableComputerControl ? { onEnableComputerControl } : {})}
                 {...(turnSummary?.turnId ? { turnId: turnSummary.turnId } : {})}
               />
             );
@@ -1969,7 +2005,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               shouldCapEntry: (workEntry) => workEntry.tone === "tool",
             });
             const renderChunks = cappedRenderPlan.chunks;
-            const collapseAsSummary = renderChunks.some((chunk) => chunk.summary !== null);
+            const collapseAsSummary = renderChunks.some(isFoldedWorkEntryChunk);
             return (
               <>
                 {!hasCollapsedWork &&
@@ -1978,26 +2014,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     <div className={placement === "leading" ? "mb-1.5" : "mt-1.5"}>
                       <div className="space-y-px">
                         {renderChunks.map((chunk) => {
-                          if (!chunk.summary) {
+                          const fold = resolveWorkEntryChunkFold(chunk);
+                          if (!fold) {
                             // Narration-tone entries render in the status block
                             // below; here they only serve as run boundaries.
                             return chunk.entries
                               .filter((workEntry) => workEntry.tone === "tool")
                               .map(renderInlineToolRow);
                           }
-                          const summary = chunk.summary;
                           // Message ids stay stable while a live group's first-entry id can drift.
-                          const summaryOverrideKey = `${placement}:${row.message.id}:${chunk.id}`;
+                          const summaryRowKey = `${placement}:${row.message.id}:${chunk.id}`;
+                          const summaryOverrideKey = `${summaryRowKey}${fold.keySuffix}`;
                           return (
                             <ToolCallGroupSummaryRow
-                              key={`inline-tool-summary:${summaryOverrideKey}`}
-                              summary={summary}
+                              key={`inline-tool-summary:${summaryRowKey}`}
+                              summary={fold.summary}
+                              liveEntry={chunk.liveEntry}
                               open={toolGroupSummaryOverrides[summaryOverrideKey] ?? false}
                               onToggle={(open) => setToolGroupSummaryOpen(summaryOverrideKey, open)}
                               fontSizePx={normalizedChatFontSizePx}
                               renderChildren={() => (
                                 <div className="space-y-px pt-0.5">
-                                  {chunk.entries.map(renderInlineToolRow)}
+                                  {fold.entries.map(renderInlineToolRow)}
                                 </div>
                               )}
                             />
@@ -2073,6 +2111,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                         timestampFormat={timestampFormat}
                         {...(onOpenAgentActivity ? { onOpenAgentActivity } : {})}
                         {...(onOpenAutomation ? { onOpenAutomation } : {})}
+                        {...(computerControlEnabled !== undefined
+                          ? { computerControlEnabled }
+                          : {})}
+                        {...(onEnableComputerControl ? { onEnableComputerControl } : {})}
                       />
                     ))}
                   </div>
@@ -2093,6 +2135,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 timestampFormat={timestampFormat}
                 {...(onOpenAgentActivity ? { onOpenAgentActivity } : {})}
                 {...(onOpenAutomation ? { onOpenAutomation } : {})}
+                {...(computerControlEnabled !== undefined ? { computerControlEnabled } : {})}
+                {...(onEnableComputerControl ? { onEnableComputerControl } : {})}
               />
             ) : (
               <div
@@ -2210,8 +2254,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               )}
               <div className="group min-w-0 py-0.5">
                 {renderWorkDisplay(leadingWorkDisplay, "leading")}
-                {messageText !== null &&
-                (row.message.text.length > 0 || !row.message.asyncUserInput) ? (
+                {!row.message.asyncUserInput && messageText !== null ? (
                   <div
                     data-assistant-message-id={row.message.id}
                     data-chat-find-document-id={row.message.id}
@@ -2262,6 +2305,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     ))}
                   </div>
                 )}
+                {collapsedComputerActionEntries.map((workEntry) => (
+                  <div key={`computer-action:${row.message.id}:${workEntry.id}`} className="mt-2">
+                    <TimelineWorkEntryRow
+                      workEntry={workEntry}
+                      chatMetaFontSizePx={appTypographyScale.chatMetaPx}
+                      textFontSizePx={normalizedChatFontSizePx}
+                      density="compact"
+                      markdownCwd={markdownCwd}
+                      onImageExpand={onImageExpand}
+                      timestampFormat={timestampFormat}
+                      {...(computerControlEnabled !== undefined ? { computerControlEnabled } : {})}
+                      {...(onEnableComputerControl ? { onEnableComputerControl } : {})}
+                    />
+                  </div>
+                ))}
                 {!row.assistantTurnInProgress && row.showAssistantCopyButton
                   ? synaraThreadCreationRecaps.map((creation) => (
                       <div key={creation.operationId} className="mt-2 mb-4">
@@ -2580,7 +2638,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-muted-foreground/30">
+        <p className="text-ui leading-snug text-muted-foreground/30">
           Send a message to start the conversation.
         </p>
       </div>

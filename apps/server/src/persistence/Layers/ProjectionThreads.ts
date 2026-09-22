@@ -15,6 +15,7 @@ import {
 import {
   ModelSelection,
   OrchestrationThreadPullRequest,
+  PendingClaudeCacheReview,
   ThreadPinnedMessages,
   ThreadHandoff,
   ThreadGoalAchievements,
@@ -32,6 +33,9 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     createBranchFlowCompleted: SqliteBoolean,
     isPinned: SqliteBoolean,
     handoff: Schema.NullOr(Schema.fromJsonString(ThreadHandoff)),
+    claudeCacheReview: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(PendingClaudeCacheReview)),
+    ),
     lastKnownPr: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadPullRequest)),
     pinnedMessages: Schema.NullOr(Schema.fromJsonString(ThreadPinnedMessages)),
     goalAchievements: Schema.optional(
@@ -81,6 +85,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           last_known_pr_json,
           latest_turn_id,
           handoff_json,
+          claude_cache_review_json,
           pinned_messages_json,
           notes,
           goal,
@@ -88,6 +93,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           goal_paused_at,
           goal_achievements_json,
           latest_user_message_at,
+          latest_human_message_at,
           pending_approval_count,
           pending_user_input_count,
           has_actionable_proposed_plan,
@@ -129,6 +135,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.lastKnownPr === null ? null : JSON.stringify(row.lastKnownPr)},
           ${row.latestTurnId},
           ${row.handoff === null ? null : JSON.stringify(row.handoff)},
+          ${row.claudeCacheReview == null ? null : JSON.stringify(row.claudeCacheReview)},
           ${row.pinnedMessages === null ? null : JSON.stringify(row.pinnedMessages)},
           ${row.notes},
           ${row.goal},
@@ -136,6 +143,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.goalPausedAt ?? null},
           ${row.goalAchievements == null ? null : JSON.stringify(row.goalAchievements)},
           ${row.latestUserMessageAt},
+          ${row.latestHumanMessageAt ?? null},
           ${row.pendingApprovalCount},
           ${row.pendingUserInputCount},
           ${row.hasActionableProposedPlan},
@@ -177,6 +185,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           last_known_pr_json = excluded.last_known_pr_json,
           latest_turn_id = excluded.latest_turn_id,
           handoff_json = excluded.handoff_json,
+          claude_cache_review_json = CASE
+            WHEN ${row.claudeCacheReview === undefined ? 1 : 0} = 1
+              THEN projection_threads.claude_cache_review_json
+            ELSE excluded.claude_cache_review_json
+          END,
           pinned_messages_json = excluded.pinned_messages_json,
           notes = excluded.notes,
           goal = excluded.goal,
@@ -184,6 +197,10 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           goal_paused_at = excluded.goal_paused_at,
           goal_achievements_json = excluded.goal_achievements_json,
           latest_user_message_at = excluded.latest_user_message_at,
+          latest_human_message_at = CASE
+            WHEN ${row.latestHumanMessageAt === undefined ? 1 : 0} = 1 THEN projection_threads.latest_human_message_at
+            ELSE excluded.latest_human_message_at
+          END,
           pending_approval_count = excluded.pending_approval_count,
           pending_user_input_count = excluded.pending_user_input_count,
           has_actionable_proposed_plan = excluded.has_actionable_proposed_plan,
@@ -232,6 +249,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           last_known_pr_json AS "lastKnownPr",
           latest_turn_id AS "latestTurnId",
           handoff_json AS "handoff",
+          claude_cache_review_json AS "claudeCacheReview",
           pinned_messages_json AS "pinnedMessages",
           notes,
           goal,
@@ -239,6 +257,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           goal_paused_at AS "goalPausedAt",
           goal_achievements_json AS "goalAchievements",
           latest_user_message_at AS "latestUserMessageAt",
+          latest_human_message_at AS "latestHumanMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
@@ -289,6 +308,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           last_known_pr_json AS "lastKnownPr",
           latest_turn_id AS "latestTurnId",
           handoff_json AS "handoff",
+          claude_cache_review_json AS "claudeCacheReview",
           pinned_messages_json AS "pinnedMessages",
           notes,
           goal,
@@ -296,6 +316,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           goal_paused_at AS "goalPausedAt",
           goal_achievements_json AS "goalAchievements",
           latest_user_message_at AS "latestUserMessageAt",
+          latest_human_message_at AS "latestHumanMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",

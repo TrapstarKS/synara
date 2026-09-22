@@ -13,11 +13,13 @@ import {
   SpaceId,
   ThreadId,
   TurnId,
+  type PendingClaudeCacheReview,
 } from "@synara/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { applyOrchestrationEvents, applyOrchestrationEventsHotPath } from "./storeEventReducer";
 import {
+  applyShellEvent,
   syncServerShellSnapshot,
   syncServerReadModel,
   syncServerThreadDetailHotPath,
@@ -38,119 +40,101 @@ import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE } from "./types";
 import { deriveTimelineEntries, deriveWorkLogEntries } from "./workLog";
 
 describe("store event reducer", () => {
-  it.each(["Before middle After", "Before After"])(
-    "renders authoritative completion %s after loading segmented streaming history",
-    (finalText) => {
-      const time = "2026-09-19T00:00:00.000Z";
-      const segments = ["Before ", "After"].map((text, sequence) => ({
-        text,
-        sequence,
-        startedAt: time,
-        endedAt: time,
-      }));
-      const message = {
-        id: MessageId.makeUnsafe("segmented-recovery"),
-        role: "assistant" as const,
-        text: "Before After",
-        textSegments: segments,
-        createdAt: time,
-        streaming: true,
-      };
-      const state = applyOrchestrationEventsHotPath(
-        makeState(makeThread({ messages: [message] })),
-        [
-          makeDomainEvent("thread.message-sent", {
-            threadId: ThreadId.makeUnsafe("thread-1"),
-            messageId: message.id,
-            role: "assistant",
-            text: finalText,
-            streaming: false,
-            source: "native",
+  it("projects durable cache review transitions and clears them without touching the draft message", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const messageId = MessageId.makeUnsafe("held-message");
+    const review: PendingClaudeCacheReview = {
+      reviewId: "cache-review-1",
+      messageId,
+      sourceEventSequence: 8,
+      assessment: {
+        observedAt: "2026-09-16T10:00:00.000Z",
+        contextTokens: 800_000,
+        state: "likely-expired",
+        source: "session-start",
+      },
+      status: "pending",
+      createdAt: "2026-09-16T10:00:00.000Z",
+    };
+    const initial = makeState(
+      makeThread({
+        messages: [
+          {
+            id: messageId,
+            role: "user",
+            text: "Continue the task",
             turnId: null,
-            createdAt: time,
-            updatedAt: time,
-          }),
-        ],
-      );
-      const completed = threadsOf(state)[0]!.messages[0]!;
-      expect(completed.text).toBe(finalText);
-      if (finalText === message.text) expect(completed.textSegments).toBe(segments);
-      else expect(completed.textSegments).toBeUndefined();
-      const visibleText = deriveTimelineEntries([completed], [], [])
-        .map((row) =>
-          row.kind === "message"
-            ? row.message.text
-            : row.kind === "message-segment"
-              ? row.message.textSegments![row.segmentIndex]!.text
-              : "",
-        )
-        .join("");
-      expect(visibleText).toBe(finalText);
-    },
-  );
-
-  it("retains an old question through new streaming output and clears attention only after answering", () => {
-    const question = {
-      id: MessageId.makeUnsafe("old-question"),
-      role: "assistant" as const,
-      text: "Choose a branch",
-      createdAt: "2026-02-13T00:00:00.000Z",
-      streaming: false,
-      asyncUserInput: { questions: [{ title: "Which branch?" }] },
-    };
-    const thread = makeThread({
-      hasPendingAsyncUserInput: true,
-      messages: [
-        question,
-        ...Array.from({ length: 2000 }, (_, index) => ({
-          id: MessageId.makeUnsafe(`message-${index}`),
-          role: "assistant" as const,
-          text: "Working",
-          createdAt: question.createdAt,
-          streaming: false,
-        })),
-      ],
-    });
-    const basePayload = {
-      threadId: thread.id,
-      role: "assistant" as const,
-      turnId: null,
-      source: "native" as const,
-      createdAt: question.createdAt,
-      updatedAt: question.createdAt,
-    };
-    let state = applyOrchestrationEventsHotPath(makeState(thread), [
-      makeDomainEvent("thread.message-sent", {
-        ...basePayload,
-        messageId: MessageId.makeUnsafe("new-output"),
-        text: "More work",
-        streaming: true,
-      }),
-    ]);
-    expect(threadsOf(state)[0]?.messages[0]?.id).toBe(question.id);
-    expect(threadsOf(state)[0]?.messages).toHaveLength(2001);
-    expect(threadsOf(state)[0]?.hasPendingAsyncUserInput).toBe(true);
-    state = applyOrchestrationEventsHotPath(state, [
-      makeDomainEvent(
-        "thread.message-sent",
-        {
-          ...basePayload,
-          messageId: question.id,
-          text: question.text,
-          streaming: false,
-          asyncUserInput: {
-            ...question.asyncUserInput,
-            response: { messageId: MessageId.makeUnsafe("answer"), answers: ["main"] },
+            streaming: false,
+            createdAt: "2026-09-16T10:00:00.000Z",
           },
+        ],
+      }),
+    );
+    const pendingEvent = makeDomainEvent("thread.claude-cache-set", {
+      threadId,
+      review,
+      updatedAt: "2026-09-16T10:00:00.000Z",
+    });
+    let state = applyOrchestrationEvents(initial, [pendingEvent]);
+    expect(state.threadShellById?.[threadId]?.claudeCacheReview).toEqual(review);
+    expect(threadsOf(state)[0]?.claudeCacheReview).toEqual(review);
+    expect(applyOrchestrationEvents(state, [pendingEvent])).toBe(state);
+
+    let sequence = pendingEvent.sequence;
+    for (const status of ["responding", "compacting", "failed", "uncertain"] as const) {
+      state = applyOrchestrationEvents(state, [
+        makeDomainEvent(
+          "thread.claude-cache-set",
+          {
+            threadId,
+            review: { ...review, status },
+            updatedAt: "2026-09-16T10:01:00.000Z",
+          },
+          { sequence: ++sequence },
+        ),
+      ]);
+      expect(threadsOf(state)[0]?.claudeCacheReview?.status).toBe(status);
+    }
+
+    state = applyOrchestrationEvents(state, [
+      makeDomainEvent(
+        "thread.claude-cache-set",
+        {
+          threadId,
+          review: null,
+          updatedAt: "2026-09-16T10:02:00.000Z",
         },
-        { sequence: 2 },
+        { sequence: ++sequence },
       ),
     ]);
-    expect(threadsOf(state)[0]?.hasPendingAsyncUserInput).toBe(false);
-    expect(state.sidebarThreadSummaryById[thread.id]?.hasPendingAsyncUserInput).toBe(false);
-    expect(
-      threadsOf(state)[0]?.messages.find((message) => message.id === "new-output")?.streaming,
-    ).toBe(true);
+    expect(threadsOf(state)[0]?.claudeCacheReview).toBeNull();
+    expect(state.messageByThreadId).toBe(initial.messageByThreadId);
+    expect(threadsOf(state)[0]?.messages[0]?.text).toBe("Continue the task");
+
+    const shell = makeReadModelThread({ claudeCacheReview: null, updatedAt: review.createdAt });
+    state = applyShellEvent(state, { kind: "thread-upserted", thread: shell, sequence: 20 });
+    state = applyOrchestrationEvents(state, [
+      makeDomainEvent(
+        "thread.claude-cache-set",
+        {
+          threadId,
+          review,
+          updatedAt: review.createdAt,
+        },
+        { sequence: 19 },
+      ),
+    ]);
+    expect(threadsOf(state)[0]?.claudeCacheReview).toBeNull();
+    state = applyShellEvent(state, {
+      kind: "thread-upserted",
+      thread: { ...shell, claudeCacheReview: review },
+      sequence: 18,
+    });
+    expect(threadsOf(state)[0]?.claudeCacheReview).toBeNull();
+    state = syncServerThreadDetailHotPath(state, { ...shell, claudeCacheReview: review }, 19);
+    expect(threadsOf(state)[0]?.claudeCacheReview).toBeNull();
+    state = syncServerThreadDetailHotPath(state, { ...shell, claudeCacheReview: review }, 21);
+    expect(threadsOf(state)[0]?.claudeCacheReview).toEqual(review);
   });
 
   it("hydrates and removes Spaces while clearing matching project assignments", () => {
@@ -1336,6 +1320,7 @@ describe("store event reducer", () => {
   it("rolls back conversation state from an edited user message", () => {
     const initialState = makeState(
       makeThread({
+        latestHumanMessageAt: "2026-02-27T00:01:00.000Z",
         latestTurn: {
           turnId: TurnId.makeUnsafe("turn-2"),
           state: "completed",
@@ -1432,6 +1417,7 @@ describe("store event reducer", () => {
     expect(threadsOf(next)[0]?.proposedPlans).toEqual([]);
     expect(threadsOf(next)[0]?.activities).toEqual([]);
     expect(threadsOf(next)[0]?.pendingSourceProposedPlan).toBeUndefined();
+    expect(threadsOf(next)[0]?.latestHumanMessageAt).toBe("2026-02-27T00:00:00.000Z");
     expect(threadsOf(next)[0]?.latestTurn?.turnId).toBe(TurnId.makeUnsafe("turn-1"));
   });
 

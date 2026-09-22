@@ -157,6 +157,8 @@ for this optimization.
   - Clean-release publication fails closed if either the default Latest manifests or the dedicated `synara` aliases are missing.
 - Production desktop builds omit web/server/desktop source maps by default to keep update payloads small. Set `SYNARA_WEB_SOURCEMAP=1`, `SYNARA_SERVER_SOURCEMAP=1`, or `SYNARA_DESKTOP_SOURCEMAP=1` only for a diagnostic release that needs them.
 - macOS metadata note:
+  - Installed macOS apps persist alternate icon choices using `NSWorkspace` custom-icon metadata, and reapply the saved choice on launch after an update. Default removes the override so the bundled icon follows system appearance. This requires a writable app bundle; development Electron bundles are not customized.
+  - Custom icons leave signed `Contents` unchanged, but add Finder metadata that `codesign --verify --strict` rejects on a customized installation. Validate pristine distribution artifacts with the strict checks below. A local notarized app copy retained normal signature verification and Gatekeeper acceptance after customization; signed release/update testing must still cover this path.
   - The build initially emits `latest-mac.yml` for both Intel and Apple Silicon.
   - The workflow merges the per-arch macOS metadata, then keeps the merged manifest as `latest-mac.yml` and copies it to `synara-mac.yml` for stable releases.
   - The desktop build script reuses the builder's `.zip` when its Electron framework symlinks are intact and both the original and extracted app signatures are valid. Matching the resource seal, signed executable, and plist also rejects a validly signed ZIP from another build. It patches the matching `latest-mac*.yml` hash/size and removes `.zip.blockmap` to retain full-archive updates. Legacy ZIPs with missing or flattened framework symlinks are rebuilt with `ditto` and pass the same checks. Unsealed build-only apps retain the previous rebuild-from-source behavior. Archive read/extraction errors and invalid or mismatched signatures otherwise fail the build.
@@ -210,6 +212,59 @@ or npm package, expose a public updater feed, or make a version-bump commit.
 5. Download the workflow artifacts and sanity-check installation on each OS.
 
 To publish, select the exact release tag for the dispatch and pass `publish_release=true`. This is intentionally opt-in.
+
+### macOS release toolchains
+
+Both native macOS release runners use macOS 15. Native helpers and the pinned
+Cua apple-metal bridge build with Xcode 16.4's macOS 15 SDK. A separate macOS 26
+job compiles the architecture-independent Icon Composer catalog with Xcode 26.3
+from the same release checkout and passes it through a required workflow artifact.
+`SYNARA_MAC_ICON_CATALOG` points packaging at that catalog; a missing file fails
+the build. This avoids Apple's AssetRuntime framework crash on macOS 15 without
+changing the native SDK. Local builds without that variable compile icons with
+the selected Xcode on the local host.
+
+An older `actool` can exit successfully without creating `Assets.car`; that is a
+packaging failure, not permission to silently omit the Liquid Glass icon.
+
+### Linux native build dependencies
+
+The release job installs the Cua driver's OpenSSL, X11, XCB, xkbcommon and
+Wayland development libraries before provisioning. This matches the build
+prerequisites in `cua-linux-check.yml`; it does not qualify Linux Computer Use
+as a supported 0.9.0 feature.
+
+### Local DMG appearance validation
+
+On an Apple Silicon Mac, build the DMG and macOS update ZIP in `release/` with:
+
+```bash
+SYNARA_DESKTOP_UPDATE_REPOSITORY=Emanuele-web04/synara bun run dist:desktop:dmg:arm64
+```
+
+Use `dist:desktop:dmg:x64` on Intel. The updater repository setting is needed for
+ZIP manifest finalization outside GitHub Actions. The build passes
+`--publish never` to electron-builder and defaults to unsigned; release signing,
+notarization, and updater settings remain controlled by the existing release flow.
+
+The Dmgly layout lives in `scripts/lib/desktop-platform-build-config.ts` and uses
+`apps/desktop/resources/dmgly/assets/dmg-background.png`. The packaging script
+copies this resources directory into its staging app, keeping the background path
+valid there. `scripts/lib/desktop-runtime-resources.ts` excludes the `dmgly`
+directory from the runtime resource copy on every platform, so installer artwork
+and the reference icon stay out of the installed app and update ZIP. The supplied
+642×406 PNG is a 1× background with its text and arrow
+already baked in. Do not add duplicate text or arrows. It has no baked label
+backgrounds. The exported `app-icon.png` is retained alongside it as a reference;
+the app continues to use the existing production ICNS generation pipeline.
+
+Mount the resulting DMG in Finder and check the 642×406 window, 128px icons,
+and icon centers at (172, 135) for `Synara.app` and (514, 241) for `Applications`.
+Verify both real filename labels remain readable and unclipped. Finder renders
+the app icon and Applications link, so their appearance can differ from Dmgly's
+preview; Retina displays also scale the supplied 1× background. Local Finder
+preferences can override the DMG's saved hidden path/status bars, reducing the
+visible background and requiring scrolling to reveal the Applications label.
 
 ## 2) Apple signing + notarization setup (macOS)
 

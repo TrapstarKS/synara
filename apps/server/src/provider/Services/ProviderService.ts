@@ -13,6 +13,7 @@
  */
 import type {
   ProviderAddMcpServerInput,
+  ClaudeCacheObservation,
   ProviderBackgroundTaskInput,
   ProviderForkThreadInput,
   ProviderForkThreadResult,
@@ -22,6 +23,8 @@ import type {
   ProviderListMcpServersResult,
   ProviderMcpServerActionInput,
   ProviderMcpServerActionResult,
+  ModelSelection,
+  RuntimeMode,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
@@ -30,6 +33,7 @@ import type {
   ProviderSteerTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderStartOptions,
   ProviderSteerSubagentInput,
   ProviderStopSessionInput,
   ProviderStopTaskInput,
@@ -78,6 +82,13 @@ export interface ProviderSessionStartOutcomeOptions {
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
 export interface ProviderServiceShape {
+  readonly startClaudeCompaction?: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+  readonly getClaudeCacheObservation?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ClaudeCacheObservation | undefined, ProviderServiceError>;
   /**
    * Start a provider session.
    */
@@ -131,6 +142,18 @@ export interface ProviderServiceShape {
   readonly forkThread?: (
     input: ProviderForkThreadInput,
   ) => Effect.Effect<ProviderForkThreadResult | null, ProviderServiceError>;
+
+  /** Copy an external native conversation without ever resuming the original. */
+  readonly importExternalThread?: (input: {
+    readonly threadId: ThreadId;
+    readonly provider: "codex" | "claudeAgent";
+    readonly externalThreadId: string;
+    readonly sourceCwd: string;
+    readonly cwd?: string;
+    readonly modelSelection: ModelSelection;
+    readonly providerOptions?: ProviderStartOptions;
+    readonly runtimeMode: RuntimeMode;
+  }) => Effect.Effect<ProviderForkThreadResult, ProviderServiceError>;
 
   /**
    * Interrupt a running provider turn.

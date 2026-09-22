@@ -14,6 +14,7 @@ import {
   TurnId,
 } from "./baseSchemas";
 import { ProviderKind } from "./orchestration";
+import { ClaudeCacheObservation } from "./claudeCache";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -149,6 +150,7 @@ export const CanonicalRequestType = Schema.Literals([
   "apply_patch_approval",
   "exec_command_approval",
   "tool_user_input",
+  "tool_approval",
   "dynamic_tool_call",
   "auth_tokens_refresh",
   "unknown",
@@ -325,6 +327,7 @@ const ThreadMetadataUpdatedPayload = Schema.Struct({
 export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.Type;
 
 export const ThreadTokenUsageSnapshot = Schema.Struct({
+  claudeCache: Schema.optional(ClaudeCacheObservation),
   // Provider session totals, distinct from the latest request/context snapshot.
   cumulativeUsage: Schema.optional(
     Schema.Struct({
@@ -395,6 +398,8 @@ export type TurnStartedPayload = typeof TurnStartedPayload.Type;
 
 const TurnCompletedPayload = Schema.Struct({
   state: RuntimeTurnState,
+  // Present only for an explicitly requested native compaction operation.
+  contextCompacted: Schema.optional(Schema.Boolean),
   stopReason: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   usage: Schema.optional(Schema.Unknown),
   modelUsage: Schema.optional(UnknownRecordSchema),

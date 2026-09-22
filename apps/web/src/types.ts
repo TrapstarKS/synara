@@ -12,6 +12,7 @@ import type {
   OrchestrationThreadPullRequest,
   OrchestrationProposedPlanId,
   PinnedMessage,
+  PendingClaudeCacheReview,
   ThreadGoalAchievement,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
@@ -122,6 +123,7 @@ export interface ChatMessage {
   startsNewTurn?: boolean;
   turnId?: TurnId | null;
   createdAt: string;
+  updatedAt?: string;
   completedAt?: string | undefined;
   streaming: boolean;
   source?: OrchestrationMessageSource;
@@ -270,8 +272,12 @@ export interface Thread extends ThreadWorkspaceState {
   sidechatLastActivityAt?: string | null;
   sidechatExpiredAt?: string | null;
   handoff?: ThreadHandoff | null;
+  claudeCacheReview?: PendingClaudeCacheReview | null;
+  /** Client projection cursor shared by shell and detail cache-review updates. */
+  claudeCacheReviewSequence?: number;
   lastKnownPr?: OrchestrationThreadPullRequest | null;
   latestUserMessageAt?: string | null;
+  latestHumanMessageAt?: string | null;
   hasPendingApprovals?: boolean;
   hasPendingUserInput?: boolean;
   hasPendingAsyncUserInput?: boolean;
@@ -317,8 +323,11 @@ export interface ThreadShell extends ThreadWorkspaceState {
   sidechatLastActivityAt?: string | null;
   sidechatExpiredAt?: string | null;
   handoff?: ThreadHandoff | null;
+  claudeCacheReview?: PendingClaudeCacheReview | null;
+  claudeCacheReviewSequence?: number;
   lastKnownPr?: OrchestrationThreadPullRequest | null;
   latestUserMessageAt?: string | null;
+  latestHumanMessageAt?: string | null;
   hasPendingApprovals?: boolean;
   hasPendingUserInput?: boolean;
   hasPendingAsyncUserInput?: boolean;
@@ -359,6 +368,7 @@ export interface SidebarThreadSummary {
   subagentNickname?: string | null;
   subagentRole?: string | null;
   latestUserMessageAt: string | null;
+  latestHumanMessageAt?: string | null;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
   hasPendingAsyncUserInput?: boolean;

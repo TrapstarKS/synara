@@ -3,6 +3,8 @@ import {
   encodeMessageTextFallback,
 } from "../../persistence/messageTextChunks.ts";
 import { ApprovalRequestId, CommandId, type OrchestrationEvent } from "@synara/contracts";
+import { resolveHumanMessageAt } from "@synara/shared/threadSummary";
+import { clearRemovedAsyncUserInputResponses } from "@synara/shared/asyncUserInput";
 import {
   addPinnedMessage,
   removePinnedMessage,
@@ -159,6 +161,7 @@ const PROJECT_EVENT_TYPES = new Set<OrchestrationEvent["type"]>([
 
 const THREAD_MESSAGE_PROJECTION_EVENT_TYPES = new Set<OrchestrationEvent["type"]>([
   "thread.message-sent",
+  "thread.async-user-input-answered",
   "thread.reverted",
   "thread.conversation-rolled-back",
 ]);
@@ -181,6 +184,11 @@ const THREAD_SESSION_PROJECTION_EVENT_TYPES = new Set<OrchestrationEvent["type"]
 ]);
 
 const THREAD_TURN_PROJECTION_EVENT_TYPES = new Set<OrchestrationEvent["type"]>([
+  "thread.deleted",
+  "thread.claude-cache-set",
+  "thread.archived",
+  "thread.session-stop-requested",
+  "thread.claude-cache-response-requested",
   "thread.turn-start-requested",
   "thread.session-set",
   "thread.turn-diff-completed",
@@ -228,8 +236,11 @@ const withRebuiltThreadShellSummary = Effect.fn(function* (input: {
   readonly projectionThreadProposedPlanRepository: ProjectionThreadProposedPlanRepositoryShape;
   readonly projectionPendingInteractionRepository: ProjectionPendingInteractionRepositoryShape;
 }) {
-  const [latestUserMessageAt, latestPlan, pendingCounts] = yield* Effect.all([
+  const [latestUserMessageAt, latestHumanMessageAt, latestPlan, pendingCounts] = yield* Effect.all([
     input.projectionThreadMessageRepository.getLatestUserMessageAt({
+      threadId: input.thread.threadId,
+    }),
+    input.projectionThreadMessageRepository.getLatestHumanMessageAt({
       threadId: input.thread.threadId,
     }),
     input.projectionThreadProposedPlanRepository.getLatestSummaryByThreadId({
@@ -244,6 +255,7 @@ const withRebuiltThreadShellSummary = Effect.fn(function* (input: {
   return {
     ...input.thread,
     latestUserMessageAt,
+    latestHumanMessageAt,
     pendingApprovalCount: pendingCounts.pendingApprovalCount,
     pendingUserInputCount: pendingCounts.pendingUserInputCount,
     hasActionableProposedPlan:
@@ -588,6 +600,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             goalPausedAt: null,
             goalAchievements: null,
             latestUserMessageAt: null,
+            latestHumanMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
@@ -743,6 +756,13 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             updatedAt: event.payload.updatedAt,
           }));
 
+        case "thread.claude-cache-set":
+          return yield* updateThreadProjection(event.payload.threadId, (thread) => ({
+            ...thread,
+            claudeCacheReview: event.payload.review,
+            updatedAt: event.payload.updatedAt,
+          }));
+
         case "thread.runtime-mode-set":
           return yield* updateThreadProjection(event.payload.threadId, (thread) => ({
             ...thread,
@@ -867,9 +887,14 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           if (!shouldApplyDeferredThreadShellSummary(event)) {
             return;
           }
+          const humanMessageAt = resolveHumanMessageAt(event.payload);
           return yield* updateThreadProjection(event.payload.threadId, (thread) => ({
             ...thread,
             latestUserMessageAt: maxIso(thread.latestUserMessageAt, event.payload.createdAt),
+            latestHumanMessageAt:
+              humanMessageAt === null
+                ? (thread.latestHumanMessageAt ?? null)
+                : maxIso(thread.latestHumanMessageAt ?? null, humanMessageAt),
             updatedAt: event.occurredAt,
           }));
         }
@@ -957,6 +982,23 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       switch (event.type) {
+        case "thread.async-user-input-answered": {
+          const existingMessage = yield* projectionThreadMessageRepository.getByThreadAndMessageId({
+            threadId: event.payload.threadId,
+            messageId: event.payload.messageId,
+          });
+          if (Option.isSome(existingMessage) && existingMessage.value.asyncUserInput) {
+            yield* projectionThreadMessageRepository.upsert({
+              ...existingMessage.value,
+              asyncUserInput: {
+                ...existingMessage.value.asyncUserInput,
+                response: event.payload.response,
+                responseSequence: event.sequence,
+              },
+            });
+          }
+          return;
+        }
         case "thread.message-sent": {
           if (event.payload.role === "assistant") {
             if (event.payload.streaming) {
@@ -1082,6 +1124,11 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadMessageRepository.deleteByThreadId({
             threadId: event.payload.threadId,
           });
+          keptRows = clearRemovedAsyncUserInputResponses(
+            keptRows,
+            new Set(keptRows.map((message) => message.messageId)),
+            event.sequence,
+          );
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert);
           // Reinserted retained messages must still reject deltas from before
           // this rollback, even though their chunk rows have been compacted.
@@ -1271,6 +1318,36 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       switch (event.type) {
+        case "thread.deleted":
+        case "thread.archived":
+        case "thread.session-stop-requested":
+          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+            threadId: event.payload.threadId,
+          });
+          return;
+        case "thread.claude-cache-set":
+          if (event.payload.review?.status === "compacting") {
+            yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            });
+          }
+          return;
+        case "thread.claude-cache-response-requested":
+          if (event.payload.decision === "cancel") {
+            yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            });
+          } else if (event.payload.decision === "continue") {
+            yield* projectionTurnRepository.replacePendingTurnStart({
+              threadId: event.payload.threadId,
+              messageId: event.payload.review.messageId,
+              sourceProposedPlanThreadId: event.payload.review.sourceProposedPlan?.threadId ?? null,
+              sourceProposedPlanId: event.payload.review.sourceProposedPlan?.planId ?? null,
+              requestedAt: event.payload.review.requestedAt ?? event.payload.review.createdAt,
+            });
+          }
+          return;
+
         case "thread.turn-start-requested": {
           yield* projectionTurnRepository.replacePendingTurnStart({
             threadId: event.payload.threadId,

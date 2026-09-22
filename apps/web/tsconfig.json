@@ -21,5 +21,11 @@
       }
     ]
   },
-  "include": ["src", "perf", "scripts/reactCompiler*.ts", "vite.config.ts"]
+  "include": [
+    "src",
+    "perf",
+    "scripts/production-assets*.ts",
+    "scripts/reactCompiler*.ts",
+    "vite.config.ts"
+  ]
 }

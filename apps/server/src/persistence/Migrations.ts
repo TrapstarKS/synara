@@ -129,6 +129,10 @@ import MindProjectionDecouplingMigration from "./Migrations/110_MindProjectionDe
 import PendingAsyncUserInputIndexMigration from "./Migrations/111_PendingAsyncUserInputIndex.ts";
 import ProfileStatsDeletedCostsMigration from "./Migrations/112_ProfileStatsDeletedCosts.ts";
 import ProfileStatsDeletedTokenPricingMigration from "./Migrations/113_ProfileStatsDeletedTokenPricing.ts";
+import Migration0114 from "./Migrations/114_ProjectionThreadsClaudeCacheReview.ts";
+import ProjectImportOriginsMigration from "./Migrations/115_ProjectImportOrigins.ts";
+import Migration0116 from "./Migrations/116_ProjectionThreadsHumanMessage.ts";
+import Migration0117 from "./Migrations/117_GatewayCompletions.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -258,6 +262,10 @@ export const migrationEntries = [
   [111, "PendingAsyncUserInputIndex", PendingAsyncUserInputIndexMigration],
   [112, "ProfileStatsDeletedCosts", ProfileStatsDeletedCostsMigration],
   [113, "ProfileStatsDeletedTokenPricing", ProfileStatsDeletedTokenPricingMigration],
+  [114, "ProjectionThreadsClaudeCacheReview", Migration0114],
+  [115, "ProjectImportOrigins", ProjectImportOriginsMigration],
+  [116, "ProjectionThreadsHumanMessage", Migration0116],
+  [117, "GatewayCompletions", Migration0117],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

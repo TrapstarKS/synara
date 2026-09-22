@@ -99,6 +99,7 @@ function shouldKeepBuiltInSlashCommandDespiteNativeCollision(
     command === "debug" ||
     command === "default" ||
     command === "automation" ||
+    command === "computer-use" ||
     command === "export" ||
     command === "feedback" ||
     // /fork is app-owned everywhere: it creates a Synara thread with fork
@@ -122,6 +123,7 @@ export function shouldHideProviderNativeCommandFromComposerMenu(
   const appCommandIsAvailable = options.availableAppCommands?.has(normalizedCommand) ?? true;
   return (
     normalizedCommand === "automation" ||
+    normalizedCommand === "computer-use" ||
     normalizedCommand === "debug" ||
     normalizedCommand === "default" ||
     (normalizedCommand === "export" && appCommandIsAvailable) ||
@@ -240,6 +242,12 @@ const COMPOSER_SLASH_COMMAND_DEFINITIONS: Record<
     command: "subagents",
     label: "/subagents",
     description: "Insert a prompt that asks the assistant to delegate work",
+    source: "app",
+  },
+  "computer-use": {
+    command: "computer-use",
+    label: "/computer-use",
+    description: "Use Synara Computer for this request only",
     source: "app",
   },
   fast: {
@@ -524,6 +532,7 @@ export function getAvailableComposerSlashCommands(input: {
           "status",
           ...(input.provider === "codex" ? (["mcp"] as const) : []),
           "subagents",
+          "computer-use",
           ...(input.canOfferExportCommand ? (["export"] as const) : []),
           "goal",
           "rename",
@@ -544,6 +553,7 @@ export function getAvailableComposerSlashCommands(input: {
           "goal",
           "rename",
           "debug",
+          "computer-use",
           "default",
           "feedback",
           "automation",

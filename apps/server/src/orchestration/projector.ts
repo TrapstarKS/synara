@@ -9,8 +9,11 @@ import {
   OrchestrationMessage,
   OrchestrationSession,
   OrchestrationThread,
+  ThreadAsyncUserInputAnsweredPayload,
+  ThreadClaudeCacheSetPayload,
   type OrchestrationMessageTextSegment,
 } from "@synara/contracts";
+import { clearRemovedAsyncUserInputResponses } from "@synara/shared/asyncUserInput";
 import {
   addPinnedMessage,
   removePinnedMessage,
@@ -884,6 +887,17 @@ export function projectEvent(
         })),
       );
 
+    case "thread.claude-cache-set":
+      return decodeForEvent(ThreadClaudeCacheSetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            claudeCacheReview: payload.review,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
     case "thread.turn-start-requested":
       return decodeForEvent(
         ThreadTurnStartRequestedPayload,
@@ -927,6 +941,36 @@ export function projectEvent(
                 ? { sidechatLastActivityAt: payload.createdAt }
                 : {}),
               updatedAt: payload.createdAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.async-user-input-answered":
+      return decodeForEvent(
+        ThreadAsyncUserInputAnsweredPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) return nextBase;
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              messages: thread.messages.map((message) =>
+                message.id === payload.messageId && message.asyncUserInput
+                  ? {
+                      ...message,
+                      asyncUserInput: {
+                        ...message.asyncUserInput,
+                        response: payload.response,
+                        responseSequence: event.sequence,
+                      },
+                    }
+                  : message,
+              ),
             }),
           };
         }),
@@ -1265,8 +1309,17 @@ export function projectEvent(
             .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
             .slice(-MAX_THREAD_CHECKPOINTS);
           const retainedTurnIds = new Set(checkpoints.map((checkpoint) => checkpoint.turnId));
+          const retainedMessages = retainThreadMessagesAfterRevert(
+            thread.messages,
+            retainedTurnIds,
+            payload.turnCount,
+          );
           const messages = retainMessagesWithPendingAsyncInputs(
-            retainThreadMessagesAfterRevert(thread.messages, retainedTurnIds, payload.turnCount),
+            clearRemovedAsyncUserInputResponses(
+              retainedMessages,
+              new Set(retainedMessages.map((message) => message.id)),
+              event.sequence,
+            ),
             MAX_THREAD_MESSAGES,
           );
           const proposedPlans = retainThreadProposedPlansAfterRevert(
@@ -1341,10 +1394,18 @@ export function projectEvent(
             threads: updateThread(nextBase.threads, payload.threadId, {
               checkpoints,
               messages: retainMessagesWithPendingAsyncInputs(
-                rollback.messages,
+                clearRemovedAsyncUserInputResponses(
+                  rollback.messages,
+                  new Set(rollback.messages.map((message) => message.id)),
+                  event.sequence,
+                ),
                 MAX_THREAD_MESSAGES,
               ),
-              hasPendingAsyncUserInput: rollback.messages.some(hasPendingAsyncUserInput),
+              hasPendingAsyncUserInput: clearRemovedAsyncUserInputResponses(
+                rollback.messages,
+                new Set(rollback.messages.map((message) => message.id)),
+                event.sequence,
+              ).some(hasPendingAsyncUserInput),
               proposedPlans,
               activities,
               latestTurn:
