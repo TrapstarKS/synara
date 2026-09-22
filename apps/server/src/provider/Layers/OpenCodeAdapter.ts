@@ -215,6 +215,7 @@ interface OpenCodeSessionContext extends OpenCodeMessageState<Part> {
   activeTurnEventSerial: number;
   activeTurnProviderActivitySerial: number;
   activeTurnCompletionActivitySerial: number;
+  readonly activeTurnOpenToolCallIds: Set<string>;
   activeTurnSawToolCallFinish: boolean;
   activeTurnSawFinalAssistant: boolean;
   activeTurnFinalAssistantMessageId: string | undefined;
@@ -831,6 +832,7 @@ const clearActiveTurnState = Effect.fn("clearOpenCodeActiveTurnState")(function*
   context.activeTurnEventSerial = 0;
   context.activeTurnProviderActivitySerial = 0;
   context.activeTurnCompletionActivitySerial = 0;
+  context.activeTurnOpenToolCallIds.clear();
   context.activeTurnSawToolCallFinish = false;
   context.activeTurnSawFinalAssistant = false;
   context.activeTurnFinalAssistantMessageId = undefined;
@@ -869,6 +871,27 @@ function markOpenCodeTurnCompletionActivity(
     return;
   }
   context.activeTurnCompletionActivitySerial += 1;
+}
+
+function updateOpenCodeTurnToolCall(
+  context: OpenCodeSessionContext,
+  turnId: TurnId | undefined,
+  input: { readonly callId?: string | undefined; readonly partId?: string | undefined },
+  running: boolean,
+): void {
+  if (!turnId || context.activeTurnId !== turnId) {
+    return;
+  }
+  const id = input.callId?.trim() || input.partId?.trim();
+  if (!id) {
+    return;
+  }
+  const key = input.callId?.trim() ? `call:${id}` : `part:${id}`;
+  if (running) {
+    context.activeTurnOpenToolCallIds.add(key);
+  } else {
+    context.activeTurnOpenToolCallIds.delete(key);
+  }
 }
 
 function openCodeNextTextItemId(turnId: TurnId): string {
@@ -1759,14 +1782,25 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
 
       const waitForOpenCodeTurnCompletionQuiet = Effect.fn("waitForOpenCodeTurnCompletionQuiet")(
         function* (context: OpenCodeSessionContext, turnId: TurnId, quietMs: number) {
-          let observedActivitySerial = context.activeTurnCompletionActivitySerial;
+          let observedActivitySerial = context.activeTurnProviderActivitySerial;
           while (true) {
-            yield* Effect.sleep(quietMs);
+            // OpenCode can report the parent session idle while an already-started
+            // tool (or child-session command) is still completing. Keep the terminal
+            // event pending until those calls close, then require a quiet provider
+            // window so late tool/message events stay attached to this turn.
+            const waitMs =
+              context.activeTurnOpenToolCallIds.size > 0
+                ? Math.min(quietMs, snapshotWatchdogPollMs)
+                : quietMs;
+            yield* Effect.sleep(waitMs);
             if ((yield* Ref.get(context.stopped)) || context.activeTurnId !== turnId) {
               return false;
             }
-            const currentActivitySerial = context.activeTurnCompletionActivitySerial;
-            if (currentActivitySerial === observedActivitySerial) {
+            const currentActivitySerial = context.activeTurnProviderActivitySerial;
+            if (
+              context.activeTurnOpenToolCallIds.size === 0 &&
+              currentActivitySerial === observedActivitySerial
+            ) {
               return true;
             }
             observedActivitySerial = currentActivitySerial;
@@ -1799,7 +1833,10 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             // window. Early idle with no completed part keeps the longer grace
             // period used for delayed provider recovery.
             const needsRecoveryGrace =
-              idleBeforeAssistantActivity || idleAfterToolCalls || idleBeforeFinalAssistantParts;
+              idleBeforeAssistantActivity ||
+              idleAfterToolCalls ||
+              idleBeforeFinalAssistantParts ||
+              context.activeTurnOpenToolCallIds.size > 0;
             const initialQuietMs = needsRecoveryGrace
               ? prematureIdleCompletionGraceMs
               : Math.min(prematureIdleCompletionGraceMs, 250);
@@ -2280,6 +2317,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         context.activeTurnEventSerial = 0;
         context.activeTurnProviderActivitySerial = 0;
         context.activeTurnCompletionActivitySerial = 0;
+        context.activeTurnOpenToolCallIds.clear();
         context.activeTurnSawToolCallFinish = false;
         context.activeTurnSawFinalAssistant = false;
         context.activeTurnFinalAssistantMessageId = undefined;
@@ -2652,6 +2690,15 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             context.partById.set(part.id, part);
             context.partSnapshotKeyById.set(part.id, openCodeSnapshotKey(part));
             const messageRole = messageRoleForPart(context, part);
+
+            if (part.type === "tool") {
+              updateOpenCodeTurnToolCall(
+                context,
+                turnId,
+                { callId: part.callID, partId: part.id },
+                part.state.status !== "completed" && part.state.status !== "error",
+              );
+            }
 
             if (messageRole === "assistant") {
               if (
@@ -3088,6 +3135,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             if (!turnId) {
               break;
             }
+            updateOpenCodeTurnToolCall(context, turnId, { callId: event.properties.callID }, true);
             yield* emit(context, {
               ...buildEventBase({
                 threadId: context.session.threadId,
@@ -3119,6 +3167,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             if (!turnId) {
               break;
             }
+            updateOpenCodeTurnToolCall(context, turnId, { callId: event.properties.callID }, false);
             yield* emit(context, {
               ...buildEventBase({
                 threadId: context.session.threadId,
@@ -3150,6 +3199,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             if (!turnId) {
               break;
             }
+            updateOpenCodeTurnToolCall(context, turnId, { callId: event.properties.callID }, true);
             yield* emit(context, {
               ...buildEventBase({
                 threadId: context.session.threadId,
@@ -3181,6 +3231,12 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             if (!turnId) {
               break;
             }
+            updateOpenCodeTurnToolCall(
+              context,
+              turnId,
+              { callId: event.properties.callID },
+              event.type === "session.next.tool.progress",
+            );
             const detail = openCodeToolContentText(event.properties.content);
             yield* emit(context, {
               ...buildEventBase({
@@ -3213,6 +3269,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             if (!turnId) {
               break;
             }
+            updateOpenCodeTurnToolCall(context, turnId, { callId: event.properties.callID }, false);
             yield* emit(context, {
               ...buildEventBase({
                 threadId: context.session.threadId,
@@ -4169,6 +4226,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                   activeTurnEventSerial: 0,
                   activeTurnProviderActivitySerial: 0,
                   activeTurnCompletionActivitySerial: 0,
+                  activeTurnOpenToolCallIds: new Set(),
                   activeTurnSawToolCallFinish: false,
                   activeTurnSawFinalAssistant: false,
                   activeTurnFinalAssistantMessageId: undefined,
@@ -4303,6 +4361,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         context.activeTurnEventSerial = 0;
         context.activeTurnProviderActivitySerial = 0;
         context.activeTurnCompletionActivitySerial = 0;
+        context.activeTurnOpenToolCallIds.clear();
         context.activeTurnSawToolCallFinish = false;
         context.activeTurnSawFinalAssistant = false;
         context.activeTurnFinalAssistantMessageId = undefined;

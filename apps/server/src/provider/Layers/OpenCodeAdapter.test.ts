@@ -6109,6 +6109,143 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
     ]);
   });
 
+  it("keeps an OpenCode turn running when idle arrives before an active tool finishes", async () => {
+    const eventQueue = createSubscribedEventQueue();
+    const runtime = createMockOpenCodeRuntime();
+    const client = runtime.runtime.createOpenCodeSdkClient({
+      baseUrl: "http://127.0.0.1:4099",
+      directory: process.cwd(),
+    }) as unknown as {
+      event: { subscribe: () => Promise<{ stream: AsyncIterable<unknown> }> };
+    };
+    client.event.subscribe = async () => ({ stream: eventQueue.stream });
+    const threadId = asThreadId("thread-idle-before-active-tool-finishes");
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 8)).pipe(
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({ provider: "opencode", threadId, runtimeMode: "full-access" });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "inspect the repository",
+          attachments: [],
+          modelSelection: { provider: "opencode", model: "openai/gpt-5.4" },
+        });
+
+        eventQueue.push({
+          type: "message.part.updated",
+          properties: {
+            sessionID: "opencode-session-1",
+            part: {
+              id: "part-running-task",
+              messageID: "msg-running-task",
+              type: "tool",
+              tool: "task",
+              callID: "task-call-1",
+              state: {
+                status: "running",
+                title: "Inspect files",
+                input: { description: "Inspect files", prompt: "Inspect the repository." },
+                metadata: { sessionId: "child-session-1" },
+                time: { start: 1 },
+              },
+            },
+          },
+        });
+        yield* Effect.sleep(10);
+        eventQueue.push({
+          type: "session.idle",
+          properties: { sessionID: "opencode-session-1" },
+        });
+
+        // The provider reports its parent session idle while the task tool is
+        // still running. Synara must retain the active turn and its stop control.
+        yield* Effect.sleep(60);
+        const [sessionWhileToolRuns] = yield* adapter.listSessions();
+
+        eventQueue.push({
+          type: "message.part.updated",
+          properties: {
+            sessionID: "opencode-session-1",
+            part: {
+              id: "part-running-task",
+              messageID: "msg-running-task",
+              type: "tool",
+              tool: "task",
+              callID: "task-call-1",
+              state: {
+                status: "completed",
+                title: "Inspect files",
+                input: { description: "Inspect files", prompt: "Inspect the repository." },
+                output: "Inspection complete.",
+                metadata: { sessionId: "child-session-1" },
+                time: { start: 1, end: 2 },
+              },
+            },
+          },
+        });
+        eventQueue.push({
+          type: "message.updated",
+          properties: {
+            sessionID: "opencode-session-1",
+            info: {
+              id: "msg-final-after-tool",
+              role: "assistant",
+              finish: "stop",
+              time: { completed: 4 },
+            },
+          },
+        });
+        eventQueue.push({
+          type: "message.part.updated",
+          properties: {
+            sessionID: "opencode-session-1",
+            part: {
+              id: "part-final-after-tool",
+              messageID: "msg-final-after-tool",
+              type: "text",
+              text: "The inspection is complete.",
+              time: { start: 3, end: 4 },
+            },
+          },
+        });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        eventQueue.close();
+        return { events, sessionWhileToolRuns };
+      }).pipe(
+        Effect.provide(
+          makeOpenCodeAdapterLive({
+            runtime: runtime.runtime,
+            prematureIdleCompletionGraceMs: 20,
+            snapshotWatchdogPollMs: 5,
+          }).pipe(
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-test-" }),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+
+    expect(result.sessionWhileToolRuns?.status).toBe("running");
+    expect(result.events.map((event) => event.type)).toEqual([
+      "session.started",
+      "thread.started",
+      "turn.started",
+      "item.updated",
+      "item.completed",
+      "content.delta",
+      "item.completed",
+      "turn.completed",
+    ]);
+  });
+
   it("recovers final parts before settling an early idle", async () => {
     const eventQueue = createSubscribedEventQueue();
     let messageFetchCount = 0;
