@@ -5690,7 +5690,7 @@ describe("ChatView transcript geometry (full app)", () => {
         expect(
           useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
             .codex,
-        ).toMatchObject({ provider: "codex", model: "gpt-5.2" });
+        ).toMatchObject({ provider: "codex", model: "gpt-5.3-codex-spark" });
       });
     } finally {
       await mounted.cleanup();

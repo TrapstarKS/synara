@@ -54,6 +54,20 @@ describe("Codex discovery catalog", () => {
     ]);
   });
 
+  it("omits retired GPT-5.2 models from runtime discovery", () => {
+    expect(
+      parseCodexModelListResponse({
+        result: {
+          items: [
+            { id: "gpt-5.2", name: "GPT-5.2" },
+            { id: "gpt-5.2-codex", name: "GPT-5.2 Codex" },
+            { id: "gpt-6-luna", name: "GPT-6 Luna" },
+          ],
+        },
+      }),
+    ).toEqual([{ slug: "gpt-6-luna", name: "GPT-6 Luna" }]);
+  });
+
   it("normalizes bucketed skills/list responses for the requested cwd", () => {
     expect(
       parseCodexSkillsListResponse(

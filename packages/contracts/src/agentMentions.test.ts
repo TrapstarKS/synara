@@ -10,6 +10,22 @@ describe("agentMentions", () => {
   it("shows one preferred alias per Codex model in autocomplete", () => {
     expect(getAgentMentionAutocompleteAliases("codex")).toEqual([
       {
+        alias: "sol",
+        provider: "codex",
+        kind: "model",
+        model: "gpt-6-sol",
+        displayName: "GPT-6 Sol",
+        color: "violet",
+      },
+      {
+        alias: "luna",
+        provider: "codex",
+        kind: "model",
+        model: "gpt-6-luna",
+        displayName: "GPT-6 Luna",
+        color: "violet",
+      },
+      {
         alias: "5.5",
         provider: "codex",
         kind: "model",
@@ -48,22 +64,6 @@ describe("agentMentions", () => {
         model: "gpt-5.3-codex-spark",
         displayName: "GPT-5.3 Codex Spark",
         color: "cyan",
-      },
-      {
-        alias: "5.2",
-        provider: "codex",
-        kind: "model",
-        model: "gpt-5.2",
-        displayName: "GPT-5.2",
-        color: "amber",
-      },
-      {
-        alias: "5.2-codex",
-        provider: "codex",
-        kind: "model",
-        model: "gpt-5.2-codex",
-        displayName: "GPT-5.2 Codex",
-        color: "orange",
       },
     ]);
   });

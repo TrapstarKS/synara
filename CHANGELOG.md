@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.2] — 2026-09-22
+
+### Added
+
+- Added GPT-6 Sol and GPT-6 Luna to the Codex model picker, aliases and token pricing.
+
+### Changed
+
+- Removed retired GPT-5.2 models from Codex discovery and the user-facing model menu.
+
 ## [0.9.1] — 2026-09-22
 
 Patch release for the upstream reconciliation. It preserves the local OpenCode recovery behavior and mobile companion identity while bringing the merged UI back within the shared font-token contract.

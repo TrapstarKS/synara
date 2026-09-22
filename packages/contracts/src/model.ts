@@ -273,6 +273,20 @@ const CODEX_GPT_6_CAPABILITIES: ModelCapabilities = {
   ],
 };
 
+// GPT-6 Sol and Luna expose the full GPT-6 reasoning ladder, including `none`.
+// Keep Astra's default ladder separate because it does not support `none`.
+const CODEX_GPT_6_SOL_LUNA_CAPABILITIES: ModelCapabilities = {
+  ...CODEX_GPT_6_CAPABILITIES,
+  reasoningEffortLevels: [
+    { value: "none", label: "None" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium", isDefault: true },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
+  ],
+};
+
 const GROK_CLI_EFFORT_DESCRIPTIONS = {
   low: "Quick, fast implementations",
   medium: "Balanced effort with standard implementation and testing",
@@ -630,6 +644,16 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       capabilities: CODEX_GPT_6_CAPABILITIES,
     },
     {
+      slug: "gpt-6-sol",
+      name: "GPT-6 Sol",
+      capabilities: CODEX_GPT_6_SOL_LUNA_CAPABILITIES,
+    },
+    {
+      slug: "gpt-6-luna",
+      name: "GPT-6 Luna",
+      capabilities: CODEX_GPT_6_SOL_LUNA_CAPABILITIES,
+    },
+    {
       slug: "gpt-5.5",
       name: "GPT-5.5",
       capabilities: CODEX_GPT_5_5_CAPABILITIES,
@@ -652,16 +676,6 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     {
       slug: "gpt-5.3-codex-spark",
       name: "GPT-5.3 Codex Spark",
-      capabilities: CODEX_GPT_5_CAPABILITIES,
-    },
-    {
-      slug: "gpt-5.2-codex",
-      name: "GPT-5.2 Codex",
-      capabilities: CODEX_GPT_5_CAPABILITIES,
-    },
-    {
-      slug: "gpt-5.2",
-      name: "GPT-5.2",
       capabilities: CODEX_GPT_5_CAPABILITIES,
     },
   ],
@@ -1238,6 +1252,10 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
     astra: "gpt-6-astra",
     "6": "gpt-6-astra",
     "gpt-6": "gpt-6-astra",
+    sol: "gpt-6-sol",
+    "6-sol": "gpt-6-sol",
+    luna: "gpt-6-luna",
+    "6-luna": "gpt-6-luna",
     "5.5": "gpt-5.5",
     "5.4": "gpt-5.4",
     "5.3": "gpt-5.3-codex",

@@ -41,6 +41,20 @@ export type ResolvedAgentAlias = AgentAliasDefinition & {
 const OPENCODE_AGENT_MENTION_ALIASES: Record<string, AgentAliasDefinition> = {};
 
 const CODEX_AGENT_MENTION_ALIASES: Record<string, CodexAgentAliasDefinition> = {
+  sol: {
+    provider: "codex",
+    kind: "model",
+    model: "gpt-6-sol",
+    displayName: "GPT-6 Sol",
+    color: "violet",
+  },
+  luna: {
+    provider: "codex",
+    kind: "model",
+    model: "gpt-6-luna",
+    displayName: "GPT-6 Luna",
+    color: "violet",
+  },
   "5.5": {
     provider: "codex",
     kind: "model",
@@ -96,20 +110,6 @@ const CODEX_AGENT_MENTION_ALIASES: Record<string, CodexAgentAliasDefinition> = {
     model: "gpt-5.3-codex-spark",
     displayName: "GPT-5.3 Codex Spark",
     color: "cyan",
-  },
-  "5.2": {
-    provider: "codex",
-    kind: "model",
-    model: "gpt-5.2",
-    displayName: "GPT-5.2",
-    color: "amber",
-  },
-  "5.2-codex": {
-    provider: "codex",
-    kind: "model",
-    model: "gpt-5.2-codex",
-    displayName: "GPT-5.2 Codex",
-    color: "orange",
   },
 };
 
@@ -230,7 +230,7 @@ export const AGENT_MENTION_ALIASES: Record<string, AgentAliasDefinition> = Objec
 );
 
 const AGENT_MENTION_AUTOCOMPLETE_ALIASES_BY_PROVIDER: Record<ProviderKind, readonly string[]> = {
-  codex: ["5.5", "5.4", "mini", "5.3-codex", "spark", "5.2", "5.2-codex"],
+  codex: ["sol", "luna", "5.5", "5.4", "mini", "5.3-codex", "spark"],
   claudeAgent: ["explore", "review", "build", "plan"],
   cursor: [],
   antigravity: [],

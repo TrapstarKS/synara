@@ -61,6 +61,11 @@ function readFirstBoolean(value: unknown, keys: readonly string[]): boolean | un
   return undefined;
 }
 
+// Keep retired GPT-5.2 entries out of the user-facing Codex catalog even when
+// an older app-server still returns them from model/list. Persisted sessions
+// can continue to reference those slugs; this only removes them from discovery.
+const RETIRED_CODEX_MODEL_SLUGS = new Set(["gpt-5.2", "gpt-5.2-codex"]);
+
 function parseSkillDescriptor(skill: unknown): ProviderSkillDescriptor | undefined {
   const record = readObject(skill);
   if (!record) return undefined;
@@ -327,7 +332,7 @@ export function parseCodexModelListResponse(response: unknown): ProviderListMode
 
     const slug = readString(model, "id") ?? readString(model, "slug") ?? readString(model, "model");
     const trimmedSlug = slug?.trim();
-    if (!trimmedSlug) {
+    if (!trimmedSlug || RETIRED_CODEX_MODEL_SLUGS.has(trimmedSlug.toLowerCase())) {
       return [];
     }
 

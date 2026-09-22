@@ -2,7 +2,7 @@
 // Purpose: Convert recorded Codex token usage into a current-rate USD equivalent.
 // Rates are public per-1M-token prices, not the user's actual subscription bill.
 
-export const PROFILE_TOKEN_PRICING_AS_OF = "2026-09-20";
+export const PROFILE_TOKEN_PRICING_AS_OF = "2026-09-22";
 
 const TOKENS_PER_MILLION = 1_000_000;
 const LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
@@ -34,10 +34,15 @@ export interface ProfileTokenCostEstimate {
 
 // ChatGPT Work / Codex USD rates where published. Older Codex models retain
 // their current API rates so existing local history can still be repriced.
-// Source checked 2026-09-20:
+// Source checked 2026-09-22:
 // https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing
 const CODEX_TOKEN_RATES: ReadonlyArray<readonly [string, TokenRates]> = [
   ["gpt-6-astra", { input: 10, cachedInput: 1, output: 50, fastMultiplier: 2.5 }],
+  ["gpt-6-sol", { input: 2, cachedInput: 0.2, output: 10, fastMultiplier: 2, longContext: true }],
+  [
+    "gpt-6-luna",
+    { input: 0.1, cachedInput: 0.01, output: 0.5, fastMultiplier: 2, longContext: true },
+  ],
   [
     "gpt-5.6-sol",
     { input: 4, cachedInput: 0.4, output: 20, fastMultiplier: 2.5, longContext: true },
