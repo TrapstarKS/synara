@@ -82,6 +82,7 @@ function createMockOpenCodeRuntime(options?: {
   ) => Promise<unknown>;
   readonly serverExit?: Effect.Effect<number>;
   readonly sessionCreateError?: Error;
+  readonly sessionCreateIds?: ReadonlyArray<string>;
   readonly sessionUpdate?: (input: Record<string, unknown>) => Promise<unknown>;
   readonly scopeCloseDefect?: boolean;
   readonly connectBarrier?: Effect.Effect<void>;
@@ -99,6 +100,7 @@ function createMockOpenCodeRuntime(options?: {
   const promptCalls: Array<Record<string, unknown>> = [];
   const promptCallKinds: Array<"async" | "sync"> = [];
   const mcpAddCalls: Array<Record<string, unknown>> = [];
+  let sessionCreateCallCount = 0;
   let eventSubscribeCallCount = 0;
   const emptySubscription = {
     async *[Symbol.asyncIterator]() {
@@ -122,7 +124,12 @@ function createMockOpenCodeRuntime(options?: {
       create: async (input: Record<string, unknown>) => {
         createCalls.push(input);
         if (options?.sessionCreateError) throw options.sessionCreateError;
-        return { data: { id: "opencode-session-1" } };
+        const id =
+          options?.sessionCreateIds?.[sessionCreateCallCount] ??
+          options?.sessionCreateIds?.at(-1) ??
+          "opencode-session-1";
+        sessionCreateCallCount += 1;
+        return { data: { id } };
       },
       update: async (input: Record<string, unknown>) => {
         updateCalls.push(input);
@@ -3875,6 +3882,245 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
       "turn.completed",
     ]);
     expect(runtime.permissionReplyCalls).toEqual([{ requestID: "permission-1", reply: "once" }]);
+  });
+
+  it("resets a poisoned native session and retries stale encrypted reasoning once", async () => {
+    const eventQueue = createSubscribedEventQueue();
+    const runtime = createMockOpenCodeRuntime({
+      events: eventQueue.stream,
+      sessionCreateIds: ["opencode-session-1", "opencode-session-2"],
+    });
+    const client = runtime.runtime.createOpenCodeSdkClient({
+      baseUrl: "http://127.0.0.1:4099",
+      directory: process.cwd(),
+    }) as unknown as {
+      event: {
+        subscribe: () => Promise<{ stream: AsyncIterable<unknown> }>;
+      };
+    };
+    client.event.subscribe = async () => ({ stream: eventQueue.stream });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-encrypted-content-recovery");
+        const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 7)).pipe(
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({ provider: "opencode", threadId, runtimeMode: "full-access" });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "continue",
+          attachments: [],
+          modelSelection: { provider: "opencode", model: "opencode-go/muse-spark-1.3" },
+        });
+
+        eventQueue.push({
+          type: "session.error",
+          properties: {
+            sessionID: "opencode-session-1",
+            error: {
+              data: {
+                message:
+                  "Upstream request failed: [invalid_request_error] reasoning `encrypted_content` was not issued to this caller",
+              },
+            },
+          },
+        });
+        eventQueue.push({
+          type: "session.next.text.delta",
+          properties: {
+            timestamp: 1,
+            sessionID: "opencode-session-2",
+            delta: "Recovered",
+          },
+        });
+        eventQueue.push({
+          type: "session.next.text.ended",
+          properties: {
+            timestamp: 2,
+            sessionID: "opencode-session-2",
+            text: "Recovered",
+          },
+        });
+        eventQueue.push({
+          type: "session.next.step.ended",
+          properties: {
+            timestamp: 3,
+            sessionID: "opencode-session-2",
+            finish: "stop",
+            cost: 0,
+            tokens: {
+              input: 0,
+              output: 0,
+              reasoning: 0,
+              cache: { read: 0, write: 0 },
+            },
+          },
+        });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        eventQueue.close();
+        const [session] = yield* adapter.listSessions();
+        return { events, session };
+      }).pipe(
+        Effect.provide(
+          makeOpenCodeAdapterLive({ runtime: runtime.runtime }).pipe(
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-test-" }),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+
+    expect(result.events.map((event) => event.type)).toEqual([
+      "session.started",
+      "thread.started",
+      "turn.started",
+      "runtime.warning",
+      "content.delta",
+      "item.completed",
+      "turn.completed",
+    ]);
+    expect(result.events[3]).toMatchObject({
+      type: "runtime.warning",
+      payload: {
+        message: expect.stringContaining("session reset"),
+      },
+    });
+    expect(runtime.promptCalls).toHaveLength(2);
+    expect(runtime.promptCalls[0]).toMatchObject({ sessionID: "opencode-session-1" });
+    expect(runtime.promptCalls[1]).toMatchObject({ sessionID: "opencode-session-2" });
+    expect(runtime.abortCalls).toContainEqual({ sessionID: "opencode-session-1" });
+    expect(result.session).toMatchObject({
+      status: "ready",
+      resumeCursor: { openCodeSessionId: "opencode-session-2" },
+    });
+  });
+
+  it("retries an invalid upstream request without the rejected model variant", async () => {
+    const eventQueue = createSubscribedEventQueue();
+    const runtime = createMockOpenCodeRuntime({
+      events: eventQueue.stream,
+      sessionCreateIds: ["opencode-session-1", "opencode-session-2"],
+    });
+    const client = runtime.runtime.createOpenCodeSdkClient({
+      baseUrl: "http://127.0.0.1:4099",
+      directory: process.cwd(),
+    }) as unknown as {
+      event: {
+        subscribe: () => Promise<{ stream: AsyncIterable<unknown> }>;
+      };
+    };
+    client.event.subscribe = async () => ({ stream: eventQueue.stream });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-invalid-upstream-request");
+        const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 7)).pipe(
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({ provider: "opencode", threadId, runtimeMode: "full-access" });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "continue",
+          attachments: [],
+          modelSelection: {
+            provider: "opencode",
+            model: "opencode-go/muse-spark-1.3",
+            options: { variant: "max" },
+          },
+        });
+
+        eventQueue.push({
+          type: "session.error",
+          properties: {
+            sessionID: "opencode-session-1",
+            error: {
+              type: "unknown",
+              message:
+                "Upstream request failed: [invalid_request_error] The request contains invalid parameters. Check the request body for any errors or inconsistencies.",
+            },
+          },
+        });
+        eventQueue.push({
+          type: "session.next.text.delta",
+          properties: {
+            timestamp: 1,
+            sessionID: "opencode-session-2",
+            delta: "Recovered",
+          },
+        });
+        eventQueue.push({
+          type: "session.next.text.ended",
+          properties: {
+            timestamp: 2,
+            sessionID: "opencode-session-2",
+            text: "Recovered",
+          },
+        });
+        eventQueue.push({
+          type: "session.next.step.ended",
+          properties: {
+            timestamp: 3,
+            sessionID: "opencode-session-2",
+            finish: "stop",
+            cost: 0,
+            tokens: {
+              input: 0,
+              output: 0,
+              reasoning: 0,
+              cache: { read: 0, write: 0 },
+            },
+          },
+        });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        eventQueue.close();
+        const [session] = yield* adapter.listSessions();
+        return { events, session };
+      }).pipe(Effect.provide(makeOpenCodeAdapterTestLayer(runtime.runtime))),
+    );
+
+    expect(result.events.map((event) => event.type)).toEqual([
+      "session.started",
+      "thread.started",
+      "turn.started",
+      "runtime.warning",
+      "content.delta",
+      "item.completed",
+      "turn.completed",
+    ]);
+    expect(result.events[3]).toMatchObject({
+      type: "runtime.warning",
+      payload: {
+        message: expect.stringContaining("without the optional variant"),
+      },
+    });
+    expect(runtime.promptCalls).toHaveLength(2);
+    expect(runtime.promptCalls[0]).toMatchObject({
+      sessionID: "opencode-session-1",
+      variant: "max",
+    });
+    expect(runtime.promptCalls[1]).toMatchObject({ sessionID: "opencode-session-2" });
+    expect(runtime.promptCalls[1]).not.toHaveProperty("variant");
+    expect(runtime.createCalls[1]).toMatchObject({
+      model: {
+        providerID: "opencode-go",
+        id: "muse-spark-1.3",
+      },
+    });
+    expect(runtime.createCalls[1]?.model).not.toHaveProperty("variant");
+    expect(runtime.abortCalls).toContainEqual({ sessionID: "opencode-session-1" });
+    expect(result.session).toMatchObject({
+      status: "ready",
+      resumeCursor: { openCodeSessionId: "opencode-session-2" },
+    });
   });
 
   it("recovers a missed Full Access permission from the active-turn watchdog", async () => {
