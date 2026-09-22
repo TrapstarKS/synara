@@ -54,6 +54,7 @@ export function ComposerSlashStatusDialog(props: {
   envState: ResolvedThreadWorkspaceState;
   branch: string | null;
   contextWindow: ContextWindowSnapshot | null;
+  showCodexCache: boolean;
   cumulativeCostUsd: number | null;
   rateLimitStatus: RateLimitStatus | null;
   activeContextWindowLabel?: string | null;
@@ -70,6 +71,7 @@ export function ComposerSlashStatusDialog(props: {
     envState,
     branch,
     contextWindow,
+    showCodexCache,
     cumulativeCostUsd,
     rateLimitStatus,
     activeContextWindowLabel,
@@ -138,6 +140,7 @@ export function ComposerSlashStatusDialog(props: {
               {contextWindow ? (
                 <ContextWindowMeter
                   usage={contextWindow}
+                  showCodexCache={showCodexCache}
                   cumulativeCostUsd={cumulativeCostUsd}
                   activeWindowLabel={activeContextWindowLabel}
                   pendingWindowLabel={pendingContextWindowLabel}

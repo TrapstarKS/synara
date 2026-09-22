@@ -465,6 +465,7 @@ const makeCheckpointStore = Effect.gen(function* () {
         cwd: input.cwd,
         args: [
           "diff",
+          "--relative",
           "--patch",
           "--minimal",
           "--no-color",

@@ -101,12 +101,15 @@ Codex sessions can expose:
 - Approval requests and user input
 - Session resume and reconnect behavior
 - Context and usage information where available
+- Cache reads and writes for the latest model request and session totals in the context meter, when Codex reports them
 - Native steering of a running turn
 - Codex-specific account and version health checks
 
 Native steering lets Synara deliver a follow-up to a supported active Codex turn without cancelling it first. It does not bypass Codex permissions or guarantee immediate action.
 
 Synara discovers Codex behavior from the installed CLI. A newer CLI may expose capabilities that an older build does not.
+Cache reads and writes are part of input and context usage; the displayed counts describe past requests and do not predict the next cache hit.
+The tooltip also estimates how recent the last confirmed cache activity was. This is a recency hint, not a guarantee that the next request will reuse the cache.
 
 ## Configuration
 

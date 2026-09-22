@@ -101,8 +101,9 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch "rust-v${CODEX_VERSION}" \
             https://github.com/openai/codex.git "$RUNNER_TEMP/codex"
-          git -C "$RUNNER_TEMP/codex" apply --3way \
-            "$GITHUB_WORKSPACE/tools/codex-luna-max-fast/luna-max-fast.patch"
+          patch="$GITHUB_WORKSPACE/tools/codex-luna-max-fast/luna-max-fast.patch"
+          git -C "$RUNNER_TEMP/codex" apply --check "$patch"
+          git -C "$RUNNER_TEMP/codex" apply "$patch"
           git -C "$RUNNER_TEMP/codex" diff --check
 
       - name: Select the pinned Codex toolchain
@@ -144,6 +145,7 @@ jobs:
           # The shipped CLI below still uses the pinned release profile.
           cargo test --locked -p codex-core --lib spawn_agent_service_tier_forces_fast_for_luna_at_any_effort
           cargo test --locked -p codex-core --test all luna_subagent_uses_priority_service_tier
+          cargo test --locked -p codex-protocol --lib gpt_6_luna_supports_priority_without_catalog_metadata
           cargo build --release --locked -p codex-cli --bin codex
 
       - name: Download matching official runtime files

@@ -8,6 +8,7 @@ import { useState } from "react";
 import { useNowMs } from "~/hooks/useNowMs";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ClaudeCacheDetails } from "./ClaudeCacheDetails";
+import { CodexCacheDetails } from "./CodexCacheDetails";
 import { Button } from "../ui/button";
 
 export function ContextWindowMeter(props: {
@@ -16,6 +17,7 @@ export function ContextWindowMeter(props: {
   activeWindowLabel?: string | null | undefined;
   pendingWindowLabel?: string | null | undefined;
   showClaudeCache?: boolean;
+  showCodexCache?: boolean;
   onOpenChange?: (open: boolean) => void;
   compactAction?: {
     disabledReason: string | null;
@@ -25,8 +27,15 @@ export function ContextWindowMeter(props: {
 }) {
   const { usage, cumulativeCostUsd, activeWindowLabel, pendingWindowLabel } = props;
   const [open, setOpen] = useState(false);
-  const nowMs = useNowMs(open && usage.claudeCache != null, 10_000);
+  const [openedAtMs, setOpenedAtMs] = useState(0);
+  const nowMs = useNowMs(
+    open &&
+      (usage.claudeCache != null ||
+        (props.showCodexCache === true && usage.codexCacheObservation != null)),
+    10_000,
+  );
   const display = deriveContextWindowMeterDisplay(usage);
+  const visibleNowMs = Math.max(nowMs, openedAtMs);
   const radius = 6;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference - (display.normalizedPercentage / 100) * circumference;
@@ -36,6 +45,7 @@ export function ContextWindowMeter(props: {
       open={open}
       onOpenChange={(nextOpen) => {
         setOpen(nextOpen);
+        if (nextOpen) setOpenedAtMs(Date.now());
         props.onOpenChange?.(nextOpen);
       }}
     >
@@ -144,8 +154,9 @@ export function ContextWindowMeter(props: {
             </div>
           ) : null}
           {usage.claudeCache || props.showClaudeCache ? (
-            <ClaudeCacheDetails observation={usage.claudeCache ?? undefined} nowMs={nowMs} />
+            <ClaudeCacheDetails observation={usage.claudeCache ?? undefined} nowMs={visibleNowMs} />
           ) : null}
+          {props.showCodexCache ? <CodexCacheDetails usage={usage} nowMs={visibleNowMs} /> : null}
           {props.compactAction ? (
             <div className="max-w-72 space-y-1.5 border-t border-border/50 pt-2">
               <Button

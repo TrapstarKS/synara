@@ -5744,6 +5744,7 @@ export default function ChatView({
                         <ContextWindowMeter
                           usage={runtimeUsageContextWindow}
                           showClaudeCache={activeThread?.session?.provider === "claudeAgent"}
+                          showCodexCache={activeThread?.session?.provider === "codex"}
                           onOpenChange={setIsContextWindowMeterOpen}
                           {...(selectedProvider === "claudeAgent" &&
                           activeThread?.session?.provider === "claudeAgent" &&
@@ -6373,6 +6374,7 @@ export default function ChatView({
         envState={envState}
         branch={activeThread?.branch ?? activeRootBranch}
         contextWindow={activeContextWindow}
+        showCodexCache={activeThread?.session?.provider === "codex"}
         cumulativeCostUsd={activeCumulativeCostUsd}
         rateLimitStatus={activeRateLimitStatus}
         activeContextWindowLabel={contextWindowSelectionStatus.activeLabel}

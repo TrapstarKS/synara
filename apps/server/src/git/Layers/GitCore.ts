@@ -1924,7 +1924,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         const tracked = yield* executeGit(
           "GitCore.readUnstagedPatch.trackedPatch",
           cwd,
-          ["diff", "--patch", "--no-color", "--no-ext-diff"],
+          ["diff", "--relative", "--patch", "--no-color", "--no-ext-diff"],
           {
             allowNonZeroExit: true,
             timeoutMs: WORKING_TREE_DIFF_TIMEOUT_MS,
@@ -1946,7 +1946,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
       executeGit(
         "GitCore.readStagedPatch",
         cwd,
-        ["diff", "--cached", "--patch", "--no-color", "--no-ext-diff"],
+        ["diff", "--cached", "--relative", "--patch", "--no-color", "--no-ext-diff"],
         {
           allowNonZeroExit: true,
           timeoutMs: WORKING_TREE_DIFF_TIMEOUT_MS,
@@ -1958,6 +1958,14 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
           patch: result.stdout,
           truncated: result.stdoutTruncated === true,
         })),
+      );
+
+    const workspacePathToGitPath = (cwd: string, filePath: string, operation: string) =>
+      executeGit(`${operation}.prefix`, cwd, ["rev-parse", "--show-prefix"]).pipe(
+        Effect.map((result) => {
+          const prefix = result.stdout.replace(/[\r\n]+$/, "");
+          return `${prefix}${filePath.replaceAll("\\", "/")}`;
+        }),
       );
 
     const readWorkingTreePatch: GitCoreShape["readWorkingTreePatch"] = (cwd, filePath) =>
@@ -2000,11 +2008,14 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
                 String(cause),
               ),
           });
+          const gitFilePath = headExists
+            ? yield* workspacePathToGitPath(cwd, filePath, "GitCore.readWorkingTreePatch.basePath")
+            : filePath;
           const baseType = headExists
             ? yield* executeGit(
                 "GitCore.readWorkingTreePatch.baseType",
                 cwd,
-                ["cat-file", "-t", `HEAD:${filePath}`],
+                ["cat-file", "-t", `HEAD:${gitFilePath}`],
                 { allowNonZeroExit: true },
               )
             : null;
@@ -2031,7 +2042,15 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
             yield* executeGit(
               "GitCore.readWorkingTreePatch.renamePaths",
               cwd,
-              ["diff", "--name-status", "-z", "--diff-filter=R", "--no-ext-diff", "HEAD"],
+              [
+                "diff",
+                "--relative",
+                "--name-status",
+                "-z",
+                "--diff-filter=R",
+                "--no-ext-diff",
+                "HEAD",
+              ],
               {
                 timeoutMs: WORKING_TREE_DIFF_TIMEOUT_MS,
                 outputMode: "truncate",
@@ -2054,6 +2073,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
           cwd,
           [
             "diff",
+            "--relative",
             "--patch",
             "--no-color",
             "--no-ext-diff",
@@ -2096,6 +2116,11 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         }
 
         const maxBytes = input.maxBytes ?? GIT_READ_FILE_AT_REV_MAX_BYTES;
+        const gitFilePath = yield* workspacePathToGitPath(
+          input.cwd,
+          filePath,
+          "GitCore.readFileAtRev.path",
+        );
         // The index is not a commit: its blob is addressed as `:<path>`.
         const baseRev =
           input.base === "index"
@@ -2112,7 +2137,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
             ? "index"
             : yield* resolveCommitObjectId(input.cwd, baseRev, "GitCore.readFileAtRev.revParse");
 
-        const blobRef = baseRev === null ? `:0:${filePath}` : `${resolvedRev}:${filePath}`;
+        const blobRef = baseRev === null ? `:0:${gitFilePath}` : `${resolvedRev}:${gitFilePath}`;
         const sizeResult = yield* executeGit(
           "GitCore.readFileAtRev.size",
           input.cwd,
@@ -2151,7 +2176,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         const tracked = yield* executeGit(
           "GitCore.readBranchPatch.trackedPatch",
           cwd,
-          ["diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", mergeBase],
+          ["diff", "--relative", "--patch", "--minimal", "--no-color", "--no-ext-diff", mergeBase],
           {
             timeoutMs: WORKING_TREE_DIFF_TIMEOUT_MS,
             maxOutputBytes: 10_000_000,
@@ -2348,6 +2373,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
           cwd,
           [
             "diff",
+            "--relative",
             "--name-only",
             "--no-renames",
             "--diff-filter=A",
@@ -2381,7 +2407,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
               const tracked = yield* executeGit(
                 "GitCore.readRefPatch.trackedPatch",
                 cwd,
-                ["diff", "--patch", "--no-color", "--no-ext-diff", resolvedRef],
+                ["diff", "--relative", "--patch", "--no-color", "--no-ext-diff", resolvedRef],
                 {
                   env,
                   timeoutMs: WORKING_TREE_DIFF_TIMEOUT_MS,
@@ -2420,15 +2446,23 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         let includeUntracked = false;
         switch (scope) {
           case "staged":
-            trackedArgs = ["diff", "--cached", "--numstat", "-z", "--no-ext-diff"];
+            trackedArgs = ["diff", "--cached", "--relative", "--numstat", "-z", "--no-ext-diff"];
             break;
           case "unstaged":
-            trackedArgs = ["diff", "--numstat", "-z", "--no-ext-diff"];
+            trackedArgs = ["diff", "--relative", "--numstat", "-z", "--no-ext-diff"];
             includeUntracked = true;
             break;
           case "branch": {
             const mergeBase = yield* resolveBranchMergeBase(cwd);
-            trackedArgs = ["diff", "--numstat", "-z", "--minimal", "--no-ext-diff", mergeBase];
+            trackedArgs = [
+              "diff",
+              "--relative",
+              "--numstat",
+              "-z",
+              "--minimal",
+              "--no-ext-diff",
+              mergeBase,
+            ];
             includeUntracked = true;
             break;
           }
@@ -2448,7 +2482,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
                   const tracked = yield* executeGit(
                     "GitCore.readDiffStats.tracked",
                     cwd,
-                    ["diff", "--numstat", "-z", "--no-ext-diff", resolvedRef],
+                    ["diff", "--relative", "--numstat", "-z", "--no-ext-diff", resolvedRef],
                     { env, timeoutMs: WORKING_TREE_DIFF_TIMEOUT_MS, maxOutputBytes: 10_000_000 },
                   ).pipe(Effect.map((result) => result.stdout));
                   const untracked = yield* readUntrackedNumstats(
@@ -2481,6 +2515,7 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
             ).pipe(Effect.map((result) => result.code === 0));
             trackedArgs = [
               "diff",
+              "--relative",
               "--numstat",
               "-z",
               "--no-ext-diff",

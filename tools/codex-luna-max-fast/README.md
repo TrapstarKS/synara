@@ -1,7 +1,10 @@
 # Codex Luna Max Fast
 
-This Codex build sends spawned `gpt-5.6-luna` agents at every reasoning effort through Fast
-routing. Root tasks and every other model keep their selected routing tier.
+This Codex build sends spawned `gpt-5.6-luna` and `gpt-6-luna` agents at every reasoning effort
+through Fast routing. Root tasks and every other model keep their selected routing tier.
+
+GPT-6 Luna keeps Fast routing even when an older bundled model catalog does not list its priority
+service tier yet.
 
 Apple Silicon Synara desktop releases include a pinned copy of this runtime. Synara verifies and
 installs it automatically when Codex still uses its default command; an explicitly configured

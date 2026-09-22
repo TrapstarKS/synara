@@ -318,6 +318,8 @@ function normalizeCodexTokenUsage(value: unknown): ThreadTokenUsageSnapshot | un
   const inputTokens = asNumber(lastUsage?.input_tokens) ?? asNumber(lastUsage?.inputTokens);
   const cachedInputTokens =
     asNumber(lastUsage?.cached_input_tokens) ?? asNumber(lastUsage?.cachedInputTokens);
+  const cacheCreationInputTokens =
+    asNumber(lastUsage?.cache_write_input_tokens) ?? asNumber(lastUsage?.cacheWriteInputTokens);
   const outputTokens = asNumber(lastUsage?.output_tokens) ?? asNumber(lastUsage?.outputTokens);
   const reasoningOutputTokens =
     asNumber(lastUsage?.reasoning_output_tokens) ?? asNumber(lastUsage?.reasoningOutputTokens);
@@ -346,11 +348,15 @@ function normalizeCodexTokenUsage(value: unknown): ThreadTokenUsageSnapshot | un
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     ...(usedTokens !== undefined ? { lastUsedTokens: usedTokens } : {}),
     ...(inputTokens !== undefined ? { lastInputTokens: inputTokens } : {}),
     ...(cachedInputTokens !== undefined ? { lastCachedInputTokens: cachedInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined
+      ? { lastCacheCreationInputTokens: cacheCreationInputTokens }
+      : {}),
     ...(outputTokens !== undefined ? { lastOutputTokens: outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined
       ? { lastReasoningOutputTokens: reasoningOutputTokens }

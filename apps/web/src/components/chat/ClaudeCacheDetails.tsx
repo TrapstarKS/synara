@@ -1,6 +1,6 @@
 import type { ClaudeCacheObservation } from "@synara/contracts";
 import { assessClaudeCache } from "@synara/shared/claudeCache";
-import { formatContextWindowTokens } from "~/lib/contextWindow";
+import { formatCacheDuration, formatContextWindowTokens } from "~/lib/contextWindow";
 
 export function ClaudeCacheDetails({
   observation,
@@ -58,13 +58,4 @@ export function ClaudeCacheDetails({
 
 function formatCacheTokens(value: number | undefined): string {
   return value === undefined ? "Unavailable" : `${formatContextWindowTokens(value)} tokens`;
-}
-
-export function formatCacheDuration(seconds: number): string {
-  if (seconds < 60) return "less than a minute";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours} ${hours === 1 ? "hour" : "hours"}${remainingMinutes > 0 ? ` ${remainingMinutes} min` : ""}`;
 }

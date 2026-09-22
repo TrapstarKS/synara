@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { EventId, type OrchestrationThreadActivity, TurnId } from "@synara/contracts";
 
 import {
+  assessCodexCacheObservation,
   deriveContextWindowSelectionStatus,
   deriveComposerContextWindowLabel,
   deriveAppliedContextWindowSelection,
   deriveContextWindowMeterDisplay,
   deriveCumulativeCostUsd,
+  deriveCodexCacheObservation,
   deriveLatestContextWindowState,
   deriveSelectedContextWindowSnapshot,
   formatContextWindowSelectionLabel,
@@ -31,6 +33,72 @@ function makeActivity(
 }
 
 describe("contextWindow", () => {
+  it("uses the first event in a repeated Codex usage series for cache recency", () => {
+    const first = makeActivity("usage-first", "context-window.updated", {
+      provider: "codex",
+      usageSessionId: "session-1",
+      usedTokens: 100,
+      lastCachedInputTokens: 40,
+      cumulativeUsage: { inputTokens: 100, outputTokens: 10, cachedInputTokens: 40 },
+    });
+    const repeated = {
+      ...first,
+      id: EventId.makeUnsafe("usage-repeat"),
+      createdAt: "2026-03-23T00:20:00.000Z",
+    };
+    const observation = deriveCodexCacheObservation([first, repeated]);
+    expect(observation).toEqual({ observedAt: first.createdAt });
+    expect(assessCodexCacheObservation(observation, Date.parse("2026-03-23T00:22:00Z"))).toEqual({
+      state: "aging",
+      ageSeconds: 22 * 60,
+    });
+  });
+
+  it("invalidates Codex cache recency after a miss, compaction, or model reroute", () => {
+    const hit = makeActivity("usage-hit", "context-window.updated", {
+      provider: "codex",
+      usageSessionId: "session-1",
+      usedTokens: 100,
+      lastCachedInputTokens: 40,
+      cumulativeUsage: { inputTokens: 100, outputTokens: 10, cachedInputTokens: 40 },
+    });
+    const miss = makeActivity("usage-miss", "context-window.updated", {
+      provider: "codex",
+      usageSessionId: "session-1",
+      usedTokens: 200,
+      lastCachedInputTokens: 0,
+      lastCacheCreationInputTokens: 0,
+      cumulativeUsage: { inputTokens: 200, outputTokens: 20, cachedInputTokens: 40 },
+    });
+    expect(deriveCodexCacheObservation([hit, miss])).toBeNull();
+    expect(
+      deriveCodexCacheObservation([
+        hit,
+        makeActivity("compact", "context-compaction", {
+          state: "compacted",
+        }),
+      ]),
+    ).toBeNull();
+    expect(
+      deriveCodexCacheObservation([hit, makeActivity("rerouted", "model.rerouted", {})]),
+    ).toBeNull();
+    expect(
+      deriveCodexCacheObservation([hit, makeActivity("boundary", "provider.session.boundary", {})]),
+    ).toBeNull();
+  });
+
+  it("marks cache recency as an estimate and never declares an old entry expired", () => {
+    const observation = { observedAt: "2026-03-23T00:00:00.000Z" };
+    const now = Date.parse(observation.observedAt);
+    expect(assessCodexCacheObservation(observation, now + 4 * 60_000).state).toBe("recent");
+    expect(assessCodexCacheObservation(observation, now + 5 * 60_000).state).toBe("aging");
+    expect(assessCodexCacheObservation(observation, now + 30 * 60_000).state).toBe("unknown");
+    expect(assessCodexCacheObservation(observation, now - 1_000)).toEqual({
+      state: "unknown",
+      ageSeconds: null,
+    });
+  });
+
   it("does not label a runtime threshold as the target when configuration history is missing", () => {
     expect(
       deriveContextWindowSelectionStatus({
@@ -93,6 +161,44 @@ describe("contextWindow", () => {
     expect(derive(undefined)?.claudeCache).toBeNull();
     expect(derive({ ...claudeCache, state: "warm" })?.claudeCache).toBeNull();
     expect(derive({ ...claudeCache, contextTokens: -1 })?.claudeCache).toBeNull();
+  });
+
+  it("keeps Codex session cache totals and ignores malformed counters", () => {
+    const snapshot = deriveLatestContextWindowState([
+      makeActivity("usage", "context-window.updated", {
+        provider: "codex",
+        usedTokens: 193_000,
+        inputTokens: 193_000,
+        cachedInputTokens: 96_000,
+        cacheCreationInputTokens: 40_000,
+        cumulativeUsage: {
+          inputTokens: 2_400_000,
+          outputTokens: 120_000,
+          cachedInputTokens: 1_200_000,
+          cacheCreationInputTokens: 400_000,
+        },
+      }),
+    ]).snapshot;
+    expect(snapshot?.cachedInputTokens).toBe(96_000);
+    expect(snapshot?.cacheCreationInputTokens).toBe(40_000);
+    expect(snapshot?.cumulativeUsage).toEqual({
+      inputTokens: 2_400_000,
+      outputTokens: 120_000,
+      cachedInputTokens: 1_200_000,
+      cacheCreationInputTokens: 400_000,
+    });
+
+    const malformed = deriveLatestContextWindowState([
+      makeActivity("usage-bad", "context-window.updated", {
+        usedTokens: 193_000,
+        cachedInputTokens: -10,
+        cacheCreationInputTokens: -20,
+        cumulativeUsage: { inputTokens: -1, outputTokens: 120_000, cachedInputTokens: 30 },
+      }),
+    ]).snapshot;
+    expect(malformed?.cumulativeUsage).toBeNull();
+    expect(malformed?.cachedInputTokens).toBeNull();
+    expect(malformed?.cacheCreationInputTokens).toBeNull();
   });
 
   it("withholds old Claude processed totals while preserving context and other providers", () => {

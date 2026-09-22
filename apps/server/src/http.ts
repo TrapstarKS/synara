@@ -835,13 +835,66 @@ function streamedFileResponse(input: {
   readonly path: string;
   readonly sizeBytes: number;
   readonly headers: Record<string, string>;
+  readonly byteRange?: { readonly start: number; readonly end: number } | undefined;
+  readonly acceptRanges?: boolean | undefined;
 }): HttpServerResponse.HttpServerResponse {
-  return HttpServerResponse.stream(input.fileSystem.stream(input.path), {
-    status: 200,
-    contentType: Mime.getType(input.path) ?? "application/octet-stream",
-    contentLength: input.sizeBytes,
-    headers: input.headers,
-  });
+  const byteRange = input.byteRange;
+  const contentLength = byteRange ? byteRange.end - byteRange.start + 1 : input.sizeBytes;
+  return HttpServerResponse.stream(
+    input.fileSystem.stream(
+      input.path,
+      byteRange ? { offset: byteRange.start, bytesToRead: contentLength } : undefined,
+    ),
+    {
+      status: byteRange ? 206 : 200,
+      contentType: Mime.getType(input.path) ?? "application/octet-stream",
+      contentLength,
+      headers: {
+        ...input.headers,
+        ...(input.acceptRanges ? { "Accept-Ranges": "bytes" } : {}),
+        ...(byteRange
+          ? {
+              "Content-Range": `bytes ${byteRange.start}-${byteRange.end}/${input.sizeBytes}`,
+            }
+          : {}),
+      },
+    },
+  );
+}
+
+type LocalPreviewRange =
+  | { readonly kind: "ignore" }
+  | { readonly kind: "unsatisfiable" }
+  | { readonly kind: "range"; readonly start: number; readonly end: number };
+
+function parseLocalPreviewRange(
+  rangeHeader: string | undefined,
+  sizeBytes: number,
+): LocalPreviewRange {
+  if (!rangeHeader) return { kind: "ignore" };
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+  if (!match) return { kind: "ignore" };
+
+  const startText = match[1] ?? "";
+  const endText = match[2] ?? "";
+  if (startText.length === 0 && endText.length === 0) return { kind: "ignore" };
+
+  const size = BigInt(sizeBytes);
+  if (size === 0n) return { kind: "unsatisfiable" };
+
+  if (startText.length === 0) {
+    const suffixLength = BigInt(endText);
+    if (suffixLength === 0n) return { kind: "unsatisfiable" };
+    const start = suffixLength >= size ? 0n : size - suffixLength;
+    return { kind: "range", start: Number(start), end: sizeBytes - 1 };
+  }
+
+  const start = BigInt(startText);
+  if (start >= size) return { kind: "unsatisfiable" };
+  const requestedEnd = endText.length > 0 ? BigInt(endText) : size - 1n;
+  if (requestedEnd < start) return { kind: "unsatisfiable" };
+  const end = requestedEnd >= size ? size - 1n : requestedEnd;
+  return { kind: "range", start: Number(start), end: Number(end) };
 }
 
 export const localImageEffectRouteLayer = HttpRouter.add(
@@ -885,23 +938,42 @@ export const localImageEffectRouteLayer = HttpRouter.add(
     const isDownload = url.searchParams.get("download") === "1";
     const safeFileName = previewFile.fileName.replaceAll('"', "");
     const isSvg = nodePath.extname(previewFile.path).toLowerCase() === ".svg";
+    const headers = {
+      "Cache-Control": "private, max-age=60",
+      // The PDF viewer fetches bytes from either the desktop app origin or
+      // the configured Vite dev origin. Reflect only those trusted origins:
+      // auth-token-less local servers must not expose workspace files to any
+      // random web page that can guess path/cwd query params.
+      ...localPreviewCorsHeaders({ config, request, url }),
+      // PDFs render in an unsandboxed same-origin iframe; never let the
+      // browser second-guess the declared content type.
+      "X-Content-Type-Options": "nosniff",
+      ...(isSvg ? SVG_DOCUMENT_SECURITY_HEADERS : {}),
+      ...(isDownload ? { "Content-Disposition": `attachment; filename="${safeFileName}"` } : {}),
+    };
+    const requestedRange = parseLocalPreviewRange(request.headers.range, previewFile.sizeBytes);
+    if (requestedRange.kind === "unsatisfiable") {
+      return HttpServerResponse.stream(Stream.empty, {
+        status: 416,
+        contentType: Mime.getType(previewFile.path) ?? "application/octet-stream",
+        contentLength: 0,
+        headers: {
+          ...headers,
+          "Accept-Ranges": "bytes",
+          "Content-Range": `bytes */${previewFile.sizeBytes}`,
+        },
+      });
+    }
+
     return streamedFileResponse({
       fileSystem,
       path: previewFile.path,
       sizeBytes: previewFile.sizeBytes,
-      headers: {
-        "Cache-Control": "private, max-age=60",
-        // The PDF viewer fetches bytes from either the desktop app origin or
-        // the configured Vite dev origin. Reflect only those trusted origins:
-        // auth-token-less local servers must not expose workspace files to any
-        // random web page that can guess path/cwd query params.
-        ...localPreviewCorsHeaders({ config, request, url }),
-        // PDFs render in an unsandboxed same-origin iframe; never let the
-        // browser second-guess the declared content type.
-        "X-Content-Type-Options": "nosniff",
-        ...(isSvg ? SVG_DOCUMENT_SECURITY_HEADERS : {}),
-        ...(isDownload ? { "Content-Disposition": `attachment; filename="${safeFileName}"` } : {}),
-      },
+      headers,
+      acceptRanges: true,
+      ...(requestedRange.kind === "range"
+        ? { byteRange: { start: requestedRange.start, end: requestedRange.end } }
+        : {}),
     });
   }).pipe(Effect.catchTag("AuthError", (error) => Effect.succeed(authErrorResponse(error)))),
 );

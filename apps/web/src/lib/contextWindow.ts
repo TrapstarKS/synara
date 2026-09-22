@@ -22,6 +22,27 @@ function asFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function asNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function readCumulativeUsage(
+  value: unknown,
+): NonNullable<ThreadTokenUsageSnapshot["cumulativeUsage"]> | null {
+  const usage = asRecord(value);
+  const inputTokens = asNonNegativeInteger(usage?.inputTokens);
+  const outputTokens = asNonNegativeInteger(usage?.outputTokens);
+  if (inputTokens === null || outputTokens === null) return null;
+  const cachedInputTokens = asNonNegativeInteger(usage?.cachedInputTokens);
+  const cacheCreationInputTokens = asNonNegativeInteger(usage?.cacheCreationInputTokens);
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cachedInputTokens !== null ? { cachedInputTokens } : {}),
+    ...(cacheCreationInputTokens !== null ? { cacheCreationInputTokens } : {}),
+  };
+}
+
 function asBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
@@ -41,6 +62,7 @@ type NullableContextWindowUsage = {
 };
 
 export type ContextWindowSnapshot = NullableContextWindowUsage & {
+  readonly codexCacheObservation: CodexCacheObservation | null;
   readonly remainingTokens: number | null;
   readonly usedPercentage: number | null;
   readonly remainingPercentage: number | null;
@@ -50,6 +72,15 @@ export type ContextWindowSnapshot = NullableContextWindowUsage & {
 export interface ContextWindowState {
   readonly snapshot: ContextWindowSnapshot | null;
   readonly invalidatedByCompaction: boolean;
+}
+
+export interface CodexCacheObservation {
+  readonly observedAt: string;
+}
+
+export interface CodexCacheAssessment {
+  readonly state: "recent" | "aging" | "unknown";
+  readonly ageSeconds: number | null;
 }
 
 export interface ContextWindowSelectionStatus {
@@ -78,6 +109,97 @@ export function isCompletedContextCompaction(activity: OrchestrationThreadActivi
   }
   const payload = asRecord(activity.payload);
   return payload?.state === "compacted" || payload?.status === "completed";
+}
+
+// Native rate-limit notifications can repeat the last request's token counters.
+// Use the oldest event in the latest unchanged cumulative series as its time.
+export function deriveCodexCacheObservation(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): CodexCacheObservation | null {
+  let latest: {
+    readonly sessionId: string | null;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly readTokens: number | null;
+    readonly writtenTokens: number | null;
+    observedAt: string;
+  } | null = null;
+
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (!activity) continue;
+    if (
+      activity.kind === "context-window.configured" ||
+      activity.kind === "model.rerouted" ||
+      activity.kind === "provider.session.boundary" ||
+      activity.kind === "provider.handoff.completed" ||
+      isCompletedContextCompaction(activity)
+    ) {
+      break;
+    }
+    if (activity.kind !== "context-window.updated") continue;
+
+    const payload = asRecord(activity.payload);
+    if (payload?.provider !== "codex") return null;
+    const cumulative = readCumulativeUsage(payload.cumulativeUsage);
+    if (!cumulative) return null;
+    const sessionId = typeof payload.usageSessionId === "string" ? payload.usageSessionId : null;
+    const readTokens = asNonNegativeInteger(
+      payload.lastCachedInputTokens ?? payload.cachedInputTokens,
+    );
+    const writtenTokens = asNonNegativeInteger(
+      payload.lastCacheCreationInputTokens ?? payload.cacheCreationInputTokens,
+    );
+
+    if (latest) {
+      if (
+        latest.sessionId !== sessionId ||
+        latest.inputTokens !== cumulative.inputTokens ||
+        latest.outputTokens !== cumulative.outputTokens
+      ) {
+        break;
+      }
+      if (latest.readTokens !== readTokens || latest.writtenTokens !== writtenTokens) return null;
+      latest.observedAt = activity.createdAt;
+      continue;
+    }
+    latest = {
+      sessionId,
+      inputTokens: cumulative.inputTokens,
+      outputTokens: cumulative.outputTokens,
+      readTokens,
+      writtenTokens,
+      observedAt: activity.createdAt,
+    };
+  }
+
+  return latest && ((latest.readTokens ?? 0) > 0 || (latest.writtenTokens ?? 0) > 0)
+    ? { observedAt: latest.observedAt }
+    : null;
+}
+
+export function assessCodexCacheObservation(
+  observation: CodexCacheObservation | null,
+  nowMs: number,
+): CodexCacheAssessment {
+  const observedAtMs = observation ? Date.parse(observation.observedAt) : NaN;
+  if (!Number.isFinite(nowMs) || !Number.isFinite(observedAtMs) || observedAtMs > nowMs) {
+    return { state: "unknown", ageSeconds: null };
+  }
+  const ageSeconds = Math.floor((nowMs - observedAtMs) / 1_000);
+  return {
+    state: ageSeconds < 5 * 60 ? "recent" : ageSeconds < 30 * 60 ? "aging" : "unknown",
+    ageSeconds,
+  };
+}
+
+export function formatCacheDuration(seconds: number): string {
+  if (seconds < 60) return "less than a minute";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours} ${hours === 1 ? "hour" : "hours"}${remainingMinutes > 0 ? ` ${remainingMinutes} min` : ""}`;
 }
 
 // Read the latest token-usage snapshot emitted by the runtime.
@@ -125,6 +247,9 @@ export function deriveLatestContextWindowState(
     return {
       snapshot: {
         claudeCache: readClaudeCacheObservation(payload?.claudeCache),
+        codexCacheObservation:
+          payload?.provider === "codex" ? deriveCodexCacheObservation(activities) : null,
+        cumulativeUsage: readCumulativeUsage(payload?.cumulativeUsage),
         usedTokens,
         usedPercent: payloadUsedPercent,
         // Older Claude totals counted completed content blocks repeatedly.
@@ -138,13 +263,15 @@ export function deriveLatestContextWindowState(
         remainingTokens,
         usedPercentage,
         remainingPercentage,
-        inputTokens: asFiniteNumber(payload?.inputTokens),
-        cachedInputTokens: asFiniteNumber(payload?.cachedInputTokens),
+        inputTokens: asNonNegativeInteger(payload?.inputTokens),
+        cachedInputTokens: asNonNegativeInteger(payload?.cachedInputTokens),
+        cacheCreationInputTokens: asNonNegativeInteger(payload?.cacheCreationInputTokens),
         outputTokens: asFiniteNumber(payload?.outputTokens),
         reasoningOutputTokens: asFiniteNumber(payload?.reasoningOutputTokens),
         lastUsedTokens: asFiniteNumber(payload?.lastUsedTokens),
-        lastInputTokens: asFiniteNumber(payload?.lastInputTokens),
-        lastCachedInputTokens: asFiniteNumber(payload?.lastCachedInputTokens),
+        lastInputTokens: asNonNegativeInteger(payload?.lastInputTokens),
+        lastCachedInputTokens: asNonNegativeInteger(payload?.lastCachedInputTokens),
+        lastCacheCreationInputTokens: asNonNegativeInteger(payload?.lastCacheCreationInputTokens),
         lastOutputTokens: asFiniteNumber(payload?.lastOutputTokens),
         lastReasoningOutputTokens: asFiniteNumber(payload?.lastReasoningOutputTokens),
         toolUses: asFiniteNumber(payload?.toolUses),
@@ -190,6 +317,7 @@ export function deriveSelectedContextWindowSnapshot(
 
   return {
     claudeCache: null,
+    codexCacheObservation: null,
     usedTokens: 0,
     usedPercent: null,
     totalProcessedTokens: null,
@@ -199,11 +327,13 @@ export function deriveSelectedContextWindowSnapshot(
     remainingPercentage: 100,
     inputTokens: null,
     cachedInputTokens: null,
+    cacheCreationInputTokens: null,
     outputTokens: null,
     reasoningOutputTokens: null,
     lastUsedTokens: null,
     lastInputTokens: null,
     lastCachedInputTokens: null,
+    lastCacheCreationInputTokens: null,
     lastOutputTokens: null,
     lastReasoningOutputTokens: null,
     toolUses: null,

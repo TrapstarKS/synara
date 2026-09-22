@@ -114,6 +114,22 @@ The session may preserve provider-specific behavior such as:
 
 Capabilities vary. Do not assume a control available for one provider exists for all of them.
 
+### Codex prompt cache counts
+
+When Codex reports token usage, the context meter shows cache reads and writes from the latest model
+request and cumulative totals for the provider session. The read percentage compares cached input
+with all input tokens in the same scope. These are observed counts, not a prediction that the next
+request will hit cache. Cache reads and writes remain part of the model's input and context usage.
+Older runtimes or sessions without a particular cache counter leave that row hidden. Synara does not
+refresh the provider's prompt cache or infer API spending from subscription usage.
+
+The same tooltip estimates cache recency from the last confirmed read or write. It uses the first
+event in an unchanged cumulative usage series, so repeated rate-limit notifications do not refresh
+the clock. It labels activity from the last five minutes as recently observed, the next 25 minutes
+as an aging observation, and older or missing evidence as unknown. Completed compaction, a native
+model reroute, and a provider session boundary clear the estimate. This status does not confirm that
+the next request will reuse a cached prefix; model, prompt, and routing changes can cause a miss.
+
 ### Claude Auto / 200k / 1M selection
 
 The auto-compact selector chooses an override, not a measured context limit. Auto leaves the
