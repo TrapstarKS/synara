@@ -175,6 +175,10 @@ interface OpenCodeHarnessPolicyDelivery {
   readonly enableComputerControl?: boolean;
 }
 
+type OpenCodePromptInput = Parameters<OpencodeClient["session"]["promptAsync"]>[0];
+
+type OpenCodeSessionRecoveryKind = "encrypted_content" | "invalid_request";
+
 interface OpenCodeResumeCursor {
   readonly openCodeSessionId: string;
   readonly cwd: string;
@@ -192,7 +196,7 @@ interface OpenCodeSessionContext extends OpenCodeMessageState<Part> {
   readonly client: OpencodeClient;
   readonly server: OpenCodeServerConnection;
   readonly directory: string;
-  readonly openCodeSessionId: string;
+  openCodeSessionId: string;
   readonly pendingPermissions: Map<string, PermissionRequest>;
   readonly replyingPermissions: Map<string, "once" | "always" | "reject">;
   readonly settlingPermissions: Map<string, Deferred.Deferred<boolean>>;
@@ -215,6 +219,9 @@ interface OpenCodeSessionContext extends OpenCodeMessageState<Part> {
   activeTurnFinalAssistantMessageId: string | undefined;
   activeTurnToolCallIdleWatchdogStarted: boolean;
   activeTurnEmptyResponseRetryAttempted: boolean;
+  activePromptInput: OpenCodePromptInput | undefined;
+  activePromptIncludesHarnessPolicy: boolean;
+  sessionRecoveryAttempted: boolean;
   activeInteractionMode: ProviderInteractionMode | undefined;
   appliedPermissionInteractionMode: "default" | "plan";
   activeAgent: string | undefined;
@@ -716,6 +723,63 @@ function isOpenCodeContextOverflowError(error: unknown): boolean {
   );
 }
 
+/**
+ * Responses reasoning payloads are caller/model-bound. OpenCode currently
+ * replays the opaque encrypted content from a previous response, which can
+ * permanently poison a session after a model, credential, or gateway change.
+ * Keep these matchers narrow so other provider failures retain their normal
+ * terminal-turn semantics.
+ */
+function isOpenCodeEncryptedContentError(error: unknown): boolean {
+  const record = openCodeRecord(error);
+  const message = [
+    sessionErrorMessage(error),
+    typeof record?.detail === "string" ? record.detail : undefined,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join("\n");
+  return /encrypted[_ ]content/i.test(message) && /not issued to this caller/i.test(message);
+}
+
+function isOpenCodeInvalidRequestError(error: unknown): boolean {
+  const record = openCodeRecord(error);
+  const data = openCodeRecord(record?.data);
+  const message = [
+    sessionErrorMessage(error),
+    typeof record?.detail === "string" ? record.detail : undefined,
+    typeof record?.message === "string" ? record.message : undefined,
+    typeof data?.message === "string" ? data.message : undefined,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join("\n");
+  return (
+    /invalid[_ ]request[_ ]error/i.test(message) &&
+    (/invalid\s+(?:request\s+)?parameters?/i.test(message) || /request\s+body/i.test(message))
+  );
+}
+
+function openCodeSessionRecoveryKind(error: unknown): OpenCodeSessionRecoveryKind | undefined {
+  if (isOpenCodeEncryptedContentError(error)) {
+    return "encrypted_content";
+  }
+  if (isOpenCodeInvalidRequestError(error)) {
+    return "invalid_request";
+  }
+  return undefined;
+}
+
+function openCodeSessionRecoveryWarning(kind: OpenCodeSessionRecoveryKind): string {
+  return kind === "encrypted_content"
+    ? "OpenCode session reset after stale reasoning metadata; retrying the current turn."
+    : "OpenCode session reset after an invalid upstream request; retrying the current turn without the optional variant.";
+}
+
+function withoutOpenCodePromptVariant(input: OpenCodePromptInput): OpenCodePromptInput {
+  const retryInput = { ...input };
+  delete retryInput.variant;
+  return retryInput;
+}
+
 function updateProviderSession(
   context: OpenCodeSessionContext,
   patch: Partial<ProviderSession>,
@@ -771,6 +835,9 @@ const clearActiveTurnState = Effect.fn("clearOpenCodeActiveTurnState")(function*
   context.activeTurnFinalAssistantMessageId = undefined;
   context.activeTurnToolCallIdleWatchdogStarted = false;
   context.activeTurnEmptyResponseRetryAttempted = false;
+  context.activePromptInput = undefined;
+  context.activePromptIncludesHarnessPolicy = false;
+  context.sessionRecoveryAttempted = false;
   context.activeInteractionMode = undefined;
   context.activeAgent = undefined;
   context.activeVariant = undefined;
@@ -1995,7 +2062,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         context: OpenCodeSessionContext,
         input: {
           readonly turnId: TurnId;
-          readonly promptInput: Parameters<OpencodeClient["session"]["promptAsync"]>[0];
+          readonly promptInput: OpenCodePromptInput;
         },
       ) {
         const settled = yield* Deferred.make<ProviderAdapterRequestError | null, never>();
@@ -2017,13 +2084,54 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               if (context.activeTurnId !== input.turnId) {
                 return requestError;
               }
+              let terminalError = requestError;
+              const recoveryKind = openCodeSessionRecoveryKind(requestError);
+              if (
+                recoveryKind !== undefined &&
+                !context.sessionRecoveryAttempted &&
+                (yield* resetOpenCodeSessionAfterRecoverableError(
+                  context,
+                  input.turnId,
+                  recoveryKind,
+                ))
+              ) {
+                yield* emit(context, {
+                  ...buildEventBase({
+                    threadId: context.session.threadId,
+                    turnId: input.turnId,
+                  }),
+                  type: "runtime.warning",
+                  payload: {
+                    message: openCodeSessionRecoveryWarning(recoveryKind),
+                    detail: requestError.detail,
+                  },
+                });
+                const retryPromptInput = context.activePromptInput;
+                if (retryPromptInput !== undefined) {
+                  const retryExit = yield* Effect.exit(
+                    runOpenCodeSdkWithTimeout(
+                      "session.promptAsync",
+                      (signal) => context.client.session.promptAsync(retryPromptInput, { signal }),
+                      promptSubmissionTimeoutMs,
+                    ).pipe(Effect.mapError(toAdapterRequestError)),
+                  );
+                  if (Exit.isSuccess(retryExit)) {
+                    markOpenCodeHarnessPolicyDelivered(context, input.turnId);
+                    return null;
+                  }
+                  const retryCause = Cause.squash(retryExit.cause);
+                  if (retryCause instanceof ProviderAdapterRequestError) {
+                    terminalError = retryCause;
+                  }
+                }
+              }
               yield* clearActiveTurnState(context);
               updateProviderSession(
                 context,
                 {
                   status: "ready",
                   model: context.session.model,
-                  lastError: requestError.detail,
+                  lastError: terminalError.detail,
                 },
                 { clearActiveTurnId: true },
               );
@@ -2031,10 +2139,10 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                 ...buildEventBase({ threadId: context.session.threadId, turnId: input.turnId }),
                 type: "turn.aborted",
                 payload: {
-                  reason: requestError.detail,
+                  reason: terminalError.detail,
                 },
               });
-              return requestError;
+              return terminalError;
             }),
           ),
           Effect.flatMap((result) => Deferred.succeed(settled, result)),
@@ -2047,6 +2155,197 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         if (quickResult._tag === "Some" && quickResult.value) {
           return yield* quickResult.value;
         }
+      });
+
+      /**
+       * These failures are not reliably recoverable by retrying the same native
+       * session. OpenCode can replay caller-bound reasoning metadata, or pass a
+       * model variant that the upstream provider rejects. Start an empty native
+       * session and retry the already accepted Synara prompt once, preserving
+       * the user's working tree and the current Synara turn.
+       */
+      const resetOpenCodeSessionAfterRecoverableError = Effect.fn(
+        "resetOpenCodeSessionAfterRecoverableError",
+      )(function* (
+        context: OpenCodeSessionContext,
+        turnId: TurnId,
+        recoveryKind: OpenCodeSessionRecoveryKind,
+      ) {
+        const promptInput = context.activePromptInput;
+        if (
+          context.activeTurnId !== turnId ||
+          promptInput === undefined ||
+          context.sessionRecoveryAttempted
+        ) {
+          return false;
+        }
+
+        context.sessionRecoveryAttempted = true;
+        const omitVariant = recoveryKind === "invalid_request";
+        const previousSessionId = context.openCodeSessionId;
+        yield* runOpenCodeSdkWithTimeout(
+          "session.abort",
+          (signal) => context.client.session.abort({ sessionID: previousSessionId }, { signal }),
+          OPENCODE_CONTROL_REQUEST_TIMEOUT_MS,
+        ).pipe(Effect.ignore({ log: true }));
+
+        const parsedModel = parseOpenCodeModelSlug(context.session.model);
+        const interactionMode = context.activeInteractionMode === "plan" ? "plan" : "default";
+        const sessionCreateInput = {
+          ...(parsedModel
+            ? {
+                model: {
+                  providerID: parsedModel.providerID,
+                  id: parsedModel.modelID,
+                  ...(context.activeVariant && !omitVariant
+                    ? { variant: context.activeVariant }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(context.activeAgent ? { agent: context.activeAgent } : {}),
+          permission: buildOpenCodePermissionRules(context.session.runtimeMode, interactionMode),
+          title: `Synara ${context.session.threadId}`,
+        };
+        const createdExit = yield* Effect.exit(
+          runOpenCodeSdkWithTimeout("session.create", (signal) =>
+            context.client.session.create(
+              sessionCreateInput as unknown as Parameters<typeof context.client.session.create>[0],
+              { signal },
+            ),
+          ),
+        );
+        if (Exit.isFailure(createdExit)) {
+          yield* Effect.logWarning(
+            `${adapterConfig.displayName} could not reset the session after a recoverable turn error`,
+            Cause.squash(createdExit.cause),
+          );
+          return false;
+        }
+
+        const nextSessionId = createdExit.value.data?.id;
+        if (typeof nextSessionId !== "string" || nextSessionId.trim().length === 0) {
+          yield* Effect.logWarning(
+            `${adapterConfig.displayName} session reset returned no session id`,
+          );
+          return false;
+        }
+
+        context.openCodeSessionId = nextSessionId.trim();
+        const retryPromptInput = omitVariant
+          ? withoutOpenCodePromptVariant(promptInput)
+          : promptInput;
+        const retryHarnessPolicy = context.activePromptIncludesHarnessPolicy
+          ? null
+          : takeSynaraHarnessPolicyForProviderSession(
+              {},
+              {
+                provider,
+                scopedGatewayConnectionAvailable: context.gatewayControlAvailable,
+              },
+            );
+        context.activePromptIncludesHarnessPolicy =
+          context.activePromptIncludesHarnessPolicy || retryHarnessPolicy !== null;
+        context.activePromptInput = {
+          ...retryPromptInput,
+          sessionID: context.openCodeSessionId,
+          ...(retryHarnessPolicy
+            ? {
+                parts: [
+                  { type: "text" as const, text: retryHarnessPolicy },
+                  ...(retryPromptInput.parts ?? []),
+                ],
+              }
+            : {}),
+        };
+        context.relatedSessionIds.clear();
+        context.pendingTextDeltasByPartId.clear();
+        context.partById.clear();
+        context.partSnapshotKeyById.clear();
+        context.emittedTextByPartId.clear();
+        context.messageRoleById.clear();
+        context.messageSnapshotKeyById.clear();
+        context.completedAssistantPartIds.clear();
+        context.pendingPermissions.clear();
+        context.replyingPermissions.clear();
+        for (const settlement of context.settlingPermissions.values()) {
+          yield* Deferred.succeed(settlement, false);
+        }
+        context.settlingPermissions.clear();
+        context.pendingQuestions.clear();
+        context.harnessPolicyDelivered = false;
+        context.pendingHarnessPolicyTurnId = context.activePromptIncludesHarnessPolicy
+          ? turnId
+          : undefined;
+        context.appliedPermissionInteractionMode = interactionMode;
+        context.lastKnownTokenUsage = undefined;
+        context.lastEmittedTokenUsageKey = undefined;
+        context.latestTurnCostUsd = undefined;
+        context.activeTurnEventSerial = 0;
+        context.activeTurnProviderActivitySerial = 0;
+        context.activeTurnCompletionActivitySerial = 0;
+        context.activeTurnSawToolCallFinish = false;
+        context.activeTurnSawFinalAssistant = false;
+        context.activeTurnFinalAssistantMessageId = undefined;
+        context.activeTurnToolCallIdleWatchdogStarted = false;
+        context.activeTurnEmptyResponseRetryAttempted = false;
+        updateProviderSession(
+          context,
+          {
+            status: "running",
+            activeTurnId: turnId,
+            resumeCursor: buildOpenCodeResumeCursor({
+              openCodeSessionId: context.openCodeSessionId,
+              cwd: context.directory,
+              gatewayControlAvailable: context.gatewayControlAvailable,
+            }),
+          },
+          { clearLastError: true },
+        );
+        return true;
+      });
+
+      const recoverOpenCodeTurnAfterRecoverableError = Effect.fn(
+        "recoverOpenCodeTurnAfterRecoverableError",
+      )(function* (
+        context: OpenCodeSessionContext,
+        input: {
+          readonly turnId: TurnId;
+          readonly message: string;
+          readonly raw: unknown;
+          readonly recoveryKind: OpenCodeSessionRecoveryKind;
+        },
+      ) {
+        if (
+          !(yield* resetOpenCodeSessionAfterRecoverableError(
+            context,
+            input.turnId,
+            input.recoveryKind,
+          ))
+        ) {
+          return false;
+        }
+        yield* emit(context, {
+          ...buildEventBase({
+            threadId: context.session.threadId,
+            turnId: input.turnId,
+            raw: input.raw,
+          }),
+          type: "runtime.warning",
+          payload: {
+            message: openCodeSessionRecoveryWarning(input.recoveryKind),
+            detail: input.message,
+          },
+        });
+        const promptInput = context.activePromptInput;
+        if (promptInput === undefined) {
+          return false;
+        }
+        yield* submitOpenCodePromptAsync(context, {
+          turnId: input.turnId,
+          promptInput,
+        });
+        return true;
       });
 
       const refreshRelatedOpenCodeSessions = Effect.fn("refreshRelatedOpenCodeSessions")(function* (
@@ -2986,6 +3285,19 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
 
           case "session.next.step.failed": {
             const message = event.properties.error.message || "OpenCode session failed.";
+            const stepRecoveryKind = openCodeSessionRecoveryKind(event.properties.error);
+            if (
+              turnId &&
+              stepRecoveryKind !== undefined &&
+              (yield* recoverOpenCodeTurnAfterRecoverableError(context, {
+                turnId,
+                message,
+                raw: event,
+                recoveryKind: stepRecoveryKind,
+              }))
+            ) {
+              break;
+            }
             if (turnId) {
               yield* completeOpenCodeTurn(context, {
                 turnId,
@@ -3060,6 +3372,19 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               break;
             }
             const activeTurnId = context.activeTurnId;
+            const sessionRecoveryKind = openCodeSessionRecoveryKind(event.properties.error);
+            if (
+              activeTurnId &&
+              sessionRecoveryKind !== undefined &&
+              (yield* recoverOpenCodeTurnAfterRecoverableError(context, {
+                turnId: activeTurnId,
+                message,
+                raw: event,
+                recoveryKind: sessionRecoveryKind,
+              }))
+            ) {
+              break;
+            }
             yield* clearActiveTurnState(context);
             updateProviderSession(
               context,
@@ -3856,6 +4181,9 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                   activeTurnFinalAssistantMessageId: undefined,
                   activeTurnToolCallIdleWatchdogStarted: false,
                   activeTurnEmptyResponseRetryAttempted: false,
+                  activePromptInput: undefined,
+                  activePromptIncludesHarnessPolicy: false,
+                  sessionRecoveryAttempted: false,
                   activeInteractionMode: undefined,
                   appliedPermissionInteractionMode: resumedSessionId ? "plan" : "default",
                   activeAgent: undefined,
@@ -3987,6 +4315,9 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         context.activeTurnFinalAssistantMessageId = undefined;
         context.activeTurnToolCallIdleWatchdogStarted = false;
         context.activeTurnEmptyResponseRetryAttempted = false;
+        context.activePromptInput = undefined;
+        context.activePromptIncludesHarnessPolicy = harnessPolicy !== null;
+        context.sessionRecoveryAttempted = false;
         context.activeInteractionMode = interactionMode;
         // Always pin Synara's interaction mode to OpenCode's primary agent.
         // Otherwise a user config with default agent=plan (or a stale options.agent=plan
@@ -4027,18 +4358,20 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         // Capture the pre-turn message ids before submitting so the watchdog can
         // distinguish this turn's final assistant message from prior ones.
         const snapshotWatchdogBaseline = yield* captureTurnSnapshotWatchdogBaseline(context);
+        const promptInput = {
+          sessionID: context.openCodeSessionId,
+          model: parsedModel,
+          ...(context.activeAgent ? { agent: context.activeAgent } : {}),
+          ...(context.activeVariant ? { variant: context.activeVariant } : {}),
+          parts: [
+            ...(providerText ? [{ type: "text" as const, text: providerText }] : []),
+            ...fileParts,
+          ],
+        } satisfies Parameters<OpencodeClient["session"]["promptAsync"]>[0];
+        context.activePromptInput = promptInput;
         yield* submitOpenCodePromptAsync(context, {
           turnId,
-          promptInput: {
-            sessionID: context.openCodeSessionId,
-            model: parsedModel,
-            ...(context.activeAgent ? { agent: context.activeAgent } : {}),
-            ...(context.activeVariant ? { variant: context.activeVariant } : {}),
-            parts: [
-              ...(providerText ? [{ type: "text" as const, text: providerText }] : []),
-              ...fileParts,
-            ],
-          },
+          promptInput,
         });
         // The completion backstop covers dropped/delayed idle events. Keep the
         // poll cheap (status-first) so large turns are not penalized.
