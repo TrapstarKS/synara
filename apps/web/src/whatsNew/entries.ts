@@ -22,6 +22,20 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.5",
+    date: "Sep 22",
+    features: [
+      {
+        id: "opencode-running-tools",
+        title: "OpenCode task turns stay active",
+        description:
+          "Synara keeps an OpenCode turn active until its running task tools finish, even when the parent session reports idle first.",
+        details:
+          "Progress and stop controls remain attached to the task while OpenCode's child-session work completes.",
+      },
+    ],
+  },
+  {
     version: "0.9.4",
     date: "Sep 22",
     features: [

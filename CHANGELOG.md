@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.5] — 2026-09-22
+
+### Fixed
+
+- OpenCode turns remain active after a terminal step event while task tools are still running, preserving progress and stop controls until the tools finish.
+
 ## [0.9.4] — 2026-09-22
 
 ### Added
