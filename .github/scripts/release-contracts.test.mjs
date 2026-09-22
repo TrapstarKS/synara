@@ -47,8 +47,8 @@ test("GitHub and npm publication require every test partition and native build",
     assert.ok(job(name).includes("needs.preflight.outputs.publish_release == 'true'"));
     assert.ok(!job(name).includes("always()"));
   }
-  assert.deepEqual(needs("build"), ["bundle", "preflight"]);
-  for (const name of ["bundle", "test", "verify"]) {
+  assert.deepEqual(needs("build"), ["build_mac_icon", "bundle", "preflight"]);
+  for (const name of ["build_mac_icon", "bundle", "test", "verify"]) {
     assert.deepEqual(needs(name), ["preflight"]);
     assert.match(job(name), /permissions:\n      contents: read/);
   }
