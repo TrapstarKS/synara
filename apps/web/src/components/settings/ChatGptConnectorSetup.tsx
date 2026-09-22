@@ -52,15 +52,15 @@ function Step(props: {
 }) {
   return (
     <li className="flex gap-2.5">
-      <span className="mt-0.5 flex size-4.5 shrink-0 items-center justify-center rounded-full border border-border text-[10px] font-medium text-muted-foreground">
+      <span className="mt-0.5 flex size-4.5 shrink-0 items-center justify-center rounded-full border border-border text-ui-xs font-medium text-muted-foreground">
         {props.index}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <StatusDot tone={props.tone} />
-          <span className="text-xs font-medium text-foreground">{props.title}</span>
+          <span className="text-ui-sm font-medium text-foreground">{props.title}</span>
         </div>
-        <div className="mt-1 text-xs text-muted-foreground">{props.children}</div>
+        <div className="mt-1 text-ui-sm text-muted-foreground">{props.children}</div>
       </div>
     </li>
   );
@@ -102,7 +102,7 @@ function WorkerCountInput(props: {
       min={MAX_WORKERS_MIN}
       max={MAX_WORKERS_MAX}
       aria-label="Simultaneous worker chats"
-      className="h-6 w-12 rounded-md border border-border bg-muted/40 px-1 text-center text-[11px] text-foreground"
+      className="h-6 w-12 rounded-md border border-border bg-muted/40 px-1 text-center text-ui-sm text-foreground"
       value={draft}
       onChange={(event) => setDraft(event.target.value)}
       onBlur={commit}
@@ -250,7 +250,7 @@ export function ChatGptConnectorSetup(props: {
       )}
     >
       <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground">
+        <div className="flex min-w-0 items-center gap-1.5 text-ui-sm font-medium text-foreground">
           <StatusDot tone={state ? tunnelTone(state.tunnelState) : "idle"} />
           Tool connector
           <span className="truncate font-normal text-muted-foreground">
@@ -337,7 +337,7 @@ export function ChatGptConnectorSetup(props: {
                 id={connectorId}
                 readOnly
                 spellCheck={false}
-                className="h-7 min-w-0 flex-1 rounded-md border border-border bg-muted/40 px-2 font-mono text-[11px] text-foreground"
+                className="h-7 min-w-0 flex-1 rounded-md border border-border bg-muted/40 px-2 font-mono text-ui-sm text-foreground"
                 value={state?.connectorUrl ?? "Connecting…"}
                 onFocus={(event) => event.currentTarget.select()}
               />
@@ -376,7 +376,7 @@ export function ChatGptConnectorSetup(props: {
               href={CHATGPT_CONNECTOR_SETTINGS_URL}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs font-medium text-foreground underline-offset-2 hover:underline"
+              className="inline-flex items-center gap-1 text-ui-sm font-medium text-foreground underline-offset-2 hover:underline"
             >
               Open ChatGPT connector settings
               <ExternalLinkIcon className="size-3" />
@@ -400,7 +400,7 @@ export function ChatGptConnectorSetup(props: {
         </Step>
       </ol>
 
-      <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
+      <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/60 pt-2 text-ui-sm text-muted-foreground">
         <span className="flex items-center gap-2">
           <span>
             {toolCalls === 1 ? "1 tool call served" : `${toolCalls} tool calls served`}
@@ -419,7 +419,7 @@ export function ChatGptConnectorSetup(props: {
           </label>
           <button
             type="button"
-            className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+            className="text-ui-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
             disabled={rotateSecret.isPending}
             title="Generates a new secret path; update the connector URL in ChatGPT afterwards"
             onClick={() => rotateSecret.mutate()}

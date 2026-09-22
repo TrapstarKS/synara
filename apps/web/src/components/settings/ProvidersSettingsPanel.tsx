@@ -720,7 +720,7 @@ function ProviderInstallFieldControl(props: {
     const current = props.settings[field.settingsKey];
     return (
       <label htmlFor={id} className="block">
-        <span className="block text-xs font-medium text-foreground">{field.label}</span>
+        <span className="block text-ui-sm font-medium text-foreground">{field.label}</span>
         <div className="mt-1">
           <SettingsSelectControl
             value={current}
@@ -742,7 +742,7 @@ function ProviderInstallFieldControl(props: {
             ))}
           </SettingsSelectControl>
         </div>
-        <span className="mt-1 block text-xs text-muted-foreground">{field.description}</span>
+        <span className="mt-1 block text-ui-sm text-muted-foreground">{field.description}</span>
       </label>
     );
   }

@@ -294,8 +294,8 @@ export function McpServersDialog(props: {
 
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-medium text-foreground">Active servers</p>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-ui font-medium text-foreground">Active servers</p>
+              <p className="text-ui-sm text-muted-foreground">
                 {servers.length === 1 ? "1 server" : `${servers.length} servers`} reported by Codex.
               </p>
             </div>
@@ -314,11 +314,11 @@ export function McpServersDialog(props: {
           </div>
 
           {loading && servers.length === 0 ? (
-            <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-5 text-center text-sm text-muted-foreground">
+            <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-5 text-center text-ui text-muted-foreground">
               Reading MCP status…
             </div>
           ) : servers.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border/60 px-3 py-5 text-center text-sm text-muted-foreground">
+            <div className="rounded-lg border border-dashed border-border/60 px-3 py-5 text-center text-ui text-muted-foreground">
               No MCP servers were reported for this session.
             </div>
           ) : (
@@ -336,17 +336,17 @@ export function McpServersDialog(props: {
                   >
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-sm font-medium text-foreground">
+                        <span className="truncate text-ui font-medium text-foreground">
                           {server.name}
                         </span>
                         <Badge variant={runtimeStatusVariant(server.runtimeStatus)} size="sm">
                           {runtimeStatusLabel(server.runtimeStatus)}
                         </Badge>
                         {builtIn ? (
-                          <span className="text-[11px] text-muted-foreground">Built-in</span>
+                          <span className="text-ui-sm text-muted-foreground">Built-in</span>
                         ) : null}
                       </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
+                      <p className="mt-1 text-ui-sm text-muted-foreground">
                         {server.toolNames.length} {server.toolNames.length === 1 ? "tool" : "tools"}
                         {server.resourceCount > 0
                           ? ` · ${server.resourceCount} resource${server.resourceCount === 1 ? "" : "s"}`
@@ -354,13 +354,13 @@ export function McpServersDialog(props: {
                         {server.authStatus !== "unknown" ? ` · auth: ${server.authStatus}` : ""}
                       </p>
                       {server.toolsError ? (
-                        <p className="mt-1 break-words text-xs text-destructive">
+                        <p className="mt-1 break-words text-ui-sm text-destructive">
                           {server.toolsError}
                         </p>
                       ) : null}
                     </div>
                     {builtIn ? (
-                      <span className="shrink-0 text-xs text-muted-foreground">
+                      <span className="shrink-0 text-ui-sm text-muted-foreground">
                         Managed by Synara
                       </span>
                     ) : (
@@ -419,8 +419,8 @@ export function McpServersDialog(props: {
           <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-muted/15 p-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-medium text-foreground">Add MCP server</p>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-ui font-medium text-foreground">Add MCP server</p>
+                <p className="text-ui-sm text-muted-foreground">
                   Configuration is written to Codex and queued for the next turn.
                 </p>
               </div>
@@ -442,7 +442,7 @@ export function McpServersDialog(props: {
             {showAddForm ? (
               <form className="flex flex-col gap-3" onSubmit={handleAdd}>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+                  <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
                     Name
                     <Input
                       value={form.name}
@@ -451,7 +451,7 @@ export function McpServersDialog(props: {
                       autoComplete="off"
                     />
                   </label>
-                  <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+                  <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
                     Transport
                     <Select
                       value={form.transport}
@@ -476,7 +476,7 @@ export function McpServersDialog(props: {
 
                 {form.transport === "stdio" ? (
                   <>
-                    <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+                    <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
                       Command
                       <Input
                         value={form.command}
@@ -486,7 +486,7 @@ export function McpServersDialog(props: {
                       />
                     </label>
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+                      <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
                         Arguments (one per line)
                         <Textarea
                           value={form.args}
@@ -495,7 +495,7 @@ export function McpServersDialog(props: {
                           size="sm"
                         />
                       </label>
-                      <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+                      <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
                         Environment (KEY=VALUE per line)
                         <Textarea
                           value={form.env}
@@ -505,7 +505,7 @@ export function McpServersDialog(props: {
                         />
                       </label>
                     </div>
-                    <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+                    <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
                       Working directory (optional)
                       <Input
                         value={form.cwd}
@@ -517,7 +517,7 @@ export function McpServersDialog(props: {
                   </>
                 ) : (
                   <>
-                    <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+                    <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
                       MCP URL
                       <Input
                         type="url"
@@ -527,7 +527,7 @@ export function McpServersDialog(props: {
                         autoComplete="url"
                       />
                     </label>
-                    <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+                    <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
                       Bearer token environment variable (optional)
                       <Input
                         value={form.bearerTokenEnvVar}

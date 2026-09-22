@@ -184,7 +184,7 @@ function ToolCallMetadata({ details }: { details: WorkLogToolDetails }) {
   if (rows.length === 0) return null;
   return (
     <ToolDetailSection title="Tool">
-      <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-lg border border-border/45 bg-background/60 px-3 py-2.5 text-[11px]">
+      <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-lg border border-border/45 bg-background/60 px-3 py-2.5 text-ui-sm">
         {rows.map(([label, value]) => (
           <div key={label} className="contents">
             <dt className="text-muted-foreground/56">{label}</dt>

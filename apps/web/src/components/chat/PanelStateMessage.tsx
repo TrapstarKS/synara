@@ -10,8 +10,8 @@ import { type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 
-// `comfortable` matches the larger pane placeholders (text-sm, p-6); `compact`
-// matches dense in-panel hints (text-xs, dimmer). `fill` chooses between filling
+// `comfortable` matches the larger pane placeholders (text-ui, p-6); `compact`
+// matches dense in-panel hints (text-ui-sm, dimmer). `fill` chooses between filling
 // a fixed-height parent (`full`) or flexing within a column (`flex`).
 export function PanelStateMessage(props: {
   children: ReactNode;

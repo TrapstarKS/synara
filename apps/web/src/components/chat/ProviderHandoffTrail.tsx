@@ -92,7 +92,7 @@ function ProviderStep({
       {current && showCurrentLabel ? (
         <>
           <span className="max-w-20 truncate font-medium text-foreground">{providerName}</span>
-          <span className="text-[9px] font-normal text-muted-foreground">Current</span>
+          <span className="text-ui-2xs font-normal text-muted-foreground">Current</span>
         </>
       ) : null}
     </span>
@@ -117,7 +117,7 @@ function HeaderTrail({
           <ProviderStep entry={presentation.first} current={false} showCurrentLabel={false} />
           <TrailConnector isReturn={false} />
           <span
-            className="inline-flex h-4 min-w-5 shrink-0 items-center justify-center px-0.5 text-[9px] font-medium tabular-nums text-muted-foreground"
+            className="inline-flex h-4 min-w-5 shrink-0 items-center justify-center px-0.5 text-ui-2xs font-medium tabular-nums text-muted-foreground"
             title={`${presentation.hiddenCount} hidden provider changes`}
           >
             +{presentation.hiddenCount}
@@ -203,7 +203,7 @@ export function ProviderHandoffTrail({
             tabIndex={0}
             aria-label={accessibleLabel}
             variant="secondary"
-            className="hidden !h-6 shrink-0 items-center justify-center gap-1 rounded-md px-1.5 text-[10px] font-normal text-muted-foreground sm:inline-flex"
+            className="hidden !h-6 shrink-0 items-center justify-center gap-1 rounded-md px-1.5 text-ui-xs font-normal text-muted-foreground sm:inline-flex"
             dir="ltr"
           >
             <HeaderTrail trail={displayedTrail} compact={compact} />

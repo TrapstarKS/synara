@@ -52,11 +52,11 @@ export function SubagentsPanel({
         { label: "Completed", items: completed },
       ].map(({ label, items }) => (
         <section key={label} aria-label={`${label} subagents`} className="mb-6">
-          <h2 className="mb-2 px-2 text-xs font-normal text-muted-foreground">
+          <h2 className="mb-2 px-2 text-ui-sm font-normal text-muted-foreground">
             {label} · {items.length}
           </h2>
           {items.length === 0 ? (
-            <p className="px-2 py-2 text-xs text-muted-foreground">
+            <p className="px-2 py-2 text-ui-sm text-muted-foreground">
               {label === "Active" ? "No active subagents" : "No completed subagents"}
             </p>
           ) : (
@@ -74,10 +74,10 @@ export function SubagentsPanel({
                   onClick={() => onOpen(thread.id)}
                 >
                   <BotIcon className="size-4 shrink-0" style={{ color: identity.accentColor }} />
-                  <span className="min-w-0 flex-1 truncate text-left text-sm">
+                  <span className="min-w-0 flex-1 truncate text-left text-ui">
                     {identity.primaryLabel}
                   </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
+                  <span className="shrink-0 text-ui-sm text-muted-foreground">
                     {active || status !== "Completed" ? (
                       status
                     ) : (

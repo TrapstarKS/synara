@@ -215,7 +215,7 @@ function SubagentDetailRow(props: {
       <button
         type="button"
         className={cn(
-          "shrink-0 rounded-full border border-border/45 px-2.5 py-1 text-[9px] font-medium text-muted-foreground/62 transition-colors",
+          "shrink-0 rounded-full border border-border/45 px-2.5 py-1 text-ui-2xs font-medium text-muted-foreground/62 transition-colors",
           canOpenThread
             ? "hover:border-foreground/15 hover:text-foreground/84"
             : "cursor-default opacity-50",

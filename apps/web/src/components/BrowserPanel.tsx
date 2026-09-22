@@ -525,13 +525,13 @@ function BrowserLocalServersHome({
             {loading ? (
               <>
                 <RefreshCwIcon className="mb-4 size-12 animate-spin text-white/20" />
-                <p className="text-base font-semibold text-white">Scanning local servers</p>
+                <p className="text-ui-lg font-semibold text-white">Scanning local servers</p>
                 <p className="mt-2 text-ui leading-snug text-white/35">Checking localhost ports</p>
               </>
             ) : (
               <>
                 <GlobeIcon className="mb-4 size-16 stroke-[1.5] text-white/30" />
-                <p className="text-base font-semibold text-white">No local servers</p>
+                <p className="text-ui-lg font-semibold text-white">No local servers</p>
                 <p className="mt-2 text-ui leading-snug text-white/35">Try another browser URL</p>
               </>
             )}

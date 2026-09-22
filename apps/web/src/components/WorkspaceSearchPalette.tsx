@@ -65,7 +65,7 @@ const LIST_CLASS = "max-h-[min(30rem,60vh)]";
 const GROUP_LABEL_CLASS =
   "px-2.5 pt-1.5 pb-1 font-normal text-ui-sm text-zinc-400 dark:text-zinc-500";
 
-// Row text sizes live on the inner spans (the item base carries a sm:text-sm
+// Row text sizes live on the inner spans (the item base carries a sm:text-ui
 // that would win over an item-level override).
 const ITEM_CLASS =
   "cursor-pointer gap-2 rounded-lg px-2.5 py-1 text-zinc-800 data-highlighted:bg-zinc-500/8 data-highlighted:text-zinc-900 dark:text-zinc-200 dark:data-highlighted:bg-zinc-400/10 dark:data-highlighted:text-zinc-100";

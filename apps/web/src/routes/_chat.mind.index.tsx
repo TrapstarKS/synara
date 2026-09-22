@@ -162,7 +162,7 @@ function MindListRow({
                   // below, so the submitted value is always a valid memory type.
                   setDraftType(event.target.value as MindMemoryType)
                 }
-                className="rounded-md border border-input bg-background px-1.5 py-1 text-xs text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="rounded-md border border-input bg-background px-1.5 py-1 text-ui-sm text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <option value="semantic">semantic</option>
                 <option value="episodic">episodic</option>
@@ -187,7 +187,7 @@ function MindListRow({
         ) : (
           <>
             <span className="truncate text-[0.8125rem] text-foreground">{memory.text}</span>
-            <span className="truncate text-xs text-muted-foreground">
+            <span className="truncate text-ui-sm text-muted-foreground">
               {projectName} · {formatRelativeTime(memory.createdAt)} ·{" "}
               {formatMindWeightLabel(memory.weight)}
               {provenance ? ` · ${provenance}` : ""}
@@ -202,13 +202,13 @@ function MindListRow({
                 aria-label={historyOpen ? "Hide history" : "Show history"}
                 aria-expanded={historyOpen}
                 onClick={() => setHistoryOpen((open) => !open)}
-                className="w-fit rounded text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                className="w-fit rounded text-ui-sm text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
               >
                 History
               </button>
             </span>
             <DisclosureRegion open={historyOpen}>
-              <span className="flex flex-col gap-0.5 py-1 text-xs text-muted-foreground">
+              <span className="flex flex-col gap-0.5 py-1 text-ui-sm text-muted-foreground">
                 <span>{MIND_HISTORY_NOTE}</span>
                 {historyQuery.isLoading ? (
                   <span>Loading history…</span>
@@ -356,10 +356,10 @@ function MindProfileCard({
       className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-3"
     >
       <div className="flex items-center justify-between gap-2">
-        <h2 className="truncate text-sm font-medium text-foreground">
+        <h2 className="truncate text-ui font-medium text-foreground">
           Project profile · {projectName}
         </h2>
-        <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+        <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-ui-sm text-muted-foreground">
           <Switch
             checked={optedIn}
             onCheckedChange={setOptedIn}
@@ -368,14 +368,14 @@ function MindProfileCard({
           Include in recalls
         </label>
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-ui-sm text-muted-foreground">
         Opt-in context for this project only. Included in recall digests while opted in, never
         shared across projects.
       </p>
       {profileQuery.isLoading ? (
-        <span className="text-xs text-muted-foreground">Loading profile…</span>
+        <span className="text-ui-sm text-muted-foreground">Loading profile…</span>
       ) : profileQuery.isError ? (
-        <span className="text-xs text-muted-foreground">
+        <span className="text-ui-sm text-muted-foreground">
           {profileQuery.error instanceof Error
             ? profileQuery.error.message
             : "Failed to load profile."}{" "}
@@ -407,12 +407,12 @@ function MindProfileCard({
               Save profile
             </Button>
             {saved ? (
-              <span className="truncate text-xs text-muted-foreground">
+              <span className="truncate text-ui-sm text-muted-foreground">
                 Updated {formatRelativeTime(saved.updatedAt)}
                 {saved.optedIn ? " · included in recalls" : " · not included"}
               </span>
             ) : (
-              <span className="text-xs text-muted-foreground">No profile saved yet.</span>
+              <span className="text-ui-sm text-muted-foreground">No profile saved yet.</span>
             )}
           </div>
         </>
@@ -685,16 +685,16 @@ function MindRouteView() {
     <section className="flex flex-col gap-2">
       {filteredMemories.length === 0 ? (
         searchActive && searchQuery.isPending ? (
-          <div className="px-2 py-4 text-xs text-muted-foreground">Searching…</div>
+          <div className="px-2 py-4 text-ui-sm text-muted-foreground">Searching…</div>
         ) : searchActive ? (
-          <div className="flex flex-col items-start gap-2 px-2 py-4 text-xs text-muted-foreground">
+          <div className="flex flex-col items-start gap-2 px-2 py-4 text-ui-sm text-muted-foreground">
             <span>No memories match — clear search.</span>
             <Button variant="outline" size="sm" onClick={() => setSearch("")}>
               Clear search
             </Button>
           </div>
         ) : (
-          <div className="px-2 py-4 text-xs text-muted-foreground">
+          <div className="px-2 py-4 text-ui-sm text-muted-foreground">
             {projectFilter === null
               ? "No memories yet — agents save project memories as they work."
               : "No memories yet for this project."}
@@ -706,7 +706,7 @@ function MindRouteView() {
             <div key={group.key} className="flex flex-col">
               <h2
                 className={cn(
-                  "px-2 pb-1 text-xs font-medium text-muted-foreground",
+                  "px-2 pb-1 text-ui-sm font-medium text-muted-foreground",
                   index > 0 && "pt-3",
                 )}
               >
@@ -788,14 +788,14 @@ function MindRouteView() {
                 projectName={projectNamesById.get(profileProjectId) ?? "Unknown project"}
               />
             ) : projects.length > 1 ? (
-              <p className="px-2 text-xs text-muted-foreground">
+              <p className="px-2 text-ui-sm text-muted-foreground">
                 Select a project to edit its profile.
               </p>
             ) : null}
             {data.memories.length > 0 || searchActive || visibleProjects.length > 1 ? (
               <div className="flex flex-col gap-2 px-2">
                 {data.memories.length > 0 || searchActive ? (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-ui-sm text-muted-foreground">
                     {searchActive
                       ? searchQuery.data === undefined
                         ? "Searching…"
@@ -852,7 +852,7 @@ function MindRouteView() {
                 </AlertDescription>
               </Alert>
             ) : mindQuery.isLoading ? (
-              <div className="py-16 text-center text-sm text-muted-foreground">
+              <div className="py-16 text-center text-ui text-muted-foreground">
                 Loading memories...
               </div>
             ) : searchActive && searchQuery.isError ? (
@@ -870,11 +870,11 @@ function MindRouteView() {
               </Alert>
             ) : data.memories.length === 0 && !searchActive ? (
               <div className="flex flex-col items-center gap-1 py-16 text-center">
-                <p className="max-w-md text-sm font-medium text-foreground">
+                <p className="max-w-md text-ui font-medium text-foreground">
                   Mind is Synara's shared memory for your projects. Agents save durable decisions
                   and conventions here and recall them in any provider's session.
                 </p>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-ui-sm text-muted-foreground">
                   Agents save memories as you work — ask yours to remember a choice. Recall only
                   reads; confirming a memory lifts its weight.
                 </p>

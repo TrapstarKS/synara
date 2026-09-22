@@ -26,7 +26,7 @@ export function ComposerAsyncUserInputPanel({
     <Collapsible className="mb-2 rounded-xl border border-amber-500/30 bg-amber-500/5">
       <CollapsibleTrigger
         aria-label={pendingLabel}
-        className="group flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
+        className="group flex w-full items-center gap-2 px-3 py-2 text-left text-ui"
       >
         <CircleQuestionIcon
           className="size-4 shrink-0 text-amber-600 dark:text-amber-300"

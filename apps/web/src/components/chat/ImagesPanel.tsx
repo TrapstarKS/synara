@@ -52,10 +52,10 @@ function GalleryThumbnail(props: {
         )}
       </span>
       <span className="block min-w-0 px-2.5 py-2">
-        <span className="block truncate text-xs font-medium text-foreground">
+        <span className="block truncate text-ui-sm font-medium text-foreground">
           {props.image.name}
         </span>
-        <span className="mt-0.5 block text-[11px] text-muted-foreground">{props.image.origin}</span>
+        <span className="mt-0.5 block text-ui-sm text-muted-foreground">{props.image.origin}</span>
       </span>
     </button>
   );
@@ -105,15 +105,15 @@ export function ImagesPanel(props: {
   return (
     <div className={cn("h-full overflow-y-auto px-3 py-5", props.className)}>
       <div className="mb-3 flex items-center justify-between px-1">
-        <h2 className="text-xs font-normal text-muted-foreground">Images</h2>
-        <span className="text-xs tabular-nums text-muted-foreground">{images.length}</span>
+        <h2 className="text-ui-sm font-normal text-muted-foreground">Images</h2>
+        <span className="text-ui-sm tabular-nums text-muted-foreground">{images.length}</span>
       </div>
       {images.length === 0 ? (
         <div className="flex min-h-52 flex-col items-center justify-center gap-3 px-6 text-center">
           <span className="flex size-10 items-center justify-center rounded-xl bg-muted/60 text-muted-foreground">
             <ImageIcon className="size-5" aria-hidden />
           </span>
-          <p className="max-w-56 text-xs leading-relaxed text-muted-foreground">
+          <p className="max-w-56 text-ui-sm leading-relaxed text-muted-foreground">
             Images shared or generated in this chat will appear here.
           </p>
         </div>

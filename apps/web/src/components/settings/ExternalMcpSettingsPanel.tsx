@@ -359,8 +359,8 @@ export function ExternalMcpSettingsPanel(props: { active: boolean }) {
               </div>
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="text-xs font-medium">Computer control</div>
-                  <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                  <div className="text-ui-sm font-medium">Computer control</div>
+                  <div className="mt-0.5 text-ui-sm leading-relaxed text-muted-foreground">
                     High impact. Tasks may drive this Mac&apos;s screen — observe, click, type,
                     menus, clipboard. Every computer action still asks for your approval.
                   </div>

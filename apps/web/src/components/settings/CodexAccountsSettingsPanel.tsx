@@ -100,8 +100,8 @@ function CodexAccountCard(props: {
           <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <div className="text-xs font-medium text-foreground">Synara / Codex</div>
-                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                <div className="text-ui-sm font-medium text-foreground">Synara / Codex</div>
+                <div className="mt-0.5 text-ui-sm text-muted-foreground">
                   {props.statePending ? "Checking…" : authLabel(state?.codexAuth ?? "signed-out")}
                 </div>
               </div>
@@ -131,8 +131,8 @@ function CodexAccountCard(props: {
           <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <div className="text-xs font-medium text-foreground">Claude Code bridge</div>
-                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                <div className="text-ui-sm font-medium text-foreground">Claude Code bridge</div>
+                <div className="mt-0.5 text-ui-sm text-muted-foreground">
                   {props.statePending
                     ? "Checking…"
                     : !state?.proxyInstalled
@@ -202,7 +202,7 @@ function CodexAccountCard(props: {
         </div>
 
         {pendingLogin && state?.userCode && state.verificationUrl ? (
-          <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 p-3 text-xs">
+          <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 p-3 text-ui-sm">
             <div className="font-medium text-foreground">Enter code {state.userCode}</div>
             <div className="mt-1 text-muted-foreground">
               Open {state.verificationUrl} and finish signing in to this account.
@@ -235,7 +235,7 @@ function CodexAccountCard(props: {
         ) : null}
 
         {actionError || state?.detail ? (
-          <p className="text-xs text-destructive">{actionError ?? state?.detail}</p>
+          <p className="text-ui-sm text-destructive">{actionError ?? state?.detail}</p>
         ) : null}
       </div>
     </SettingsCard>
@@ -308,11 +308,11 @@ export function CodexAccountsSettingsPanel({ active }: { active: boolean }) {
       <SettingsSectionShell title="Codex accounts">
         <SettingsCard divided={false}>
           <div className="space-y-3 p-4">
-            <div className="text-xs leading-relaxed text-muted-foreground">
+            <div className="text-ui-sm leading-relaxed text-muted-foreground">
               Each account has isolated Codex credentials. Choose an account before the first
               message; Synara keeps that account attached to the thread afterward.
             </div>
-            <div className="text-xs leading-relaxed text-muted-foreground">
+            <div className="text-ui-sm leading-relaxed text-muted-foreground">
               The Claude Code bridge uses a separate login for safe token refresh. It runs the
               open-source MIT-licensed proxy on this computer and only listens on localhost.
             </div>
@@ -345,7 +345,7 @@ export function CodexAccountsSettingsPanel({ active }: { active: boolean }) {
               </Button>
             </div>
             <div>
-              <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+              <div className="mb-1 text-ui-sm font-medium text-muted-foreground">
                 Claude Code proxy binary
               </div>
               <DebouncedSettingTextInput
@@ -412,12 +412,12 @@ export function CodexAccountsSettingsPanel({ active }: { active: boolean }) {
         ))}
 
         {profiles.length === 0 ? (
-          <p className="px-2 text-[11px] leading-relaxed text-muted-foreground">
+          <p className="px-2 text-ui-sm leading-relaxed text-muted-foreground">
             Add an account to enable per-thread account selection and per-account usage.
           </p>
         ) : null}
         {error || accountStatesQuery.error ? (
-          <p className="px-2 text-xs text-destructive">
+          <p className="px-2 text-ui-sm text-destructive">
             {error ??
               (accountStatesQuery.error instanceof Error
                 ? accountStatesQuery.error.message
