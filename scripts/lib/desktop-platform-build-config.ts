@@ -3,6 +3,8 @@
 // Layer: Release/build helper
 // Depends on: Desktop packaging policy and electron-builder config shape.
 
+import { fileURLToPath } from "node:url";
+
 import {
   createDesktopBundleFilePatterns,
   preserveDependencyDiagnostics,
@@ -37,6 +39,8 @@ export const NODE_PTY_ASAR_UNPACK_GLOBS = ["node_modules/node-pty/**"] as const;
 export type MacSigningMode = "developer-id" | "adhoc";
 
 export interface DesktopPlatformBuildConfig {
+  readonly afterPack?: string;
+  readonly afterSign?: string;
   readonly asarUnpack?: ReadonlyArray<string>;
   readonly dmg?: Record<string, unknown>;
   readonly extraFiles?: ReadonlyArray<Record<string, string>>;
@@ -108,7 +112,9 @@ export function createDesktopPlatformBuildConfig(
       icon: MAC_DMG_ICON_PATH,
       category: "public.app-category.developer-tools",
       hardenedRuntime: input.signed === true,
-      notarize: input.signed === true && macSigningMode !== "adhoc",
+      // The afterSign hook notarizes the app before electron-builder creates the
+      // update ZIP and DMG; the build script then notarizes and staples the DMG.
+      notarize: false,
       // Use electron-builder's per-file signing pass, including the inherited
       // entitlements. Leaving only Electron's linker signature does not bind
       // the app's actual identity or seal its Info.plist and resources.
@@ -135,6 +141,12 @@ export function createDesktopPlatformBuildConfig(
 
     return {
       ...nativePackaging,
+      ...(input.signed === true && macSigningMode !== "adhoc"
+        ? {
+            afterPack: fileURLToPath(new URL("./mac-after-pack.cjs", import.meta.url)),
+            afterSign: fileURLToPath(new URL("./mac-after-sign.cjs", import.meta.url)),
+          }
+        : {}),
       dmg: {
         background: "apps/desktop/resources/dmgly/assets/dmg-background.png",
         window: { width: 642, height: 406 },

@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.9.4] — 2026-09-22
+
+### Added
+
+- Codex context details now show cache reads and writes for the last request and session when the runtime reports them. Cache recency is an estimate and does not promise a future hit.
+- The context meter keeps the first timestamp in a repeated usage series so recurring notifications do not make old cache activity appear new.
+- Local file previews support byte-range requests for PDF viewers. Git diffs and patches now respect nested workspace paths.
+
+### Changed
+
+- GPT-6 Sol and Luna expose their current supported reasoning levels. GPT-6 Luna is the default model for Git writing.
+- GPT-5.2 Codex and GPT-5.2 are again listed to match the current Codex model catalog.
+- The bundled Luna Max Fast runtime routes GPT-6 Luna subagents through Fast while leaving other models' selected routing unchanged.
+- Environment-created tasks and computer-control previews provide clearer navigation and status.
+
+### Fixed
+
+- OpenCode managed sessions retain the engine required for thread tools, and CLI discovery reports unsupported versions clearly.
+- Windows credential-reader startup has a larger bounded timeout.
+- Windows x64 release artifacts are unsigned under the version-scoped release policy; packaging and startup validation remain required.
+
+## [0.9.3] — 2026-09-22
+
+Bound checkpoint startup and skip unused artifacts.
+
 ## [0.9.2] — 2026-09-22
 
 ### Added
@@ -12,9 +37,27 @@
 
 ## [0.9.1] — 2026-09-22
 
-Patch release for the upstream reconciliation. It preserves the local OpenCode recovery behavior and mobile companion identity while bringing the merged UI back within the shared font-token contract.
+**Claude Opus 5.5 and GPT-6 Sol & Luna lead this update.** Synara also improves environment task navigation, OpenCode startup, Computer control feedback, and several high-frequency paths.
+
+### Added
+
+- Claude Opus 5.5 model name, aliases, and capability mapping. The `opus` alias resolves to 5.5; existing explicit choices remain intact.
+- GPT-6 Sol and Luna in the Codex model catalog with their supported reasoning ranges. Astra remains the chat default; Luna is the default for Git writing. Runtime and account access govern availability.
+- Direct rows for tasks created from an environment, with navigation and status in the Environment panel.
+
+### Changed
+
+- Computer control previews, targeting, settings, and model-picker feedback are clearer.
+- Streaming, projection, provider, Git, simulator, sidebar, and review paths avoid redundant work.
+- Long-running durations include days, and model favorites and active-task deletion behave more consistently.
 
 ### Fixed
+
+- OpenCode managed sessions retain the legacy engine required for thread tools. Binary discovery covers common installation locations and reports unsupported 2.x-only CLIs clearly.
+- Windows credential-reader cold compilation has more time before its bounded timeout.
+- Computer settings no longer offer macOS permission setup on unsupported platforms.
+
+### Fork changes
 
 - Reconciled upstream UI changes with the shared `text-ui*` typography tokens across browser, chat, settings and Mind surfaces.
 - Restored the mobile companion's reviewed launchd identities to the brand-check allowlist without renaming installed services.

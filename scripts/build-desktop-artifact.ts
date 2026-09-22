@@ -1453,7 +1453,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     options.macSigningMode === "developer-id"
   ) {
     yield* Effect.log("[desktop-artifact] Notarizing and validating signed macOS DMG...");
-    const finalizedDmg = yield* Effect.try({
+    const finalizedDmg = yield* Effect.tryPromise({
       try: () =>
         finalizeSignedMacDmg({
           stageDistDir,

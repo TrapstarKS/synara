@@ -273,18 +273,11 @@ const CODEX_GPT_6_CAPABILITIES: ModelCapabilities = {
   ],
 };
 
-// GPT-6 Sol and Luna expose the full GPT-6 reasoning ladder, including `none`.
-// Keep Astra's default ladder separate because it does not support `none`.
-const CODEX_GPT_6_SOL_LUNA_CAPABILITIES: ModelCapabilities = {
+const CODEX_GPT_6_LUNA_CAPABILITIES: ModelCapabilities = {
   ...CODEX_GPT_6_CAPABILITIES,
-  reasoningEffortLevels: [
-    { value: "none", label: "None" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium", isDefault: true },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "Extra High" },
-    { value: "max", label: "Max" },
-  ],
+  reasoningEffortLevels: CODEX_GPT_6_CAPABILITIES.reasoningEffortLevels.filter(
+    (level) => level.value !== "ultra",
+  ),
 };
 
 const GROK_CLI_EFFORT_DESCRIPTIONS = {
@@ -549,7 +542,7 @@ const CLAUDE_NO_FAST_XHIGH_CAPABILITIES: ModelCapabilities = {
 // ultrathink prompt mode), effort runs low..max, and there is no fast-mode lane.
 const CLAUDE_FABLE_CAPABILITIES: ModelCapabilities = CLAUDE_NO_FAST_XHIGH_CAPABILITIES;
 
-// Opus 5 keeps the Claude 5 ladder (thinking is adaptive, so no ultrathink prompt
+// Opus 5 and 5.5 keep the Claude 5 ladder (thinking is adaptive, so no ultrathink prompt
 // mode) but stays on the Opus fast-mode lane that Fable and Sonnet lack.
 const CLAUDE_OPUS_5_CAPABILITIES: ModelCapabilities = {
   ...CLAUDE_NO_FAST_XHIGH_CAPABILITIES,
@@ -646,12 +639,12 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     {
       slug: "gpt-6-sol",
       name: "GPT-6 Sol",
-      capabilities: CODEX_GPT_6_SOL_LUNA_CAPABILITIES,
+      capabilities: CODEX_GPT_6_CAPABILITIES,
     },
     {
       slug: "gpt-6-luna",
       name: "GPT-6 Luna",
-      capabilities: CODEX_GPT_6_SOL_LUNA_CAPABILITIES,
+      capabilities: CODEX_GPT_6_LUNA_CAPABILITIES,
     },
     {
       slug: "gpt-5.5",
@@ -678,6 +671,16 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       name: "GPT-5.3 Codex Spark",
       capabilities: CODEX_GPT_5_CAPABILITIES,
     },
+    {
+      slug: "gpt-5.2-codex",
+      name: "GPT-5.2 Codex",
+      capabilities: CODEX_GPT_5_CAPABILITIES,
+    },
+    {
+      slug: "gpt-5.2",
+      name: "GPT-5.2",
+      capabilities: CODEX_GPT_5_CAPABILITIES,
+    },
   ],
   claudeAgent: [
     {
@@ -689,6 +692,11 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       slug: "claude-fable-5",
       name: "Claude Fable 5",
       capabilities: CLAUDE_FABLE_CAPABILITIES,
+    },
+    {
+      slug: "claude-opus-5-5",
+      name: "Claude Opus 5.5",
+      capabilities: CLAUDE_OPUS_5_CAPABILITIES,
     },
     {
       slug: "claude-opus-5",
@@ -1229,7 +1237,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderWithDefaultModel, ModelSl
 
 // Backward compatibility for existing Codex-only call sites.
 export const DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER.codex;
-export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.6-luna" as const;
+export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-6-luna" as const;
 export const DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT = "high" as const;
 
 /**
@@ -1270,7 +1278,10 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
     "claude-fable-5-1": "claude-fable-5-1",
     "fable-5": "claude-fable-5",
     "claude-fable-5": "claude-fable-5",
-    opus: "claude-opus-5",
+    opus: "claude-opus-5-5",
+    "opus-5.5": "claude-opus-5-5",
+    "claude-opus-5.5": "claude-opus-5-5",
+    "claude-opus-5-5": "claude-opus-5-5",
     "opus-5": "claude-opus-5",
     "claude-opus-5": "claude-opus-5",
     "opus-4.8": "claude-opus-4-8",

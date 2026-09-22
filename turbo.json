@@ -2,12 +2,12 @@
   "$schema": "https://turbo.build/schema.json",
   "globalDependencies": ["tsconfig.base.json", "patches/**"],
   "globalEnv": [
+    "AZURE_TRUSTED_SIGNING_SUBJECT_DN",
     "VITE_WS_URL",
     "VITE_DEV_SERVER_URL",
     "SYNARA_WEB_SOURCEMAP",
     "SYNARA_SERVER_SOURCEMAP",
-    "SYNARA_DESKTOP_SOURCEMAP",
-    "AZURE_TRUSTED_SIGNING_SUBJECT_DN"
+    "SYNARA_DESKTOP_SOURCEMAP"
   ],
   "globalPassThroughEnv": [
     "SYNARA_COMPILER_CACHE",
