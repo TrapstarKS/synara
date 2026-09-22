@@ -22,7 +22,7 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
-    version: "0.9.1",
+    version: "0.9.4",
     date: "Sep 22",
     features: [
       {
@@ -41,6 +41,13 @@ export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
           "Sol offers Low through Ultra effort; Luna offers Low through Max. GPT-6 Astra remains the default for chat, and GPT-6 Luna is the default for Git writing. Your installed Codex runtime and account determine which models are available.",
       },
       {
+        id: "codex-context-cache",
+        title: "See Codex context cache activity",
+        description:
+          "The context meter shows cache reads and writes for the latest request and session when Codex reports them.",
+        details: "Cache recency is an estimate and does not guarantee a later cache hit.",
+      },
+      {
         id: "environment-tasks",
         title: "Find tasks created from an environment",
         description:
@@ -56,7 +63,7 @@ export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
         id: "opencode-recovery",
         title: "More reliable OpenCode startup",
         description:
-          "Synara finds OpenCode across common installation paths and explains when a CLI lacks the managed-session tools it needs.",
+          "Synara finds OpenCode across common installation paths, explains when a CLI lacks the managed-session tools it needs, and keeps active tasks attached to their turn.",
       },
       {
         id: "release-performance",

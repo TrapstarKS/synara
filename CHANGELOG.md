@@ -18,6 +18,7 @@
 ### Fixed
 
 - OpenCode managed sessions retain the engine required for thread tools, and CLI discovery reports unsupported versions clearly.
+- OpenCode turns stay active while a task tool continues after the parent session reports idle.
 - Windows credential-reader startup has a larger bounded timeout.
 - Windows x64 release artifacts are unsigned under the version-scoped release policy; packaging and startup validation remain required.
 
