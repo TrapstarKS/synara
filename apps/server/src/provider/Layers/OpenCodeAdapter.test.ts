@@ -6158,6 +6158,15 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
         });
         yield* Effect.sleep(10);
         eventQueue.push({
+          type: "session.next.step.ended",
+          properties: {
+            timestamp: 2,
+            sessionID: "opencode-session-1",
+            finish: "stop",
+            cost: 0,
+          },
+        });
+        eventQueue.push({
           type: "session.idle",
           properties: { sessionID: "opencode-session-1" },
         });

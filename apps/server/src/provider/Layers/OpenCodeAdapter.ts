@@ -1808,6 +1808,38 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         },
       );
 
+      const completeOpenCodeTurnAfterOpenToolCalls = Effect.fn(
+        "completeOpenCodeTurnAfterOpenToolCalls",
+      )(function* (
+        context: OpenCodeSessionContext,
+        input: {
+          readonly turnId: TurnId;
+          readonly raw: unknown;
+          readonly totalCostUsd?: number | undefined;
+        },
+      ) {
+        if (context.activeTurnId !== input.turnId) {
+          return false;
+        }
+        if (context.activeTurnOpenToolCallIds.size === 0) {
+          return yield* completeOpenCodeTurn(context, input);
+        }
+
+        yield* Effect.gen(function* () {
+          if (
+            !(yield* waitForOpenCodeTurnCompletionQuiet(
+              context,
+              input.turnId,
+              Math.min(prematureIdleCompletionGraceMs, 250),
+            ))
+          ) {
+            return;
+          }
+          yield* completeOpenCodeTurn(context, input);
+        }).pipe(Effect.forkIn(context.sessionScope));
+        return true;
+      });
+
       const deferPrematureIdleCompletion = Effect.fn("deferPrematureIdleCompletion")(function* (
         context: OpenCodeSessionContext,
         turnId: TurnId,
@@ -3324,7 +3356,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               context.activeTurnSawToolCallFinish = true;
             }
             if (isOpenCodeTerminalStepFinish(event.properties.finish)) {
-              yield* completeOpenCodeTurn(context, {
+              yield* completeOpenCodeTurnAfterOpenToolCalls(context, {
                 turnId,
                 raw: event,
                 totalCostUsd: context.latestTurnCostUsd,
