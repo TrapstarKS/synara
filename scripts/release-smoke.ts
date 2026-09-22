@@ -1,7 +1,7 @@
 // FILE: release-smoke.ts
-// Purpose: Smoke-tests release version alignment and merged macOS updater manifests.
+// Purpose: Smoke-tests release version alignment and ARM64 macOS updater manifests.
 // Layer: Release verification script
-// Depends on: update-release-package-versions.ts and merge-mac-update-manifests.ts.
+// Depends on: update-release-package-versions.ts and prepare-release-update-feed.ts.
 
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -39,12 +39,11 @@ function copyWorkspaceManifestFixture(targetRoot: string): void {
   });
 }
 
-function writeMacManifestFixtures(targetRoot: string): { arm64Path: string; x64Path: string } {
+function writeMacManifestFixture(targetRoot: string): string {
   const assetDirectory = resolve(targetRoot, "release-assets");
   mkdirSync(assetDirectory, { recursive: true });
 
   const arm64Path = resolve(assetDirectory, "latest-mac.yml");
-  const x64Path = resolve(assetDirectory, "latest-mac-x64.yml");
 
   writeFileSync(
     arm64Path,
@@ -59,20 +58,7 @@ releaseDate: '2026-03-08T10:32:14.587Z'
 `,
   );
 
-  writeFileSync(
-    x64Path,
-    `version: 9.9.9-smoke.0
-files:
-  - url: Synara-9.9.9-smoke.0-x64.zip
-    sha512: x64zip
-    size: 132000112
-path: Synara-9.9.9-smoke.0-x64.zip
-sha512: x64zip
-releaseDate: '2026-03-08T10:36:07.540Z'
-`,
-  );
-
-  return { arm64Path, x64Path };
+  return arm64Path;
 }
 
 function assertContains(haystack: string, needle: string, message: string): void {
@@ -296,10 +282,15 @@ function verifyReleaseWorkflowSafety(): void {
     "node scripts/write-release-artifact-provenance.ts",
     "Expected every platform lane to prove collected artifacts before upload.",
   );
-  assertContains(
+  assertNotContains(
     workflow,
-    'mv release-publish/latest-mac.yml "release-publish/latest-mac-${{ matrix.arch }}.yml"',
-    "Expected the x64 macOS matrix lane to preserve a distinct updater manifest for merging.",
+    "latest-mac-x64.yml",
+    "The release workflow must not require a macOS x64 updater manifest.",
+  );
+  assertNotContains(
+    workflow,
+    "macos-15-intel",
+    "The release workflow must not schedule an Intel macOS runner.",
   );
   assertContains(
     workflow,
@@ -512,31 +503,39 @@ try {
     "Expected bun.lock to contain the smoke version.",
   );
 
-  const { arm64Path, x64Path } = writeMacManifestFixtures(tempRoot);
+  const arm64Path = writeMacManifestFixture(tempRoot);
+  const assetDirectory = dirname(arm64Path);
+  const windowsManifestPath = resolve(assetDirectory, "latest.yml");
+  writeFileSync(windowsManifestPath, "version: 9.9.9-smoke.0\nfiles: []\n");
   execFileSync(
     process.execPath,
-    [resolve(repoRoot, "scripts/merge-mac-update-manifests.ts"), arm64Path, x64Path],
+    [resolve(repoRoot, "scripts/prepare-release-update-feed.ts"), assetDirectory, "--no-linux"],
     {
       cwd: repoRoot,
       stdio: "inherit",
     },
   );
 
-  const mergedManifest = readFileSync(arm64Path, "utf8");
+  const arm64Manifest = readFileSync(arm64Path, "utf8");
   assertContains(
-    mergedManifest,
+    arm64Manifest,
     "Synara-9.9.9-smoke.0-arm64.zip",
-    "Merged manifest is missing the arm64 asset.",
-  );
-  assertContains(
-    mergedManifest,
-    "Synara-9.9.9-smoke.0-x64.zip",
-    "Merged manifest is missing the x64 asset.",
+    "ARM64 updater manifest is missing its ZIP asset.",
   );
   assertNotContains(
-    mergedManifest,
+    arm64Manifest,
     ".dmg",
     "macOS updater manifests must describe only the finalized ZIP artifacts.",
+  );
+  assertNotContains(
+    arm64Manifest,
+    "x64.zip",
+    "The macOS updater manifest must not require an Intel ZIP asset.",
+  );
+  assertContains(
+    readFileSync(resolve(assetDirectory, "synara-mac.yml"), "utf8"),
+    "Synara-9.9.9-smoke.0-arm64.zip",
+    "The dedicated macOS update channel must point to the ARM64 feed.",
   );
 
   console.log("Release smoke checks passed.");

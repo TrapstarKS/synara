@@ -1,7 +1,7 @@
 name: Release Desktop
 
 # Publish only on an explicit manual dispatch against the exact release tag.
-# macOS includes DMG + updater ZIP; Windows includes NSIS + updater metadata.
+# macOS ARM64 includes DMG + updater ZIP; Windows includes NSIS + updater metadata.
 on:
   workflow_dispatch:
     inputs:
@@ -317,11 +317,6 @@ jobs:
             platform: mac
             target: dmg
             arch: arm64
-          - label: macOS x64
-            runner: macos-15-intel
-            platform: mac
-            target: dmg
-            arch: x64
           - label: Windows x64
             runner: windows-2022
             platform: win
@@ -521,8 +516,6 @@ jobs:
           rust_version=$(jq -r .rustVersion packages/shared/src/cuaDriverRelease.json)
           rustup toolchain install "$rust_version" --profile minimal
           echo "RUSTUP_TOOLCHAIN=$rust_version" >> "$GITHUB_ENV"
-          # Provisioning otherwise compiles into a directory it deletes, so the
-          # macOS x64 packaging retries would each recompile the driver.
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/cua-driver-target" >> "$GITHUB_ENV"
 
       - name: Install Linux native build dependencies
@@ -623,27 +616,7 @@ jobs:
             echo "Signing disabled for ${{ matrix.platform }}."
           fi
 
-          if [[ "${{ matrix.platform }}" == "mac" && "${{ matrix.arch }}" == "x64" ]]; then
-            # electron-builder occasionally times out fetching x64 DMG helper bundles on GitHub-hosted macOS runners.
-            # Retry this narrow packaging path so transient upstream 504s do not block the whole release.
-            max_attempts=3
-            for attempt in $(seq 1 "$max_attempts"); do
-              if bun run dist:desktop:artifact -- "${args[@]}"; then
-                break
-              fi
-
-              if [[ "$attempt" -eq "$max_attempts" ]]; then
-                echo "macOS x64 desktop artifact build failed after $max_attempts attempts."
-                exit 1
-              fi
-
-              sleep_seconds=$((attempt * 15))
-              echo "macOS x64 desktop artifact build failed on attempt $attempt/$max_attempts. Retrying in ${sleep_seconds}s..."
-              sleep "$sleep_seconds"
-            done
-          else
-            bun run dist:desktop:artifact -- "${args[@]}"
-          fi
+          bun run dist:desktop:artifact -- "${args[@]}"
 
           echo "signed=$signed" >> "$GITHUB_OUTPUT"
 
@@ -665,12 +638,6 @@ jobs:
               cp "$file" release-publish/
             done
           done
-
-          if [[ "${{ matrix.platform }}" == "mac" && "${{ matrix.arch }}" != "arm64" ]]; then
-            if [[ -f release-publish/latest-mac.yml ]]; then
-              mv release-publish/latest-mac.yml "release-publish/latest-mac-${{ matrix.arch }}.yml"
-            fi
-          fi
 
       - name: Verify and record artifact provenance
         shell: bash
@@ -811,13 +778,6 @@ jobs:
         run: |
           zip -qr "release-assets/synara-chatgpt-browser-extension-v${RELEASE_VERSION}.zip" \
             extensions/chatgpt-browser
-
-      - name: Merge macOS updater manifests
-        run: |
-          node scripts/merge-mac-update-manifests.ts \
-            release-assets/latest-mac.yml \
-            release-assets/latest-mac-x64.yml
-          rm -f release-assets/latest-mac-x64.yml
 
       - name: Prepare updater feed metadata
         run: node scripts/prepare-release-update-feed.ts release-assets --no-linux

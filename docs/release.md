@@ -10,9 +10,8 @@ This document covers build-only native validation and publishing desktop release
   - Publication requires dispatching against the exact release tag with `publish_release=true`.
 - Verifies source provenance first, then runs static verification, five test partitions,
   and shared compilation in parallel. Every verification and test partition gates publication.
-- Builds three native targets from the shared desktop/server/web bundle:
+- Builds two native targets from the shared desktop/server/web bundle:
   - macOS `arm64` DMG
-  - macOS `x64` DMG
   - Windows `x64` NSIS installer
 - Packs the server tarball in the shared bundle job, including in build-only runs.
   The optional npm publication job consumes the same compiled server instead of rebuilding it.
@@ -199,7 +198,7 @@ Checklist:
 
 ## 1) Build-only native CI validation
 
-Use this before publication to validate both macOS architectures and Windows.
+Use this before publication to validate macOS ARM64 and Windows.
 Build-only mode uploads installers, updater metadata, provenance, and the server
 tarball as workflow artifacts. It does not create a tag, publish a GitHub Release
 or npm package, expose a public updater feed, or make a version-bump commit.
@@ -208,14 +207,14 @@ or npm package, expose a public updater feed, or make a version-bump commit.
 2. Start the workflow in build-only mode:
    - `gh workflow run release.yml --ref BRANCH -f version=X.Y.Z -f publish_release=false`
 3. Wait for `.github/workflows/release.yml` to finish.
-4. Confirm preflight, static verification, all five test partitions, shared bundle/server tarball, and all three native builds pass.
-5. Download the workflow artifacts and sanity-check installation on each OS.
+4. Confirm preflight, static verification, all five test partitions, shared bundle/server tarball, and both native builds pass.
+5. Download the workflow artifacts and sanity-check the macOS and Windows installers.
 
 To publish, select the exact release tag for the dispatch and pass `publish_release=true`. This is intentionally opt-in.
 
 ### macOS release toolchains
 
-Both native macOS release runners use macOS 15. Native helpers and the pinned
+The native macOS release runner uses macOS 15. Native helpers and the pinned
 Cua apple-metal bridge build with Xcode 16.4's macOS 15 SDK. A separate macOS 26
 job compiles the architecture-independent Icon Composer catalog with Xcode 26.3
 from the same release checkout and passes it through a required workflow artifact.

@@ -60,6 +60,29 @@ test("GitHub and npm publication require every test partition and native build",
   );
 });
 
+test("native release matrix contains only macOS ARM64 and Windows x64", () => {
+  const build = job("build");
+  const include = build.match(/      matrix:\n        include:\n([\s\S]*?)\n    steps:/)?.[1];
+  assert.ok(include, "The native build job must declare its release matrix");
+  const lanes = [
+    ...include.matchAll(
+      /- label: ([^\n]+)\n\s+runner: ([^\n]+)\n\s+platform: ([^\n]+)\n\s+target: ([^\n]+)\n\s+arch: ([^\n]+)/g,
+    ),
+  ].map(([, label, runner, platform, target, arch]) => [
+    label.trim(),
+    runner.trim(),
+    platform.trim(),
+    target.trim(),
+    arch.trim(),
+  ]);
+  assert.deepEqual(lanes, [
+    ["macOS arm64", "macos-15", "mac", "dmg", "arm64"],
+    ["Windows x64", "windows-2022", "win", "nsis", "x64"],
+  ]);
+  assert.ok(!include.includes("macos-15-intel"));
+  assert.ok(!include.includes("latest-mac-x64.yml"));
+});
+
 test("the actual Turbo test graph is covered by the release matrix", () => {
   const partitions = [
     ...job("test").matchAll(/filters: "([^"]+)"\n            test-args: "([^"]*)"/g),
