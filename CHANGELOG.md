@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.1] — 2026-09-22
+
+Patch release for the upstream reconciliation. It preserves the local OpenCode recovery behavior and mobile companion identity while bringing the merged UI back within the shared font-token contract.
+
+### Fixed
+
+- Reconciled upstream UI changes with the shared `text-ui*` typography tokens across browser, chat, settings and Mind surfaces.
+- Restored the mobile companion's reviewed launchd identities to the brand-check allowlist without renaming installed services.
+- Retained recovery for invalid OpenCode requests after the upstream merge.
+
 ## [0.9.0] — 2026-09-21
 
 **Computer Use arrives in beta, available on macOS only at the moment. Linux is coming soon.** Ask Synara to operate Mac apps and browsers with `/computer-use`, follow the targeted window in a preview, and stop the task from chat. The rest of this release brings project import, richer provider controls, clearer review workflows and many reliability fixes.
