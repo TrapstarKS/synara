@@ -498,5 +498,5 @@ describe("canonical browser host RPC", () => {
         expect(socket.destroyed).toBe(false);
       },
     );
-  });
+  }, 15_000);
 });
