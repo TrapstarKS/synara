@@ -188,6 +188,26 @@ describe("localImageEffectRouteLayer", () => {
     });
   });
 
+  it("serves an allowlisted workspace video without routing it through text reads", async () => {
+    const workspace = makeTempDir("synara-effect-video-workspace-");
+    writeFileSync(path.join(workspace, ".git"), "gitdir: .git");
+    const videoPath = path.join(workspace, "Artifacts", "recording.mp4");
+    mkdirSync(path.dirname(videoPath), { recursive: true });
+    const bytes = Buffer.from("fake mp4 bytes");
+    writeFileSync(videoPath, bytes);
+    const config = makeServerConfig({ cwd: workspace });
+
+    await withEffectServer(config, localImageEffectRouteLayer, async (origin) => {
+      const params = new URLSearchParams({ path: videoPath, cwd: workspace });
+      const response = await fetch(`${origin}/api/local-image?${params}`);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("video/mp4");
+      expect(response.headers.get("content-disposition")).toBeNull();
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+    });
+  });
+
   it("serves an absolute local image outside the workspace for file-panel previews", async () => {
     const workspace = makeTempDir("synara-effect-image-workspace-");
     writeFileSync(path.join(workspace, ".git"), "gitdir: .git");

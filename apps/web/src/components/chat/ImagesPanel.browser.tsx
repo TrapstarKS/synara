@@ -43,16 +43,32 @@ it("shows sent and generated images and expands the selected item", async () => 
     },
   ];
 
-  const screen = await render(<ImagesPanel messages={messages} cwd={null} />);
+  const screen = await render(
+    <ImagesPanel
+      messages={messages}
+      workEntries={[
+        {
+          id: "generated-work-entry",
+          createdAt: "2026-09-09T10:02:00.000Z",
+          tone: "tool",
+          itemType: "image_generation",
+          activityKind: "tool.completed",
+          toolStatus: "completed",
+          detail: `${PIXEL}#generated-work`,
+        },
+      ]}
+      cwd={null}
+    />,
+  );
   try {
-    await expect.element(page.getByText("2")).toBeVisible();
+    await expect.element(page.getByText("3")).toBeVisible();
     await expect.element(page.getByText("You")).toBeVisible();
-    await expect.element(page.getByText("Agent")).toBeVisible();
+    await expect.element(page.getByText("Generated image")).toBeVisible();
     await page.getByRole("button", { name: "Open Generated result" }).click();
     await expect
       .element(page.getByRole("dialog", { name: "Expanded image preview" }))
       .toBeVisible();
-    await expect.element(page.getByText("Generated result (1/2)")).toBeVisible();
+    await expect.element(page.getByText("Generated result (2/3)")).toBeVisible();
   } finally {
     await screen.unmount();
   }

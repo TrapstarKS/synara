@@ -2,8 +2,7 @@
 // Purpose: Single source of truth for the /api/local-image route shape consumed by
 //          both the server (HTTP route + filesystem allowlist) and the web client
 //          (URL builder + markdown image source detection). The route serves every
-//          allowlisted preview file: images (rendered via <img>) and PDFs (rendered
-//          by the browser's built-in viewer in an <iframe>).
+//          allowlisted preview file: images, videos, and PDFs.
 // Layer: Shared utility (no runtime dependencies)
 // Exports: route path, preview-file extension allowlists, and helper predicates
 //          derived from them.
@@ -44,6 +43,33 @@ export function isSupportedLocalImagePath(filePath: string): boolean {
   return extension !== null && SUPPORTED_LOCAL_IMAGE_EXTENSIONS_SET.has(extension);
 }
 
+// Browser-friendly and commonly generated video formats. These are also
+// allowlisted for download when the current browser cannot decode a particular
+// container (for example MKV or AVI).
+export const SUPPORTED_LOCAL_VIDEO_EXTENSIONS = [
+  ".3gp",
+  ".avi",
+  ".flv",
+  ".m4v",
+  ".mkv",
+  ".mov",
+  ".mp4",
+  ".mpeg",
+  ".mpg",
+  ".ogv",
+  ".webm",
+  ".wmv",
+] as const;
+
+const SUPPORTED_LOCAL_VIDEO_EXTENSIONS_SET: ReadonlySet<string> = new Set(
+  SUPPORTED_LOCAL_VIDEO_EXTENSIONS,
+);
+
+export function isSupportedLocalVideoPath(filePath: string): boolean {
+  const extension = lowerCaseExtensionOf(filePath);
+  return extension !== null && SUPPORTED_LOCAL_VIDEO_EXTENSIONS_SET.has(extension);
+}
+
 export const SUPPORTED_LOCAL_PDF_EXTENSION = ".pdf" as const;
 
 export function isSupportedLocalPdfPath(filePath: string): boolean {
@@ -51,10 +77,14 @@ export function isSupportedLocalPdfPath(filePath: string): boolean {
 }
 
 // Full allowlist for the /api/local-image serving route. Markdown image source
-// detection (below) intentionally stays image-only: a `.pdf` link in chat
-// markdown must never be inlined as an <img>.
+// detection (below) intentionally stays image-only: PDFs and videos must never
+// be inlined as an <img>.
 export function isSupportedLocalPreviewFilePath(filePath: string): boolean {
-  return isSupportedLocalImagePath(filePath) || isSupportedLocalPdfPath(filePath);
+  return (
+    isSupportedLocalImagePath(filePath) ||
+    isSupportedLocalVideoPath(filePath) ||
+    isSupportedLocalPdfPath(filePath)
+  );
 }
 
 // Built from the canonical extensions list so the web regex never drifts from the

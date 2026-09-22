@@ -8,6 +8,7 @@ import {
   isLocalImageMarkdownSrc,
   localImageFileName,
 } from "~/lib/localImageUrls";
+import type { WorkLogEntry } from "../../workLog";
 
 export interface ChatGalleryImage {
   id: string;
@@ -16,6 +17,18 @@ export interface ChatGalleryImage {
   origin: "You" | "Agent";
   createdAt: string;
 }
+
+export type ChatGalleryWorkEntry = Pick<
+  WorkLogEntry,
+  | "id"
+  | "createdAt"
+  | "detail"
+  | "tone"
+  | "toolStatus"
+  | "liveActivity"
+  | "itemType"
+  | "activityKind"
+>;
 
 const MARKDOWN_IMAGE_PATTERN =
   /!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/g;
@@ -30,6 +43,26 @@ function nameFromSource(src: string): string {
   return localImageFileName(withoutQuery) || "Image";
 }
 
+function isCompletedGeneratedImageEntry(entry: ChatGalleryWorkEntry): boolean {
+  if (entry.itemType !== "image_generation" || entry.tone === "error") {
+    return false;
+  }
+  if (entry.toolStatus === "failed" || entry.toolStatus === "cancelled") {
+    return false;
+  }
+  if (entry.toolStatus === "running" || entry.toolStatus === "paused") {
+    return false;
+  }
+  if (entry.liveActivity?.state === "failed" || entry.liveActivity?.state === "cancelled") {
+    return false;
+  }
+  return (
+    (entry.activityKind === undefined && entry.liveActivity === undefined) ||
+    entry.activityKind === "tool.completed" ||
+    entry.liveActivity?.state === "completed"
+  );
+}
+
 export function extractMarkdownImages(markdown: string): Array<{ src: string; alt: string }> {
   return [...markdown.matchAll(MARKDOWN_IMAGE_PATTERN)].flatMap((match) => {
     const src = (match[2] ?? match[3] ?? "").trim();
@@ -40,6 +73,7 @@ export function extractMarkdownImages(markdown: string): Array<{ src: string; al
 
 export function collectChatGalleryImages(
   messages: ReadonlyArray<Pick<ChatMessage, "id" | "role" | "text" | "attachments" | "createdAt">>,
+  workEntries: ReadonlyArray<ChatGalleryWorkEntry> = [],
 ): ChatGalleryImage[] {
   const images: ChatGalleryImage[] = [];
   const seenSources = new Set<string>();
@@ -71,6 +105,20 @@ export function collectChatGalleryImages(
         createdAt: message.createdAt,
       });
     }
+  }
+
+  for (const workEntry of workEntries) {
+    const src = workEntry.detail?.trim();
+    if (!src || !isCompletedGeneratedImageEntry(workEntry) || !isPreviewableImageSource(src)) {
+      continue;
+    }
+    add({
+      id: `${workEntry.id}:generated-image`,
+      src,
+      name: isLocalImageMarkdownSrc(src) ? nameFromSource(src) : "Generated image",
+      origin: "Agent",
+      createdAt: workEntry.createdAt,
+    });
   }
 
   return images.toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));

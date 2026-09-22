@@ -250,6 +250,41 @@ describe("EditorWorkspaceView", () => {
     expect(markup).not.toContain("editor-file-viewer__highlight");
   });
 
+  it("renders video files through the local video preview instead of text preview", () => {
+    const queryClient = new QueryClient();
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
+        <EditorWorkspaceView
+          workspaceRoot="/Users/tester/project"
+          projectName="project"
+          selectedFilePath="Artifacts/generated.mp4"
+          expandedDirectories={new Set()}
+          centerMode="file"
+          diffFiles={[]}
+          selectedDiffFilePath={null}
+          diffPanel={<div>Diff panel</div>}
+          chatPanel={<div>Chat panel</div>}
+          onSelectFile={vi.fn()}
+          onSelectDiffFile={vi.fn()}
+          onToggleDirectory={vi.fn()}
+          onCenterModeChange={vi.fn()}
+          editFilePath={null}
+          editDiffBaseRev={null}
+          onEditFile={vi.fn()}
+          onCloseEdit={vi.fn()}
+          onExitEditorView={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain("<video");
+    expect(markup).toContain(
+      "/api/local-image?path=Artifacts%2Fgenerated.mp4&amp;cwd=%2FUsers%2Ftester%2Fproject",
+    );
+    expect(markup).not.toContain("editor-file-viewer__plain");
+    expect(markup).not.toContain("editor-file-viewer__highlight");
+  });
+
   it("renders PDF files through the in-app PDF viewer instead of the text preview", () => {
     const queryClient = new QueryClient();
     const markup = renderToStaticMarkup(

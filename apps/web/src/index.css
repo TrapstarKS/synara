@@ -1469,6 +1469,16 @@ label:has(> select#reasoning-effort) select {
   opacity: 0;
 }
 
+.local-image-preview[data-status="loading"] .local-video-preview__video {
+  opacity: 0;
+}
+
+.local-video-preview__video {
+  display: block;
+  object-fit: contain;
+  user-select: none;
+}
+
 .local-image-preview__skeleton {
   position: absolute;
   inset: 0;

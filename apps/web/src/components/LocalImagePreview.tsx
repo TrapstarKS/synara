@@ -137,6 +137,7 @@ export function LocalImageErrorCard(props: {
   /** `downloadName` from useLocalImagePreview. */
   downloadName: string;
   className?: string | undefined;
+  title?: string | undefined;
   downloadAriaLabel?: string;
   onDownloadClick?: ((event: MouseEvent<HTMLElement>) => void) | undefined;
 }) {
@@ -146,7 +147,9 @@ export function LocalImageErrorCard(props: {
         <TriangleAlertIcon className="size-4" />
       </span>
       <span className="local-image-error__body">
-        <span className="local-image-error__title">Couldn’t open this image</span>
+        <span className="local-image-error__title">
+          {props.title ?? "Couldn’t open this image"}
+        </span>
         <span className="local-image-error__subtitle">
           The file may have moved or be unavailable.
         </span>

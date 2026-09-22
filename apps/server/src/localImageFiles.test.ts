@@ -158,6 +158,24 @@ describe("resolveAllowedLocalPreviewFile", () => {
     assert.equal(result?.sizeBytes, 8);
   });
 
+  it("allows videos inside the current workspace", async () => {
+    const workspace = makeTempDir("synara-video-workspace-");
+    writeFileSync(path.join(workspace, ".git"), "gitdir: .git");
+    const videoPath = path.join(workspace, "Artifacts", "recording.mp4");
+    mkdirSync(path.dirname(videoPath), { recursive: true });
+    const bytes = Buffer.from("fake mp4 bytes");
+    writeFileSync(videoPath, bytes);
+
+    const result = await resolveAllowedLocalPreviewFile({
+      requestedPath: videoPath,
+      cwd: workspace,
+    });
+
+    assert.equal(result?.path, realpathSync(videoPath));
+    assert.equal(result?.fileName, "recording.mp4");
+    assert.equal(result?.sizeBytes, bytes.length);
+  });
+
   it("allows PDFs inside a per-thread scratch workspace without a cwd", async () => {
     // Sessions that start before a project workspace exists run in
     // <tmpdir>/synara-codex-workspaces/<threadId>; files agents create there

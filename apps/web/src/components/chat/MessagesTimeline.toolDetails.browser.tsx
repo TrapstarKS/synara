@@ -415,6 +415,8 @@ describe("MessagesTimeline tool details", () => {
             label: "Generated image",
             tone: "tool",
             itemType: "image_generation",
+            activityKind: "tool.completed",
+            toolStatus: "completed",
             detail: "/tmp/synara/generated/pose_HAYMAKER_orig.png",
             liveActivity: {
               state: "completed",
@@ -455,6 +457,61 @@ describe("MessagesTimeline tool details", () => {
         ],
         index: 0,
       });
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+      host.remove();
+      await settleLayout();
+    }
+  });
+
+  it("waits for a running image generation to settle before loading its file", async () => {
+    const host = createTimelineHost();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const imagePath = "/tmp/synara/generated/pose_HAYMAKER_orig.png";
+    const renderRow = (
+      activityKind: "tool.started" | "tool.completed",
+      state: "running_tool" | "completed",
+    ) => (
+      <QueryClientProvider client={queryClient}>
+        <TimelineWorkEntryRow
+          workEntry={{
+            id: "running-generated-image-activity",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            label: "Generated image",
+            tone: "tool",
+            itemType: "image_generation",
+            activityKind,
+            ...(activityKind === "tool.completed" ? { toolStatus: "completed" as const } : {}),
+            detail: imagePath,
+            liveActivity: {
+              state,
+              label: "Generated image",
+              startedAt: "2026-03-17T19:12:28.000Z",
+              lastActivityAt: "2026-03-17T19:12:29.000Z",
+            },
+          }}
+          chatMetaFontSizePx={12}
+          textFontSizePx={13}
+          density="compact"
+          onImageExpand={() => {}}
+          markdownCwd={undefined}
+          timestampFormat="locale"
+        />
+      </QueryClientProvider>
+    );
+    const screen = await render(renderRow("tool.started", "running_tool"), { container: host });
+
+    try {
+      document.querySelector<HTMLButtonElement>('[data-tool-detail-trigger="true"]')?.click();
+      await expect.poll(() => document.body.textContent ?? "").toContain("Running tool");
+      expect(document.querySelector('img[alt="Generated image"]')).toBeNull();
+      expect(document.querySelector(".local-image-error")).toBeNull();
+
+      await screen.rerender(renderRow("tool.completed", "completed"));
+      await expect
+        .poll(() => document.querySelector<HTMLImageElement>('img[alt="Generated image"]'))
+        .not.toBeNull();
     } finally {
       await screen.unmount();
       queryClient.clear();

@@ -591,8 +591,27 @@ export const TimelineWorkEntryRow = memo(function TimelineWorkEntryRow(props: {
       ? extractFilePathFromDetail(workEntry.detail)
       : null;
   const canOpenReadFile = readFilePath !== null;
+  // Codex can create the file before it settles the image-generation item. If we
+  // mount the preview during that window, the local-image route/grant can see a
+  // transient 404 and the component would stay on its terminal error card. Keep
+  // the activity metadata visible while the tool runs, then mount the preview
+  // once the lifecycle has a terminal success state.
+  const generatedImageLifecycleSettled =
+    workEntry.activityKind === undefined && workEntry.liveActivity === undefined
+      ? true
+      : workEntry.activityKind === "tool.completed" ||
+        workEntry.liveActivity?.state === "completed";
+  const generatedImageFailed =
+    workEntry.tone === "error" ||
+    workEntry.toolStatus === "failed" ||
+    workEntry.toolStatus === "cancelled" ||
+    workEntry.liveActivity?.state === "failed" ||
+    workEntry.liveActivity?.state === "cancelled";
   const generatedImageSrc =
-    workEntry.itemType === "image_generation" && isLocalImageMarkdownSrc(workEntry.detail)
+    workEntry.itemType === "image_generation" &&
+    generatedImageLifecycleSettled &&
+    !generatedImageFailed &&
+    isLocalImageMarkdownSrc(workEntry.detail)
       ? workEntry.detail
       : undefined;
   const canOpenToolDetails =

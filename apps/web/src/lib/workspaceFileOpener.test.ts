@@ -122,9 +122,11 @@ describe("resolveWorkspaceFileOpenTarget", () => {
 
 describe("resolveScratchPreviewFileOpenTarget", () => {
   const scratchPdf = "/private/tmp/synara-codex-workspaces/thread-1/report.pdf";
+  const scratchVideo = "/tmp/synara-codex-workspaces/thread-1/recording.mp4";
 
   it("returns absolute scratch-workspace preview paths unchanged", () => {
     expect(resolveScratchPreviewFileOpenTarget(scratchPdf)).toBe(scratchPdf);
+    expect(resolveScratchPreviewFileOpenTarget(scratchVideo)).toBe(scratchVideo);
     expect(
       resolveScratchPreviewFileOpenTarget("/tmp/synara-codex-workspaces/thread-1/shot.png"),
     ).toBe("/tmp/synara-codex-workspaces/thread-1/shot.png");

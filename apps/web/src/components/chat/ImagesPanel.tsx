@@ -2,7 +2,7 @@
 // Purpose: Responsive chat image gallery used by the desktop right dock and its mobile sheet.
 // Layer: Chat right-dock UI
 
-import type { ThreadId } from "@synara/contracts";
+import type { OrchestrationThreadActivity, ThreadId } from "@synara/contracts";
 import { useEffect, useMemo, useState } from "react";
 
 import type { ChatMessage } from "~/types";
@@ -10,11 +10,13 @@ import { ImageIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import { useStore } from "~/store";
 import { createThreadSelector } from "~/storeSelectors";
+import { deriveWorkLogEntries } from "../../workLog";
 import { ExpandedImageOverlay } from "./ExpandedImageOverlay";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import {
   collectChatGalleryImages,
   resolveChatGalleryPreviewUrl,
+  type ChatGalleryWorkEntry,
   type ChatGalleryImage,
 } from "./imageGallery.logic";
 
@@ -62,9 +64,13 @@ function GalleryThumbnail(props: {
 export function ImagesPanel(props: {
   messages: ReadonlyArray<ChatMessage>;
   cwd: string | null;
+  workEntries?: ReadonlyArray<ChatGalleryWorkEntry>;
   className?: string;
 }) {
-  const images = useMemo(() => collectChatGalleryImages(props.messages), [props.messages]);
+  const images = useMemo(
+    () => collectChatGalleryImages(props.messages, props.workEntries),
+    [props.messages, props.workEntries],
+  );
   const previewImages = useMemo(
     () =>
       images.map((image) => ({
@@ -146,5 +152,17 @@ const EMPTY_MESSAGES: readonly ChatMessage[] = [];
  * gallery cannot make the whole chat shell rerender during streaming. */
 export function ThreadImagesPanel(props: { threadId: ThreadId; cwd: string | null }) {
   const thread = useStore(useMemo(() => createThreadSelector(props.threadId), [props.threadId]));
-  return <ImagesPanel messages={thread?.messages ?? EMPTY_MESSAGES} cwd={props.cwd} />;
+  const workEntries = useMemo(
+    () => deriveWorkLogEntries(thread?.activities ?? EMPTY_ACTIVITIES, undefined),
+    [thread?.activities],
+  );
+  return (
+    <ImagesPanel
+      messages={thread?.messages ?? EMPTY_MESSAGES}
+      workEntries={workEntries}
+      cwd={props.cwd}
+    />
+  );
 }
+
+const EMPTY_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
