@@ -16,6 +16,9 @@ import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { CheckpointRef } from "@synara/contracts";
 
+const REMOVE_ARTIFACTS_COMMAND = "rm --cached --force -r --ignore-unmatch -- :(top)Artifacts";
+const ADD_CHECKPOINT_PATHS_COMMAND = "add -A -- . :(exclude,top)Artifacts";
+
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -78,7 +81,10 @@ describe("CheckpointStoreLive", () => {
       if (args === "read-tree HEAD") {
         return Effect.succeed({ code: 0, stdout: "", stderr: "" });
       }
-      if (args === "add -A -- .") {
+      if (args === REMOVE_ARTIFACTS_COMMAND) {
+        return Effect.succeed({ code: 0, stdout: "", stderr: "" });
+      }
+      if (args === ADD_CHECKPOINT_PATHS_COMMAND) {
         return Effect.promise(() => addGate).pipe(Effect.as({ code: 0, stdout: "", stderr: "" }));
       }
       if (args === "write-tree") {
@@ -108,13 +114,19 @@ describe("CheckpointStoreLive", () => {
 
         const first = yield* store.captureCheckpoint(input).pipe(Effect.forkChild);
         yield* Effect.promise(() =>
-          waitFor(() => execute.mock.calls.some(([call]) => call.args.join(" ") === "add -A -- .")),
+          waitFor(() =>
+            execute.mock.calls.some(
+              ([call]) => call.args.join(" ") === ADD_CHECKPOINT_PATHS_COMMAND,
+            ),
+          ),
         );
         const second = yield* store.captureCheckpoint(input).pipe(Effect.forkChild);
         yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
 
         expect(
-          execute.mock.calls.filter(([call]) => call.args.join(" ") === "add -A -- ."),
+          execute.mock.calls.filter(
+            ([call]) => call.args.join(" ") === ADD_CHECKPOINT_PATHS_COMMAND,
+          ),
         ).toHaveLength(1);
 
         releaseAdd?.();
@@ -147,7 +159,10 @@ describe("CheckpointStoreLive", () => {
         utimesSync(captureIndexPath, refreshTime, refreshTime);
         return Effect.succeed({ code: 1, stdout: "", stderr: "README.md: needs update\n" });
       }
-      if (args === "add -A -- .") {
+      if (args === REMOVE_ARTIFACTS_COMMAND) {
+        return Effect.succeed({ code: 0, stdout: "", stderr: "" });
+      }
+      if (args === ADD_CHECKPOINT_PATHS_COMMAND) {
         const captureIndexPath = input.env?.GIT_INDEX_FILE ?? "";
         capturedSeed = readFileSync(captureIndexPath, "utf8");
         capturedIndexMtimeMs = statSync(captureIndexPath).mtimeMs;
@@ -209,7 +224,10 @@ describe("CheckpointStoreLive", () => {
       if (args === "read-tree HEAD") {
         return Effect.succeed({ code: 0, stdout: "", stderr: "" });
       }
-      if (args === "add -A -- .") {
+      if (args === REMOVE_ARTIFACTS_COMMAND) {
+        return Effect.succeed({ code: 0, stdout: "", stderr: "" });
+      }
+      if (args === ADD_CHECKPOINT_PATHS_COMMAND) {
         addCalls += 1;
         if (addCalls === 1) {
           return Effect.never;
@@ -296,7 +314,9 @@ describe("CheckpointStoreLive", () => {
       }),
     );
 
-    expect(execute.mock.calls.some(([call]) => call.args.join(" ") === "add -A -- .")).toBe(false);
+    expect(
+      execute.mock.calls.some(([call]) => call.args.join(" ") === ADD_CHECKPOINT_PATHS_COMMAND),
+    ).toBe(false);
   });
 
   it("skips the capture when skipIfExists is set and the ref already exists", async () => {
@@ -319,7 +339,10 @@ describe("CheckpointStoreLive", () => {
       if (args === "read-tree HEAD") {
         return Effect.succeed({ code: 0, stdout: "", stderr: "" });
       }
-      if (args === "add -A -- .") {
+      if (args === REMOVE_ARTIFACTS_COMMAND) {
+        return Effect.succeed({ code: 0, stdout: "", stderr: "" });
+      }
+      if (args === ADD_CHECKPOINT_PATHS_COMMAND) {
         return Effect.succeed({ code: 0, stdout: "", stderr: "" });
       }
       if (args === "write-tree") {
@@ -350,14 +373,14 @@ describe("CheckpointStoreLive", () => {
           checkpointRef: CheckpointRef.makeUnsafe(existingRef),
           skipIfExists: true,
         });
-        expect(captureArgs("add -A -- .")).toHaveLength(0);
+        expect(captureArgs(ADD_CHECKPOINT_PATHS_COMMAND)).toHaveLength(0);
 
         yield* store.captureCheckpoint({
           cwd: "/repo",
           checkpointRef: CheckpointRef.makeUnsafe(missingRef),
           skipIfExists: true,
         });
-        expect(captureArgs("add -A -- .")).toHaveLength(1);
+        expect(captureArgs(ADD_CHECKPOINT_PATHS_COMMAND)).toHaveLength(1);
         expect(captureArgs(`update-ref ${missingRef} commit-oid`)).toHaveLength(1);
       }),
     );
@@ -379,7 +402,9 @@ describe("CheckpointStoreLive", () => {
       if (args.startsWith("diff --patch --binary --full-index")) {
         return Effect.succeed({ code: 0, stdout: "turn patch", stderr: "" });
       }
-      if (args === "diff --name-only --no-renames -z from-oid to-oid") {
+      if (
+        args === "diff --name-only --no-renames -z from-oid to-oid -- . :(exclude,top)Artifacts"
+      ) {
         return Effect.succeed({ code: 0, stdout: "src/file.ts\0", stderr: "" });
       }
       if (input.args[0] === "apply" && input.args[1] === "--reverse") {

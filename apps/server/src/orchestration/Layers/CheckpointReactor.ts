@@ -28,7 +28,10 @@ import {
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
 import { clearWorkspaceIndexCache } from "../../workspaceEntries.ts";
-import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import {
+  CheckpointStore,
+  PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
+} from "../../checkpointing/Services/CheckpointStore.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -554,6 +557,7 @@ const make = Effect.gen(function* () {
     readonly cwd: string;
     readonly turnCount: number;
     readonly createdAt: string;
+    readonly timeoutMs?: number;
   }) {
     const legacyBaselineRef = checkpointRefForThreadTurn(input.threadId, input.turnCount);
     const legacyBaselineExists = yield* checkpointStore.hasCheckpointRef({
@@ -567,6 +571,7 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd: input.cwd,
       checkpointRef: legacyBaselineRef,
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     });
     yield* receiptBus.publish({
       type: "checkpoint.baseline.captured",
@@ -870,6 +875,7 @@ const make = Effect.gen(function* () {
           cwd: checkpointCwd,
           checkpointRef: messageStartCheckpointRef,
           skipIfExists: true,
+          timeoutMs: PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
         });
         copied = yield* copyMessageStartBaseline;
       }
@@ -892,6 +898,7 @@ const make = Effect.gen(function* () {
         yield* checkpointStore.captureCheckpoint({
           cwd: checkpointCwd,
           checkpointRef: turnStartCheckpointRef,
+          timeoutMs: PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
         });
       }
     }
@@ -905,6 +912,7 @@ const make = Effect.gen(function* () {
       cwd: checkpointCwd,
       turnCount: currentTurnCount,
       createdAt: event.createdAt,
+      timeoutMs: PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
     });
   });
 
@@ -960,6 +968,7 @@ const make = Effect.gen(function* () {
           cwd: checkpointCwd,
           checkpointRef: messageStartCheckpointRef,
           skipIfExists: true,
+          timeoutMs: PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
         });
       }
     }
@@ -973,6 +982,7 @@ const make = Effect.gen(function* () {
       cwd: checkpointCwd,
       turnCount: currentTurnCount,
       createdAt: event.occurredAt,
+      timeoutMs: PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
     });
   });
 

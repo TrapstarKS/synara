@@ -20,6 +20,8 @@ import { CheckpointStore, type CheckpointStoreShape } from "../Services/Checkpoi
 import { CheckpointRef } from "@synara/contracts";
 
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
+const CHECKPOINT_ARTIFACTS_PATHSPEC = ":(top)Artifacts";
+const CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC = ":(exclude,top)Artifacts";
 
 // Individual git commands are already bounded by GitCore's default timeout;
 // this aggregate cap exists to unstick the shared in-flight capture slot if a
@@ -179,6 +181,26 @@ const makeCheckpointStore = Effect.gen(function* () {
                 env: commitEnv,
               });
             }
+            // Exclude the workspace-root Artifacts tree from every Synara
+            // checkpoint. Generated QA outputs and recovery databases can be
+            // multi-gigabyte and should not hold a provider turn at startup.
+            // Remove indexed entries from this temporary index only; the user's
+            // working index and files on disk remain untouched.
+            yield* git.execute({
+              operation,
+              cwd: input.cwd,
+              args: [
+                "rm",
+                "--cached",
+                "--force",
+                "-r",
+                "--ignore-unmatch",
+                "--",
+                CHECKPOINT_ARTIFACTS_PATHSPEC,
+              ],
+              env: commitEnv,
+            });
+
             if (workingIndexInfo !== null) {
               // A copied index can describe a rapid same-size rewrite as clean
               // when its cached stat tuple still matches. Really-refresh makes
@@ -211,7 +233,7 @@ const makeCheckpointStore = Effect.gen(function* () {
             yield* git.execute({
               operation,
               cwd: input.cwd,
-              args: ["add", "-A", "--", "."],
+              args: ["add", "-A", "--", ".", CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC],
               env: commitEnv,
             });
 
@@ -272,6 +294,7 @@ const makeCheckpointStore = Effect.gen(function* () {
   const captureCheckpoint: CheckpointStoreShape["captureCheckpoint"] = (input) =>
     Effect.gen(function* () {
       const key = captureKey(input);
+      const timeoutMs = input.timeoutMs ?? CHECKPOINT_CAPTURE_TIMEOUT_MS;
       const registration = yield* captureLock.withPermits(1)(
         Effect.gen(function* () {
           const existing = inFlightCaptures.get(key);
@@ -285,7 +308,19 @@ const makeCheckpointStore = Effect.gen(function* () {
       );
 
       if (!registration.owner) {
-        return yield* Deferred.await(registration.deferred);
+        return yield* Deferred.await(registration.deferred).pipe(
+          Effect.timeoutOption(timeoutMs),
+          Effect.flatMap((completed) =>
+            Option.isSome(completed)
+              ? Effect.void
+              : Effect.fail(
+                  new CheckpointInvariantError({
+                    operation: "CheckpointStore.captureCheckpoint",
+                    detail: `Timed out after ${timeoutMs}ms waiting for checkpoint capture.`,
+                  }),
+                ),
+          ),
+        );
       }
 
       // Let the git capture remain interruptible, but always notify waiters
@@ -295,14 +330,14 @@ const makeCheckpointStore = Effect.gen(function* () {
           const exit = yield* Effect.exit(
             restore(
               captureCheckpointOnce(input).pipe(
-                Effect.timeoutOption(CHECKPOINT_CAPTURE_TIMEOUT_MS),
+                Effect.timeoutOption(timeoutMs),
                 Effect.flatMap((completed) =>
                   Option.isSome(completed)
                     ? Effect.void
                     : Effect.fail(
                         new CheckpointInvariantError({
                           operation: "CheckpointStore.captureCheckpoint",
-                          detail: `Checkpoint capture timed out after ${CHECKPOINT_CAPTURE_TIMEOUT_MS}ms.`,
+                          detail: `Checkpoint capture timed out after ${timeoutMs}ms.`,
                         }),
                       ),
                 ),
@@ -368,12 +403,21 @@ const makeCheckpointStore = Effect.gen(function* () {
       yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["restore", "--source", commitOid, "--worktree", "--staged", "--", "."],
+        args: [
+          "restore",
+          "--source",
+          commitOid,
+          "--worktree",
+          "--staged",
+          "--",
+          ".",
+          CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC,
+        ],
       });
       yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["clean", "-fd", "--", "."],
+        args: ["clean", "-fd", "--", ".", CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC],
       });
 
       const headExists = yield* hasHeadCommit(input.cwd);
@@ -381,7 +425,7 @@ const makeCheckpointStore = Effect.gen(function* () {
         yield* git.execute({
           operation,
           cwd: input.cwd,
-          args: ["reset", "--quiet", "--", "."],
+          args: ["reset", "--quiet", "--", ".", CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC],
         });
       }
 
@@ -429,6 +473,9 @@ const makeCheckpointStore = Effect.gen(function* () {
           ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
           fromCommitOid,
           toCommitOid,
+          "--",
+          ".",
+          CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC,
         ],
         maxOutputBytes: input.maxOutputBytes ?? CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
       });
@@ -507,7 +554,7 @@ const makeCheckpointStore = Effect.gen(function* () {
       yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["add", "-A", "--", "."],
+        args: ["add", "-A", "--", ".", CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC],
         env: mergeIndexEnv,
       });
       // Snapshot of the pre-attempt working tree, used to undo a conflicted
@@ -588,6 +635,9 @@ const makeCheckpointStore = Effect.gen(function* () {
           "--no-textconv",
           fromCommitOid,
           toCommitOid,
+          "--",
+          ".",
+          CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC,
         ],
         maxOutputBytes: input.maxOutputBytes ?? CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
       });
@@ -598,7 +648,17 @@ const makeCheckpointStore = Effect.gen(function* () {
       const changedPaths = yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["diff", "--name-only", "--no-renames", "-z", fromCommitOid, toCommitOid],
+        args: [
+          "diff",
+          "--name-only",
+          "--no-renames",
+          "-z",
+          fromCommitOid,
+          toCommitOid,
+          "--",
+          ".",
+          CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC,
+        ],
         maxOutputBytes: input.maxOutputBytes ?? CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
       });
       const affectedPaths = changedPaths.stdout.split("\0").filter((entry) => entry.length > 0);

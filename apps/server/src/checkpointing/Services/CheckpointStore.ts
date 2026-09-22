@@ -16,6 +16,9 @@ import type { Effect } from "effect";
 import type { CheckpointStoreError } from "../Errors.ts";
 import { CheckpointRef } from "@synara/contracts";
 
+/** Keep pre-turn snapshot work from consuming the provider command deadline. */
+export const PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS = 10_000;
+
 export interface CaptureCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
@@ -27,6 +30,12 @@ export interface CaptureCheckpointInput {
    * working tree the agent may already have modified.
    */
   readonly skipIfExists?: boolean;
+  /**
+   * Override the aggregate capture deadline for latency-sensitive baselines.
+   * Callers waiting on an in-flight capture use the same value to bound their
+   * wait without interrupting the owner.
+   */
+  readonly timeoutMs?: number;
 }
 
 export interface CopyCheckpointRefInput {

@@ -86,7 +86,10 @@ import {
   checkpointRefForThreadTurn,
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
-import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import {
+  CheckpointStore,
+  PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
+} from "../../checkpointing/Services/CheckpointStore.ts";
 import { AgentGatewayOperationRepository } from "../../agentGateway/Services/AgentGatewayOperationRepository.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import {
@@ -2956,14 +2959,17 @@ const make = Effect.gen(function* () {
           MessageId.makeUnsafe(input.messageId),
         ),
         skipIfExists: true,
+        timeoutMs: PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
       });
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("failed to capture provider turn start checkpoint", {
-          threadId: input.threadId,
-          messageId: input.messageId,
-          cause: Cause.pretty(cause),
-        }),
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("failed to capture provider turn start checkpoint", {
+              threadId: input.threadId,
+              messageId: input.messageId,
+              cause: Cause.pretty(cause),
+            }),
       ),
     );
 

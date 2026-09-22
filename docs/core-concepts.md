@@ -146,6 +146,12 @@ The intended loop is:
 Synara's checkpoint and revert controls can help recover task work, but committed Git history remains
 the strongest boundary for important changes.
 
+Automatic workspace checkpoints omit the repository-root `Artifacts/` directory. Generated QA
+outputs and recovery data can be very large; keeping them out of checkpoint snapshots prevents them
+from delaying provider turn startup. Files in that directory remain on disk, but are not included in
+checkpoint diffs or restores. Pre-turn baseline capture has a 10-second limit; if it expires, the
+provider turn proceeds and may have no recoverable workspace baseline.
+
 ## Parallel work
 
 Parallelism is useful only when ownership is clear.
