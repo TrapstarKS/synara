@@ -44,6 +44,22 @@ async function api(path, value) {
   if (!response.ok) throw new Error(result.error || "Não foi possível salvar. Tente novamente.");
   return result;
 }
+function renderHosts() {
+  const host = status.hosts.find((entry) => entry.id === status.host) ?? status.hosts[0];
+  $("connection").textContent = host.name + (host.online ? " conectado" : " indisponível");
+  $("hosts-section").hidden = false;
+  $("hosts").replaceChildren(
+    ...status.hosts.map((entry) => {
+      const link = document.createElement("a");
+      link.className = entry.id === status.host ? "button" : "button secondary";
+      link.href = "/mobile/host/" + encodeURIComponent(entry.id) + "?to=/";
+      if (entry.id === status.host) link.setAttribute("aria-current", "true");
+      link.textContent =
+        entry.name + (entry.online ? "" : entry.error ? " · " + entry.error : " · offline");
+      return link;
+    }),
+  );
+}
 async function refresh() {
   status = await api("status");
   $("pair").hidden = status.paired;
@@ -55,6 +71,7 @@ async function refresh() {
       ? "Computador conectado"
       : "Computador indisponível";
   if (!status.paired) return;
+  if (status.hosts?.length > 1) renderHosts();
   $("device-name").textContent = status.name;
   for (const key of Object.keys(status.preferences))
     $("preferences").elements[key].checked = status.preferences[key];

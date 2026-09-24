@@ -4,11 +4,26 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { adminAddress, mobileDirectory } from "./lib/admin.mjs";
 import { assertPrivateWindowsPath } from "./lib/windows.mjs";
-const [command, id] = process.argv.slice(2);
-if (!["pair", "devices", "revoke"].includes(command) || (command === "revoke" && !id)) {
-  console.error("Usage: node cli.mjs pair | devices | revoke <device-id>");
+const [command, id, extra] = process.argv.slice(2);
+const routes = {
+  pair: ["POST", "/pair", {}],
+  devices: ["GET", "/devices"],
+  revoke: ["POST", "/revoke", { id }],
+  peers: ["GET", "/peers"],
+  "peer-add": ["POST", "/peers", { name: id, link: extra }],
+  "peer-remove": ["POST", "/peers/remove", { id }],
+};
+if (
+  !routes[command] ||
+  (["revoke", "peer-remove"].includes(command) && !id) ||
+  (command === "peer-add" && !extra)
+) {
+  console.error(
+    "Usage: node cli.mjs pair | devices | revoke <device-id> | peers | peer-add <name> <pairing-link> | peer-remove <peer-id>",
+  );
   process.exit(1);
 }
+const [method, path, payload] = routes[command];
 const directory = mobileDirectory(process.env, homedir());
 let adminToken;
 if (process.platform === "win32") {
@@ -21,8 +36,8 @@ if (process.platform === "win32") {
 const request = http.request(
   {
     socketPath: adminAddress(directory),
-    path: "/" + command,
-    method: command === "devices" ? "GET" : "POST",
+    path,
+    method,
     headers: {
       "Content-Type": "application/json",
       ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}),
@@ -46,7 +61,5 @@ request.on("error", (error) => {
   console.error(`Mobile service unavailable: ${error.message}`);
   process.exitCode = 1;
 });
-request.setTimeout(5000, () => request.destroy(new Error("Timed out")));
-request.end(
-  command === "devices" ? undefined : command === "revoke" ? JSON.stringify({ id }) : "{}",
-);
+request.setTimeout(15_000, () => request.destroy(new Error("Timed out")));
+request.end(payload && JSON.stringify(payload));

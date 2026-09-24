@@ -1302,6 +1302,27 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   yield* assertPlatformBuildResources(options.platform, stageResourcesDir, options.verbose);
 
+  // The phone companion ships inside the app so every desktop serves its own
+  // tailnet endpoint without a checkout or service install.
+  const mobileRemoteDir = path.join(repoRoot, "extensions/mobile-remote");
+  const stageMobileRemoteDir = path.join(stageAppDir, "apps/desktop/mobile-remote");
+  yield* Effect.log("[desktop-artifact] Bundling mobile companion...");
+  yield* runCommand(
+    ChildProcess.make({
+      cwd: mobileRemoteDir,
+      ...commandOutputOptions(options.verbose),
+      shell: process.platform === "win32",
+    })`npm ci --omit=dev --ignore-scripts --no-audit --no-fund`,
+  );
+  yield* runCommand(
+    ChildProcess.make({
+      cwd: repoRoot,
+      ...commandOutputOptions(options.verbose),
+      shell: process.platform === "win32",
+    })`bun build ${path.join(mobileRemoteDir, "server.mjs")} --target=node --format=esm --outfile ${path.join(stageMobileRemoteDir, "server.mjs")}`,
+  );
+  yield* fs.copy(path.join(mobileRemoteDir, "public"), path.join(stageMobileRemoteDir, "public"));
+
   if (options.platform === "mac" || options.platform === "linux") {
     const provisionCua = path.join(repoRoot, "apps/desktop/scripts/provision-cua-driver.mjs");
     const cuaDestination = path.join(stageResourcesDir, "cua-driver");

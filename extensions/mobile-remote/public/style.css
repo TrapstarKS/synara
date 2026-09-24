@@ -157,7 +157,10 @@ input:not([type="checkbox"]) {
   font: inherit;
   font-size: 16px;
 }
-button {
+button,
+a.button {
+  display: inline-block;
+  text-decoration: none;
   font: inherit;
   font-size: 12px;
   font-weight: 500;
