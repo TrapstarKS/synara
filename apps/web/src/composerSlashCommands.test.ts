@@ -503,6 +503,7 @@ describe("composerSlashCommands", () => {
       "side",
       "btw",
       "export",
+      "mcp",
       "goal",
       "rename",
       "debug",

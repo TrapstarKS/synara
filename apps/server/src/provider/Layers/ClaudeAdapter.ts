@@ -15,6 +15,9 @@ import type {
   AgentDefinition,
   HookInput,
   HookJSONOutput,
+  McpServerConfig,
+  McpServerStatus,
+  McpSetServersResult,
   Options as ClaudeQueryOptions,
   ModelInfo,
   PermissionMode,
@@ -108,6 +111,11 @@ import {
 } from "effect";
 
 import { buildClaudeMcpServers } from "../../agentGateway/mcpInjection.ts";
+import {
+  buildClaudeMcpServerConfig,
+  parseClaudeMcpServerStatus,
+  validateMcpServerName,
+} from "../mcpServer.ts";
 import { renderSynaraHarnessPolicy } from "../../agentGateway/harnessPolicy.ts";
 import { shouldAllowSynaraComputerProviderTool } from "../../agentGateway/computerToolPermission.ts";
 import { AgentGatewayCredentials } from "../../agentGateway/Services/AgentGatewayCredentials.ts";
@@ -499,6 +507,12 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly supportedCommands: () => Promise<SlashCommand[]>;
   readonly supportedModels: () => Promise<ModelInfo[]>;
   readonly supportedAgents: () => Promise<AgentInfo[]>;
+  readonly mcpServerStatus: () => Promise<McpServerStatus[]>;
+  readonly reconnectMcpServer: (serverName: string) => Promise<void>;
+  readonly toggleMcpServer: (serverName: string, enabled: boolean) => Promise<void>;
+  readonly setMcpServers: (
+    servers: Record<string, McpServerConfig>,
+  ) => Promise<McpSetServersResult>;
   readonly close: () => void;
 }
 
@@ -7328,6 +7342,79 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         return result;
       });
 
+    // Servers added from /mcp live only in this Claude process; the SDK replaces
+    // the whole dynamic set, so Synara's own server is resent with them.
+    const addedMcpServers = new WeakMap<ClaudeSessionContext, Record<string, McpServerConfig>>();
+
+    const withMcpSession = <A>(
+      threadId: ThreadId,
+      method: string,
+      run: (context: ClaudeSessionContext) => Promise<A>,
+    ) =>
+      requireSession(threadId).pipe(
+        Effect.flatMap((context) =>
+          Effect.tryPromise({
+            try: () => run(context),
+            catch: (cause) => toRequestError(threadId, method, cause),
+          }),
+        ),
+      );
+
+    const readMcpServers = async (context: ClaudeSessionContext) => ({
+      servers: (await context.query.mcpServerStatus())
+        .map(parseClaudeMcpServerStatus)
+        .filter((server) => server !== null)
+        .toSorted((left, right) => left.name.localeCompare(right.name)),
+    });
+
+    const listMcpServers: NonNullable<ClaudeAdapterShape["listMcpServers"]> = (input) =>
+      withMcpSession(input.threadId, "mcp/list", readMcpServers);
+
+    const reloadMcpServers: NonNullable<ClaudeAdapterShape["reloadMcpServers"]> = (input) =>
+      withMcpSession(input.threadId, "mcp/reload", async (context) => {
+        const statuses = await context.query.mcpServerStatus();
+        await Promise.allSettled(
+          statuses
+            .filter((server) => server.status === "failed" || server.status === "needs-auth")
+            .map((server) => context.query.reconnectMcpServer(server.name)),
+        );
+        return { action: "reloaded" as const, ...(await readMcpServers(context)) };
+      });
+
+    const toggleMcpServer =
+      (enabled: boolean) => (input: { readonly threadId: ThreadId; readonly name: string }) =>
+        withMcpSession(input.threadId, "mcp/toggle", async (context) => {
+          await context.query.toggleMcpServer(validateMcpServerName(input.name), enabled);
+          return {
+            action: enabled ? ("connected" as const) : ("disconnected" as const),
+            ...(await readMcpServers(context)),
+          };
+        });
+
+    const restartMcpServer: NonNullable<ClaudeAdapterShape["restartMcpServer"]> = (input) =>
+      withMcpSession(input.threadId, "mcp/restart", async (context) => {
+        await context.query.reconnectMcpServer(validateMcpServerName(input.name));
+        return { action: "restarted" as const, ...(await readMcpServers(context)) };
+      });
+
+    const addMcpServer: NonNullable<ClaudeAdapterShape["addMcpServer"]> = (input) =>
+      withMcpSession(input.threadId, "mcp/add", async (context) => {
+        const added = {
+          ...addedMcpServers.get(context),
+          [input.name]: buildClaudeMcpServerConfig(input) as McpServerConfig,
+        };
+        const result = await context.query.setMcpServers({
+          ...(context.gatewaySessionLease
+            ? buildClaudeMcpServers(context.gatewaySessionLease.connection)
+            : {}),
+          ...added,
+        });
+        addedMcpServers.set(context, added);
+        const failure = result.errors[input.name];
+        if (failure) throw new Error(failure);
+        return { action: "connected" as const, ...(await readMcpServers(context)) };
+      });
+
     const listAgents: NonNullable<ClaudeAdapterShape["listAgents"]> = (_input) =>
       Effect.sync(() => {
         if (cachedAgents) {
@@ -7394,6 +7481,12 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       listSkills,
       listModels,
       listAgents,
+      listMcpServers,
+      reloadMcpServers,
+      connectMcpServer: toggleMcpServer(true),
+      disconnectMcpServer: toggleMcpServer(false),
+      restartMcpServer,
+      addMcpServer,
       streamEvents: Stream.fromQueue(runtimeEventQueue),
     } satisfies ClaudeAdapterShape;
   });

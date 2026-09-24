@@ -6,6 +6,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
   Options as ClaudeQueryOptions,
   HookInput,
+  McpServerConfig,
+  McpServerStatus,
   ModelInfo,
   PermissionMode,
   PermissionResult,
@@ -190,6 +192,25 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly supportedAgents = async (): Promise<[]> => {
     return [];
+  };
+
+  public mcpStatuses: McpServerStatus[] = [];
+  public readonly mcpCalls: Array<string> = [];
+  public mcpServersSet: Record<string, McpServerConfig> | undefined;
+
+  readonly mcpServerStatus = async (): Promise<McpServerStatus[]> => this.mcpStatuses;
+
+  readonly reconnectMcpServer = async (name: string): Promise<void> => {
+    this.mcpCalls.push(`reconnect:${name}`);
+  };
+
+  readonly toggleMcpServer = async (name: string, enabled: boolean): Promise<void> => {
+    this.mcpCalls.push(`toggle:${name}:${enabled}`);
+  };
+
+  readonly setMcpServers = async (servers: Record<string, McpServerConfig>) => {
+    this.mcpServersSet = servers;
+    return { added: Object.keys(servers), removed: [], errors: {} };
   };
 
   readonly close = (): void => {
@@ -12330,6 +12351,62 @@ describe("ClaudeAdapterLive forkThread", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(layer),
+    );
+  });
+});
+
+describe("Claude MCP servers", () => {
+  it.effect("lists, toggles, restarts, and adds servers on the live session", () => {
+    const harness = makeHarness();
+    harness.query.mcpStatuses = [
+      { name: "zeta", status: "failed", error: "boom" },
+      { name: "alpha", status: "connected", tools: [{ name: "run" }] },
+    ];
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({ threadId: THREAD_ID, runtimeMode: "full-access" });
+      const listed = yield* adapter.listMcpServers!({
+        provider: "claudeAgent",
+        threadId: THREAD_ID,
+      });
+      assert.deepEqual(
+        listed.servers.map((server) => [server.name, server.runtimeStatus]),
+        [
+          ["alpha", "connected"],
+          ["zeta", "failed"],
+        ],
+      );
+      yield* adapter.reloadMcpServers!({ provider: "claudeAgent", threadId: THREAD_ID });
+      const name = "alpha";
+      yield* adapter.disconnectMcpServer!({ provider: "claudeAgent", threadId: THREAD_ID, name });
+      yield* adapter.restartMcpServer!({ provider: "claudeAgent", threadId: THREAD_ID, name });
+      const added = yield* adapter.addMcpServer!({
+        provider: "claudeAgent",
+        threadId: THREAD_ID,
+        name: "tool",
+        transport: "stdio",
+        command: "npx",
+      });
+      assert.equal(added.action, "connected");
+      assert.deepEqual(harness.query.mcpCalls, [
+        "reconnect:zeta",
+        "toggle:alpha:false",
+        "reconnect:alpha",
+      ]);
+      assert.deepEqual(harness.query.mcpServersSet?.tool, {
+        type: "stdio",
+        command: "npx",
+        args: [],
+      });
+      const refused = yield* adapter.restartMcpServer!({
+        provider: "claudeAgent",
+        threadId: THREAD_ID,
+        name: "synara",
+      }).pipe(Effect.flip);
+      assert.equal(refused._tag, "ProviderAdapterRequestError");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
     );
   });
 });

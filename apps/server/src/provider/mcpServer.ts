@@ -126,4 +126,63 @@ export function buildCodexMcpServerConfig(input: ProviderAddMcpServerInput): Unk
   };
 }
 
+const CLAUDE_RUNTIME_STATUSES: Record<string, ProviderMcpRuntimeStatus> = {
+  connected: "connected",
+  failed: "failed",
+  "needs-auth": "authenticationRequired",
+  pending: "starting",
+  disabled: "disabled",
+};
+
+/** Maps one entry of the Claude Agent SDK's `mcpServerStatus()` to the shared shape. */
+export function parseClaudeMcpServerStatus(value: unknown): ProviderMcpServerStatus | null {
+  if (!isRecord(value)) return null;
+  const name = readString(value, "name")?.trim();
+  if (!name) return null;
+  const status = readString(value, "status") ?? "";
+  return {
+    name,
+    runtimeStatus: CLAUDE_RUNTIME_STATUSES[status] ?? null,
+    authStatus: status === "needs-auth" ? "notLoggedIn" : "unknown",
+    pluginId: null,
+    toolNames: readArray(value, "tools")
+      .map((tool) => (isRecord(tool) ? readString(tool, "name")?.trim() : undefined))
+      .filter((toolName): toolName is string => Boolean(toolName))
+      .toSorted((left, right) => left.localeCompare(right)),
+    resourceCount: 0,
+    resourceTemplateCount: 0,
+    toolsError: readString(value, "error") ?? null,
+  };
+}
+
+/** Builds a Claude Agent SDK MCP config; bearer tokens are read from `env` now. */
+export function buildClaudeMcpServerConfig(
+  input: ProviderAddMcpServerInput,
+  env: NodeJS.ProcessEnv = process.env,
+): UnknownRecord {
+  validateMcpServerName(input.name);
+
+  if (input.transport === "stdio") {
+    if (!input.command) throw new Error(`MCP server "${input.name}" needs a command.`);
+    if (input.cwd) throw new Error("Claude MCP servers do not support a working directory.");
+    return {
+      type: "stdio",
+      command: input.command,
+      args: [...(input.args ?? [])],
+      ...(input.env && Object.keys(input.env).length > 0 ? { env: { ...input.env } } : {}),
+    };
+  }
+
+  if (!input.url) throw new Error(`MCP server "${input.name}" needs a URL.`);
+  const token = input.bearerTokenEnvVar ? env[input.bearerTokenEnvVar] : undefined;
+  if (input.bearerTokenEnvVar && !token) {
+    throw new Error(`Environment variable ${input.bearerTokenEnvVar} is not set.`);
+  }
+  return {
+    type: "http",
+    url: input.url,
+    ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+  };
+}
+
 export const MCP_SERVER_LIST_PAGE_LIMIT = MCP_SERVER_PAGE_LIMIT;
