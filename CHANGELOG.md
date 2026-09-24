@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.8] — 2026-09-24
+
+### Changed
+
+- Republishes 0.9.7 from cleaned commit history; application behavior is unchanged.
+
 ## [0.9.7] — 2026-09-24
 
 ### Added
