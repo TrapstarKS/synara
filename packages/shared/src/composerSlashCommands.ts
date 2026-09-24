@@ -19,6 +19,8 @@ export const BUILT_IN_COMPOSER_SLASH_COMMANDS = [
   "btw",
   "status",
   "mcp",
+  "chrome",
+  "claude-in-chrome",
   "subagents",
   COMPUTER_USE_SLASH_COMMAND,
   "fast",

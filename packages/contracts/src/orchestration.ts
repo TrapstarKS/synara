@@ -218,6 +218,7 @@ export const ClaudeProviderStartOptions = Schema.Struct({
   permissionMode: Schema.optional(TrimmedNonEmptyString),
   maxThinkingTokens: Schema.optional(NonNegativeInt),
   enableArtifacts: Schema.optional(Schema.Boolean),
+  enableChrome: Schema.optional(Schema.Boolean),
 });
 
 export const AntigravityProviderStartOptions = Schema.Struct({

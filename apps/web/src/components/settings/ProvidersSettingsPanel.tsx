@@ -99,7 +99,10 @@ type ProviderInstallPasswordKey = "openCodeServerPassword" | "chatGptOpenAiTunne
 type ProviderInstallPasswordConfiguredKey =
   | "openCodeServerPasswordConfigured"
   | "chatGptOpenAiTunnelApiKeyConfigured";
-type ProviderInstallBooleanKey = "claudeEnableArtifacts" | "openCodeExperimentalWebSockets";
+type ProviderInstallBooleanKey =
+  | "claudeEnableArtifacts"
+  | "claudeEnableChrome"
+  | "openCodeExperimentalWebSockets";
 type ProviderInstallSelectKey = "chatGptTunnelMode";
 
 type ProviderInstallTextField = {
@@ -204,6 +207,18 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
             Claude Code keeps Artifacts off in embedded sessions. Turn this on so{" "}
             <code>/design</code> and <code>/slides</code> publish to claude.ai. Needs a claude.ai
             login on a Pro, Max, Team or Enterprise plan, and applies to new sessions.
+          </>
+        ),
+      },
+      {
+        kind: "boolean",
+        settingsKey: "claudeEnableChrome",
+        label: "Claude in Chrome",
+        description: (
+          <>
+            Starts Claude with <code>--chrome</code> so it can drive your browser through the Claude
+            in Chrome extension. Same as <code>/chrome</code>; open threads pick it up on their next
+            message.
           </>
         ),
       },

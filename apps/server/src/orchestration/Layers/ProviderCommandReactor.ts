@@ -836,6 +836,9 @@ const make = Effect.gen(function* () {
   // against the old subprocess configuration before the next turn starts.
   const threadSessionModelSelections = new Map<string, ModelSelection>();
   const threadSessionComputerControl = new Map<string, boolean>();
+  // `--chrome` is spawn-fixed, so a Claude in Chrome toggle restarts (and
+  // resumes) the thread's Claude session on its next turn.
+  const threadSessionClaudeChrome = new Map<string, boolean>();
   // Seeded from the engine's in-memory command read model, not a second snapshot query.
   // The engine loads that model once after the projection bootstrap and keeps it current
   // as commands commit, so reading it here is both free and strictly fresher than
@@ -1538,6 +1541,7 @@ const make = Effect.gen(function* () {
       threadProviderOptions.delete(threadId);
       threadSessionModelSelections.delete(threadId);
       threadSessionComputerControl.delete(threadId);
+      threadSessionClaudeChrome.delete(threadId);
       const editResendPrefix = `${threadId}:`;
       for (const key of editResendTurnStartKeys) {
         if (key.startsWith(editResendPrefix)) {
@@ -1885,6 +1889,7 @@ const make = Effect.gen(function* () {
       runtimeMode: desiredRuntimeMode,
     };
 
+    const desiredClaudeChrome = resolvedProviderOptions.claudeAgent?.enableChrome === true;
     const providerSessionStartInput = (resumeCursor?: unknown) => ({
       ...providerSessionOptions,
       ...(preferredProvider ? { provider: preferredProvider } : {}),
@@ -1896,18 +1901,24 @@ const make = Effect.gen(function* () {
       registerPriorTranscriptBootstrapOnFreshStart = false,
     ) => {
       const startInput = providerSessionStartInput(resumeCursor);
-      return providerService.startSessionWithOutcome
-        ? providerService.startSessionWithOutcome(threadId, startInput, {
-            registerPriorTranscriptBootstrapOnFreshStart,
-          })
-        : providerService.startSession(threadId, startInput).pipe(
-            Effect.map((session) => ({
-              session,
-              nativeResumeAttempted: resumeCursor !== undefined && resumeCursor !== null,
-              nativeResumeSucceeded: resumeCursor !== undefined && resumeCursor !== null,
-              priorTranscriptBootstrapPending: registerPriorTranscriptBootstrapOnFreshStart,
-            })),
-          );
+      return (
+        providerService.startSessionWithOutcome
+          ? providerService.startSessionWithOutcome(threadId, startInput, {
+              registerPriorTranscriptBootstrapOnFreshStart,
+            })
+          : providerService.startSession(threadId, startInput).pipe(
+              Effect.map((session) => ({
+                session,
+                nativeResumeAttempted: resumeCursor !== undefined && resumeCursor !== null,
+                nativeResumeSucceeded: resumeCursor !== undefined && resumeCursor !== null,
+                priorTranscriptBootstrapPending: registerPriorTranscriptBootstrapOnFreshStart,
+              })),
+            )
+      ).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => threadSessionClaudeChrome.set(threadId, desiredClaudeChrome)),
+        ),
+      );
     };
 
     const bindSessionToThread = (session: ProviderSession) =>
@@ -1999,6 +2010,10 @@ const make = Effect.gen(function* () {
       const computerControlChanged =
         requestedComputerControl !== undefined &&
         requestedComputerControl !== previousComputerControl;
+      const claudeChromeChanged =
+        currentProvider === "claudeAgent" &&
+        desiredModelSelection.provider === "claudeAgent" &&
+        (threadSessionClaudeChrome.get(threadId) ?? false) !== desiredClaudeChrome;
 
       if (
         !runtimeModeChanged &&
@@ -2007,7 +2022,8 @@ const make = Effect.gen(function* () {
         !shouldRestartForModelChange &&
         !shouldRestartForModelSelectionChange &&
         !shouldRestartForCodexProfileChange &&
-        !computerControlChanged
+        !computerControlChanged &&
+        !claudeChromeChanged
       ) {
         return {
           activeSessionBeforeEnsure,
@@ -2032,7 +2048,7 @@ const make = Effect.gen(function* () {
       // the queued turn before the projector clears the session row, so a
       // projected running turn here is stale, not live.
       if (
-        computerControlChanged &&
+        (computerControlChanged || claudeChromeChanged) &&
         !runtimeModeChanged &&
         !providerChanged &&
         !workspaceChanged &&
@@ -2085,6 +2101,7 @@ const make = Effect.gen(function* () {
         shouldRestartForModelChange,
         shouldRestartForModelSelectionChange,
         computerControlChanged,
+        claudeChromeChanged,
         hasResumeCursor: resumeCursor !== undefined,
       });
       const restartedOutcome = yield* startProviderSessionWithOutcome(

@@ -4560,6 +4560,8 @@ export default function ChatView({
     clearThreadGoal,
     setThreadGoalPaused,
   } = useComposerSlashCommands({
+    claudeChromeEnabled: settings.claudeEnableChrome,
+    setClaudeChromeEnabled: (enabled) => updateSettings({ claudeEnableChrome: enabled }),
     activeProject,
     activeThread,
     activeRootBranch,

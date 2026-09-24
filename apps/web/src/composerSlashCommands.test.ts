@@ -504,6 +504,8 @@ describe("composerSlashCommands", () => {
       "btw",
       "export",
       "mcp",
+      "chrome",
+      "claude-in-chrome",
       "goal",
       "rename",
       "debug",

@@ -5873,6 +5873,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
             : {}),
           settings,
+          ...(providerOptions?.enableChrome ? { extraArgs: { chrome: null } } : {}),
           ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,

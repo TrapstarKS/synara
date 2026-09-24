@@ -12620,6 +12620,27 @@ describe("Claude explicit native compaction", () => {
     );
   });
 
+  for (const enableChrome of [false, true]) {
+    it.effect(`passes --chrome only when Claude in Chrome is on (${enableChrome})`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          providerOptions: { claudeAgent: { enableChrome } },
+        });
+        assert.deepEqual(
+          harness.getLastCreateQueryInput()?.options.extraArgs,
+          enableChrome ? { chrome: null } : undefined,
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
+
   for (const enableArtifacts of [false, true]) {
     it.effect(`reports Claude artifact availability (setting ${enableArtifacts})`, () => {
       // One session per harness: the fake query is shared, so stopping a first

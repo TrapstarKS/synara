@@ -86,6 +86,8 @@ export function useComposerSlashCommands(input: {
   canOfferExportCommand: boolean;
   supportsTextNativeReviewCommand: boolean;
   fastModeEnabled: boolean;
+  claudeChromeEnabled: boolean;
+  setClaudeChromeEnabled: (enabled: boolean) => void;
   providerNativeCommands: readonly ProviderNativeCommandDescriptor[];
   providerCommandDiscoveryCwd: string | null;
   selectedProvider: ProviderKind;
@@ -140,6 +142,8 @@ export function useComposerSlashCommands(input: {
     canOfferExportCommand,
     supportsTextNativeReviewCommand,
     fastModeEnabled,
+    claudeChromeEnabled,
+    setClaudeChromeEnabled,
     providerNativeCommands,
     providerCommandDiscoveryCwd,
     selectedProvider,
@@ -895,6 +899,24 @@ export function useComposerSlashCommands(input: {
     selectedProvider,
   ]);
 
+  // `/chrome [on|off]` flips the Claude in Chrome provider setting; the server
+  // restarts the Claude session with `--chrome` on the thread's next turn.
+  const toggleClaudeChrome = useCallback(
+    (args: string) => {
+      const arg = args.trim().toLowerCase();
+      const enabled = arg === "on" ? true : arg === "off" ? false : !claudeChromeEnabled;
+      setClaudeChromeEnabled(enabled);
+      toastManager.add({
+        type: "success",
+        title: enabled ? "Claude in Chrome on" : "Claude in Chrome off",
+        description: enabled
+          ? "Claude gets the Chrome browser tools from its next message. Needs the Claude in Chrome extension."
+          : "Claude drops the Chrome browser tools from its next message.",
+      });
+    },
+    [claudeChromeEnabled, setClaudeChromeEnabled],
+  );
+
   const handleStandaloneSlashCommand = useCallback(
     async (trimmed: string): Promise<boolean | string> => {
       const fastSlashAction = parseFastSlashCommandAction(trimmed);
@@ -949,6 +971,11 @@ export function useComposerSlashCommands(input: {
       if (slashInvocation.command === "mcp") {
         editorActions.clearComposerSlashDraft();
         setIsMcpDialogOpen(true);
+        return true;
+      }
+      if (slashInvocation.command === "chrome" || slashInvocation.command === "claude-in-chrome") {
+        editorActions.clearComposerSlashDraft();
+        toggleClaudeChrome(slashInvocation.args);
         return true;
       }
       if (slashInvocation.command === "goal") {
@@ -1130,6 +1157,7 @@ export function useComposerSlashCommands(input: {
       runFastSlashCommand,
       runGoalSlashCommand,
       runRenameSlashCommand,
+      toggleClaudeChrome,
     ],
   );
 
@@ -1251,6 +1279,16 @@ export function useComposerSlashCommands(input: {
         return;
       }
 
+      if (item.command === "chrome" || item.command === "claude-in-chrome") {
+        const applied = clearSlashCommandFromComposer();
+        if (wasPromptReplacementApplied(applied)) {
+          editorActions.setComposerHighlightedItemId(null);
+          toggleClaudeChrome("");
+          editorActions.scheduleComposerFocus();
+        }
+        return;
+      }
+
       if (item.command === "fast") {
         const applied = clearSlashCommandFromComposer();
         if (!wasPromptReplacementApplied(applied)) {
@@ -1363,6 +1401,7 @@ export function useComposerSlashCommands(input: {
       supportsTextNativeReviewCommand,
       runExportSlashCommand,
       runFastSlashCommand,
+      toggleClaudeChrome,
     ],
   );
 

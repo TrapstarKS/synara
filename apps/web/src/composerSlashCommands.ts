@@ -115,6 +115,7 @@ function shouldKeepBuiltInSlashCommandDespiteNativeCollision(
     command === "goal" ||
     command === "rename" ||
     (providerUsesAppOwnedMcpSlashCommand(provider) && command === "mcp") ||
+    (provider === "claudeAgent" && (command === "chrome" || command === "claude-in-chrome")) ||
     (providerUsesAppOwnedReviewSlashCommand(provider) && command === "review")
   );
 }
@@ -139,6 +140,9 @@ export function shouldHideProviderNativeCommandFromComposerMenu(
     (normalizedCommand === "rename" && appCommandIsAvailable) ||
     (providerUsesAppOwnedMcpSlashCommand(provider) &&
       normalizedCommand === "mcp" &&
+      appCommandIsAvailable) ||
+    (provider === "claudeAgent" &&
+      (normalizedCommand === "chrome" || normalizedCommand === "claude-in-chrome") &&
       appCommandIsAvailable) ||
     (providerUsesAppOwnedReviewSlashCommand(provider) && normalizedCommand === "review")
   );
@@ -243,6 +247,18 @@ const COMPOSER_SLASH_COMMAND_DEFINITIONS: Record<
     command: "mcp",
     label: "/mcp",
     description: "List and manage MCP servers for this session",
+    source: "app",
+  },
+  chrome: {
+    command: "chrome",
+    label: "/chrome",
+    description: "Turn Claude in Chrome browser tools on or off",
+    source: "app",
+  },
+  "claude-in-chrome": {
+    command: "claude-in-chrome",
+    label: "/claude-in-chrome",
+    description: "Turn Claude in Chrome browser tools on or off",
     source: "app",
   },
   subagents: {
@@ -558,6 +574,8 @@ export function getAvailableComposerSlashCommands(input: {
           ...(input.canOfferSideCommand ? (["btw"] as const) : []),
           ...(input.canOfferExportCommand ? (["export"] as const) : []),
           "mcp",
+          "chrome",
+          "claude-in-chrome",
           "goal",
           "rename",
           "debug",

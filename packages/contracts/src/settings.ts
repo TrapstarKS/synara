@@ -43,6 +43,9 @@ export const ClaudeServerProviderSettings = Schema.Struct({
   // Claude Code keeps Artifact publishing (and `/design`, `/slides`) off for
   // Agent SDK sessions unless the host opts in.
   enableArtifacts: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  // Spawns Claude Code with `--chrome` so the Claude in Chrome extension's
+  // browser tools are available. Toggled from Settings or `/chrome`.
+  enableChrome: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 });
 export type ClaudeServerProviderSettings = typeof ClaudeServerProviderSettings.Type;
 
@@ -204,6 +207,7 @@ export const ServerSettingsPatch = Schema.Struct({
           ...ProviderSettingsBasePatch,
           launchArgs: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(4096))),
           enableArtifacts: Schema.optionalKey(Schema.Boolean),
+          enableChrome: Schema.optionalKey(Schema.Boolean),
         }),
       ),
       cursor: Schema.optionalKey(

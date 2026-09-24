@@ -242,6 +242,16 @@ allows Artifacts. While Artifacts are off or unavailable, the composer marks bot
 warning that explains what is missing. Published pages are hosted on claude.ai; Claude returns the
 link in its reply.
 
+### Claude in Chrome, `/chrome`
+
+Type `/chrome` (or `/claude-in-chrome`) in a Claude thread to turn
+[Claude in Chrome](https://code.claude.com/docs/en/chrome) on or off; `/chrome on` and `/chrome off`
+set it explicitly. The same switch lives in **Settings → Providers → Claude → Claude in Chrome**.
+While it is on, Synara launches Claude with `--chrome`, which adds the `claude-in-chrome` MCP server
+and its browser tools. The option is fixed when Claude starts, so an open thread restarts and resumes
+its Claude session on the next message. It needs the Claude in Chrome extension installed and
+connected in Chrome.
+
 ## Switching providers
 
 A [provider handoff](https://www.trysynara.com/docs/workflows/handoffs) allows another provider to

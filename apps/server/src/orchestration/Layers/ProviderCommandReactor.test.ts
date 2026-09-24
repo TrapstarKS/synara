@@ -13267,6 +13267,45 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("restarts and resumes a Claude session when Claude in Chrome is toggled", async () => {
+    const harness = await createHarness({
+      threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-7" },
+    });
+    const startTurn = (id: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe(`cmd-turn-start-${id}`),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: asMessageId(`user-message-${id}`),
+            role: "user",
+            text: id,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: new Date().toISOString(),
+        }),
+      );
+
+    await startTurn("chrome-off");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await startTurn("chrome-still-off");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+
+    await Effect.runPromise(
+      harness.serverSettings.updateSettings({ providers: { claudeAgent: { enableChrome: true } } }),
+    );
+    await startTurn("chrome-on");
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      resumeCursor: { opaque: "resume-1" },
+      providerOptions: { claudeAgent: { enableChrome: true } },
+    });
+  });
+
   it("restarts a directly started Claude session when spawn-fixed options change", async () => {
     const initialSelection: ModelSelection = {
       provider: "claudeAgent",
