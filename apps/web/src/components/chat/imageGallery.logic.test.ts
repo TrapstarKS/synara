@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import { collectChatGalleryImages, extractMarkdownImages } from "./imageGallery.logic";
+import { deriveWorkLogToolDetails } from "~/lib/toolCallDetails";
+
+import {
+  collectChatGalleryImages,
+  extractMarkdownImages,
+  extractToolResultImagePaths,
+  type ChatGalleryWorkEntry,
+} from "./imageGallery.logic";
+
+const toolEntry = (
+  id: string,
+  toolDetails: ChatGalleryWorkEntry["toolDetails"],
+  overrides: Partial<ChatGalleryWorkEntry> = {},
+): ChatGalleryWorkEntry => ({
+  id,
+  createdAt: "2026-09-24T10:00:00.000Z",
+  tone: "tool",
+  itemType: "mcp_tool_call",
+  activityKind: "tool.completed",
+  ...(toolDetails ? { toolDetails } : {}),
+  ...overrides,
+});
 
 describe("image gallery", () => {
   it("extracts remote and angle-bracketed local Markdown images", () => {
@@ -99,6 +120,84 @@ describe("image gallery", () => {
     );
 
     expect(images).toEqual([]);
+  });
+
+  it("collects images that non-Codex tools report as saved paths", () => {
+    const images = collectChatGalleryImages(
+      [],
+      [
+        // Claude's serialized tool_result (text plus an inline image block).
+        toolEntry("claude-generate", {
+          kind: "tool-call",
+          title: "generate_image",
+          result:
+            '[{"type":"text","text":"Saved 2 images:\\n/Users/me/repo/cat.png\\n/Users/me/repo/cat-2.webp"},{"type":"image","synaraImageOmitted":true}]',
+        }),
+        toolEntry("proof", {
+          kind: "tool-call",
+          title: "browser_screenshot",
+          structuredResult: '{"artifactPath":"C:\\\\Users\\\\me\\\\proof.png"}',
+        }),
+      ],
+    );
+    expect(images.map((image) => image.src).toSorted()).toEqual([
+      "/Users/me/repo/cat-2.webp",
+      "/Users/me/repo/cat.png",
+      "C:\\Users\\me\\proof.png",
+    ]);
+    expect(images.every((image) => image.origin === "Agent")).toBe(true);
+  });
+
+  it("reads the saved path from a Claude codex-media tool_result payload", () => {
+    const toolDetails = deriveWorkLogToolDetails({
+      itemType: "mcp_tool_call",
+      label: "generate_image",
+      payload: {
+        data: {
+          toolName: "mcp__codex-media__generate_image",
+          input: { prompt: "a cat" },
+          result: {
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            content: [
+              { type: "text", text: "Saved 1 image:\n/Users/me/repo/a-cat.png" },
+              { type: "image", source: { type: "base64", synaraImageOmitted: true } },
+            ],
+          },
+        },
+      },
+    });
+    expect(extractToolResultImagePaths(toolEntry("claude", toolDetails))).toEqual([
+      "/Users/me/repo/a-cat.png",
+    ]);
+  });
+
+  it("skips URLs, commands and failed or running tool calls", () => {
+    expect(
+      extractToolResultImagePaths(
+        toolEntry("remote", {
+          kind: "tool-call",
+          title: "fetch",
+          result: "See https://example.com/a.png and ./relative.png",
+        }),
+      ),
+    ).toEqual([]);
+    const saved = { kind: "tool-call" as const, title: "t", result: "Saved /tmp/a.png" };
+    expect(
+      collectChatGalleryImages(
+        [],
+        [
+          toolEntry("command", {
+            kind: "command",
+            title: "ls",
+            command: "ls",
+            result: "/tmp/a.png",
+          }),
+          toolEntry("failed", saved, { toolStatus: "failed" }),
+          toolEntry("running", saved, { activityKind: "tool.updated" }),
+        ],
+      ),
+    ).toEqual([]);
   });
 
   it("ignores unsafe or non-image Markdown destinations", () => {

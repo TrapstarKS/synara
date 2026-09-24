@@ -28,6 +28,7 @@ export type ChatGalleryWorkEntry = Pick<
   | "liveActivity"
   | "itemType"
   | "activityKind"
+  | "toolDetails"
 >;
 
 const MARKDOWN_IMAGE_PATTERN =
@@ -43,8 +44,32 @@ function nameFromSource(src: string): string {
   return localImageFileName(withoutQuery) || "Image";
 }
 
-function isCompletedGeneratedImageEntry(entry: ChatGalleryWorkEntry): boolean {
-  if (entry.itemType !== "image_generation" || entry.tone === "error") {
+// Absolute image paths as tools print them, e.g. codex-media's "Saved 1 image:\n/…/a.png"
+// or a browser proof's `"artifactPath":"/…/b.png"`.
+const ABSOLUTE_IMAGE_PATH_PATTERN =
+  /(?<![\w.~:/-])((?:\/|[A-Za-z]:\\)[^\s"'<>|*?]*?\.(?:png|jpe?g|gif|webp))(?![\w-])/gi;
+
+/**
+ * Image files a completed tool call reports writing. Codex's native image
+ * generation has its own item type; every other provider (Claude via the
+ * codex-media MCP, browser proofs) only returns the saved path as tool text.
+ */
+export function extractToolResultImagePaths(entry: ChatGalleryWorkEntry): string[] {
+  const details = entry.toolDetails;
+  if (details?.kind !== "tool-call" || entry.tone === "error" || details.success === false) {
+    return [];
+  }
+  // Serialized results keep JSON escapes; undo the ones that can border a path.
+  const text = [details.result, details.structuredResult]
+    .filter((value): value is string => Boolean(value))
+    .join("\n")
+    .replaceAll("\\\\", "\\")
+    .replace(/\\[nrt"]/g, " ");
+  return [...new Set([...text.matchAll(ABSOLUTE_IMAGE_PATH_PATTERN)].map((match) => match[1]!))];
+}
+
+function isCompletedToolEntry(entry: ChatGalleryWorkEntry): boolean {
+  if (entry.tone === "error") {
     return false;
   }
   if (entry.toolStatus === "failed" || entry.toolStatus === "cancelled") {
@@ -108,8 +133,18 @@ export function collectChatGalleryImages(
   }
 
   for (const workEntry of workEntries) {
+    if (!isCompletedToolEntry(workEntry)) continue;
+    for (const [index, src] of extractToolResultImagePaths(workEntry).entries()) {
+      add({
+        id: `${workEntry.id}:tool-image:${index}`,
+        src,
+        name: nameFromSource(src),
+        origin: "Agent",
+        createdAt: workEntry.createdAt,
+      });
+    }
     const src = workEntry.detail?.trim();
-    if (!src || !isCompletedGeneratedImageEntry(workEntry) || !isPreviewableImageSource(src)) {
+    if (!src || workEntry.itemType !== "image_generation" || !isPreviewableImageSource(src)) {
       continue;
     }
     add({
