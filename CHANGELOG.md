@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.9] — 2026-09-24
+
+### Added
+
+- `/chrome` and `/claude-in-chrome` in Claude threads turn Claude in Chrome on or off. Synara then starts Claude with `--chrome`, and open threads resume with the browser tools on their next message. The same switch is in Settings → Providers → Claude.
+
 ## [0.9.8] — 2026-09-24
 
 ### Changed

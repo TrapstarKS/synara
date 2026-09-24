@@ -26,6 +26,20 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    version: "0.9.9",
+    date: "Sep 24",
+    features: [
+      {
+        id: "claude-in-chrome",
+        title: "/chrome for Claude",
+        description:
+          "Type /chrome or /claude-in-chrome in a Claude thread to give Claude the Claude in Chrome browser tools, or to take them away.",
+        details:
+          "The switch also lives in Settings → Providers → Claude. Open threads pick it up on their next message. Needs the Claude in Chrome extension.",
+      },
+    ],
+  },
+  {
     version: "0.9.7",
     date: "Sep 24",
     features: [
