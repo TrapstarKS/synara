@@ -72,7 +72,23 @@ Run `cli.mjs pair` from another terminal. The login task uses `%USERPROFILE%\.sy
 3. Open Synara from its new icon, pair there, and optionally enable/test notifications. If pairing was already consumed in a separate browser context, generate a new link.
 4. Open the conversations page to create threads, send prompts, approve tools, interrupt or resume work on that computer.
 
-Each computer has a separate HTTPS origin, pairing and project/thread history. Open or install each host's address to choose where work runs. Tailscale connects the devices; the companion does not merge histories or move processes between machines. The computer still needs its provider CLI installed and signed in. Nothing needs a public inbound port or Funnel.
+Each computer has a separate HTTPS origin, pairing and project/thread history. Tailscale connects the devices; the companion does not merge histories or move processes between machines. The computer still needs its provider CLI installed and signed in. Nothing needs a public inbound port or Funnel.
+
+### One app for several computers
+
+Packaged desktop builds ship this companion and start it with the app, so a computer needs only Synara and Tailscale. Without `SYNARA_MOBILE_ORIGIN` the companion uses its own MagicDNS name on `:8443` and adds `tailscale serve --bg --https=8443` only when that port has no route yet; existing Serve routes are never changed. If a login service already holds `~/.synara-mobile`, the bundled copy exits and the service keeps serving.
+
+Every minute each companion looks for the owner's other online computers in `tailscale status` and pairs with their companions automatically. The peer accepts a pairing only over Tailscale Serve HTTPS, when the `Tailscale-User-Login` header is its own owner, the caller is one of that owner's online computers, and a callback to the caller's origin confirms the one-time nonce. The phone then picks the computer in **Celular → Computador**. A manual link still works:
+
+```sh
+# on the peer (Windows)
+node extensions/mobile-remote/cli.mjs pair
+# on the hub (Mac)
+node extensions/mobile-remote/cli.mjs peer-add Windows "https://your-pc.your-tailnet.ts.net:8443/mobile#pair=…"
+node extensions/mobile-remote/cli.mjs peers
+```
+
+The hub pairs as a device of the peer and proxies the selected computer's UI and WebSocket through the peer's own companion; the desktop credential never leaves its machine. Peer alerts are relayed to the hub's push subscriptions, prefixed with the peer name, and tapping one switches to that computer. Relay is live only: alerts raised while the hub↔peer link is down are not replayed. The hub's session on the peer expires after 90 days like any device; automatic discovery renews it (same computer keeps its id). Remove with `peer-remove <id>`. Both computers share the phone's browser storage for this origin, so UI drafts or local view state may carry across a switch. Opening each host's own address directly still works.
 
 ### Keep it running on this Mac
 

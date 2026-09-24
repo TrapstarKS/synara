@@ -305,6 +305,7 @@ import { notifyBackendComputerEmergencyStop } from "./computerEmergencyStopNotic
 import { EscapeKillSwitchMonitor } from "./escapeKillSwitchMonitor";
 import { hardenBrowserAnnotationWebviewPreferences } from "./browserAnnotations/webviewSecurity";
 import { LOCAL_HTML_PREVIEW_SCHEME } from "./localHtmlPreviewProtocol";
+import { startMobileCompanion } from "./mobileCompanion";
 import {
   APP_SNAP_SETTINGS_PANE_URLS,
   registerAppSnapIpcHandlers,
@@ -442,6 +443,7 @@ let backendProcess: ChildProcess.ChildProcess | null = null;
 let backendPort = 0;
 let backendAuthToken = "";
 let backendHttpUrl = "";
+let stopMobileCompanion: (() => void) | undefined;
 let backendWsUrl = "";
 let backendReadinessAbortController: AbortController | null = null;
 let backendInitialWindowOpenInFlight: Promise<void> | null = null;
@@ -4635,6 +4637,7 @@ async function shutdownDesktopRuntime(reason: string): Promise<void> {
 
   isQuitting = true;
   hideDesktopWindowForImmediateQuit();
+  stopMobileCompanion?.();
   writeDesktopLogHeader(`${reason} shutdown start`);
   const shutdown = runAfterDesktopShutdown(
     stopBackendAndWaitForExit(),
@@ -5713,6 +5716,12 @@ async function bootstrap(): Promise<void> {
   await startCuaHost();
   startBackend();
   writeDesktopLogHeader("bootstrap backend start requested");
+  if (app.isPackaged) {
+    stopMobileCompanion = startMobileCompanion({
+      entry: Path.join(__dirname, "../mobile-remote/server.mjs"),
+      log: writeDesktopLogHeader,
+    });
+  }
 
   if (isDevelopment) {
     void waitForBackendWindowReady(backendHttpUrl)
