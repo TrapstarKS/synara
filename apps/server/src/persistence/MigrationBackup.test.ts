@@ -970,6 +970,11 @@ describe("migration backups", () => {
     const dbPath = await makeDbPath();
     await fs.mkdir(migrationBackupDirectory(dbPath), { recursive: true, mode: 0o755 });
     await fs.chmod(migrationBackupDirectory(dbPath), 0o755);
+    const strandedJournal = path.join(
+      migrationBackupDirectory(dbPath),
+      `.${path.basename(dbPath)}.pre-migration-v0-to-v1-20260101T000000000Z-x.sqlite.partial-journal`,
+    );
+    await fs.writeFile(strandedJournal, "journal");
 
     await runWithDatabase(
       dbPath,
@@ -987,6 +992,10 @@ describe("migration backups", () => {
 
     const retainedBackups = await backupPaths(dbPath);
     expect(retainedBackups).toHaveLength(MIGRATION_BACKUP_RETENTION);
+    expect(path.basename(retainedBackups.at(-1)!)).toContain(
+      `-v${MIGRATION_BACKUP_RETENTION + 2}-to-v${MIGRATION_BACKUP_RETENTION + 3}-`,
+    );
+    await expect(fs.stat(strandedJournal)).rejects.toMatchObject({ code: "ENOENT" });
     if (process.platform !== "win32") {
       expect((await fs.stat(migrationBackupDirectory(dbPath))).mode & 0o777).toBe(0o700);
       for (const backupPath of retainedBackups) {

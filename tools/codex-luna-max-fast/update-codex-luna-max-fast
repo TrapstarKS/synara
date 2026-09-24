@@ -55,6 +55,12 @@ else
   exit "${lock_result}"
 fi
 
+# The retired local-build updater cloned Codex into source/ and compiled it into
+# target/ (15 GB debug + 7 GB release), and nothing ever removed them. Releases
+# now arrive prebuilt, so reclaim those leftovers on every run.
+/bin/rm -rf "${state_dir}/source" "${state_dir}/target" "${state_dir}/status.json" \
+  "${state_dir}/luna-max-fast.patch" "${bin_dir}/__pycache__"
+
 temp_dir="$(/usr/bin/mktemp -d "${state_dir}/update.XXXXXX")"
 cleanup() {
   /bin/rm -rf "${temp_dir}"

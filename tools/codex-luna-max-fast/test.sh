@@ -67,6 +67,17 @@ SYNARA_LUNA_HOME="${temp_dir}/home" \
 [[ "$(/usr/bin/plutil -extract settings.providers.codex.binaryPath raw \
   "${temp_dir}/home/userdata/settings.json")" == "${temp_dir}/home/bin/codex-luna-max-fast" ]]
 
+# Build leftovers from the retired local-build updater are reclaimed even when
+# the installed release is already current.
+/bin/mkdir -p "${temp_dir}/home/codex-luna-max-fast/target/debug" \
+  "${temp_dir}/home/codex-luna-max-fast/source" "${temp_dir}/home/bin/__pycache__"
+SYNARA_LUNA_HOME="${temp_dir}/home" \
+  SYNARA_LUNA_RELEASE_BASE_URL="file://${temp_dir}/release" \
+  "${script_dir}/update-codex-luna-max-fast" >/dev/null
+[[ ! -e "${temp_dir}/home/codex-luna-max-fast/target" && \
+  ! -e "${temp_dir}/home/codex-luna-max-fast/source" && \
+  ! -e "${temp_dir}/home/bin/__pycache__" ]]
+
 # A directory left by the old updater must not permanently disable updates.
 /bin/mkdir "${temp_dir}/home/codex-luna-max-fast/update.lock.d"
 SYNARA_LUNA_HOME="${temp_dir}/home" \

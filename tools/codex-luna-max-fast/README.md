@@ -18,6 +18,10 @@ older updater no longer blocks progress. Network operations have bounded connect
 and transfer timeouts. A newer installed stable version is preserved when the
 published feed temporarily contains an older version, including with `--force`.
 
+The updater never compiles locally; Cargo builds happen only on the ephemeral CI runner. Each
+run also deletes the `source/`, `target/` and `bin/__pycache__` leftovers of the retired
+local-build updater, which could reach 20 GB.
+
 Updates apply to new Codex processes. Existing conversations keep their running
 provider process until it exits normally; the updater does not restart active work.
 

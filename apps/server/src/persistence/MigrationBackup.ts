@@ -40,8 +40,14 @@ import {
   planMigrationLineageAliasRepairs,
 } from "./Migrations.ts";
 
-/** Keep at most this many finished pre-migration SQLite backups (issue #618). */
-export const MIGRATION_BACKUP_RETENTION = 5;
+/**
+ * Keep only the newest finished pre-migration SQLite backup (issue #618).
+ *
+ * Each snapshot is a full copy of the database, so five of them cost 11 GB on a
+ * 3 GB database. Only the snapshot of the latest migration can be restored by
+ * the recovery flow; older ones predate migrations that already succeeded.
+ */
+export const MIGRATION_BACKUP_RETENTION = 1;
 export const FAILED_MIGRATION_BUNDLE_RETENTION = 3;
 
 const STALE_RECOVERY_ARTIFACT_AGE_MS = 24 * 60 * 60 * 1_000;
@@ -440,7 +446,11 @@ const removeStaleRegularFiles = (directory: string, matches: (name: string) => b
  */
 function isMigrationBackupPartial(dbBasename: string): (name: string) => boolean {
   const partialPrefix = `.${dbBasename}.pre-migration-`;
-  return (name) => name.startsWith(partialPrefix) && name.endsWith(".partial");
+  // `VACUUM INTO` writes its target through a rollback journal, which a crash
+  // strands next to the partial as `<partial>-journal`.
+  return (name) =>
+    name.startsWith(partialPrefix) &&
+    (name.endsWith(".partial") || name.endsWith(".partial-journal"));
 }
 
 /**

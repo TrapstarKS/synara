@@ -2,7 +2,18 @@ import { ProjectionPendingInteractionRepositoryLive } from "./persistence/Layers
 import http from "node:http";
 
 import type { ServerSettingsError } from "@synara/contracts";
-import { Effect, Exit, FileSystem, Layer, Path, Schema, Scope, ServiceMap } from "effect";
+import {
+  Duration,
+  Effect,
+  Exit,
+  FileSystem,
+  Layer,
+  Path,
+  Schedule,
+  Schema,
+  Scope,
+  ServiceMap,
+} from "effect";
 import { HttpRouter } from "effect/unstable/http";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -18,6 +29,7 @@ import {
 } from "./serverRuntimeState";
 import { remoteAccessPolicyError, ServerConfig } from "./config";
 import { resolveListeningPort } from "./startupAccess";
+import { sweepCodexOverlayRollouts } from "./codexOverlayRolloutRetention";
 import { patchBunWebSocketCloseEventCompatibility } from "./bunWebSocketCompatibility";
 import { makeEffectHttpRouteLayer } from "./http";
 import { Keybindings } from "./keybindings";
@@ -243,6 +255,10 @@ export const createEffectServer = Effect.fn(function* (
   // The recorded chats get their continuation turn now that the orphaned turns
   // above are settled. Forked so the (rare) dispatch work never delays readiness.
   yield* resumeQuitInterruptedChats(quitResumeRecord).pipe(Effect.forkIn(subscriptionsScope));
+  yield* sweepCodexOverlayRollouts(process.env.SYNARA_HOME).pipe(
+    Effect.repeat(Schedule.spaced(Duration.hours(24))),
+    Effect.forkIn(subscriptionsScope),
+  );
 
   yield* lifecycleEvents.publish({
     type: "welcome",

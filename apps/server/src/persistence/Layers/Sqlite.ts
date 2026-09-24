@@ -1,6 +1,6 @@
 import { totalmem } from "node:os";
 
-import { Effect, Layer, FileSystem, Path } from "effect";
+import { Duration, Effect, Layer, FileSystem, Path, Schedule } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
@@ -15,6 +15,7 @@ import {
 import { createMigrationSchemaTooNewStartupBlockError } from "../MigrationSchemaTooNewStartupBlock.ts";
 import { ensurePrivateFileSync, repairPrivateFile } from "../../privatePathPermissions.ts";
 import { resolveSqliteMemoryBudget } from "../sqliteMemoryBudget.ts";
+import { runStorageMaintenance } from "../StorageMaintenance.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   acquireDatabaseLifecycleLock,
@@ -108,6 +109,9 @@ const makeSetup = ({
       // on every commit is too costly, and losing the last few events on a hard
       // power loss is acceptable.
       yield* sql`PRAGMA synchronous = NORMAL;`;
+      // A checkpoint resets the WAL but never shrinks it, so one large write
+      // would otherwise leave a WAL file that size on disk forever.
+      yield* sql`PRAGMA journal_size_limit = 67108864;`;
       yield* sql`PRAGMA foreign_keys = ON;`;
       // The event log alone can exceed a gigabyte, so the 2MB default page
       // cache thrashes during projector replay and large projection reads.
@@ -154,6 +158,16 @@ const makeSetup = ({
             : Effect.fail(cause),
         ),
       );
+      if (dbPath) {
+        // Startup may run the one-time full VACUUM that switches old databases
+        // to incremental vacuum; the daily pass only prunes and frees pages.
+        yield* runStorageMaintenance(dbPath, { allowFullVacuum: true });
+        yield* runStorageMaintenance(dbPath, { allowFullVacuum: false }).pipe(
+          Effect.delay(Duration.hours(24)),
+          Effect.repeat(Schedule.spaced(Duration.hours(24))),
+          Effect.forkScoped,
+        );
+      }
     }),
   );
 
