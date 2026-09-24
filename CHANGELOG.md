@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.11] — 2026-09-24
+
+### Fixed
+
+- Synara no longer fills your disk: old migration backups, streamed-message history, command receipts and idle Codex profile sessions are now cleaned up automatically, and the database shrinks after cleanup. The first launch after updating may take about a minute longer while it compacts.
+- The Codex Luna updater removes the build leftovers (up to 20 GB) of its retired local-build version.
+
 ## [0.9.10] — 2026-09-24
 
 ### Fixed

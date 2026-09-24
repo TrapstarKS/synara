@@ -22,6 +22,20 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.11",
+    date: "Sep 24",
+    features: [
+      {
+        id: "bounded-disk-usage",
+        title: "Synara keeps its disk usage in check",
+        description:
+          "Old migration backups, streamed-message history and idle Codex profile sessions are now cleaned up automatically, and the database shrinks afterwards.",
+        details:
+          "The first launch after updating may take about a minute longer while the database is compacted once.",
+      },
+    ],
+  },
+  {
     version: "0.9.10",
     date: "Sep 24",
     features: [
