@@ -1414,6 +1414,10 @@ function makeClaudeGatewayRuntime(models: ModelInfo[]) {
         supportedCommands: async () => [],
         supportedModels: async () => models,
         supportedAgents: async () => [],
+        mcpServerStatus: async () => [],
+        reconnectMcpServer: async () => {},
+        toggleMcpServer: async () => {},
+        setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
       };
     },
   }).pipe(

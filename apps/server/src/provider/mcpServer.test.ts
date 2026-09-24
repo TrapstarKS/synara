@@ -2,7 +2,9 @@ import { ThreadId } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildClaudeMcpServerConfig,
   buildCodexMcpServerConfig,
+  parseClaudeMcpServerStatus,
   parseCodexMcpServerListResponse,
   parseCodexMcpServerStatus,
   validateMcpServerName,
@@ -105,5 +107,50 @@ describe("Codex MCP server normalization", () => {
         transport: "stdio",
       }),
     ).toThrow(/command/);
+  });
+});
+
+describe("Claude MCP server normalization", () => {
+  it("maps SDK status, auth, tools, and errors", () => {
+    expect(
+      parseClaudeMcpServerStatus({
+        name: "github",
+        status: "needs-auth",
+        error: "login required",
+        tools: [{ name: "search" }, { name: "add" }, {}],
+      }),
+    ).toEqual({
+      name: "github",
+      runtimeStatus: "authenticationRequired",
+      authStatus: "notLoggedIn",
+      pluginId: null,
+      toolNames: ["add", "search"],
+      resourceCount: 0,
+      resourceTemplateCount: 0,
+      toolsError: "login required",
+    });
+    expect(parseClaudeMcpServerStatus({ name: " " })).toBeNull();
+  });
+
+  it("builds stdio and bearer HTTP configs without accepting unsupported fields", () => {
+    const base = { provider: "claudeAgent" as const, threadId: THREAD_ID, name: "tool" };
+    expect(
+      buildClaudeMcpServerConfig({ ...base, transport: "stdio", command: "npx", args: ["x"] }),
+    ).toEqual({ type: "stdio", command: "npx", args: ["x"] });
+    expect(() =>
+      buildClaudeMcpServerConfig({ ...base, transport: "stdio", command: "npx", cwd: "/tmp" }),
+    ).toThrow("working directory");
+    expect(
+      buildClaudeMcpServerConfig(
+        { ...base, transport: "streamable-http", url: "https://x", bearerTokenEnvVar: "TOKEN" },
+        { TOKEN: "secret" },
+      ),
+    ).toEqual({ type: "http", url: "https://x", headers: { Authorization: "Bearer secret" } });
+    expect(() =>
+      buildClaudeMcpServerConfig(
+        { ...base, transport: "streamable-http", url: "https://x", bearerTokenEnvVar: "MISSING" },
+        {},
+      ),
+    ).toThrow("MISSING");
   });
 });

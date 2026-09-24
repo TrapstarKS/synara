@@ -260,6 +260,7 @@ import TerminalWorkspaceTabs from "./TerminalWorkspaceTabs";
 import { ThreadWorktreeHandoffDialog } from "./ThreadWorktreeHandoffDialog";
 import { ChatComposerFooter } from "./chat/ChatComposerFooter";
 import { ChatHeader } from "./chat/ChatHeader";
+import { McpServersDialog } from "./chat/McpServersDialog";
 import type { ProviderHandoffMode } from "./chat/ChatHandoffMenu";
 import { ChatSurfaceHeader } from "./chat/ChatSurfaceHeader";
 import { useAsyncUserInputResponse } from "./chat/useAsyncUserInputResponse";
@@ -4552,6 +4553,8 @@ export default function ChatView({
     handleReviewTargetSelection,
     isSlashStatusDialogOpen,
     setIsSlashStatusDialogOpen,
+    isMcpDialogOpen,
+    setIsMcpDialogOpen,
     handleStandaloneSlashCommand,
     handleSlashCommandSelection,
     clearThreadGoal,
@@ -6379,6 +6382,12 @@ export default function ChatView({
         rateLimitStatus={activeRateLimitStatus}
         activeContextWindowLabel={contextWindowSelectionStatus.activeLabel}
         pendingContextWindowLabel={contextWindowSelectionStatus.pendingSelectedLabel}
+      />
+      <McpServersDialog
+        open={isMcpDialogOpen}
+        onOpenChange={setIsMcpDialogOpen}
+        provider={selectedProvider}
+        threadId={threadId}
       />
       <ThreadWorktreeHandoffDialog
         open={worktreeHandoffDialogOpen}

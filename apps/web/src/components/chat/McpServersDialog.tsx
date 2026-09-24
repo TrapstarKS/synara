@@ -143,6 +143,7 @@ export function McpServersDialog(props: {
   threadId: ThreadId;
 }) {
   const { open, onOpenChange, provider, threadId } = props;
+  const providerName = provider === "claudeAgent" ? "Claude" : "Codex";
   const [servers, setServers] = useState<ReadonlyArray<ProviderMcpServerStatus>>([]);
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -241,7 +242,7 @@ export function McpServersDialog(props: {
         ...(command ? { command } : {}),
         ...(args ? { args } : {}),
         ...(env ? { env } : {}),
-        ...(form.cwd.trim() ? { cwd: form.cwd.trim() } : {}),
+        ...(provider !== "claudeAgent" && form.cwd.trim() ? { cwd: form.cwd.trim() } : {}),
         ...(url ? { url } : {}),
         ...(form.bearerTokenEnvVar.trim()
           ? { bearerTokenEnvVar: form.bearerTokenEnvVar.trim() }
@@ -280,8 +281,8 @@ export function McpServersDialog(props: {
             MCP servers
           </DialogTitle>
           <DialogDescription>
-            See what this Codex session has loaded, enable or disable individual servers, or restart
-            one to renegotiate its tools without restarting the whole session.
+            See what this {providerName} session has loaded, enable or disable individual servers,
+            or restart one to renegotiate its tools without restarting the whole session.
           </DialogDescription>
         </DialogHeader>
 
@@ -296,7 +297,8 @@ export function McpServersDialog(props: {
             <div>
               <p className="text-ui font-medium text-foreground">Active servers</p>
               <p className="text-ui-sm text-muted-foreground">
-                {servers.length === 1 ? "1 server" : `${servers.length} servers`} reported by Codex.
+                {servers.length === 1 ? "1 server" : `${servers.length} servers`} reported by{" "}
+                {providerName}.
               </p>
             </div>
             <Button
@@ -421,7 +423,9 @@ export function McpServersDialog(props: {
               <div>
                 <p className="text-ui font-medium text-foreground">Add MCP server</p>
                 <p className="text-ui-sm text-muted-foreground">
-                  Configuration is written to Codex and queued for the next turn.
+                  {provider === "claudeAgent"
+                    ? "The server is added to this Claude session until it restarts."
+                    : "Configuration is written to Codex and queued for the next turn."}
                 </p>
               </div>
               <Button
@@ -505,15 +509,17 @@ export function McpServersDialog(props: {
                         />
                       </label>
                     </div>
-                    <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
-                      Working directory (optional)
-                      <Input
-                        value={form.cwd}
-                        onChange={(event) => updateForm("cwd", event.target.value)}
-                        placeholder="/path/to/project"
-                        autoComplete="off"
-                      />
-                    </label>
+                    {provider === "claudeAgent" ? null : (
+                      <label className="flex flex-col gap-1.5 text-ui-sm text-muted-foreground">
+                        Working directory (optional)
+                        <Input
+                          value={form.cwd}
+                          onChange={(event) => updateForm("cwd", event.target.value)}
+                          placeholder="/path/to/project"
+                          autoComplete="off"
+                        />
+                      </label>
+                    )}
                   </>
                 ) : (
                   <>

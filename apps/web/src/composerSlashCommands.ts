@@ -87,6 +87,11 @@ function expandProviderNativeSlashCommandNames(
  * win over listing a native "review" command. OpenCode exposes /review in its
  * command list but does not honor bare `/review` text turns (#218).
  */
+/** Synara's /mcp dialog replaces the provider-native command for these providers. */
+export function providerUsesAppOwnedMcpSlashCommand(provider: ProviderKind): boolean {
+  return provider === "codex" || provider === "claudeAgent";
+}
+
 export function providerUsesAppOwnedReviewSlashCommand(provider: ProviderKind): boolean {
   return provider === "codex" || provider === "opencode";
 }
@@ -109,7 +114,7 @@ function shouldKeepBuiltInSlashCommandDespiteNativeCollision(
     command === "btw" ||
     command === "goal" ||
     command === "rename" ||
-    (provider === "codex" && command === "mcp") ||
+    (providerUsesAppOwnedMcpSlashCommand(provider) && command === "mcp") ||
     (providerUsesAppOwnedReviewSlashCommand(provider) && command === "review")
   );
 }
@@ -132,7 +137,9 @@ export function shouldHideProviderNativeCommandFromComposerMenu(
     (normalizedCommand === "btw" && appCommandIsAvailable) ||
     (normalizedCommand === "goal" && appCommandIsAvailable) ||
     (normalizedCommand === "rename" && appCommandIsAvailable) ||
-    (provider === "codex" && normalizedCommand === "mcp" && appCommandIsAvailable) ||
+    (providerUsesAppOwnedMcpSlashCommand(provider) &&
+      normalizedCommand === "mcp" &&
+      appCommandIsAvailable) ||
     (providerUsesAppOwnedReviewSlashCommand(provider) && normalizedCommand === "review")
   );
 }
@@ -235,7 +242,7 @@ const COMPOSER_SLASH_COMMAND_DEFINITIONS: Record<
   mcp: {
     command: "mcp",
     label: "/mcp",
-    description: "List and manage MCP servers for this Codex session",
+    description: "List and manage MCP servers for this session",
     source: "app",
   },
   subagents: {
@@ -550,6 +557,7 @@ export function getAvailableComposerSlashCommands(input: {
           ...(input.canOfferSideCommand ? (["side"] as const) : []),
           ...(input.canOfferSideCommand ? (["btw"] as const) : []),
           ...(input.canOfferExportCommand ? (["export"] as const) : []),
+          "mcp",
           "goal",
           "rename",
           "debug",
