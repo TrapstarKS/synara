@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.13] — 2026-09-24
+
+### Fixed
+
+- Using `/goal` as the first message of a new chat now activates the goal right away, with its timer and pause, edit, and delete controls, instead of requiring `/goal` to be sent again.
+
 ## [0.9.12] — 2026-09-24
 
 ### Fixed

@@ -22,6 +22,18 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.13",
+    date: "Sep 24",
+    features: [
+      {
+        id: "goal-first-prompt",
+        title: "/goal works as the first message",
+        description:
+          "Starting a new chat with /goal now activates the goal immediately, with its timer and pause, edit, and delete controls.",
+      },
+    ],
+  },
+  {
     version: "0.9.12",
     date: "Sep 24",
     features: [
