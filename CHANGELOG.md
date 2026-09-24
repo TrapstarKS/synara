@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.7] — 2026-09-24
+
+### Added
+
+- `/mcp` in Claude sessions opens Synara's MCP panel to list, enable, disable, restart and add servers.
+
+### Fixed
+
+- The `/mcp` panel opens again for Codex sessions.
+
 ## [0.9.6] — 2026-09-24
 
 ### Added
