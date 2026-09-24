@@ -423,6 +423,13 @@ export function useChatTurnExecution({
         );
 
         if (isLocalDraftThread) {
+          // Read the staged goal from the store: `/goal` as the first prompt stages
+          // it during this same submit, after `activeThread` was captured.
+          const draftGoalForSend = (
+            useComposerDraftStore.getState().getDraftThread(activeThread.id)?.goal ??
+            activeThread.goal ??
+            ""
+          ).trim();
           const inheritedProjectInstructions =
             useProjectInstructionsStore.getState().instructionsByProjectId[
               targetProjectIdForSend
@@ -466,7 +473,6 @@ export function useChatTurnExecution({
           }
           // Same for a goal staged on the draft via /goal: persist it now so the
           // decider stamps goalStartedAt when the thread actually starts working.
-          const draftGoalForSend = activeThread.goal?.trim() ?? "";
           if (draftGoalForSend.length > 0) {
             try {
               await dispatchThreadGoal(threadIdForSend, draftGoalForSend, {
