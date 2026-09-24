@@ -353,6 +353,8 @@ export interface ThreadStatusPill {
   colorClass: string;
   dotClass: string;
   pulse: boolean;
+  // Attention pills keep the thread's running state visible behind the dot.
+  working?: boolean;
   dismissible?: boolean;
   dismissalKey?: string;
 }
@@ -647,6 +649,7 @@ export function resolveThreadStatusPill(input: {
   const canAnswerPendingRequests = canSessionAnswerPendingRequests(thread.session);
   const hasPendingApprovals = input.hasPendingApprovals && canAnswerPendingRequests;
   const hasPendingUserInput = input.hasPendingUserInput && canAnswerPendingRequests;
+  const working = isThreadActivelyWorking(thread) ? { working: true } : {};
 
   if (hasPendingApprovals) {
     const dismissalKey = createThreadStatusDismissalKey("Pending Approval", thread);
@@ -658,6 +661,7 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-amber-600 dark:text-amber-300/90",
       dotClass: "bg-amber-500 dark:bg-amber-300/90",
       pulse: false,
+      ...working,
       dismissible: true,
       dismissalKey,
     };
@@ -673,6 +677,7 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-indigo-600 dark:text-indigo-300/90",
       dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
       pulse: false,
+      ...working,
       dismissible: true,
       dismissalKey,
     };
@@ -686,6 +691,7 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-amber-600 dark:text-amber-300/90",
       dotClass: "bg-amber-500 dark:bg-amber-300/90",
       pulse: false,
+      ...working,
       dismissible: false,
     };
   }

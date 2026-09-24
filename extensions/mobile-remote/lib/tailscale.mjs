@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import dns from "node:dns";
 
 // GUI apps and login tasks often lack the CLI on PATH.
 const candidates =
@@ -27,14 +28,14 @@ export async function tailscale(args, run = execFile) {
   throw new Error("Tailscale CLI not found");
 }
 
-const dns = (name) => String(name ?? "").replace(/\.$/, "");
+const dnsName = (name) => String(name ?? "").replace(/\.$/, "");
 
 /** This node's MagicDNS name, owner login, and the owner's other online computers. */
 export function parseStatus(status) {
   const self = status.Self;
   if (!self?.DNSName) throw new Error("Tailscale is not connected");
   return {
-    dnsName: dns(self.DNSName),
+    dnsName: dnsName(self.DNSName),
     name: String(self.HostName ?? "").slice(0, 40),
     login: status.User?.[self.UserID]?.LoginName,
     computers: Object.values(status.Peer ?? {})
@@ -42,12 +43,35 @@ export function parseStatus(status) {
         (peer) =>
           peer.Online && peer.UserID === self.UserID && desktopOs.has(peer.OS) && peer.DNSName,
       )
-      .map((peer) => ({ name: String(peer.HostName).slice(0, 40), dnsName: dns(peer.DNSName) })),
+      .map((peer) => ({
+        name: String(peer.HostName).slice(0, 40),
+        dnsName: dnsName(peer.DNSName),
+        ip: peer.TailscaleIPs?.[0],
+      })),
+  };
+}
+
+const tailnetAddresses = new Map();
+const systemLookup = dns.lookup;
+/**
+ * Resolves peer MagicDNS names to their Tailscale IPs, so peers stay reachable
+ * when this computer runs with `tailscale set --accept-dns=false`. TLS still
+ * verifies the MagicDNS name because only the socket address changes.
+ */
+export function routeTailnetNames(computers) {
+  for (const computer of computers)
+    if (computer.ip) tailnetAddresses.set(computer.dnsName.toLowerCase(), computer.ip);
+  if (dns.lookup !== systemLookup) return;
+  dns.lookup = function (host, options, callback) {
+    const address = tailnetAddresses.get(String(host).toLowerCase());
+    return systemLookup.call(this, address ?? host, options, callback);
   };
 }
 
 export async function tailnetStatus(run) {
-  return parseStatus(JSON.parse(await tailscale(["status", "--json"], run)));
+  const status = parseStatus(JSON.parse(await tailscale(["status", "--json"], run)));
+  routeTailnetNames(status.computers);
+  return status;
 }
 
 /** Serves the companion on HTTPS :httpsPort unless that port already has another route. */

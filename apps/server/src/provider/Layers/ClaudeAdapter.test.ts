@@ -2802,6 +2802,10 @@ describe("ClaudeAdapterLive", () => {
       );
       assert.equal(progress?.type, "tool.progress");
       assert.equal(progress?.providerRefs?.providerThreadId, undefined);
+      // Heartbeat ids must fold back onto the Bash row, not open a new one.
+      if (progress?.type === "tool.progress") {
+        assert.equal(progress.payload.toolUseId, "tool-bash-1");
+      }
       // The detached command's task carries the tool use it belongs to and the
       // fact that it was launched straight into the background, which is what
       // the web work log needs to keep the Bash row live past its tool_result.

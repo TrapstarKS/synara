@@ -1241,6 +1241,17 @@ describe("resolveThreadStatusPill", () => {
           ...input,
           thread: {
             ...baseThread,
+            session: { ...baseThread.session, status },
+            hasPendingAsyncUserInput: true,
+            lastVisitedAt: "2026-03-09T12:00:00.000Z",
+          },
+        })?.working === true,
+      ).toBe(status === "running");
+      expect(
+        resolveThreadStatusPill({
+          ...input,
+          thread: {
+            ...baseThread,
             hasPendingAsyncUserInput: false,
           },
         }),

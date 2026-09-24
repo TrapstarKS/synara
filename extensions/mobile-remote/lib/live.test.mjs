@@ -133,7 +133,7 @@ test(
     );
     const upstream = `http://127.0.0.1:${serverPort}`;
     const negotiateQuery =
-      "?x-synara-client-build=mobile-live-test&x-synara-protocol-epoch=1&x-synara-protocol-min-revision=1&x-synara-protocol-max-revision=1";
+      "?x-synara-client-build=mobile-live-test&x-synara-protocol-epoch=1&x-synara-protocol-min-revision=1&x-synara-protocol-max-revision=2";
     await waitFor(async () => {
       if (synara.exitCode !== null) throw new Error(synara.output);
       try {

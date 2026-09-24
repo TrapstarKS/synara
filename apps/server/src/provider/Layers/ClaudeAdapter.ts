@@ -4892,7 +4892,10 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...base,
             type: "tool.progress",
             payload: {
-              toolUseId: message.tool_use_id,
+              // Long Bash heartbeats arrive as `<tool_use_id>-heartbeat-<n>`; keep the
+              // real id so progress joins the tool's row instead of opening one that
+              // never completes.
+              toolUseId: message.tool_use_id.replace(/-heartbeat-\d+$/u, ""),
               toolName: message.tool_name,
               elapsedSeconds: message.elapsed_time_seconds,
               ...(message.task_id ? { summary: `task:${message.task_id}` } : {}),

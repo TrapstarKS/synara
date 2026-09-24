@@ -20,6 +20,18 @@ export function SidebarStatusTrailingGlyph({ status }: { status: ThreadStatusPil
   if (status.label === "Completed") {
     return <SidebarUnreadCompletionGlyph />;
   }
+  if (status.working) {
+    return (
+      <span
+        role="img"
+        aria-label={`${status.label} · Working`}
+        className="relative inline-flex shrink-0 items-center justify-center"
+      >
+        <ThreadRunningSpinner />
+        <span className={cn("absolute size-1.5 rounded-full", status.dotClass)} />
+      </span>
+    );
+  }
   if (status.pulse) {
     return (
       <span role="img" aria-label={status.label} className="inline-flex shrink-0">
