@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.6] — 2026-09-24
+
+### Added
+
+- The desktop app ships the Synara Mobile companion and starts it with the app. Computers owned by the same Tailscale user find and pair with each other automatically, so one phone app can pick which computer runs the work.
+
 ## [0.9.5] — 2026-09-22
 
 ### Fixed

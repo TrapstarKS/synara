@@ -26,6 +26,20 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    version: "0.9.6",
+    date: "Sep 24",
+    features: [
+      {
+        id: "mobile-multi-computer",
+        title: "One phone app for all your computers",
+        description:
+          "The desktop app now runs the Synara Mobile companion itself, and your computers on the same Tailscale account pair with each other automatically.",
+        details:
+          "Pick the computer in Celular → Computador; alerts from every computer arrive on the phone and open on the right one.",
+      },
+    ],
+  },
+  {
     version: "0.9.5",
     date: "Sep 22",
     features: [
