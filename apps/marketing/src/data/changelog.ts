@@ -26,6 +26,20 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    version: "0.9.10",
+    date: "Sep 24",
+    features: [
+      {
+        id: "attention-dot-over-spinner",
+        title: "See work continue while you're needed",
+        description:
+          "When a thread waits for your approval or answer but is still running, the sidebar now shows the colored dot on top of the working spinner.",
+        details:
+          'Also fixed: stuck "Bash · No activity" rows during long Claude commands, and the phone companion showing "Computador indisponível".',
+      },
+    ],
+  },
+  {
     version: "0.9.9",
     date: "Sep 24",
     features: [

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.10] — 2026-09-24
+
+### Fixed
+
+- Long-running Bash commands in Claude threads no longer leave stuck "Bash · No activity" rows; their progress now updates the command's own row.
+- A thread waiting on you (approval, input or an answer) keeps its working spinner, with the colored dot on top, while it is still running.
+- The phone companion reconnects to Synara again after the protocol update, and finds your other computers even when Tailscale DNS is off on the host.
+
 ## [0.9.9] — 2026-09-24
 
 ### Added
