@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.12] — 2026-09-24
+
+### Fixed
+
+- The Images tab now shows images that Claude and other tools save to disk, such as generated images and browser screenshots, not only Codex's built-in image generation.
+
 ## [0.9.11] — 2026-09-24
 
 ### Fixed

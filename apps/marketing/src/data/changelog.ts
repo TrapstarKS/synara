@@ -26,6 +26,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    version: "0.9.12",
+    date: "Sep 24",
+    features: [
+      {
+        id: "images-tab-tool-images",
+        title: "Images tab works with Claude",
+        description:
+          "Images that Claude and other tools save to disk, like generated images and browser screenshots, now appear in the Images tab.",
+      },
+    ],
+  },
+  {
     version: "0.9.11",
     date: "Sep 24",
     features: [
