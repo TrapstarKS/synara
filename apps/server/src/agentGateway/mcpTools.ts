@@ -1,4 +1,4 @@
-import { ThreadId, type ProviderAddMcpServerInput } from "@synara/contracts";
+import { ThreadId, type ProviderAddMcpServerInput, type ProviderKind } from "@synara/contracts";
 import { Effect } from "effect";
 
 import type { ProviderServiceError } from "../provider/Errors.ts";
@@ -18,24 +18,15 @@ import {
   type ToolEntry,
 } from "./toolRuntime.ts";
 
-const MCP_PROVIDER = "codex" as const;
-
+// ProviderService routes to the caller's adapter and reports providers without MCP management.
 function currentSessionInput(context: ToolContext): {
-  readonly provider: typeof MCP_PROVIDER;
+  readonly provider: ProviderKind;
   readonly threadId: ThreadId;
 } {
   return {
-    provider: MCP_PROVIDER,
+    provider: context.callerProvider,
     threadId: ThreadId.makeUnsafe(context.callerThreadId) as ThreadId,
   };
-}
-
-function assertCodexSession(context: ToolContext): void {
-  if (context.callerProvider !== MCP_PROVIDER) {
-    throw new ToolInputError(
-      "MCP runtime management is currently available for Codex sessions only.",
-    );
-  }
 }
 
 function readEnvironment(args: Record<string, unknown>): Record<string, string> | undefined {
@@ -67,14 +58,13 @@ export function makeAgentGatewayMcpTools(input: {
     definition: {
       name: "synara_mcp_list",
       description:
-        "List the MCP servers configured for the current Codex session, including runtime/auth status, loaded tools, and resource counts.",
+        "List the MCP servers configured for the current provider session, including runtime/auth status, loaded tools, and resource counts.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { title: "List MCP servers", ...READ_ONLY_TOOL_ANNOTATIONS },
     },
     handler: (_args, context) =>
       withMcpErrorHandling(
         Effect.gen(function* () {
-          assertCodexSession(context);
           const result = yield* input.providerService.listMcpServers(currentSessionInput(context));
           return mcpToolResultJson(result);
         }),
@@ -87,14 +77,13 @@ export function makeAgentGatewayMcpTools(input: {
     definition: {
       name: "synara_mcp_reload",
       description:
-        "Reload every configured MCP server in the current Codex session and return fresh statuses. A newly added server becomes available to later turns after the reload.",
+        "Reload every configured MCP server in the current provider session and return fresh statuses. A newly added server becomes available to later turns after the reload.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { title: "Reload MCP servers", ...WRITE_TOOL_ANNOTATIONS },
     },
     handler: (_args, context) =>
       withMcpErrorHandling(
         Effect.gen(function* () {
-          assertCodexSession(context);
           const result = yield* input.providerService.reloadMcpServers(
             currentSessionInput(context),
           );
@@ -109,7 +98,7 @@ export function makeAgentGatewayMcpTools(input: {
     definition: {
       name: "synara_mcp_connect",
       description:
-        "Enable one configured MCP server in the current Codex session, reload its MCP runtime, and return fresh statuses.",
+        "Enable one configured MCP server in the current provider session, reload its MCP runtime, and return fresh statuses.",
       inputSchema: {
         type: "object",
         properties: { name: { type: "string" } },
@@ -121,7 +110,6 @@ export function makeAgentGatewayMcpTools(input: {
     handler: (args, context) =>
       withMcpErrorHandling(
         Effect.gen(function* () {
-          assertCodexSession(context);
           const name = readStringArg(args, "name", { required: true })!;
           const result = yield* input.providerService.connectMcpServer({
             ...currentSessionInput(context),
@@ -138,7 +126,7 @@ export function makeAgentGatewayMcpTools(input: {
     definition: {
       name: "synara_mcp_disconnect",
       description:
-        "Disable one configured MCP server in the current Codex session, reload its MCP runtime, and return fresh statuses. Configuration is preserved for enabling it later.",
+        "Disable one configured MCP server in the current provider session, reload its MCP runtime, and return fresh statuses. Configuration is preserved for enabling it later.",
       inputSchema: {
         type: "object",
         properties: { name: { type: "string" } },
@@ -150,7 +138,6 @@ export function makeAgentGatewayMcpTools(input: {
     handler: (args, context) =>
       withMcpErrorHandling(
         Effect.gen(function* () {
-          assertCodexSession(context);
           const name = readStringArg(args, "name", { required: true })!;
           const result = yield* input.providerService.disconnectMcpServer({
             ...currentSessionInput(context),
@@ -167,7 +154,7 @@ export function makeAgentGatewayMcpTools(input: {
     definition: {
       name: "synara_mcp_restart",
       description:
-        "Restart one configured MCP server in the current Codex session by disabling it and then enabling it in sequence. Use this when the server is connected but its tools are missing or stale; return fresh statuses after the handshake.",
+        "Restart one configured MCP server in the current provider session by disabling it and then enabling it in sequence. Use this when the server is connected but its tools are missing or stale; return fresh statuses after the handshake.",
       inputSchema: {
         type: "object",
         properties: { name: { type: "string" } },
@@ -179,7 +166,6 @@ export function makeAgentGatewayMcpTools(input: {
     handler: (args, context) =>
       withMcpErrorHandling(
         Effect.gen(function* () {
-          assertCodexSession(context);
           const name = readStringArg(args, "name", { required: true })!;
           const result = yield* input.providerService.restartMcpServer({
             ...currentSessionInput(context),
@@ -196,7 +182,7 @@ export function makeAgentGatewayMcpTools(input: {
     definition: {
       name: "synara_mcp_add",
       description:
-        "Add or update a Codex MCP server and reload the runtime. Use transport 'stdio' with command/args/env/cwd, or 'streamable-http' with url and an optional bearer token environment variable. Secrets are accepted only as env values and are never returned.",
+        "Add or update an MCP server in the current provider session and reload its runtime. Use transport 'stdio' with command/args/env/cwd, or 'streamable-http' with url and an optional bearer token environment variable. Secrets are accepted only as env values and are never returned. Claude sessions keep added servers until the session restarts and do not support cwd.",
       inputSchema: {
         type: "object",
         properties: {
@@ -217,7 +203,6 @@ export function makeAgentGatewayMcpTools(input: {
     handler: (args, context) =>
       withMcpErrorHandling(
         Effect.gen(function* () {
-          assertCodexSession(context);
           const name = readStringArg(args, "name", { required: true })!;
           const transport = readStringArg(args, "transport", { required: true });
           if (transport !== "stdio" && transport !== "streamable-http") {
