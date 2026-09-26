@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isDroppedComposerDirectory,
   resolveDroppedFileAbsolutePath,
+  resolveDroppedUriListPaths,
   splitDroppedComposerFiles,
   type ComposerDroppedFileItem,
 } from "./composerDropPaths";
@@ -167,5 +168,24 @@ describe("composerDropPaths", () => {
       genericFiles: [emptyFile],
       unresolvedDirectories: 0,
     });
+  });
+});
+
+describe("resolveDroppedUriListPaths", () => {
+  it("turns file URIs into decoded absolute paths and skips everything else", () => {
+    expect(
+      resolveDroppedUriListPaths(
+        [
+          "# comment",
+          "file:///Users/me/My%20Project/src/app.ts",
+          "https://example.com/page",
+          "file:///C:/repo/readme.md",
+          "file:///tmp/folder/",
+          "file:///Users/me/My%20Project/src/app.ts",
+          "",
+        ].join("\r\n"),
+      ),
+    ).toEqual(["/Users/me/My Project/src/app.ts", "C:/repo/readme.md", "/tmp/folder"]);
+    expect(resolveDroppedUriListPaths("")).toEqual([]);
   });
 });

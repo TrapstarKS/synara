@@ -6,7 +6,11 @@
 import { useEffect, useRef, type ClipboardEvent, type DragEvent } from "react";
 
 import { CHAT_FILE_REFERENCE_DRAG_TYPE } from "~/lib/chatReferences";
-import { isDroppedComposerDirectory, splitDroppedComposerFiles } from "~/lib/composerDropPaths";
+import {
+  isDroppedComposerDirectory,
+  resolveDroppedUriListPaths,
+  splitDroppedComposerFiles,
+} from "~/lib/composerDropPaths";
 
 export interface ComposerDropzoneFileSplit {
   readonly imageFiles: File[];
@@ -113,11 +117,23 @@ export function isComposerDropzoneInternalDragTransition(
   }
 }
 
+// A `file://` URI drag without `Files` (see resolveDroppedUriListPaths). Web
+// link drags also carry `text/html`, so they keep their default behavior.
+export function isComposerFileUriListDrag(types: readonly string[]): boolean {
+  return (
+    types.includes("text/uri-list") && !types.includes("Files") && !types.includes("text/html")
+  );
+}
+
 function isComposerHandledDragForMode(
   dataTransfer: DataTransfer,
   genericFiles: ComposerDropzoneGenericFileMode,
+  acceptsUriList: boolean,
 ): boolean {
   if (dataTransfer.types.includes(CHAT_FILE_REFERENCE_DRAG_TYPE)) {
+    return true;
+  }
+  if (acceptsUriList && isComposerFileUriListDrag(dataTransfer.types)) {
     return true;
   }
   if (!dataTransfer.types.includes("Files")) {
@@ -172,6 +188,7 @@ export function useComposerDropzone(input: {
   } = input;
   const internalDragDepthRef = useRef(0);
   const dragDepthRef = input.dragDepthRef ?? internalDragDepthRef;
+  const acceptsUriList = !disabled && appendPathMentions !== undefined;
 
   const handleSplitFiles = (files: ComposerDropzoneFileSplit): boolean => {
     if (disabled) return false;
@@ -212,7 +229,8 @@ export function useComposerDropzone(input: {
       resetComposerDragState();
       return;
     }
-    if (!isComposerHandledDragForMode(event.dataTransfer, fileSupport.genericFiles)) return;
+    if (!isComposerHandledDragForMode(event.dataTransfer, fileSupport.genericFiles, acceptsUriList))
+      return;
     event.preventDefault();
     if (isComposerDropzoneInternalDragTransition(event.currentTarget, event.relatedTarget)) {
       return;
@@ -228,7 +246,8 @@ export function useComposerDropzone(input: {
       resetComposerDragState();
       return;
     }
-    if (!isComposerHandledDragForMode(event.dataTransfer, fileSupport.genericFiles)) return;
+    if (!isComposerHandledDragForMode(event.dataTransfer, fileSupport.genericFiles, acceptsUriList))
+      return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     setIsDragOverComposer(true);
@@ -240,7 +259,8 @@ export function useComposerDropzone(input: {
       resetComposerDragState();
       return;
     }
-    if (!isComposerHandledDragForMode(event.dataTransfer, fileSupport.genericFiles)) return;
+    if (!isComposerHandledDragForMode(event.dataTransfer, fileSupport.genericFiles, acceptsUriList))
+      return;
     event.preventDefault();
     if (isComposerDropzoneInternalDragTransition(event.currentTarget, event.relatedTarget)) {
       return;
@@ -262,6 +282,13 @@ export function useComposerDropzone(input: {
       return;
     }
     if (!event.dataTransfer.types.includes("Files")) {
+      if (!acceptsUriList || !isComposerFileUriListDrag(event.dataTransfer.types)) return;
+      resetComposerDragState();
+      const uriPaths = resolveDroppedUriListPaths(event.dataTransfer.getData("text/uri-list"));
+      if (uriPaths.length === 0) return;
+      event.preventDefault();
+      appendPathMentions?.(uriPaths);
+      focusComposer?.();
       return;
     }
     // Desktop OS drops: resolve absolute paths so folders become @mentions

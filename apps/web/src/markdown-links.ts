@@ -45,7 +45,7 @@ function stripSearchAndHash(value: string): { path: string; hash: string } {
   return { path, hash: rawHash };
 }
 
-function parseFileUrlHref(
+export function parseFileUrlHref(
   href: string,
   options?: { readonly decodePath?: boolean },
 ): { path: string; hash: string } | null {

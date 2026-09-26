@@ -3740,9 +3740,16 @@ export default function ChatView({
       });
 
       const insertedCount = nextFiles.length > 0 ? addComposerFilesToDraft(nextFiles) : 0;
+      // The store also skips files that are already attached; only a full
+      // composer means the limit was hit.
+      const limitReached =
+        insertedCount < nextFiles.length &&
+        effectiveComposerAttachmentCount(
+          useComposerDraftStore.getState().draftsByThreadId[activeThreadId],
+        ) >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
       setThreadError(
         activeThreadId,
-        insertedCount < nextFiles.length
+        limitReached
           ? `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} references per message.`
           : error,
       );
@@ -3814,7 +3821,9 @@ export default function ChatView({
     },
     onDropError: (message) => setThreadError(activeThreadId, message),
     dragDepthRef,
-    focusComposer,
+    // Focus after the dropped mentions render: a synchronous focus reports the
+    // editor's pre-drop text back through onChange and erases them.
+    focusComposer: scheduleComposerFocus,
     setIsDragOverComposer,
   });
 

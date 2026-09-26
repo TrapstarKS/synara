@@ -9,6 +9,7 @@ import { CHAT_FILE_REFERENCE_DRAG_TYPE } from "~/lib/chatReferences";
 import {
   collectComposerClipboardFiles,
   isComposerDropzoneInternalDragTransition,
+  isComposerFileUriListDrag,
   shouldBlockDisabledComposerDropzoneTransfer,
   shouldPreventDefaultForUnhandledFileDrop,
   shouldResetComposerDropzoneAfterUnhandledFileDrop,
@@ -109,5 +110,12 @@ describe("useComposerDropzone file capability helpers", () => {
     );
     expect(shouldBlockDisabledComposerDropzoneTransfer(false, ["Files"])).toBe(false);
     expect(shouldBlockDisabledComposerDropzoneTransfer(true, ["text/plain"])).toBe(false);
+  });
+
+  it("claims file-URI drags without Files but leaves web link drags alone", () => {
+    expect(isComposerFileUriListDrag(["text/uri-list"])).toBe(true);
+    expect(isComposerFileUriListDrag(["text/plain", "text/uri-list"])).toBe(true);
+    expect(isComposerFileUriListDrag(["text/uri-list", "text/html"])).toBe(false);
+    expect(isComposerFileUriListDrag(["Files", "text/uri-list"])).toBe(false);
   });
 });

@@ -5,6 +5,8 @@
 
 import { PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "@synara/contracts";
 
+import { parseFileUrlHref } from "~/markdown-links";
+
 export interface ComposerDroppedFileItem {
   readonly kind: string;
   readonly getAsFile: () => File | null;
@@ -42,6 +44,23 @@ export function resolveDroppedFileAbsolutePath(file: File): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Some apps (Chromium-based editors among them) drag files as `file://` URLs
+ * without a `Files` entry, so the drop carries paths but no File objects.
+ */
+export function resolveDroppedUriListPaths(uriList: string): string[] {
+  const paths: string[] = [];
+  for (const line of uriList.split(/\r?\n/)) {
+    const uri = line.trim();
+    if (uri.length === 0 || uri.startsWith("#")) continue;
+    const rawPath = parseFileUrlHref(uri)?.path;
+    // Directory URLs end in "/"; the mention should name the folder itself.
+    const path = rawPath && (rawPath.replace(/[\\/]+$/, "") || rawPath);
+    if (path && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
 }
 
 /** Chromium exposes directory identity on the drag item, not reliably on File. */
