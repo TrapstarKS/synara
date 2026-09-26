@@ -26,6 +26,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    version: "0.9.16",
+    date: "Sep 26",
+    features: [
+      {
+        id: "windows-file-links",
+        title: "Reliable local file links",
+        description:
+          "Chat links and images for Windows paths like /C:/... now open, even with spaces in folder names.",
+      },
+    ],
+  },
+  {
     version: "0.9.15",
     date: "Sep 26",
     features: [

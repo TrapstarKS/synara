@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.16] — 2026-09-26
+
+### Fixed
+
+- Local file links and images in chat now open when written as /C:/... or file:///C:/..., including folder names with spaces. Links to /Applications, /Library and /System are also clickable.
+
 ## [0.9.15] — 2026-09-26
 
 ### Fixed
