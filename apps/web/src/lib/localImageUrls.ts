@@ -14,6 +14,11 @@ import { isLocalAbsolutePath, isWindowsAbsolutePath } from "@synara/shared/path"
 import { resolveWsHttpUrl } from "./wsHttpUrl";
 
 function normalizeMarkdownImagePath(src: string): string {
+  // "/C:/x" (from file:///C:/x or `</C:/x>`) is a Windows drive path.
+  return decodeMarkdownImagePath(src).replace(/^\/(?=[A-Za-z]:[\\/])/, "");
+}
+
+function decodeMarkdownImagePath(src: string): string {
   const trimmed = src.trim();
   if (trimmed.startsWith("file://")) {
     try {

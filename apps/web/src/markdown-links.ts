@@ -24,6 +24,9 @@ const POSIX_FILE_ROOT_PREFIXES = [
   "/opt/",
   "/mnt/",
   "/Volumes/",
+  "/Applications/",
+  "/Library/",
+  "/System/",
   "/private/",
   "/root/",
 ] as const;
@@ -279,7 +282,11 @@ export function resolveMarkdownFileLinkTarget(
     ? parseFileUrlHref(rawHref)
     : null;
   const source = fileUrlTarget ?? stripSearchAndHash(rawHref);
-  const decodedPath = fileUrlTarget ? source.path.trim() : safeDecode(source.path.trim());
+  // "/C:/x" (from `</C:/x>` links) is a Windows drive path, not a POSIX one.
+  const decodedPath = (fileUrlTarget ? source.path.trim() : safeDecode(source.path.trim())).replace(
+    /^\/(?=[A-Za-z]:[\\/])/,
+    "",
+  );
   const decodedHash = safeDecode(source.hash.trim());
 
   if (decodedPath.length === 0) return null;
