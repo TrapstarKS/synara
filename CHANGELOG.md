@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.15] — 2026-09-26
+
+### Fixed
+
+- Claude sessions can list, add, connect, disconnect, restart and reload MCP servers through Synara's MCP tools, which previously worked only in Codex sessions. Servers added from a Claude session last until that session restarts.
+
 ## [0.9.14] — 2026-09-25
 
 ### Added

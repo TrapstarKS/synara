@@ -26,6 +26,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    version: "0.9.15",
+    date: "Sep 26",
+    features: [
+      {
+        id: "claude-mcp-tools",
+        title: "MCP management for Claude",
+        description:
+          "Claude sessions can now list, add, connect, disconnect and restart MCP servers through Synara, just like Codex.",
+      },
+    ],
+  },
+  {
     version: "0.9.14",
     date: "Sep 25",
     features: [
