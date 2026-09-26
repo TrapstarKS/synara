@@ -22,6 +22,24 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.14",
+    date: "Sep 25",
+    features: [
+      {
+        id: "reliable-file-drops",
+        title: "Dropped files always get mentioned",
+        description:
+          "Files and folders dragged onto the chat now always land in the composer, including drops while Synara is focused and files dragged from editors that share them as links.",
+      },
+      {
+        id: "upstream-0-9-2",
+        title: "Upstream 0.9.2 improvements",
+        description:
+          "Provider model catalogs survive restarts, Computer asks before bringing a Mac app forward, and task recovery and transports are more reliable.",
+      },
+    ],
+  },
+  {
     version: "0.9.13",
     date: "Sep 24",
     features: [

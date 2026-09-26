@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.14] — 2026-09-25
+
+### Added
+
+- Upstream Synara 0.9.2 changes: Oh My Pi (OMP) as a provider in Synara Beta (gated off in Stable), provider model catalogs that persist across server restarts, approval before Computer brings a Mac app to the foreground, and transport and task-recovery reliability fixes. ChatGPT, the mobile companion and this fork's release pipeline are unchanged.
+
+### Fixed
+
+- Files and folders dropped on the chat are always mentioned. A drop while Synara was the focused window could erase the new @mention; that no longer happens.
+- Files dragged from apps that share them only as `file://` links, such as some code editors, now become @mentions instead of being ignored.
+- Dropping a file that is already attached no longer shows the "You can attach up to 8 references" error.
+
 ## [0.9.13] — 2026-09-24
 
 ### Fixed
