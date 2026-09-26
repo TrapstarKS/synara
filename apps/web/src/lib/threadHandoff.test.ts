@@ -156,7 +156,6 @@ describe("threadHandoff", () => {
         enabled: false,
       },
     };
-
     expect(
       resolveAvailableHandoffTargetProviders({
         sourceProvider: "codex",

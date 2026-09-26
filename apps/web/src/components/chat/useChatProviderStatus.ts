@@ -60,6 +60,8 @@ function getProviderStartOptionsCustomBinaryPath(
       return normalizeCustomBinaryPath(providerOptions?.pi?.binaryPath);
     case "chatgpt":
       return null;
+    case "omp":
+      return normalizeCustomBinaryPath(providerOptions?.omp?.binaryPath);
   }
 }
 interface ChatProviderStatusInput {

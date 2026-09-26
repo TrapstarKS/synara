@@ -147,7 +147,8 @@ type CustomModelSettingsKey =
   | "customDevinModels"
   | "customOpenCodeModels"
   | "customPiModels"
-  | "customChatGptModels";
+  | "customChatGptModels"
+  | "customOmpModels";
 export type ProviderCustomModelConfig = {
   provider: ProviderKind;
   settingsKey: CustomModelSettingsKey;
@@ -169,6 +170,7 @@ const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>
   opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
   pi: new Set(getModelOptions("pi").map((option) => option.slug)),
   chatgpt: new Set(getModelOptions("chatgpt").map((option) => option.slug)),
+  omp: new Set(getModelOptions("omp").map((option) => option.slug)),
 };
 
 const withDefaults =
@@ -197,6 +199,7 @@ const PersistedProviderKind = Schema.Literals([
   "opencode",
   "pi",
   "chatgpt",
+  "omp",
 ]).pipe(
   Schema.decodeTo(
     ProviderKind,
@@ -289,6 +292,8 @@ export const AppSettingsSchema = Schema.Struct({
   openCodeBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   piBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   piAgentDir: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
+  ompBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
+  ompAgentDir: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   openCodeServerUrl: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   openCodeServerPassword: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     withDefaults(() => ""),
@@ -309,6 +314,8 @@ export const AppSettingsSchema = Schema.Struct({
   chatGptMaxWorkers: Schema.Number.pipe(withDefaults(() => 2)),
   defaultThreadEnvMode: EnvMode.pipe(withDefaults(() => "local" as const satisfies EnvMode)),
   confirmThreadDelete: Schema.Boolean.pipe(withDefaults(() => true)),
+  // Opt-in: archiving a task also releases its worktree when nothing else uses it.
+  archiveDeletesOrphanedWorktree: Schema.Boolean.pipe(withDefaults(() => false)),
   // Desktop quit dialog: remember interrupted chats and continue them on the next launch.
   resumeChatsAfterQuit: Schema.Boolean.pipe(withDefaults(() => true)),
   confirmThreadArchive: Schema.Boolean.pipe(withDefaults(() => false)),
@@ -412,6 +419,7 @@ export const AppSettingsSchema = Schema.Struct({
   customOpenCodeModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customPiModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customChatGptModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
+  customOmpModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   textGenerationProvider: PersistedProviderKind.pipe(withDefaults(() => "codex" as const)),
   textGenerationModel: Schema.optional(TrimmedNonEmptyString),
   uiFontFamily: Schema.String.check(Schema.isMaxLength(256)).pipe(withDefaults(() => "")),
@@ -553,6 +561,15 @@ const PROVIDER_CUSTOM_MODEL_CONFIG: Record<ProviderKind, ProviderCustomModelConf
     description: "Save additional ChatGPT model slugs for the picker and `/model` command.",
     placeholder: "your-chatgpt-model-slug",
     example: "gpt-6-astra",
+  },
+  omp: {
+    provider: "omp",
+    settingsKey: "customOmpModels",
+    defaultSettingsKey: "customOmpModels",
+    title: "Oh My Pi",
+    description: "Save additional Oh My Pi model slugs for the picker and provider runtime.",
+    placeholder: "provider/model",
+    example: "anthropic/claude-sonnet-4-5",
   },
 };
 
@@ -715,6 +732,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
       settings.openCodeBinaryPath,
     ),
     piBinaryPath: normalizeProviderBinaryPathOverride("pi", settings.piBinaryPath),
+    ompBinaryPath: normalizeProviderBinaryPathOverride("omp", settings.ompBinaryPath),
     uiDensity: normalizeUiDensityValue(settings.uiDensity),
     chatWidth: normalizeChatWidthModeValue(settings.chatWidth),
     agentCursorFillColor: normalizeCursorHexColor(settings.agentCursorFillColor),
@@ -735,6 +753,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     customOpenCodeModels: normalizeCustomModelSlugs(settings.customOpenCodeModels, "opencode"),
     customPiModels: normalizeCustomModelSlugs(settings.customPiModels, "pi"),
     customChatGptModels: normalizeCustomModelSlugs(settings.customChatGptModels, "chatgpt"),
+    customOmpModels: normalizeCustomModelSlugs(settings.customOmpModels, "omp"),
     hiddenProviders: normalizeHiddenProviders(settings.hiddenProviders),
     disabledProviders: normalizeHiddenProviders(settings.disabledProviders),
     providerOrder: normalizeProviderOrder(settings.providerOrder),
@@ -801,6 +820,8 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     chatGptMaxWorkers: settings.providers.chatgpt.maxWorkers,
     piAgentDir: settings.providers.pi.agentDir,
     piBinaryPath: settings.providers.pi.binaryPath,
+    ompAgentDir: settings.providers.omp.agentDir,
+    ompBinaryPath: settings.providers.omp.binaryPath,
     customCodexModels: settings.providers.codex.customModels,
     customClaudeModels: settings.providers.claudeAgent.customModels,
     customCursorModels: settings.providers.cursor.customModels,
@@ -811,6 +832,7 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     customOpenCodeModels: settings.providers.opencode.customModels,
     customPiModels: settings.providers.pi.customModels,
     customChatGptModels: settings.providers.chatgpt.customModels,
+    customOmpModels: settings.providers.omp.customModels,
     disabledProviders: getServerDisabledProviders(settings),
     textGenerationProvider: settings.textGenerationModelSelection.provider,
     textGenerationModel: settings.textGenerationModelSelection.model,
@@ -843,6 +865,8 @@ function touchesProviderDiscoverySettings(patch: Partial<AppSettings>): boolean 
     hasOwn(patch, "openCodeServerUrl") ||
     hasOwn(patch, "piAgentDir") ||
     hasOwn(patch, "customChatGptModels") ||
+    hasOwn(patch, "ompBinaryPath") ||
+    hasOwn(patch, "ompAgentDir") ||
     hasOwn(patch, "disabledProviders")
   );
 }
@@ -1070,6 +1094,17 @@ export function appSettingsPatchToServerSettingsPatch(
   if (currentSettings) {
     pruneProviderPatchAgainstCurrentSettings(providers, currentSettings);
   }
+  if (
+    hasOwn(patch, "ompAgentDir") ||
+    hasOwn(patch, "ompBinaryPath") ||
+    hasOwn(patch, "customOmpModels")
+  ) {
+    providers.omp = {
+      ...(hasOwn(patch, "ompAgentDir") ? { agentDir: patch.ompAgentDir ?? "" } : {}),
+      ...(hasOwn(patch, "ompBinaryPath") ? { binaryPath: patch.ompBinaryPath ?? "" } : {}),
+      ...(hasOwn(patch, "customOmpModels") ? { customModels: patch.customOmpModels ?? [] } : {}),
+    };
+  }
 
   if (Object.keys(providers).length > 0) {
     serverPatch.providers = providers;
@@ -1112,6 +1147,8 @@ function buildInitialServerSettingsMigrationPatch(settings: AppSettings): Server
     "chatGptOpenAiTunnelApiKey",
     "piAgentDir",
     "piBinaryPath",
+    "ompAgentDir",
+    "ompBinaryPath",
     "textGenerationModel",
     "textGenerationProvider",
   ] as const) {
@@ -1140,6 +1177,7 @@ function buildInitialServerSettingsMigrationPatch(settings: AppSettings): Server
     "customOpenCodeModels",
     "customPiModels",
     "customChatGptModels",
+    "customOmpModels",
   ] as const) {
     if (normalizedSettings[key].length > 0) {
       patch[key] = normalizedSettings[key] as never;
@@ -1214,6 +1252,7 @@ export function getCustomModelsByProvider(
     opencode: getCustomModelsForProvider(settings, "opencode"),
     pi: getCustomModelsForProvider(settings, "pi"),
     chatgpt: getCustomModelsForProvider(settings, "chatgpt"),
+    omp: getCustomModelsForProvider(settings, "omp"),
   };
 }
 
@@ -1334,24 +1373,6 @@ export function resolveAppModelSelection(
   );
 }
 
-export function getCustomModelOptionsByProvider(
-  settings: Pick<AppSettings, CustomModelSettingsKey>,
-): Record<ProviderKind, ReadonlyArray<ProviderModelOption>> {
-  const customModelsByProvider = getCustomModelsByProvider(settings);
-  return {
-    codex: getAppModelOptions("codex", customModelsByProvider.codex),
-    claudeAgent: getAppModelOptions("claudeAgent", customModelsByProvider.claudeAgent),
-    cursor: getAppModelOptions("cursor", customModelsByProvider.cursor),
-    devin: getAppModelOptions("devin", customModelsByProvider.devin),
-    antigravity: getAppModelOptions("antigravity", customModelsByProvider.antigravity),
-    grok: getAppModelOptions("grok", customModelsByProvider.grok),
-    droid: getAppModelOptions("droid", customModelsByProvider.droid),
-    opencode: getAppModelOptions("opencode", customModelsByProvider.opencode),
-    pi: getAppModelOptions("pi", customModelsByProvider.pi),
-    chatgpt: getAppModelOptions("chatgpt", customModelsByProvider.chatgpt),
-  };
-}
-
 export function getProviderStartOptions(
   settings: Pick<
     AppSettings,
@@ -1369,6 +1390,8 @@ export function getProviderStartOptions(
     | "openCodeServerUrl"
     | "piAgentDir"
     | "piBinaryPath"
+    | "ompAgentDir"
+    | "ompBinaryPath"
   >,
 ): ProviderStartOptions | undefined {
   const claudeBinaryPath = normalizeProviderBinaryPathOverride(
@@ -1389,6 +1412,7 @@ export function getProviderStartOptions(
     settings.openCodeBinaryPath,
   );
   const piBinaryPath = normalizeProviderBinaryPathOverride("pi", settings.piBinaryPath);
+  const ompBinaryPath = normalizeProviderBinaryPathOverride("omp", settings.ompBinaryPath);
   const hasOpenCodeStartOptions = Boolean(
     openCodeBinaryPath || settings.openCodeExperimentalWebSockets || settings.openCodeServerUrl,
   );
@@ -1461,6 +1485,14 @@ export function getProviderStartOptions(
           },
         }
       : {}),
+    ...(ompBinaryPath || settings.ompAgentDir
+      ? {
+          omp: {
+            ...(ompBinaryPath ? { binaryPath: ompBinaryPath } : {}),
+            ...(settings.ompAgentDir ? { agentDir: settings.ompAgentDir } : {}),
+          },
+        }
+      : {}),
   };
 
   return Object.keys(providerOptions).length > 0 ? providerOptions : undefined;
@@ -1506,6 +1538,7 @@ export function getCustomBinaryPathForProvider(
     | "droidBinaryPath"
     | "openCodeBinaryPath"
     | "piBinaryPath"
+    | "ompBinaryPath"
   >,
   provider: ProviderKind,
 ): string {
@@ -1532,6 +1565,8 @@ export function getCustomBinaryPathForProvider(
       // ChatGPT (Web) is driven through the in-app browser, so there is no CLI
       // binary to override and a custom path is never persisted.
       return "";
+    case "omp":
+      return normalizeProviderBinaryPathOverride(provider, settings.ompBinaryPath);
   }
 }
 

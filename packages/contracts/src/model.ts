@@ -27,6 +27,20 @@ export const PI_THINKING_LEVEL_OPTIONS = [
   "max",
 ] as const;
 export type PiThinkingLevel = (typeof PI_THINKING_LEVEL_OPTIONS)[number];
+// `auto` is an OMP thinking sentinel (not an effort level): it maps to the
+// `thinking` config option's Auto choice, which no model catalog emits as an
+// effort but role selectors (`model:auto`) may pin.
+export const OMP_THINKING_LEVEL_OPTIONS = [
+  "off",
+  "auto",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type OmpThinkingLevel = (typeof OMP_THINKING_LEVEL_OPTIONS)[number];
 // Union of every Grok CLI ladder. Per-model capabilities pick a subset:
 // grok-build keeps none/low/medium/high, Grok 4.5 drops none, Grok 4.6 adds xhigh.
 export const GROK_REASONING_EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"] as const;
@@ -128,6 +142,10 @@ export const PiModelOptions = Schema.Struct({
   thinkingLevel: Schema.optional(Schema.Literals(PI_THINKING_LEVEL_OPTIONS)),
 });
 export type PiModelOptions = typeof PiModelOptions.Type;
+export const OmpModelOptions = Schema.Struct({
+  thinkingLevel: Schema.optional(Schema.Literals(OMP_THINKING_LEVEL_OPTIONS)),
+});
+export type OmpModelOptions = typeof OmpModelOptions.Type;
 
 export const CursorModelOptions = Schema.Struct({
   reasoningEffort: Schema.optional(TrimmedNonEmptyString),
@@ -191,6 +209,7 @@ export const ProviderModelOptions = Schema.Struct({
   opencode: Schema.optional(OpenCodeModelOptions),
   pi: Schema.optional(PiModelOptions),
   chatgpt: Schema.optional(ChatGptModelOptions),
+  omp: Schema.optional(OmpModelOptions),
 });
 export type ProviderModelOptions = typeof ProviderModelOptions.Type;
 
@@ -1215,13 +1234,14 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       capabilities: CHATGPT_WEB_CAPABILITIES,
     },
   ],
+  omp: [],
 } as const satisfies Record<ProviderKind, readonly ModelDefinition[]>;
 export type ModelOptionsByProvider = typeof MODEL_OPTIONS_BY_PROVIDER;
 
 type BuiltInModelSlug = (typeof MODEL_OPTIONS_BY_PROVIDER)[ProviderKind][number]["slug"];
 export type ModelSlug = BuiltInModelSlug | (string & {});
 
-export type ProviderWithDefaultModel = Exclude<ProviderKind, "pi">;
+export type ProviderWithDefaultModel = Exclude<ProviderKind, "pi" | "omp">;
 
 export const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderWithDefaultModel, ModelSlug> = {
   codex: "gpt-6-astra",
@@ -1423,6 +1443,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
     sonnet: "claude-sonnet-5",
     fable: "claude-fable-5",
   },
+  omp: {},
 };
 
 // ── Agent mention aliases ─────────────────────────────────────────────
@@ -1466,4 +1487,5 @@ export const PROVIDER_DISPLAY_NAMES: Record<ProviderKind, string> = {
   opencode: "OpenCode",
   pi: "Pi",
   chatgpt: "ChatGPT (Web)",
+  omp: "Oh My Pi",
 };

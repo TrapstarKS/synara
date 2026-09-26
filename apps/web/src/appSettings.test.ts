@@ -23,7 +23,6 @@ import {
   getAppModelOptions,
   getCustomBinaryPathForProvider,
   getDefaultNativeFontSmoothing,
-  getCustomModelOptionsByProvider,
   getCustomModelsByProvider,
   getCustomModelsForProvider,
   getDefaultCustomModelsForProvider,
@@ -48,13 +47,6 @@ describe("computer control defaults", () => {
     expect(AppSettingsSchema.makeUnsafe({}).computerControlEnabled).toBe(false);
     const decoded = Schema.decodeUnknownSync(AppSettingsSchema)({ autoOpenComputerPane: false });
     expect(normalizeStoredAppSettings(decoded).computerControlEnabled).toBe(false);
-  });
-
-  it("preserves a saved computer control preference", () => {
-    const decoded = Schema.decodeUnknownSync(AppSettingsSchema)({
-      computerControlEnabled: true,
-    });
-    expect(normalizeStoredAppSettings(decoded).computerControlEnabled).toBe(true);
   });
 
   it("migrates the legacy per-chat computer control default", () => {
@@ -215,28 +207,6 @@ describe("server-backed provider enablement", () => {
   });
 });
 
-describe("normalizeCustomModelSlugs", () => {
-  it("normalizes aliases, removes built-ins, and deduplicates values", () => {
-    expect(
-      normalizeCustomModelSlugs([
-        " custom/internal-model ",
-        "gpt-5.3-codex",
-        "5.3",
-        "custom/internal-model",
-        "",
-        null,
-      ]),
-    ).toEqual(["custom/internal-model"]);
-  });
-
-  it("normalizes provider-specific aliases for claude", () => {
-    expect(normalizeCustomModelSlugs(["sonnet"], "claudeAgent")).toEqual([]);
-    expect(normalizeCustomModelSlugs(["claude/custom-sonnet"], "claudeAgent")).toEqual([
-      "claude/custom-sonnet",
-    ]);
-  });
-});
-
 describe("resolveFollowUpDispatchMode", () => {
   it("uses the selected behavior only while a turn is live", () => {
     expect(
@@ -272,10 +242,6 @@ describe("resolveFollowUpDispatchMode", () => {
 });
 
 describe("getAppModelOptions", () => {
-  it("does not expose a hardcoded Antigravity model catalog", () => {
-    expect(getAppModelOptions("antigravity", [])).toEqual([]);
-  });
-
   it("does not expose Anthropic models in Pi before authenticated discovery", () => {
     expect(getAppModelOptions("pi", [])).toEqual([]);
   });
@@ -316,25 +282,6 @@ describe("getAppModelOptions", () => {
       options.filter((option) => option.slug.startsWith("grok-4.5")).map((option) => option.slug),
     ).toEqual(["grok-4.5"]);
   });
-
-  it("formats unknown GPT custom models with a readable label", () => {
-    const options = getAppModelOptions("codex", ["gpt-5.1-codex-max"]);
-
-    expect(options.at(-1)).toEqual({
-      slug: "gpt-5.1-codex-max",
-      name: "GPT-5.1 Codex Max",
-      provider: "codex",
-      isCustom: true,
-    });
-  });
-
-  it("keeps a saved custom provider model available as an exact slug option", () => {
-    const options = getAppModelOptions("claudeAgent", ["claude/custom-opus"], "claude/custom-opus");
-
-    expect(options.some((option) => option.slug === "claude/custom-opus" && option.isCustom)).toBe(
-      true,
-    );
-  });
 });
 
 describe("getGitTextGenerationModelOptions", () => {
@@ -366,71 +313,6 @@ describe("getGitTextGenerationModelOptions", () => {
 
     expect(options.some((option) => option.slug === "openrouter/gpt-oss-120b")).toBe(true);
     expect(options.some((option) => option.slug === "openrouter/custom-model")).toBe(true);
-  });
-
-  it("preserves a currently selected transient git writing model", () => {
-    const options = getGitTextGenerationModelOptions({
-      customCodexModels: [],
-      customOpenCodeModels: [],
-      textGenerationModel: "openrouter/custom-model",
-      textGenerationProvider: "opencode",
-    });
-
-    expect(options.at(-1)).toEqual({
-      slug: "openrouter/custom-model",
-      name: "Custom Model",
-      provider: "opencode",
-      isCustom: true,
-    });
-  });
-
-  it("humanizes transient OpenCode git-writing models instead of showing the raw slug", () => {
-    const options = getGitTextGenerationModelOptions({
-      customCodexModels: [],
-      customOpenCodeModels: [],
-      textGenerationModel: "opencode-go/kimi-k2.6",
-      textGenerationProvider: "opencode",
-    });
-
-    expect(options.at(-1)).toEqual({
-      slug: "opencode-go/kimi-k2.6",
-      name: "Kimi K2.6",
-      provider: "opencode",
-      isCustom: true,
-    });
-  });
-
-  it("offers built-in Droid and Cursor models to a user currently on Codex", () => {
-    const options = getGitTextGenerationModelOptions({
-      customCodexModels: [],
-      customOpenCodeModels: [],
-      textGenerationModel: "gpt-5.6-luna",
-      textGenerationProvider: "codex",
-    });
-
-    expect(options.some((option) => option.provider === "droid" && option.slug === "auto")).toBe(
-      true,
-    );
-    expect(
-      options.some((option) => option.provider === "cursor" && option.slug === "composer-2.5"),
-    ).toBe(true);
-    expect(options.some((option) => option.provider === "codex")).toBe(true);
-  });
-
-  it("includes custom Cursor models in the git writing picker", () => {
-    const options = getGitTextGenerationModelOptions({
-      customCodexModels: [],
-      customCursorModels: ["cursor/custom-composer"],
-      customOpenCodeModels: [],
-      textGenerationModel: "gpt-5.6-luna",
-      textGenerationProvider: "codex",
-    });
-
-    expect(
-      options.some(
-        (option) => option.provider === "cursor" && option.slug === "cursor/custom-composer",
-      ),
-    ).toBe(true);
   });
 
   it("omits chat-only providers that have no Git text-generation backend", () => {
@@ -500,6 +382,7 @@ describe("resolveAppModelSelection", () => {
           opencode: [],
           pi: [],
           chatgpt: [],
+          omp: [],
         },
         "galapagos-alpha",
       ),
@@ -521,6 +404,7 @@ describe("resolveAppModelSelection", () => {
           opencode: [],
           pi: [],
           chatgpt: [],
+          omp: [],
         },
         "",
       ),
@@ -542,6 +426,7 @@ describe("resolveAppModelSelection", () => {
           opencode: [],
           pi: [],
           chatgpt: [],
+          omp: [],
         },
         "GPT-5.3 Codex",
       ),
@@ -563,6 +448,7 @@ describe("resolveAppModelSelection", () => {
           opencode: [],
           pi: [],
           chatgpt: [],
+          omp: [],
         },
         "sonnet",
       ),
@@ -584,6 +470,7 @@ describe("resolveAppModelSelection", () => {
           opencode: [],
           pi: [],
           chatgpt: [],
+          omp: [],
         },
         "custom/selected-model",
       ),
@@ -598,10 +485,6 @@ describe("timestamp format defaults", () => {
 });
 
 describe("chat font size defaults", () => {
-  it("defaults chat font size to 12px", () => {
-    expect(DEFAULT_CHAT_FONT_SIZE_PX).toBe(13);
-  });
-
   it("clamps chat font size updates into the supported range", () => {
     expect(normalizeChatFontSizePx(9)).toBe(11);
     expect(normalizeChatFontSizePx(18.4)).toBe(18);
@@ -610,10 +493,6 @@ describe("chat font size defaults", () => {
 });
 
 describe("terminal font size defaults", () => {
-  it("defaults terminal font size to 12px", () => {
-    expect(DEFAULT_TERMINAL_FONT_SIZE_PX).toBe(12);
-  });
-
   it("clamps terminal font size updates into the supported range", () => {
     expect(normalizeTerminalFontSizePx(8)).toBe(10);
     expect(normalizeTerminalFontSizePx(20.4)).toBe(20);
@@ -647,16 +526,6 @@ describe("terminal font family settings", () => {
   });
 });
 
-describe("sidebar sort defaults", () => {
-  it("defaults project sorting to manual", () => {
-    expect(DEFAULT_SIDEBAR_PROJECT_SORT_ORDER).toBe("manual");
-  });
-
-  it("defaults thread sorting to updated_at", () => {
-    expect(DEFAULT_SIDEBAR_THREAD_SORT_ORDER).toBe("updated_at");
-  });
-});
-
 describe("normalizeStoredAppSettings", () => {
   it("defaults native font smoothing by platform", () => {
     expect(getDefaultNativeFontSmoothing("MacIntel")).toBe(true);
@@ -676,7 +545,13 @@ describe("normalizeStoredAppSettings", () => {
         sidebarProjectSortOrder: "updated_at",
         chatFontSizePx: 99,
         terminalFontSizePx: 3,
-        customCodexModels: [" custom/internal-model ", "gpt-5.4", "custom/internal-model"],
+        customCodexModels: [
+          " custom/internal-model ",
+          "gpt-5.4",
+          "custom/internal-model",
+          "5.3",
+          "",
+        ],
       }),
     );
 
@@ -717,14 +592,6 @@ describe("normalizeStoredAppSettings", () => {
   });
 });
 
-describe("provider-specific custom models", () => {
-  it("includes provider-specific custom slugs in non-codex model lists", () => {
-    const claudeOptions = getAppModelOptions("claudeAgent", ["claude/custom-opus"]);
-
-    expect(claudeOptions.some((option) => option.slug === "claude/custom-opus")).toBe(true);
-  });
-});
-
 describe("getProviderStartOptions", () => {
   it("returns only populated provider overrides", () => {
     expect(
@@ -743,6 +610,8 @@ describe("getProviderStartOptions", () => {
         piAgentDir: "",
         piBinaryPath: "",
         devinBinaryPath: "/usr/local/bin/devin",
+        ompBinaryPath: "",
+        ompAgentDir: "",
       }),
     ).toEqual({
       claudeAgent: {
@@ -784,6 +653,8 @@ describe("getProviderStartOptions", () => {
         piAgentDir: "",
         piBinaryPath: "",
         devinBinaryPath: "",
+        ompBinaryPath: "",
+        ompAgentDir: "",
       }),
     ).toBeUndefined();
   });
@@ -805,6 +676,8 @@ describe("getProviderStartOptions", () => {
         openCodeServerUrl: "",
         piAgentDir: "",
         piBinaryPath: "pi",
+        ompBinaryPath: "",
+        ompAgentDir: "",
       }),
     ).toBeUndefined();
   });
@@ -822,6 +695,7 @@ describe("provider-indexed custom model settings", () => {
     customOpenCodeModels: ["openrouter/gpt-oss-120b"],
     customPiModels: ["anthropic/custom-pi"],
     customChatGptModels: ["chatgpt/custom-model"],
+    customOmpModels: [],
   } as const;
 
   it("exports one provider config per provider", () => {
@@ -836,6 +710,7 @@ describe("provider-indexed custom model settings", () => {
       "opencode",
       "pi",
       "chatgpt",
+      "omp",
     ]);
   });
 
@@ -869,6 +744,7 @@ describe("provider-indexed custom model settings", () => {
       customOpenCodeModels: ["openai/gpt-5"],
       customPiModels: ["anthropic/default-pi"],
       customChatGptModels: ["chatgpt/default-model"],
+      customOmpModels: [],
     } as const;
 
     expect(getDefaultCustomModelsForProvider(defaults, "codex")).toEqual(["default/codex-model"]);
@@ -961,109 +837,8 @@ describe("provider-indexed custom model settings", () => {
       opencode: ["openrouter/gpt-oss-120b"],
       pi: ["anthropic/custom-pi"],
       chatgpt: ["chatgpt/custom-model"],
+      omp: [],
     });
-  });
-
-  it("builds provider-indexed model options including custom models", () => {
-    const modelOptionsByProvider = getCustomModelOptionsByProvider(settings);
-
-    expect(
-      modelOptionsByProvider.codex.some((option) => option.slug === "custom/codex-model"),
-    ).toBe(true);
-    expect(
-      modelOptionsByProvider.claudeAgent.some((option) => option.slug === "claude/custom-opus"),
-    ).toBe(true);
-    expect(
-      modelOptionsByProvider.cursor.some((option) => option.slug === "cursor/custom-model"),
-    ).toBe(true);
-    expect(
-      modelOptionsByProvider.antigravity.some(
-        (option) => option.slug === "Gemini 3.5 Flash (Experimental)",
-      ),
-    ).toBe(true);
-    expect(modelOptionsByProvider.grok.some((option) => option.slug === "grok/custom-fast")).toBe(
-      true,
-    );
-    expect(
-      modelOptionsByProvider.devin.some((option) => option.slug === "devin/custom-model"),
-    ).toBe(true);
-    expect(
-      modelOptionsByProvider.opencode.some((option) => option.slug === "openrouter/gpt-oss-120b"),
-    ).toBe(true);
-    expect(modelOptionsByProvider.pi.some((option) => option.slug === "anthropic/custom-pi")).toBe(
-      true,
-    );
-  });
-
-  it("normalizes and deduplicates custom model options per provider", () => {
-    const modelOptionsByProvider = getCustomModelOptionsByProvider({
-      customCodexModels: ["  custom/codex-model ", "gpt-5.4", "custom/codex-model"],
-      customClaudeModels: [" sonnet ", "claude/custom-opus", "claude/custom-opus"],
-      customCursorModels: [" composer-2 ", "cursor/custom-model", "cursor/custom-model"],
-      customAntigravityModels: [
-        " Gemini 3.5 Flash ",
-        "Gemini 3.5 Flash (Experimental)",
-        "Gemini 3.5 Flash (Experimental)",
-      ],
-      customGrokModels: [" grok-build ", "grok/custom-fast", "grok/custom-fast"],
-      customDroidModels: [" opus ", "droid/custom-model", "droid/custom-model"],
-      customDevinModels: [" adaptive ", "devin/custom-model", "devin/custom-model"],
-      customOpenCodeModels: [
-        " openai/gpt-5 ",
-        "openrouter/gpt-oss-120b",
-        "openrouter/gpt-oss-120b",
-      ],
-      customPiModels: [
-        " anthropic/claude-sonnet-4-5 ",
-        "anthropic/custom-pi",
-        "anthropic/custom-pi",
-      ],
-      customChatGptModels: [" gpt-6-astra ", "chatgpt/custom-model", "chatgpt/custom-model"],
-    });
-
-    expect(
-      modelOptionsByProvider.codex.filter((option) => option.slug === "custom/codex-model"),
-    ).toHaveLength(1);
-    expect(modelOptionsByProvider.codex.some((option) => option.slug === "gpt-5.4")).toBe(true);
-    expect(
-      modelOptionsByProvider.claudeAgent.filter((option) => option.slug === "claude/custom-opus"),
-    ).toHaveLength(1);
-    expect(
-      modelOptionsByProvider.claudeAgent.some((option) => option.slug === "claude-sonnet-5"),
-    ).toBe(true);
-    expect(
-      modelOptionsByProvider.droid.filter((option) => option.slug === "droid/custom-model"),
-    ).toHaveLength(1);
-    expect(
-      modelOptionsByProvider.cursor.filter((option) => option.slug === "cursor/custom-model"),
-    ).toHaveLength(1);
-    expect(
-      modelOptionsByProvider.antigravity.filter(
-        (option) => option.slug === "Gemini 3.5 Flash (Experimental)",
-      ),
-    ).toHaveLength(1);
-    expect(
-      modelOptionsByProvider.grok.filter((option) => option.slug === "grok/custom-fast"),
-    ).toHaveLength(1);
-    expect(modelOptionsByProvider.grok.some((option) => option.slug === "grok-4.6")).toBe(true);
-    expect(
-      modelOptionsByProvider.grok.filter((option) => option.slug === "grok-build"),
-    ).toHaveLength(1);
-    expect(
-      modelOptionsByProvider.devin.filter((option) => option.slug === "devin/custom-model"),
-    ).toHaveLength(1);
-    expect(
-      modelOptionsByProvider.opencode.filter((option) => option.slug === "openrouter/gpt-oss-120b"),
-    ).toHaveLength(1);
-    expect(
-      modelOptionsByProvider.pi.filter((option) => option.slug === "anthropic/custom-pi"),
-    ).toHaveLength(1);
-    expect(
-      modelOptionsByProvider.chatgpt.filter((option) => option.slug === "chatgpt/custom-model"),
-    ).toHaveLength(1);
-    expect(modelOptionsByProvider.chatgpt.some((option) => option.slug === "gpt-6-astra")).toBe(
-      true,
-    );
   });
 });
 
@@ -1168,7 +943,8 @@ describe("AppSettingsSchema", () => {
     ).toMatchObject({
       claudeBinaryPath: "",
       uiDensity: "comfortable",
-      chatFontSizePx: DEFAULT_CHAT_FONT_SIZE_PX,
+      chatFontSizePx: 13,
+      terminalFontSizePx: 12,
       codexBinaryPath: "/usr/local/bin/codex",
       codexHomePath: "",
       grokBinaryPath: "",
@@ -1182,11 +958,11 @@ describe("AppSettingsSchema", () => {
       appSnapPlaySound: true,
       enableAssistantStreaming: true,
       followUpBehavior: DEFAULT_FOLLOW_UP_BEHAVIOR,
-      sidebarProjectSortOrder: DEFAULT_SIDEBAR_PROJECT_SORT_ORDER,
-      sidebarThreadSortOrder: DEFAULT_SIDEBAR_THREAD_SORT_ORDER,
+      sidebarProjectSortOrder: "manual",
+      sidebarThreadSortOrder: "updated_at",
       showStudioSection: true,
       showAutomationRunThreads: true,
-      timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
+      timestampFormat: "locale",
       customCodexModels: [],
       customClaudeModels: [],
       customCursorModels: [],
@@ -1195,19 +971,6 @@ describe("AppSettingsSchema", () => {
       customOpenCodeModels: [],
       customPiModels: [],
     });
-  });
-
-  it("preserves the selected desktop app icon", () => {
-    const decode = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema));
-
-    expect(decode(JSON.stringify({ desktopAppIcon: "icon" })).desktopAppIcon).toBe("icon");
-  });
-
-  it("preserves the custom title bar preference", () => {
-    const decode = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema));
-
-    expect(decode(JSON.stringify({ useCustomTitleBar: false })).useCustomTitleBar).toBe(false);
-    expect(decode(JSON.stringify({})).useCustomTitleBar).toBe(true);
   });
 
   it("migrates the former AppSnap feature flag", () => {

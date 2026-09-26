@@ -55,6 +55,11 @@ describe("providerStartOptionsFromServerSettings", () => {
           tunnelBinaryPath: "",
           openAiTunnelId: "",
         },
+        omp: {
+          ...DEFAULT_SERVER_SETTINGS.providers.omp,
+          binaryPath: "",
+          agentDir: "",
+        },
       },
     };
 
@@ -78,6 +83,7 @@ describe("providerStartOptionsFromServerSettings", () => {
     expect(providerOptions.pi).toEqual({});
     expect(providerOptions.devin).toEqual({});
     expect(providerOptions.chatgpt).toEqual({});
+    expect(providerOptions.omp).toEqual({});
   });
 
   it("preserves configured launch settings", () => {

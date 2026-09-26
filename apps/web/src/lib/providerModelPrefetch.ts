@@ -35,6 +35,8 @@ export type ProviderModelPrefetchSettings = Pick<
   | "openCodeBinaryPath"
   | "piBinaryPath"
   | "piAgentDir"
+  | "ompBinaryPath"
+  | "ompAgentDir"
 >;
 
 /**
@@ -52,14 +54,20 @@ export const NEW_THREAD_MODEL_PREFETCH_PROVIDERS: ReadonlyArray<Exclude<Provider
   "opencode",
   "pi",
   "devin",
+  // One global `omp models` spawn, not per-model sessions like Droid — safe to
+  // keep warm across hover/mount prefetches.
+  "omp",
 ];
 
-/** Warm results stay fresh for 30 minutes instead of the interactive 60s. */
+/** Warm results stay fresh for 30 minutes; the interactive staleTime is 15min. */
 export const NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS = 30 * 60_000;
+
+/** Retain warmed catalogs as long as the server's stale-while-revalidate window. */
+export const NEW_THREAD_MODEL_PREFETCH_GC_TIME_MS = 24 * 60 * 60_000;
 
 const EMPTY_PROVIDER_STATUSES: readonly ServerProviderStatus[] = [];
 
-export function resolveNewThreadModelPrefetchProvider(input: {
+function resolveNewThreadModelPrefetchProvider(input: {
   providerOverride?: ProviderKind | null | undefined;
   draftActiveProvider?: ProviderKind | null | undefined;
   stickyActiveProvider?: ProviderKind | null | undefined;
@@ -198,6 +206,13 @@ export function providerModelsPrefetchQueryOptions(
       });
     case "chatgpt":
       return null;
+    case "omp":
+      return providerModelsQueryOptions({
+        provider: "omp",
+        binaryPath: settings.ompBinaryPath || null,
+        agentDir: settings.ompAgentDir || null,
+        priority,
+      });
   }
 }
 
@@ -257,7 +272,7 @@ export function prefetchProviderModelsForNewThread(
         provider === "devin"
           ? (query) => (query.state.data?.error ? 0 : NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS)
           : NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS,
-      gcTime: NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS,
+      gcTime: NEW_THREAD_MODEL_PREFETCH_GC_TIME_MS,
     });
 
     // Agent/mode lists ride along for providers that surface them next to models.
@@ -271,7 +286,7 @@ export function prefetchProviderModelsForNewThread(
         ...agentsOptions,
         retry: 0,
         staleTime: NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS,
-        gcTime: NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS,
+        gcTime: NEW_THREAD_MODEL_PREFETCH_GC_TIME_MS,
       });
     }
 
@@ -282,7 +297,7 @@ export function prefetchProviderModelsForNewThread(
     void queryClient.prefetchQuery({
       ...providerComposerCapabilitiesQueryOptions(provider),
       retry: 0,
-      gcTime: NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS,
+      gcTime: NEW_THREAD_MODEL_PREFETCH_GC_TIME_MS,
     });
   }
 }
@@ -308,12 +323,12 @@ export function prefetchDroidModelsForNewThread(
       priority: "prefetch",
     }),
     staleTime: NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS,
-    gcTime: NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS,
+    gcTime: NEW_THREAD_MODEL_PREFETCH_GC_TIME_MS,
   });
   void queryClient.prefetchQuery({
     ...providerComposerCapabilitiesQueryOptions("droid"),
     retry: 0,
-    gcTime: NEW_THREAD_MODEL_PREFETCH_STALE_TIME_MS,
+    gcTime: NEW_THREAD_MODEL_PREFETCH_GC_TIME_MS,
   });
 }
 

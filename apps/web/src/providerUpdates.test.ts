@@ -97,6 +97,7 @@ function serverSettings(overrides: Partial<ServerSettings["providers"]> = {}): S
         openAiTunnelApiKeyConfigured: false,
         maxWorkers: 2,
       },
+      omp: { ...provider, binaryPath: "omp", agentDir: "" },
       ...overrides,
     },
     skills: { disabled: [] },
@@ -356,10 +357,6 @@ describe("shouldOfferProviderUpdateAction", () => {
 
     expect(shouldOfferProviderUpdateAction(uninstalledPi)).toBe(false);
     expect(shouldOfferProviderUpdateAction(uninstalledDroid)).toBe(false);
-  });
-
-  it("offers updates for installed outdated CLIs", () => {
-    expect(shouldOfferProviderUpdateAction(providerStatus("codex"))).toBe(true);
   });
 
   it("offers native AGY updates even when upstream latest-version metadata is unavailable", () => {

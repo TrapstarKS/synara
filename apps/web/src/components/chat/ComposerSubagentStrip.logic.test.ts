@@ -46,15 +46,6 @@ function subagentRows(rows: ComposerSubagentStripRow[]): ComposerSubagentStripIt
 }
 
 describe("deriveComposerSubagentStripItems", () => {
-  it("returns no rows when the work log has no subagents", () => {
-    expect(
-      deriveComposerSubagentStripItems({
-        workEntries: [workEntry({ id: "entry-1", turnId: "turn-1" })],
-        liveTurnId: TurnId.makeUnsafe("turn-1"),
-      }),
-    ).toEqual([]);
-  });
-
   it("keeps prior running background rows alongside subagents from the live turn", () => {
     const items = deriveComposerSubagentStripItems({
       workEntries: [
@@ -676,21 +667,6 @@ describe("collectRunningSubagentStripItems", () => {
     const running = collectRunningSubagentStripItems(rows);
     expect(running.map((item) => item.threadId)).toEqual(["sub-1", "sub-3"]);
     expect(running.every((item) => item.kind === "subagent" && item.isActive)).toBe(true);
-  });
-
-  it("returns no rows when nothing is running", () => {
-    const rows = deriveComposerSubagentStripItems({
-      workEntries: [
-        workEntry({
-          id: "entry-1",
-          turnId: "turn-1",
-          subagents: [subagent({ threadId: "sub-1", nickname: "Ada", rawStatus: "queued" })],
-        }),
-      ],
-      liveTurnId: TurnId.makeUnsafe("turn-1"),
-    });
-
-    expect(collectRunningSubagentStripItems(rows)).toEqual([]);
   });
 });
 

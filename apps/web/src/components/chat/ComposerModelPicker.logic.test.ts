@@ -37,6 +37,7 @@ const EMPTY_MODEL_OPTIONS: Record<ProviderKind, ReadonlyArray<ProviderModelOptio
   droid: [],
   opencode: [],
   pi: [],
+  omp: [],
 };
 
 describe("starred model presets", () => {

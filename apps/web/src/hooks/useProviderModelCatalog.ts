@@ -133,6 +133,7 @@ export function useProviderModelCatalog(input: {
   const openCodeModelDiscoveryEnabled = shouldDiscoverProvider("opencode");
   const piModelDiscoveryEnabled = shouldDiscoverProvider("pi");
   const devinModelDiscoveryEnabled = shouldDiscoverProvider("devin");
+  const ompModelDiscoveryEnabled = shouldDiscoverProvider("omp");
 
   const modelQueryOptionsByProvider = {
     claudeAgent: providerModelsQueryOptions({
@@ -191,6 +192,15 @@ export function useProviderModelCatalog(input: {
     // ChatGPT (Web) has no model-discovery endpoint: its catalog is the static
     // contract list plus user-entered custom models, so keep the query disabled.
     chatgpt: providerModelsQueryOptions({ provider: "chatgpt", enabled: false }),
+    omp: providerModelsQueryOptions({
+      provider: "omp",
+      binaryPath: settings.ompBinaryPath || null,
+      agentDir: settings.ompAgentDir || null,
+      // cwd scopes the project `modelRoles` layer; the model catalog itself is
+      // global and stays shared in the server-side cache.
+      cwd: discoveryCwd,
+      enabled: ompModelDiscoveryEnabled,
+    }),
   } as const;
 
   const claudeDynamicModelsQuery = useQuery(modelQueryOptionsByProvider.claudeAgent);
@@ -219,6 +229,7 @@ export function useProviderModelCatalog(input: {
       ),
     [modelProvider, modelBinaryPath, modelApiEndpoint, modelAgentDir, modelCwd],
   );
+  const ompDynamicModelsQuery = useQuery(modelQueryOptionsByProvider.omp);
 
   const selectedProviderModelsEnabled = modelQueryOptionsByProvider[selectedProvider].enabled;
 
@@ -297,6 +308,25 @@ export function useProviderModelCatalog(input: {
     devinModelDiscoveryEnabled &&
     !hasResolvedDevinModelDiscovery &&
     isInitialModelDiscoveryPending(devinDynamicModelsQuery);
+  const hasResolvedOmpModelDiscovery =
+    ompDynamicModelsQuery.data?.source === "omp-cli" &&
+    (ompDynamicModelsQuery.data.models.length ?? 0) > 0;
+  // OMP has no static model fallback. A terminal discovery failure (retries
+  // exhausted — isError true) must NOT park the picker on the loading skeleton:
+  // isInitialModelDiscoveryPending's contract is "a failed provider must not
+  // park the model control on a skeleton" (see providerDiscoveryReactQuery).
+  // Instead modelOptionsByProvider clears OMP's options on failure so the picker
+  // surfaces a load-failure message rather than the hint-only static list
+  // (previously-selected model shown as the sole OMP entry — the "collapsed to
+  // one model" symptom). Pending stays true only while the first fetch is
+  // outstanding or retrying; transient cold-start failures retry under the
+  // skeleton before this flag ever flips.
+  const ompDiscoveryFailed =
+    ompModelDiscoveryEnabled &&
+    !hasResolvedOmpModelDiscovery &&
+    !isInitialModelDiscoveryPending(ompDynamicModelsQuery);
+  const ompModelDiscoveryPending =
+    ompModelDiscoveryEnabled && !hasResolvedOmpModelDiscovery && !ompDiscoveryFailed;
   const antigravityModelDiscoveryPending =
     antigravityModelDiscoveryEnabled &&
     !(
@@ -337,6 +367,7 @@ export function useProviderModelCatalog(input: {
         customModelsByProvider.chatgpt,
         modelHintByProvider?.chatgpt,
       ),
+      omp: getAppModelOptions("omp", customModelsByProvider.omp, modelHintByProvider?.omp),
     };
     const result: Record<
       ProviderKind,
@@ -356,6 +387,7 @@ export function useProviderModelCatalog(input: {
       pi: piDynamicModelsQuery.data,
       devin: devinDynamicModelsQuery.data,
       chatgpt: undefined,
+      omp: ompDynamicModelsQuery.data,
     };
     for (const provider of [
       "claudeAgent",
@@ -367,6 +399,7 @@ export function useProviderModelCatalog(input: {
       "opencode",
       "pi",
       "devin",
+      "omp",
     ] as const) {
       const discovery = dynamicSources[provider];
       const dynamicModels = discovery?.models;
@@ -382,6 +415,26 @@ export function useProviderModelCatalog(input: {
         });
       }
     }
+    const ompRoles = ompDynamicModelsQuery.data?.roles ?? [];
+    if (ompRoles.length > 0) {
+      const roleOptions: ProviderModelOption[] = ompRoles.map((role) => ({
+        slug: `role:${role.name}`,
+        name: role.name.replace(/[-_]/g, " "),
+        upstreamProviderName: "Roles",
+        upstreamProviderId: "roles",
+        role:
+          role.thinkingLevel !== undefined
+            ? { name: role.name, model: role.model, thinkingLevel: role.thinkingLevel }
+            : { name: role.name, model: role.model },
+      }));
+      result.omp = [...roleOptions, ...result.omp];
+    }
+    // Terminal OMP discovery failure: drop the hint placeholder but keep
+    // user-configured custom models — the picker still renders the
+    // discovery error line above whatever options remain.
+    if (ompDiscoveryFailed) {
+      result.omp = staticOptions.omp.filter((option) => option.isCustom === true);
+    }
     return result;
   }, [
     antigravityModelsQuery.data,
@@ -396,6 +449,8 @@ export function useProviderModelCatalog(input: {
     openCodeDynamicModelsQuery.data,
     piDynamicModelsQuery.data,
     devinDynamicModelsQuery.data,
+    ompDynamicModelsQuery.data,
+    ompDiscoveryFailed,
   ]);
 
   const loadingModelProviders = useMemo<Partial<Record<ProviderKind, boolean>>>(
@@ -408,6 +463,7 @@ export function useProviderModelCatalog(input: {
       devin: devinModelDiscoveryPending,
       // Static-only catalog: never blocks the composer on discovery.
       chatgpt: false,
+      omp: ompModelDiscoveryPending,
     }),
     [
       antigravityModelDiscoveryPending,
@@ -416,6 +472,7 @@ export function useProviderModelCatalog(input: {
       openCodeModelDiscoveryPending,
       piModelDiscoveryPending,
       devinModelDiscoveryPending,
+      ompModelDiscoveryPending,
     ],
   );
 
@@ -433,6 +490,7 @@ export function useProviderModelCatalog(input: {
       pi: piDynamicModelsQuery.data?.models ?? [],
       devin: devinDynamicModelsQuery.data?.models ?? [],
       chatgpt: [],
+      omp: ompDynamicModelsQuery.data?.models ?? [],
     }),
     [
       antigravityModelsQuery.data?.models,
@@ -444,6 +502,7 @@ export function useProviderModelCatalog(input: {
       openCodeDynamicModelsQuery.data?.models,
       piDynamicModelsQuery.data?.models,
       devinDynamicModelsQuery.data?.models,
+      ompDynamicModelsQuery.data?.models,
     ],
   );
 
@@ -501,6 +560,7 @@ export function useProviderModelCatalog(input: {
         openCodeDynamicModelsQuery.error,
       ),
       pi: modelDiscoveryError(piDynamicModelsQuery.data?.error, piDynamicModelsQuery.error),
+      omp: modelDiscoveryError(ompDynamicModelsQuery.data?.error, ompDynamicModelsQuery.error),
     }),
     [
       antigravityModelsQuery.data?.error,
@@ -519,6 +579,8 @@ export function useProviderModelCatalog(input: {
       openCodeDynamicModelsQuery.error,
       piDynamicModelsQuery.data?.error,
       piDynamicModelsQuery.error,
+      ompDynamicModelsQuery.data?.error,
+      ompDynamicModelsQuery.error,
     ],
   );
 
@@ -543,7 +605,9 @@ export function useProviderModelCatalog(input: {
                     ? piDynamicModelsQuery
                     : selectedProvider === "chatgpt"
                       ? chatGptDynamicModelsQuery
-                      : devinDynamicModelsQuery;
+                      : selectedProvider === "omp"
+                        ? ompDynamicModelsQuery
+                        : devinDynamicModelsQuery;
   const selectedProviderModelsLoading =
     selectedProviderRuntimeModelDiscoveryPending ||
     (loadingModelProviders[selectedProvider] === undefined &&

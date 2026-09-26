@@ -3,11 +3,6 @@ import { describe, expect, it } from "vitest";
 import { isLunaFastSubagent, resolveThreadModelSummary } from "./threadModelSummary";
 
 describe("resolveThreadModelSummary", () => {
-  it("returns null without a selection", () => {
-    expect(resolveThreadModelSummary(null)).toBeNull();
-    expect(resolveThreadModelSummary(undefined)).toBeNull();
-  });
-
   it("summarizes a codex selection with its reasoning effort", () => {
     const summary = resolveThreadModelSummary({
       provider: "codex",

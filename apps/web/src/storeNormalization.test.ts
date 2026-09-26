@@ -1,7 +1,12 @@
 // FILE: storeNormalization.test.ts
 // Purpose: Pins the incremental activity accumulator to the `normalizeActivities` fold it replaces.
 
-import { MessageId, TurnId, type PendingClaudeCacheReview } from "@synara/contracts";
+import {
+  MessageId,
+  TurnId,
+  type PendingClaudeCacheReview,
+  type ProviderKind,
+} from "@synara/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -15,6 +20,7 @@ import {
   normalizeThreadShellSnapshot,
   threadShellsEqual,
   type ThreadActivityAccumulator,
+  toLegacyProvider,
 } from "./storeNormalization";
 import { makeActivity, makeReadModelThread, makeThread } from "./storeTestFixtures";
 import type { Thread } from "./types";
@@ -560,5 +566,42 @@ describe("asynchronous question hydration", () => {
     const restored = normalizeChatMessage(pending, answered);
     expect(restored.asyncUserInput?.response).toEqual(response);
     expect(restored.completedAt).toBe(createdAt);
+  });
+});
+
+const KNOWN_PROVIDERS: ReadonlyArray<ProviderKind> = [
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "antigravity",
+  "grok",
+  "droid",
+  "devin",
+  "opencode",
+  "pi",
+  "chatgpt",
+  "omp",
+];
+
+describe("toLegacyProvider", () => {
+  it("maps each known provider name to itself", () => {
+    for (const provider of KNOWN_PROVIDERS) {
+      expect(toLegacyProvider(provider)).toBe(provider);
+    }
+  });
+
+  it("maps omp to omp (regression: omp threads were coerced to codex)", () => {
+    // The server stamps providerName "omp" for OMP threads; before the fix this
+    // fell through to "codex", mislabeling every OMP thread across the UI
+    // (ChatHeader, Sidebar, ChatView activeProvider, kanban, threadDisplay).
+    expect(toLegacyProvider("omp")).toBe("omp");
+  });
+
+  it("falls back to codex for an unknown provider name", () => {
+    expect(toLegacyProvider("unknown-provider")).toBe("codex");
+  });
+
+  it("falls back to codex for null", () => {
+    expect(toLegacyProvider(null)).toBe("codex");
   });
 });

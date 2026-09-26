@@ -138,6 +138,14 @@ describe("agentMentions", () => {
     expect(getAgentMentionAliases("codex").map(({ alias }) => alias)).toContain("5.4-mini");
     expect(getAgentMentionAliases("claudeAgent").map(({ alias }) => alias)).toContain("reviewer");
     expect(getAgentMentionAliases("claudeAgent").map(({ alias }) => alias)).toContain("planner");
+    const codexAutocomplete = getAgentMentionAutocompleteAliases("codex").map(({ alias }) => alias);
+    expect(codexAutocomplete).toEqual(expect.arrayContaining(["5.3-codex", "spark", "mini"]));
+    for (const hidden of ["codex", "5.3-spark", "5.4-mini"]) {
+      expect(codexAutocomplete).not.toContain(hidden);
+    }
+    expect(
+      new Set(getAgentMentionAutocompleteAliases("codex").map(({ model }) => model)).size,
+    ).toBe(codexAutocomplete.length);
 
     expect(codexCompatAlias?.kind).toBe("model");
     expect(codexCompatAlias?.provider).toBe("codex");

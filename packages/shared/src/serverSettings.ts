@@ -28,6 +28,7 @@ export function applyServerSettingsPatch(
     selectionPatch.model ??
     (selectionPatch.provider &&
     selectionPatch.provider !== "pi" &&
+    selectionPatch.provider !== "omp" &&
     selectionPatch.provider !== current.textGenerationModelSelection.provider
       ? DEFAULT_MODEL_BY_PROVIDER[selectionPatch.provider]
       : current.textGenerationModelSelection.model);
@@ -60,13 +61,16 @@ export function providerStartOptionsFromServerSettings(
   settings: ServerSettings,
 ): ProviderStartOptions {
   const { providers } = settings;
+  const codexBinaryPath = providers.codex.binaryPath.trim();
+  const codexHomePath = providers.codex.homePath.trim();
+  const claudeBinaryPath = providers.claudeAgent.binaryPath.trim();
   return {
     codex: {
-      ...(providers.codex.binaryPath ? { binaryPath: providers.codex.binaryPath } : {}),
-      ...(providers.codex.homePath ? { homePath: providers.codex.homePath } : {}),
+      ...(codexBinaryPath ? { binaryPath: codexBinaryPath } : {}),
+      ...(codexHomePath ? { homePath: codexHomePath } : {}),
     },
     claudeAgent: {
-      ...(providers.claudeAgent.binaryPath ? { binaryPath: providers.claudeAgent.binaryPath } : {}),
+      ...(claudeBinaryPath ? { binaryPath: claudeBinaryPath } : {}),
       enableArtifacts: providers.claudeAgent.enableArtifacts,
       enableChrome: providers.claudeAgent.enableChrome,
     },
@@ -98,5 +102,9 @@ export function providerStartOptionsFromServerSettings(
     // ChatGPT web sessions are configured by their own settings (tunnel mode,
     // browser URL); no launch options are derived here.
     chatgpt: {},
+    omp: {
+      ...(providers.omp.binaryPath ? { binaryPath: providers.omp.binaryPath } : {}),
+      ...(providers.omp.agentDir ? { agentDir: providers.omp.agentDir } : {}),
+    },
   };
 }

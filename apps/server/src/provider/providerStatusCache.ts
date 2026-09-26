@@ -21,6 +21,7 @@ const PROVIDER_STATUS_CACHE_IDS = [
   "opencode",
   "pi",
   "chatgpt",
+  "omp",
 ] as const satisfies ReadonlyArray<ServerProviderStatus["provider"]>;
 
 const decodeProviderStatusCache = Schema.decodeUnknownEffect(

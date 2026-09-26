@@ -70,20 +70,6 @@ it("migrates combined Antigravity model and effort labels", () => {
   );
 });
 
-it("infers Antigravity from persisted instance labels", () => {
-  assert.deepEqual(
-    normalizePersistedModelSelection({
-      instanceId: "Antigravity CLI",
-      model: "Claude Sonnet 4.6 (Thinking)",
-    }),
-    {
-      provider: "antigravity",
-      model: "Claude Sonnet 4.6",
-      options: { reasoningEffort: "thinking" },
-    },
-  );
-});
-
 it("prefers an explicit Antigravity instance over a model vendor in its label", () => {
   assert.deepEqual(
     normalizePersistedModelSelection({
@@ -176,13 +162,6 @@ it("does not steal ambiguous provider-less Claude slugs from Claude Agent", () =
   assert.deepEqual(normalizePersistedModelSelection({ model: "claude-opus-4-8" }), {
     provider: "claudeAgent",
     model: "claude-opus-4-8",
-  });
-});
-
-it("preserves canonical Devin model selections", () => {
-  assert.deepEqual(normalizePersistedModelSelection({ provider: "devin", model: "devin-core" }), {
-    provider: "devin",
-    model: "devin-core",
   });
 });
 

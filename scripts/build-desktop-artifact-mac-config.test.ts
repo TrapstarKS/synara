@@ -1,4 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
+import { basename } from "node:path";
+import { SYNARA_PACKAGED_DESKTOP_FLAVORS } from "@synara/shared/desktopIdentity";
+import { desktopIconAssetPaths } from "./lib/brand-assets.ts";
 
 import {
   createDesktopPlatformBuildConfig,
@@ -20,9 +23,17 @@ import {
   validateDesktopNativeBuildHost,
   WINDOWS_INSTALLER_GUID,
 } from "./lib/desktop-platform-build-config.ts";
-import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 
 describe("createDesktopPlatformBuildConfig", () => {
+  it("names every packaged Icon Composer asset for CFBundleIconName", () => {
+    for (const flavor of SYNARA_PACKAGED_DESKTOP_FLAVORS) {
+      assert.equal(
+        basename(desktopIconAssetPaths(flavor).macIconComposer, ".icon"),
+        MAC_ICON_ASSET_NAME,
+      );
+    }
+  });
+
   it("adds explicit microphone entitlements to macOS builds", () => {
     const config = createDesktopPlatformBuildConfig({
       platform: "mac",
@@ -313,14 +324,5 @@ describe("createDesktopPlatformBuildConfig", () => {
       hostArch: "arm64",
     });
     assert.ok(issue?.includes("Build mac/arm64 on macOS"));
-  });
-
-  it("keeps separate macOS sources for solid and rounded icons", () => {
-    assert.equal(BRAND_ASSET_PATHS.productionMacIconPng, "assets/prod/black-macos-1024.png");
-    assert.equal(BRAND_ASSET_PATHS.productionMacIconComposer, "assets/prod/Synara.icon");
-    assert.equal(
-      BRAND_ASSET_PATHS.productionMacLegacyIconPng,
-      "assets/prod/black-macos-legacy-1024.png",
-    );
   });
 });

@@ -68,6 +68,7 @@ import {
 } from "../acp/CursorAcpCommand";
 import { hasDroidApiKeyEnv, resolveDroidCliBinaryPath } from "../acp/DroidAcpSupport";
 import { hasGrokApiKeyEnv } from "../acp/GrokAcpSupport";
+import { resolveOmpCliBinaryPath } from "../acp/OmpAcpSupport";
 import {
   hasDevinApiKeyEnv,
   readDevinStoredCredentials,
@@ -129,6 +130,7 @@ const DEVIN_PROVIDER = "devin" as const;
 const OPENCODE_PROVIDER = "opencode" as const;
 const PI_PROVIDER = "pi" as const;
 const CHATGPT_PROVIDER = "chatgpt" as const;
+const OMP_PROVIDER = "omp" as const;
 type ProviderStatuses = ReadonlyArray<ServerProviderStatus>;
 const DISABLED_PROVIDER_STATUS_MESSAGE = "Provider is disabled in Synara settings.";
 const MINIMUM_ANTIGRAVITY_CLI_VERSION = "1.0.12";
@@ -144,6 +146,7 @@ const PROVIDERS = [
   OPENCODE_PROVIDER,
   PI_PROVIDER,
   CHATGPT_PROVIDER,
+  OMP_PROVIDER,
 ] as const satisfies ReadonlyArray<ProviderKind>;
 
 const providerChildKind = (provider: ProviderKind): ProviderChildKind =>
@@ -284,6 +287,13 @@ export const PACKAGE_MANAGED_PROVIDER_UPDATES: Partial<
       lockKey: "pi-native",
       strategy: "always",
     },
+  },
+  omp: {
+    provider: OMP_PROVIDER,
+    binaryName: "omp",
+    npmPackageName: null,
+    homebrew: null,
+    nativeUpdate: null,
   },
 };
 
@@ -783,6 +793,15 @@ function cursorModelsOutputHasNoModels(output: string): boolean {
 
 const runPiCommand = (args: ReadonlyArray<string>, executable = "pi") =>
   runProviderCommand(executable, args, providerCommandEnv(PI_PROVIDER)).pipe(
+    Effect.flatMap((result) =>
+      isWindowsShellCommandMissingResult({ code: result.code, stderr: result.stderr })
+        ? Effect.fail(new Error(`spawn ${executable} ENOENT`))
+        : Effect.succeed(result),
+    ),
+  );
+
+const runOmpCommand = (args: ReadonlyArray<string>, executable = "omp") =>
+  runProviderCommand(executable, args, providerCommandEnv(OMP_PROVIDER)).pipe(
     Effect.flatMap((result) =>
       isWindowsShellCommandMissingResult({ code: result.code, stderr: result.stderr })
         ? Effect.fail(new Error(`spawn ${executable} ENOENT`))
@@ -1563,6 +1582,74 @@ export const checkPiProviderStatus = (
     } satisfies ServerProviderStatus;
   });
 
+export const checkOmpProviderStatus = (
+  agentDir?: string,
+  binaryPath?: string,
+): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  Effect.gen(function* () {
+    const checkedAt = new Date().toISOString();
+    const executable = resolveOmpCliBinaryPath(nonEmptyTrimmed(binaryPath) ?? undefined);
+
+    const versionProbe = yield* probeProviderCliVersion(
+      runOmpCommand(["--version"], executable),
+      DEFAULT_TIMEOUT_MS,
+    );
+
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
+      return {
+        provider: OMP_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message:
+          versionProbe.outcome === "missing"
+            ? "OMP CLI (`omp`) is not on PATH. Install it to use the OMP provider."
+            : `OMP CLI health check failed: ${error instanceof Error ? error.message : String(error)}.`,
+      } satisfies ServerProviderStatus;
+    }
+
+    if (versionProbe.outcome === "timeout") {
+      return {
+        provider: OMP_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: "OMP CLI health check timed out before Synara could verify the installed version.",
+      } satisfies ServerProviderStatus;
+    }
+
+    if (versionProbe.outcome === "nonzero") {
+      const version = versionProbe.result;
+      const detail = detailFromResult(version);
+      return {
+        provider: OMP_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: detail ? `OMP CLI health check failed. ${detail}` : "OMP CLI health check failed.",
+      } satisfies ServerProviderStatus;
+    }
+
+    const version = versionProbe.result;
+    const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
+    const configuredAgentDir = nonEmptyTrimmed(agentDir);
+    return {
+      provider: OMP_PROVIDER,
+      status: "ready" as const,
+      available: true,
+      authStatus: "unknown" as const,
+      version: parsedVersion,
+      checkedAt,
+      message: configuredAgentDir
+        ? `OMP CLI is installed. Synara will use the OMP agent dir ${configuredAgentDir}.`
+        : "OMP CLI is installed. Configure provider credentials inside the OMP app as needed.",
+    } satisfies ServerProviderStatus;
+  });
+
 // ── Antigravity CLI health check ──────────────────────────────────
 
 export const checkAntigravityProviderStatus = (
@@ -2231,6 +2318,8 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
           // helper is supervised separately by the connector service.
           case "chatgpt":
             return "";
+          case "omp":
+            return settings.providers.omp.binaryPath;
         }
       };
 
@@ -2448,6 +2537,14 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
                   settings,
                   CHATGPT_PROVIDER,
                   checkChatGptProviderStatus(settings.providers.chatgpt),
+                ),
+                checkProviderWhenEnabled(
+                  settings,
+                  OMP_PROVIDER,
+                  checkOmpProviderStatus(
+                    settings.providers.omp.agentDir,
+                    settings.providers.omp.binaryPath,
+                  ),
                 ),
               ],
               {

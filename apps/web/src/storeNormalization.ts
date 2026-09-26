@@ -2066,7 +2066,7 @@ function toLegacySessionStatus(
   }
 }
 
-function toLegacyProvider(providerName: string | null): ProviderKind {
+export function toLegacyProvider(providerName: string | null): ProviderKind {
   if (
     providerName === "codex" ||
     providerName === "claudeAgent" ||
@@ -2077,7 +2077,8 @@ function toLegacyProvider(providerName: string | null): ProviderKind {
     providerName === "opencode" ||
     providerName === "pi" ||
     providerName === "devin" ||
-    providerName === "chatgpt"
+    providerName === "chatgpt" ||
+    providerName === "omp"
   ) {
     return providerName;
   }
