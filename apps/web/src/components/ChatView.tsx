@@ -2004,8 +2004,8 @@ export default function ChatView({
     ? isNativeCommandDiscoveryPending
       ? "Checking Claude's available commands..."
       : "Compaction is unavailable for this Claude session."
-    : hasLiveTurn || isConnecting || (activeBackgroundTasks?.activeCount ?? 0) > 0
-      ? "Wait for Claude and its background tasks to finish."
+    : hasLiveTurn || isConnecting
+      ? "Wait for Claude to finish before compacting."
       : activePendingApproval || pendingUserInputs.length > 0
         ? "Resolve the pending request before compacting."
         : null;

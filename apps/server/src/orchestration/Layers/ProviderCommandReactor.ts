@@ -2109,11 +2109,50 @@ const make = Effect.gen(function* () {
         claudeChromeChanged,
         hasResumeCursor: resumeCursor !== undefined,
       });
-      const restartedOutcome = yield* startProviderSessionWithOutcome(
+      // A Claude spawn-profile-only change (auto-compact budget, max effort)
+      // must not fail the turn while background subagents/shared tasks keep the
+      // session busy: keep the live session and retry on a later turn (the
+      // selection cache stays stale on purpose).
+      const claudeProfileOnlyRestart =
+        currentProvider === "claudeAgent" &&
+        shouldRestartForModelSelectionChange &&
+        !runtimeModeChanged &&
+        !providerChanged &&
+        !workspaceChanged &&
+        !shouldRestartForModelChange &&
+        !computerControlChanged &&
+        !claudeChromeChanged;
+      const restartAttempt = yield* startProviderSessionWithOutcome(
         resumeCursor,
         options?.registerPriorTranscriptBootstrapOnFreshStart === true ||
           (workspaceChanged && shouldRegisterContextBootstrap),
+      ).pipe(
+        Effect.map(Option.some),
+        Effect.catchIf(
+          (error) =>
+            claudeProfileOnlyRestart &&
+            error._tag === "ProviderAdapterValidationError" &&
+            error.operation === "session/reconfigure" &&
+            error.issue.startsWith("Wait for Claude"),
+          () => Effect.succeed(Option.none()),
+        ),
       );
+      if (Option.isNone(restartAttempt)) {
+        yield* Effect.logInfo("provider command reactor deferred busy Claude profile restart", {
+          threadId,
+        });
+        return {
+          activeSessionBeforeEnsure,
+          activeSession: reusableSession,
+          modelSelection: desiredModelSelection,
+          nativeResumeSucceeded: false,
+          nativeResumeFailed: false,
+          nativeSessionRestarted: false,
+          computerControlRestartDeferred: false,
+          forkComputerControl: undefined,
+        };
+      }
+      const restartedOutcome = restartAttempt.value;
       const restartedSession = restartedOutcome.session;
       if (shouldRegisterContextBootstrap && restartedOutcome.priorTranscriptBootstrapPending) {
         freshSessionContextBootstrapThreadIds.add(threadId);

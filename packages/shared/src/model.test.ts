@@ -580,7 +580,7 @@ describe("provider option descriptor helpers", () => {
     expect(descriptors[0]).toMatchObject({ id: "reasoningDepth", currentValue: "deep" });
   });
 
-  it("marks Auto as the default auto-compact option for a 1M Claude variant", () => {
+  it("marks 200k as the default auto-compact option for a 1M Claude variant", () => {
     const caps = getModelCapabilities("claudeAgent", "claude-fable-5-1[1m]");
     const defaultDescriptor = getProviderOptionDescriptors({
       provider: "claudeAgent",
@@ -589,19 +589,19 @@ describe("provider option descriptor helpers", () => {
     const explicitDescriptor = getProviderOptionDescriptors({
       provider: "claudeAgent",
       caps,
-      selections: { autoCompactWindow: "200k" },
+      selections: { autoCompactWindow: "auto" },
     }).find((descriptor) => descriptor.id === "autoCompactWindow");
 
     expect(defaultDescriptor).toMatchObject({
       type: "select",
-      currentValue: "auto",
+      currentValue: "200k",
       options: [
-        { id: "auto", label: "Auto (Claude Code)", isDefault: true },
-        { id: "200k", label: "200k" },
+        { id: "auto", label: "Auto (Claude Code)" },
+        { id: "200k", label: "200k", isDefault: true },
         { id: "1m", label: "1M" },
       ],
     });
-    expect(explicitDescriptor).toMatchObject({ type: "select", currentValue: "200k" });
+    expect(explicitDescriptor).toMatchObject({ type: "select", currentValue: "auto" });
   });
 });
 
@@ -609,17 +609,17 @@ describe("context window helpers", () => {
   it("separates Claude's real context capacity from its auto-compact budget", () => {
     const opusCaps = getModelCapabilities("claudeAgent", "claude-opus-4-6");
     expect(getDefaultContextWindow(opusCaps)).toBeNull();
-    expect(getDefaultAutoCompactWindow(opusCaps)).toBe("auto");
+    expect(getDefaultAutoCompactWindow(opusCaps)).toBe("200k");
     expect(opusCaps.contextWindowTokens).toBe(1_000_000);
     expect(getModelCapabilities("claudeAgent", "claude-opus-4-5").contextWindowTokens).toBe(
       200_000,
     );
     const opus5Caps = getModelCapabilities("claudeAgent", "claude-opus-5");
     expect(opus5Caps.contextWindowTokens).toBe(1_000_000);
-    expect(getDefaultAutoCompactWindow(opus5Caps)).toBe("auto");
+    expect(getDefaultAutoCompactWindow(opus5Caps)).toBe("200k");
     const sonnet5Caps = getModelCapabilities("claudeAgent", "claude-sonnet-5");
     expect(sonnet5Caps.contextWindowTokens).toBe(1_000_000);
-    expect(getDefaultAutoCompactWindow(sonnet5Caps)).toBe("auto");
+    expect(getDefaultAutoCompactWindow(sonnet5Caps)).toBe("200k");
     expect(getDefaultContextWindow(getModelCapabilities("codex", "gpt-5.4"))).toBeNull();
   });
 
@@ -742,7 +742,7 @@ describe("normalizeClaudeModelOptions", () => {
       normalizeClaudeModelOptions("claude-opus-4-6", {
         effort: "high",
         fastMode: false,
-        autoCompactWindow: "auto",
+        autoCompactWindow: "200k",
       }),
     ).toBeUndefined();
   });
@@ -755,9 +755,9 @@ describe("normalizeClaudeModelOptions", () => {
     ).toEqual({ autoCompactWindow: "1m" });
     expect(
       normalizeClaudeModelOptions("claude-fable-5-1[1M]", {
-        autoCompactWindow: "200k",
+        autoCompactWindow: "auto",
       }),
-    ).toEqual({ autoCompactWindow: "200k" });
+    ).toEqual({ autoCompactWindow: "auto" });
     expect(
       normalizeClaudeModelOptions("claude-fable-5-1", {
         autoCompactWindow: "1m",
@@ -765,9 +765,9 @@ describe("normalizeClaudeModelOptions", () => {
     ).toEqual({ autoCompactWindow: "1m" });
     expect(
       normalizeClaudeModelOptions("claude-fable-5-1", {
-        autoCompactWindow: "200k",
+        autoCompactWindow: "auto",
       }),
-    ).toEqual({ autoCompactWindow: "200k" });
+    ).toEqual({ autoCompactWindow: "auto" });
   });
 
   it("migrates the legacy context-window field to the auto-compact budget", () => {

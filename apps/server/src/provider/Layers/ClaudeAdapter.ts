@@ -1111,9 +1111,15 @@ function hasActiveClaudeRuntimeWork(context: ClaudeSessionContext): boolean {
   );
 }
 
-// Persistent TODOs block compaction but survive restart through the resume cursor.
+// Compaction runs in the live session, so background tasks, subagents,
+// workflows and open TODOs keep running across it (as in Claude Code); only the
+// main turn and pending approvals/questions block it.
 function hasActiveClaudeCompactionWork(context: ClaudeSessionContext): boolean {
-  return hasActiveClaudeRuntimeWork(context) || hasUnfinishedClaudeTasks(context.trackedTasks);
+  return (
+    context.turnState !== undefined ||
+    context.pendingApprovals.size > 0 ||
+    context.pendingUserInputs.size > 0
+  );
 }
 
 function classifyToolItemType(toolName: string): CanonicalItemType {

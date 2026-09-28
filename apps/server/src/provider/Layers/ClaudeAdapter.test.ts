@@ -12231,7 +12231,7 @@ describe("Claude explicit native compaction", () => {
     "workflow",
     "background",
   ] as const) {
-    it.effect(`rejects compaction while shared work is active: ${activeWork}`, () => {
+    it.effect(`gates compaction only on the main turn: ${activeWork}`, () => {
       const harness = makeHarness();
       harness.query.supportedCommandList = [
         { name: "compact", description: "Compact context", argumentHint: "" },
@@ -12302,6 +12302,11 @@ describe("Claude explicit native compaction", () => {
           threadId: THREAD_ID,
           turnId: compactionTurnId,
         }).pipe(Effect.result);
+        // Background tasks, workflows and TODOs keep running across compaction.
+        if (activeWork !== "turn") {
+          assert.equal(result._tag, "Success");
+          return;
+        }
         assert.equal(result._tag, "Failure");
         const ordinaryResult = yield* adapter
           .sendTurn({ threadId: THREAD_ID, input: "/compact retain active work", attachments: [] })
