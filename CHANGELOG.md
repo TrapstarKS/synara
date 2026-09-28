@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.17] — 2026-09-28
+
+### Changed
+
+- Claude's auto-compact budget now defaults to 200k. Auto and 1M remain available in the model options.
+
+### Fixed
+
+- /compact no longer waits for background tasks, subagents, workflows or open TODOs; only Claude's main turn and pending approvals or questions block it.
+- Changing Claude's compact window or effort while background work is running no longer fails the message; the change applies once the session is idle.
+
 ## [0.9.16] — 2026-09-26
 
 ### Fixed

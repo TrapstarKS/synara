@@ -26,6 +26,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    version: "0.9.17",
+    date: "Sep 28",
+    features: [
+      {
+        id: "claude-compact-background",
+        title: "Compact while subagents run",
+        description:
+          "Claude now compacts at 200k by default, and /compact works while background tasks and subagents keep running.",
+      },
+    ],
+  },
+  {
     version: "0.9.16",
     date: "Sep 26",
     features: [
