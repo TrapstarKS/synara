@@ -179,14 +179,11 @@ export function resolveSelectedClaudeAutoCompactWindow(
   selectedAutoCompactWindow: string | null | undefined,
 ): number | undefined {
   const caps = getModelCapabilities("claudeAgent", model);
-  const selected = trimOrNull(selectedAutoCompactWindow);
-  // Only an explicit override is pinned; the model-native window is left to
-  // Claude Code's own resolution (server tuning, settings.json, env override).
-  if (
-    !selected ||
-    selected === getDefaultAutoCompactWindow(caps) ||
-    !hasAutoCompactWindowOption(caps, selected)
-  ) {
+  // Normalized options omit the default, so a missing value means the default
+  // (200k). Only "auto" leaves the window to Claude Code's own resolution
+  // (server tuning, settings.json, env override).
+  const selected = trimOrNull(selectedAutoCompactWindow) ?? getDefaultAutoCompactWindow(caps);
+  if (!selected || selected === "auto" || !hasAutoCompactWindowOption(caps, selected)) {
     return undefined;
   }
   return claudeContextWindowTokensForOption(selected);

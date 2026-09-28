@@ -13421,7 +13421,7 @@ describe("ProviderCommandReactor", () => {
         modelSelection: {
           provider: "claudeAgent",
           model: "claude-opus-4-7",
-          options: { autoCompactWindow: "200k" },
+          options: { autoCompactWindow: "1m" },
         },
       }),
     );
@@ -13502,7 +13502,7 @@ describe("ProviderCommandReactor", () => {
       modelSelection: {
         provider: "claudeAgent",
         model: "claude-opus-4-7",
-        options: { autoCompactWindow: "200k" },
+        options: { autoCompactWindow: "1m" },
       },
     });
   });
@@ -13563,7 +13563,7 @@ describe("ProviderCommandReactor", () => {
           });
         }),
       );
-      await Effect.runPromise(send("rejected-busy", { autoCompactWindow: "200k" }));
+      await Effect.runPromise(send("rejected-busy", { autoCompactWindow: "1m" }));
       await harness.drain();
       const after = (await Effect.runPromise(harness.engine.getReadModel())).threads[0]!.session!;
       expect(after).toMatchObject(

@@ -1613,7 +1613,7 @@ describe("AgentGateway", () => {
               const settings = query.options.settings as { autoCompactWindow?: number };
               assert.equal(
                 settings.autoCompactWindow,
-                window === "1m" ? 1_000_000 : window === "200k" ? 200_000 : undefined,
+                window === "1m" ? 1_000_000 : window === "auto" ? undefined : 200_000,
               );
               assert.deepEqual(query.modelChanges, []);
               assert.deepEqual(query.settingsChanges, []);

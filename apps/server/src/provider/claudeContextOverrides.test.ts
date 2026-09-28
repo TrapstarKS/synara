@@ -11,20 +11,18 @@ import {
 
 describe("Claude explicit compact overrides", () => {
   it.each(["claude-opus-4-6", "claude-sonnet-4-6", "claude-fable-5-1", "claude-sonnet-5"])(
-    "preserves both explicit budgets on %s and can return to auto",
+    "defaults %s to 200k and keeps explicit 1M and auto",
     (model) => {
-      for (const [value, tokens] of [
-        ["200k", 200_000],
-        ["1m", 1_000_000],
-      ] as const) {
-        const options = normalizeClaudeModelOptions(model, { autoCompactWindow: value });
-        expect(options?.autoCompactWindow).toBe(value);
-        expect(resolveSelectedClaudeAutoCompactWindow(model, options?.autoCompactWindow)).toBe(
-          tokens,
-        );
-      }
-      expect(normalizeClaudeModelOptions(model, { autoCompactWindow: "auto" })).toBeUndefined();
-      expect(resolveSelectedClaudeAutoCompactWindow(model, undefined)).toBeUndefined();
+      expect(normalizeClaudeModelOptions(model, { autoCompactWindow: "200k" })).toBeUndefined();
+      expect(resolveSelectedClaudeAutoCompactWindow(model, undefined)).toBe(200_000);
+      const oneM = normalizeClaudeModelOptions(model, { autoCompactWindow: "1m" });
+      expect(oneM?.autoCompactWindow).toBe("1m");
+      expect(resolveSelectedClaudeAutoCompactWindow(model, oneM?.autoCompactWindow)).toBe(
+        1_000_000,
+      );
+      const auto = normalizeClaudeModelOptions(model, { autoCompactWindow: "auto" });
+      expect(auto?.autoCompactWindow).toBe("auto");
+      expect(resolveSelectedClaudeAutoCompactWindow(model, "auto")).toBeUndefined();
       expect(getModelCapabilities("claudeAgent", model).contextWindowTokens).toBe(1_000_000);
     },
   );

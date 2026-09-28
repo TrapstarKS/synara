@@ -1171,6 +1171,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.effort, undefined);
       assert.deepEqual(createInput?.options.settings, {
         autoCompactEnabled: true,
+        autoCompactWindow: 200_000,
         effortLevel: "xhigh",
         ultracode: true,
       });
@@ -1253,6 +1254,7 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.deepEqual(createInput?.options.settings, {
         autoCompactEnabled: true,
+        autoCompactWindow: 200_000,
       });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -1280,6 +1282,7 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.deepEqual(createInput?.options.settings, {
         autoCompactEnabled: true,
+        autoCompactWindow: 200_000,
         fastMode: true,
       });
     }).pipe(
@@ -1308,6 +1311,7 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.deepEqual(createInput?.options.settings, {
         autoCompactEnabled: true,
+        autoCompactWindow: 200_000,
       });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -5615,10 +5619,10 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           id: "autoCompactWindow",
           label: "Auto-compact",
           type: "select",
-          currentValue: "auto",
+          currentValue: "200k",
           options: [
-            { id: "auto", label: "Auto (Claude Code)", isDefault: true },
-            { id: "200k", label: "200k" },
+            { id: "auto", label: "Auto (Claude Code)" },
+            { id: "200k", label: "200k", isDefault: true },
             { id: "1m", label: "1M" },
           ],
         },
@@ -6398,7 +6402,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           usage: {
             usedTokens: 321,
             lastUsedTokens: 321,
-            maxTokens: 1_000_000,
+            maxTokens: 200_000,
             toolUses: 2,
             durationMs: 654,
           },
@@ -6478,7 +6482,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
             lastUsedTokens: 24542,
             inputTokens: 23863,
             outputTokens: 679,
-            maxTokens: 1_000_000,
+            maxTokens: 200_000,
             totalProcessedTokens: 24542,
           },
         });
@@ -8152,7 +8156,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           modelSelection: {
             provider: "claudeAgent",
             model: "claude-opus-4-8",
-            options: { autoCompactWindow: "200k" },
+            options: { autoCompactWindow: "1m" },
           },
         })
         .pipe(Effect.result);
@@ -8200,8 +8204,8 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
   });
 
   for (const [previous, next] of [
-    [undefined, "200k"],
-    ["200k", undefined],
+    ["auto", "200k"],
+    ["200k", "auto"],
   ] as const) {
     it.effect(`rejects direct auto-compact changes ${previous} -> ${next} before mutation`, () => {
       const harness = makeHarness();
@@ -8267,6 +8271,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         modelSelection: {
           provider: "claudeAgent",
           model: "claude-opus-4-6",
+          options: { autoCompactWindow: "auto" },
         },
       });
       yield* adapter.sendTurn({
@@ -8275,6 +8280,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         modelSelection: {
           provider: "claudeAgent",
           model: "claude-fable-5-1[1m]",
+          options: { autoCompactWindow: "auto" },
         },
         attachments: [],
       });
@@ -8582,7 +8588,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
     );
   });
 
-  it.effect("enables auto-compaction without pinning the model-native window", () => {
+  it.effect("enables auto-compaction pinned to the default 200k window", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -8600,12 +8606,12 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
       const settings = harness.getLastCreateQueryInput()?.options.settings;
       assert.ok(settings && typeof settings === "object");
       assert.equal((settings as { autoCompactEnabled?: boolean }).autoCompactEnabled, true);
-      assert.isUndefined((settings as { autoCompactWindow?: number }).autoCompactWindow);
+      assert.equal((settings as { autoCompactWindow?: number }).autoCompactWindow, 200_000);
 
       const configuredEvent = yield* Fiber.join(configuredEventFiber);
       assert.equal(configuredEvent._tag, "Some");
       if (configuredEvent._tag === "Some" && configuredEvent.value.type === "session.configured") {
-        assert.equal(configuredEvent.value.payload.config.autoCompactWindow, null);
+        assert.equal(configuredEvent.value.payload.config.autoCompactWindow, 200_000);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -9622,7 +9628,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         tokenAccountingVersion: 1,
         lastUsedTokens: 20_000,
         totalProcessedTokens: 370_000,
-        maxTokens: 1_000_000,
+        maxTokens: 200_000,
         inputTokens: 20_000,
       });
       assertTokenUsageEvent(usageEvents[1]);
@@ -9903,7 +9909,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
 
   for (const [nextModel, expectedBudget] of [
     ["claude-sonnet-5", 150_000],
-    ["claude-fable-5-1", 1_000_000],
+    ["claude-fable-5-1", 200_000],
   ] as const) {
     it.effect(`keeps live context only for the same model before ${nextModel}`, () => {
       const harness = makeHarness();
@@ -12332,27 +12338,8 @@ describe("Claude explicit native compaction", () => {
             },
           })
           .pipe(Effect.result);
-        assert.equal(
-          replacement._tag,
-          activeWork === "tracked-task" || activeWork === "pending-todo" ? "Success" : "Failure",
-        );
-        assert.equal(
-          harness.query.closeCalls,
-          activeWork === "tracked-task" || activeWork === "pending-todo" ? 1 : 0,
-        );
-        if (activeWork === "tracked-task" || activeWork === "pending-todo") {
-          const cursor = (yield* adapter.listSessions())[0]?.resumeCursor as {
-            resume: string;
-            trackedTasks: unknown[];
-          };
-          assert.equal(cursor.resume, nativeSessionId);
-          assert.equal(cursor.trackedTasks.length, 1);
-          assert.include(cursor.trackedTasks[0], {
-            id: "shared-task",
-            subject: "Working",
-            status: activeWork === "pending-todo" ? "pending" : "in_progress",
-          });
-        }
+        assert.equal(replacement._tag, "Failure");
+        assert.equal(harness.query.closeCalls, 0);
         assert.equal((yield* adapter.listSessions())[0]?.activeTurnId, active?.turnId);
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),

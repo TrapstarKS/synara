@@ -154,7 +154,8 @@ describe("Claude context selection", () => {
   it.each([
     ["claude-opus-4-6", "200k", 200_000],
     ["claude-opus-4-6", "1m", 1_000_000],
-    ["claude-fable-5-1[1m]", undefined, undefined],
+    ["claude-fable-5-1[1m]", undefined, 200_000],
+    ["claude-fable-5-1[1m]", "auto", undefined],
     ["claude-fable-5-1[1m]", "200k", 200_000],
     ["claude-opus-4-5", "1m", undefined],
   ] as const)("resolves model=%s selection=%s to %s", (model, selected, expected) => {
