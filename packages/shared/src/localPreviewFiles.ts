@@ -34,7 +34,8 @@ const SUPPORTED_LOCAL_IMAGE_EXTENSIONS_SET: ReadonlySet<string> = new Set(
 /** Lower-cased extension (with leading dot) of a path, or null when there is none. */
 export function lowerCaseExtensionOf(filePath: string): string | null {
   const dot = filePath.lastIndexOf(".");
-  if (dot < 0) return null;
+  const separator = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
+  if (dot <= separator + 1) return null;
   return filePath.slice(dot).toLowerCase();
 }
 
@@ -70,6 +71,27 @@ export function isSupportedLocalVideoPath(filePath: string): boolean {
   return extension !== null && SUPPORTED_LOCAL_VIDEO_EXTENSIONS_SET.has(extension);
 }
 
+export const SUPPORTED_LOCAL_AUDIO_EXTENSIONS = [
+  ".aac",
+  ".flac",
+  ".m4a",
+  ".mp3",
+  ".oga",
+  ".ogg",
+  ".opus",
+  ".wav",
+  ".weba",
+] as const;
+
+const SUPPORTED_LOCAL_AUDIO_EXTENSIONS_SET: ReadonlySet<string> = new Set(
+  SUPPORTED_LOCAL_AUDIO_EXTENSIONS,
+);
+
+export function isSupportedLocalAudioPath(filePath: string): boolean {
+  const extension = lowerCaseExtensionOf(filePath);
+  return extension !== null && SUPPORTED_LOCAL_AUDIO_EXTENSIONS_SET.has(extension);
+}
+
 export const SUPPORTED_LOCAL_PDF_EXTENSION = ".pdf" as const;
 
 export function isSupportedLocalPdfPath(filePath: string): boolean {
@@ -83,6 +105,7 @@ export function isSupportedLocalPreviewFilePath(filePath: string): boolean {
   return (
     isSupportedLocalImagePath(filePath) ||
     isSupportedLocalVideoPath(filePath) ||
+    isSupportedLocalAudioPath(filePath) ||
     isSupportedLocalPdfPath(filePath)
   );
 }

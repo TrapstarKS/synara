@@ -43,8 +43,25 @@ test(
   { timeout: 20_000 },
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "synara-mobile-test-"));
+    let disconnectedRequests = 0;
+    let peerUnavailable = true;
     const upstream = http.createServer((req, res) => {
       const requestUrl = new URL(req.url, "http://upstream.test");
+      if (requestUrl.pathname === "/disconnect") {
+        disconnectedRequests += 1;
+        req.socket.destroy();
+        return;
+      }
+      if (requestUrl.pathname === "/mobile/api/pair") {
+        res.setHeader("Set-Cookie", "synara-mobile=peer-fixture; Path=/; HttpOnly");
+        res.end("{}");
+        return;
+      }
+      if (requestUrl.pathname === "/peer-recovery" && peerUnavailable) {
+        res.writeHead(502);
+        res.end();
+        return;
+      }
       if (requestUrl.pathname === "/ws/negotiate") {
         res.writeHead(503);
         res.end();
@@ -209,6 +226,40 @@ test(
     const proxiedUrl = new URL(proxiedRequest.url, "http://upstream.test");
     assert.equal(proxiedUrl.searchParams.get("client"), "mobile");
     assert.equal(proxiedUrl.searchParams.get("token"), "desktop-secret");
+
+    const interrupted = await fetch(base + "/disconnect", {
+      headers: { Cookie: cookie, Accept: "text/html" },
+    });
+    assert.equal(interrupted.status, 503);
+    assert.equal(interrupted.headers.get("retry-after"), "2");
+    assert.match(await interrupted.text(), /http-equiv="refresh"/);
+    const beforeMutation = disconnectedRequests;
+    const interruptedMutation = await post("/disconnect", { action: "once" }, cookie);
+    assert.equal(interruptedMutation.status, 503);
+    assert.equal(disconnectedRequests, beforeMutation + 1, "a failed mutation is never replayed");
+
+    const peer = await admin("/peers", "POST", {
+      name: "Windows fixture",
+      link: `http://127.0.0.1:${upstream.address().port}/mobile#pair=fixture`,
+    });
+    const peerCookie = `${cookie}; synara-host=${peer.id}`;
+    const unavailablePeer = await fetch(base + "/peer-recovery", {
+      headers: { Cookie: peerCookie, Accept: "text/html" },
+    });
+    assert.equal(unavailablePeer.status, 503, "empty Tailscale gateway errors show recovery");
+    assert.match(await unavailablePeer.text(), /reconecta automaticamente/);
+    const unavailableApi = await fetch(base + "/peer-recovery", {
+      headers: { Cookie: peerCookie, Accept: "application/json" },
+    });
+    assert.equal(unavailableApi.status, 503);
+    assert.equal(typeof (await unavailableApi.json()).error, "string");
+    peerUnavailable = false;
+    const recoveredPeer = await fetch(base + "/peer-recovery", {
+      headers: { Cookie: peerCookie, Accept: "text/html" },
+    });
+    assert.equal(recoveredPeer.status, 200);
+    assert.match(await recoveredPeer.text(), /Synara fixture/);
+    await admin("/peers/remove", "POST", { id: peer.id });
     assert.equal(
       (await post("/mobile/api/subscribe", { endpoint: "https://localhost/push" }, cookie)).status,
       400,

@@ -13,6 +13,7 @@ import {
 } from "@pierre/diffs/edit";
 import { EditProvider, File as PierreFile } from "@pierre/diffs/react";
 import {
+  isSupportedLocalAudioPath,
   isSupportedLocalImagePath,
   isSupportedLocalPdfPath,
   isSupportedLocalVideoPath,
@@ -49,6 +50,7 @@ import {
   getSelectionWithin,
   type ChatFileReference,
 } from "~/lib/chatReferences";
+import { createLocalFileClipboardSource } from "~/lib/desktopClipboard";
 import {
   buildDiffPanelUnsafeCSS,
   resolveDiffThemeName,
@@ -58,7 +60,8 @@ import { extractEditorGutterChanges, type EditorGutterChangeRange } from "~/lib/
 import { formatFileCommentRange, type FileCommentSelection } from "~/lib/fileComments";
 import { showFileReferenceContextMenu } from "~/lib/fileReferenceContextMenu";
 import { gitWorkingTreeDiffQueryOptions } from "~/lib/gitReactQuery";
-import { PlusIcon } from "~/lib/icons";
+import { DownloadIcon, FileIcon, PlusIcon } from "~/lib/icons";
+import { buildLocalImageUrl, localImageFileName } from "~/lib/localImageUrls";
 import { toggleMarkdownTaskMarker } from "~/lib/markdownTaskList";
 import { isRpcCapacityExceededError } from "~/lib/expensiveReadRetry";
 import {
@@ -89,7 +92,8 @@ import { useFileLineCommenting } from "./chat/useFileLineCommenting";
 import { WorkspaceFilePreviewHeader } from "./chat/WorkspaceFilePreviewHeader";
 import { TranscriptSelectionAction } from "./chat/TranscriptSelectionAction";
 import { useCodeSelectionAction } from "./chat/useCodeSelectionAction";
-import { LocalImagePreview } from "./LocalImagePreview";
+import { LocalAudioPreview } from "./LocalAudioPreview";
+import { LocalImagePreview, useLocalImageDownloadClick } from "./LocalImagePreview";
 import { LocalVideoPreview } from "./LocalVideoPreview";
 import { PdfFilePreview } from "./PdfFilePreview";
 import { Skeleton } from "./ui/skeleton";
@@ -305,7 +309,10 @@ function PierreEditableFileContents(props: EditableFileContentsProps) {
     if (editorObserverRef.current === null) {
       editorObserverRef.current = new MutationObserver(labelEditor);
     }
-    editorObserverRef.current.observe(shadowRoot, { childList: true, subtree: true });
+    editorObserverRef.current.observe(shadowRoot, {
+      childList: true,
+      subtree: true,
+    });
   }, [labelEditor]);
   useEffect(() => {
     attachEditor();
@@ -528,6 +535,57 @@ function FilePreviewLoadingState() {
   );
 }
 
+function isUnsupportedTextFileError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /appears to be binary|encoding is not supported for text/i.test(message);
+}
+
+function UnsupportedFilePreview(props: {
+  filePath: string;
+  workspaceRoot: string | null;
+  previewGrant: string | null;
+}) {
+  const fileName = localImageFileName(props.filePath);
+  const extension = lowerCaseExtensionOf(fileName);
+  const downloadUrl = buildLocalImageUrl({
+    src: props.filePath,
+    cwd: props.workspaceRoot ?? undefined,
+    grant: props.previewGrant,
+    download: true,
+  });
+  const handleDownloadClick = useLocalImageDownloadClick({
+    downloadUrl,
+    downloadName: fileName,
+    errorTitle: "Could not download file",
+  });
+  const typeLabel = extension ? `${extension.slice(1).toUpperCase()} file` : "Binary file";
+
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+      <div className="flex max-w-md flex-col items-center gap-3 text-center text-ui">
+        <span className="flex size-10 items-center justify-center rounded-lg border border-border/70 bg-muted/30">
+          <FileIcon className="size-5 text-muted-foreground" aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate font-medium text-foreground">{fileName}</p>
+          <p className="mt-1 text-ui-sm text-muted-foreground">
+            {typeLabel} · This file can’t be shown as text.
+          </p>
+        </div>
+        <a
+          href={downloadUrl}
+          download={fileName}
+          onClick={handleDownloadClick}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-background px-3 py-1.5 text-ui-sm font-medium text-foreground hover:bg-muted/60"
+        >
+          <DownloadIcon className="size-3.5" aria-hidden="true" />
+          Download
+        </a>
+      </div>
+    </div>
+  );
+}
+
 export interface WorkspaceFilePreviewProps {
   workspaceRoot: string | null;
   /**
@@ -565,7 +623,10 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const contentsRef = useRef<HTMLDivElement>(null);
   const taskWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const latestTaskWriteVersionRef = useRef({ next: 0, byFile: new Map<string, number>() });
+  const latestTaskWriteVersionRef = useRef({
+    next: 0,
+    byFile: new Map<string, number>(),
+  });
   const taskFileDiskVersionRef = useRef(new Map<string, string>());
   const {
     filePath: requestedFilePath,
@@ -594,10 +655,11 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
   const [binaryPreviewReloading, setBinaryPreviewReloading] = useState(false);
   const filePath = relocatedFullPath ?? requestedFilePath;
   const markdownPreviewDefault = props.markdownPreviewDefault ?? false;
+  const fileIsAudio = filePath !== null && isSupportedLocalAudioPath(filePath);
   const fileIsImage = filePath !== null && isSupportedLocalImagePath(filePath);
   const fileIsPdf = filePath !== null && isSupportedLocalPdfPath(filePath);
   const fileIsVideo = filePath !== null && isSupportedLocalVideoPath(filePath);
-  const fileIsBinaryPreview = fileIsImage || fileIsPdf || fileIsVideo;
+  const fileIsBinaryPreview = fileIsAudio || fileIsImage || fileIsPdf || fileIsVideo;
   const fileIsLocalAbsolute = filePath !== null && isLocalAbsolutePath(filePath);
   const fileIsWorkspaceRelative = filePath !== null && isWorkspaceRelativePathSafe(filePath);
   const fileIsScratchBinaryPreview =
@@ -731,7 +793,10 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
         current?.requestedKey === relocationRequestKey &&
         current.fullPath === resolvedOutOfRootFullPath
           ? current
-          : { requestedKey: relocationRequestKey, fullPath: resolvedOutOfRootFullPath },
+          : {
+              requestedKey: relocationRequestKey,
+              fullPath: resolvedOutOfRootFullPath,
+            },
       );
       return;
     }
@@ -877,6 +942,7 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
     const selection = container ? readPreviewSelection(container) : null;
     void showFileReferenceContextMenu({
       path: filePath,
+      fileForCopy: createLocalFileClipboardSource({ path: filePath, cwd: workspaceRoot }),
       position: { x: event.clientX, y: event.clientY },
       selection,
       onReferenceInChat,
@@ -890,7 +956,10 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
     if (!workspaceRoot || !filePath) {
       return;
     }
-    const options = projectReadFileQueryOptions({ cwd: workspaceRoot, relativePath: filePath });
+    const options = projectReadFileQueryOptions({
+      cwd: workspaceRoot,
+      relativePath: filePath,
+    });
     const current = queryClient.getQueryData(options.queryKey);
     if (
       !current ||
@@ -921,7 +990,10 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
       editor.save();
       return;
     }
-    queryClient.setQueryData(options.queryKey, { ...current, contents: nextContents });
+    queryClient.setQueryData(options.queryKey, {
+      ...current,
+      contents: nextContents,
+    });
     // The read RPC may have resolved a bare/partial reference (e.g. a clicked
     // `notes.md`) to its real nested path. Write back to that resolved path,
     // not the opened reference, so the toggle lands on the file we read from
@@ -1026,7 +1098,7 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
     return <FilePreviewLoadingState />;
   }
 
-  if ((fileIsPdf || fileIsVideo) && locatingOutOfRootFile) {
+  if ((fileIsAudio || fileIsPdf || fileIsVideo) && locatingOutOfRootFile) {
     return <FilePreviewLoadingState />;
   }
 
@@ -1057,6 +1129,7 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
   const hasFileContents = fileQuery.data !== undefined;
   const fileReadError = fileQuery.error;
   const fileReadCapacityError = isRpcCapacityExceededError(fileReadError);
+  const unsupportedTextFile = !hasFileContents && isUnsupportedTextFileError(fileReadError);
   const showFileReadErrorIndicator =
     hasFileContents && fileReadError !== null && !activeEditBuffer?.error;
 
@@ -1065,6 +1138,7 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
       <WorkspaceFilePreviewHeader
         workspaceRoot={props.workspaceRoot}
         filePath={filePath}
+        fileForCopy={createLocalFileClipboardSource({ path: filePath, cwd: workspaceRoot })}
         isMarkdown={fileIsMarkdown}
         markdownPreviewEnabled={showMarkdownPreview}
         onMarkdownPreviewChange={handleMarkdownPreviewChange}
@@ -1182,8 +1256,29 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
             onPreviewError={handleBinaryPreviewError}
           />
         </div>
+      ) : fileIsAudio ? (
+        <div
+          className="editor-file-viewer min-h-0 flex-1 overflow-auto"
+          onContextMenu={handleContentsContextMenu}
+        >
+          <LocalAudioPreview
+            key={binaryPreviewKey}
+            src={filePath}
+            cwd={props.workspaceRoot}
+            previewGrant={localPreviewGrant}
+            cacheKey={binaryPreviewRevision}
+            onPreviewReady={handleBinaryPreviewReady}
+            onPreviewError={handleBinaryPreviewError}
+          />
+        </div>
       ) : fileQuery.isLoading ? (
         <FilePreviewLoadingState />
+      ) : unsupportedTextFile ? (
+        <UnsupportedFilePreview
+          filePath={filePath}
+          workspaceRoot={props.workspaceRoot}
+          previewGrant={localPreviewGrant}
+        />
       ) : !hasFileContents && fileReadError ? (
         <PanelStateMessage density="compact" fill="flex" className="items-start justify-start p-3">
           <p className="text-left text-ui-sm text-destructive/85">
@@ -1282,7 +1377,10 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
                 <>
                   <div
                     className="editor-file-viewer__comment-line-highlight"
-                    style={{ top: activeCommentLine.top, height: activeCommentLine.height }}
+                    style={{
+                      top: activeCommentLine.top,
+                      height: activeCommentLine.height,
+                    }}
                     aria-hidden="true"
                   />
                   <FileLineCommentBox

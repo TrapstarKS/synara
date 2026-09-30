@@ -195,27 +195,35 @@ export function useCopyFileContentsToClipboard(): (
   fileName: string,
   options?: { partial?: boolean },
 ) => void {
-  const copy = useCopyWithToasts();
-  return (contents: string, fileName: string, options?: { partial?: boolean }) => {
-    if (contents.length === 0) {
-      toastManager.add({ type: "info", title: "Nothing to copy", description: "File is empty" });
-      return;
-    }
-    copy(
-      contents,
-      options?.partial
-        ? {
-            successTitle: "Partial contents copied",
-            successDescription: "Large file — only the loaded part was copied",
-            errorTitle: "Failed to copy contents",
-          }
-        : {
-            successTitle: "Contents copied",
-            successDescription: fileName,
-            errorTitle: "Failed to copy contents",
-          },
-    );
+  return (contents, fileName, options) => {
+    void copyFileContentsToClipboard(contents, fileName, options);
   };
+}
+
+/** Shared by the header and the imperative native/browser context menu. */
+export async function copyFileContentsToClipboard(
+  contents: string,
+  fileName: string,
+  options?: { partial?: boolean },
+): Promise<void> {
+  if (contents.length === 0) {
+    toastManager.add({ type: "info", title: "Nothing to copy", description: "File is empty" });
+    return;
+  }
+  try {
+    await copyTextToClipboard(contents);
+    toastManager.add({
+      type: "success",
+      title: options?.partial ? "Partial contents copied" : "Contents copied",
+      description: options?.partial ? "Large file — only the loaded part was copied" : fileName,
+    });
+  } catch {
+    toastManager.add({
+      type: "error",
+      title: "Failed to copy contents",
+      description: "Clipboard access was denied or is unavailable.",
+    });
+  }
 }
 
 /** Copy a thread id and surface the shared "Thread ID copied" toast. */

@@ -45,11 +45,12 @@ import remarkMath from "remark-math";
 import { copyTextToClipboard } from "../hooks/useCopyToClipboard";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { dedentCode, parseCodeFenceInfo, type CodeFenceInfo } from "../lib/codeFence";
-import { getFileIconName, pathLooksLikeKnownFile } from "../file-icons";
+import { getFileIconName, inferEntryKindFromPath, pathLooksLikeKnownFile } from "../file-icons";
 import { CentralIcon } from "~/lib/central-icons";
 import { isLocalImageMarkdownSrc } from "../lib/localImageUrls";
 import { repairMarkdownTableDelimiters } from "../lib/markdownTableRepair";
 import { showFileReferenceContextMenu } from "../lib/fileReferenceContextMenu";
+import { createLocalFileClipboardSource } from "../lib/desktopClipboard";
 import { useTheme } from "../hooks/useTheme";
 import { useSmoothStreamedText } from "../hooks/useSmoothStreamedText";
 import { useThrottledStreamingValue } from "../hooks/useThrottledStreamingValue";
@@ -773,6 +774,9 @@ function OpenableFileChip(props: {
         event.stopPropagation();
         void showFileReferenceContextMenu({
           path: chipPath,
+          ...(isLocalAbsolutePath(chipPath) && inferEntryKindFromPath(chipPath) === "file"
+            ? { fileForCopy: createLocalFileClipboardSource({ path: chipPath }) }
+            : {}),
           ...(revealPath ? { revealPath } : {}),
           position: { x: event.clientX, y: event.clientY },
           onReferenceInChat: undefined,

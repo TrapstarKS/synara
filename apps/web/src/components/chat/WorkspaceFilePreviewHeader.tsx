@@ -17,8 +17,10 @@ import { isWorkspaceRelativePathSafe, joinWorkspaceRelativePath } from "@synara/
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
 
 import { basenameOfPath } from "~/file-icons";
-import { useCopyFileContentsToClipboard, useCopyPathToClipboard } from "~/hooks/useCopyToClipboard";
+import { useCopyPathToClipboard } from "~/hooks/useCopyToClipboard";
 import type { ChatFileReference } from "~/lib/chatReferences";
+import type { FileClipboardSource } from "~/lib/desktopClipboard";
+import { getFileReferenceClipboardActions } from "~/lib/fileReferenceContextMenu";
 import {
   ChevronRightIcon,
   CodeIcon,
@@ -55,6 +57,8 @@ interface WorkspaceFilePreviewHeaderProps {
    * pending/failed reads).
    */
   contentsForCopy?: string | null;
+  /** Authenticated file resource on the active host, including grant renewal when needed. */
+  fileForCopy?: FileClipboardSource | undefined;
   /** Shown when the preview only holds a partial read of a large file. */
   truncated?: boolean;
   onEditFile?: (() => void) | undefined;
@@ -273,10 +277,13 @@ export const WorkspaceFilePreviewHeader = function WorkspaceFilePreviewHeader(
   const askWhyWholeFile = () => {
     onAskWhyInChat?.({ path: filePath });
   };
-  const copyFileContents = useCopyFileContentsToClipboard();
   const copyPathToClipboard = useCopyPathToClipboard();
-
-  const canCopyContents = contentsForCopy != null;
+  const clipboardActions = getFileReferenceClipboardActions({
+    path: filePath,
+    fileForCopy: props.fileForCopy,
+    contentsForCopy,
+    truncated: props.truncated,
+  });
   const openInTarget =
     fileIsOutsideWorkspace || !workspaceRoot
       ? filePath
@@ -391,17 +398,11 @@ export const WorkspaceFilePreviewHeader = function WorkspaceFilePreviewHeader(
               <CopyIcon className="size-3.5 shrink-0 text-muted-foreground" />
               <span>Copy path</span>
             </MenuItem>
-            {canCopyContents ? (
-              <MenuItem
-                onClick={() =>
-                  copyFileContents(contentsForCopy ?? "", fileSegment, {
-                    partial: props.truncated ?? false,
-                  })
-                }
-              >
-                Copy contents
+            {clipboardActions.map((action) => (
+              <MenuItem key={action.id} onClick={() => void action.run()}>
+                {action.label}
               </MenuItem>
-            ) : null}
+            ))}
             {onReferenceInChat ? (
               <MenuItem onClick={referenceWholeFile}>Reference in chat</MenuItem>
             ) : null}

@@ -5,10 +5,10 @@
 // Layer: web profile feature.
 
 import { toBlob } from "html-to-image";
-import { copyPngBlobToDesktopClipboard } from "~/lib/desktopClipboard";
 import { readNativeApi } from "~/nativeApi";
 
 export { downloadBlob } from "~/lib/browserDownload";
+export { copyImageToClipboard } from "~/lib/desktopClipboard";
 
 const SHARE_BRAND_HANDLE = "@trySynara";
 export const SHARE_TWEET_TEXT = `Just checking my ${SHARE_BRAND_HANDLE} dev stats. Absolute masterpiece of an IDE.`;
@@ -32,22 +32,6 @@ export async function renderNodeToPngBlob(
     });
   } catch {
     return null;
-  }
-}
-
-export async function copyImageToClipboard(blob: Blob): Promise<boolean> {
-  if (await copyPngBlobToDesktopClipboard(blob)) {
-    return true;
-  }
-
-  try {
-    if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
-      return false;
-    }
-    await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
-    return true;
-  } catch {
-    return false;
   }
 }
 

@@ -367,6 +367,12 @@ jobs:
         # runtime/build dependencies but do not install the unrelated marketing site.
         run: bun install --frozen-lockfile --ignore-scripts --filter '!@synara/marketing'
 
+      - name: Test mobile remote recovery
+        shell: bash
+        run: |
+          npm ci --prefix extensions/mobile-remote --ignore-scripts --no-audit --no-fund
+          node --test extensions/mobile-remote/lib/*.test.mjs
+
       - id: prepare_mac_signing
         name: Import persistent TrapRAM-compatible macOS signing certificate
         if: matrix.platform == 'mac'

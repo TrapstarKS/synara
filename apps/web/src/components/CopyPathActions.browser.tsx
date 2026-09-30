@@ -40,6 +40,7 @@ import { WorkspaceFilePreviewHeader } from "./chat/WorkspaceFilePreviewHeader";
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 const originalExecCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+const originalBridgeDescriptor = Object.getOwnPropertyDescriptor(window, "desktopBridge");
 
 function setClipboard(clipboard: Pick<Clipboard, "writeText"> | undefined): void {
   Object.defineProperty(navigator, "clipboard", {
@@ -104,10 +105,133 @@ afterEach(() => {
   harness.toastAdd.mockReset();
   restoreProperty(navigator, "clipboard", originalClipboardDescriptor);
   restoreProperty(document, "execCommand", originalExecCommandDescriptor);
+  restoreProperty(window, "desktopBridge", originalBridgeDescriptor);
   vi.restoreAllMocks();
 });
 
 describe("copy-path actions", () => {
+  it("copies actual remote file bytes from the preview header", async () => {
+    const writeFile = vi.fn().mockResolvedValue(true);
+    Object.defineProperty(window, "desktopBridge", {
+      configurable: true,
+      value: { clipboard: { writeFile } },
+    });
+    const fileForCopy = {
+      url: `${window.location.origin}/api/local-image?path=C%3A%5Cremote%5Carchive.zip&download=1`,
+    };
+    const fetchFile = vi
+      .spyOn(window, "fetch")
+      .mockResolvedValue(new Response(new Uint8Array([80, 75, 0, 255])));
+    await render(
+      <WorkspaceFilePreviewHeader
+        workspaceRoot="C:\\remote"
+        filePath="archive.zip"
+        isMarkdown={false}
+        markdownPreviewEnabled={false}
+        onMarkdownPreviewChange={vi.fn()}
+        fileForCopy={fileForCopy}
+      />,
+    );
+    await page.getByLabelText("More actions").click();
+    await page.getByText("Copy file", { exact: true }).click();
+    await vi.waitFor(() =>
+      expect(writeFile).toHaveBeenCalledWith({
+        name: "archive.zip",
+        bytes: new Uint8Array([80, 75, 0, 255]),
+      }),
+    );
+    expect(fetchFile).toHaveBeenCalledWith(
+      fileForCopy.url,
+      expect.objectContaining({ redirect: "error" }),
+    );
+    expect(harness.toastAdd).toHaveBeenCalledWith({
+      type: "success",
+      title: "File copied",
+      description: "archive.zip",
+    });
+  });
+
+  it("keeps copy contents honest for partial text in the preview header", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    setClipboard({ writeText });
+    await render(
+      <WorkspaceFilePreviewHeader
+        workspaceRoot="/repo"
+        filePath="notes.txt"
+        isMarkdown={false}
+        markdownPreviewEnabled={false}
+        onMarkdownPreviewChange={vi.fn()}
+        contentsForCopy="Loaded text only"
+        truncated
+      />,
+    );
+    await page.getByLabelText("More actions").click();
+    await page.getByText("Copy contents", { exact: true }).click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Loaded text only"));
+    expect(harness.toastAdd).toHaveBeenCalledWith({
+      type: "success",
+      title: "Partial contents copied",
+      description: "Large file — only the loaded part was copied",
+    });
+  });
+
+  it("shows Download file instead of pretending a browser can copy arbitrary files", async () => {
+    Object.defineProperty(window, "desktopBridge", { configurable: true, value: undefined });
+    await render(
+      <WorkspaceFilePreviewHeader
+        workspaceRoot="/repo"
+        filePath="clip.mp4"
+        isMarkdown={false}
+        markdownPreviewEnabled={false}
+        onMarkdownPreviewChange={vi.fn()}
+        fileForCopy={{ url: `${window.location.origin}/api/local-image?path=clip.mp4&download=1` }}
+      />,
+    );
+    await page.getByLabelText("More actions").click();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Download file", exact: true }))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Copy file", exact: true }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Copy path", exact: true }))
+      .toBeVisible();
+    await page.getByLabelText("More actions").click();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Download file", exact: true }))
+      .not.toBeInTheDocument();
+  });
+
+  it("never displays File copied when the native writer rejects", async () => {
+    const writeFile = vi.fn().mockResolvedValue(false);
+    Object.defineProperty(window, "desktopBridge", {
+      configurable: true,
+      value: { clipboard: { writeFile } },
+    });
+    vi.spyOn(window, "fetch").mockResolvedValue(new Response("bytes"));
+    await render(
+      <WorkspaceFilePreviewHeader
+        workspaceRoot="/repo"
+        filePath="archive.zip"
+        isMarkdown={false}
+        markdownPreviewEnabled={false}
+        onMarkdownPreviewChange={vi.fn()}
+        fileForCopy={{
+          url: `${window.location.origin}/api/local-image?path=archive.zip&download=1`,
+        }}
+      />,
+    );
+    await page.getByLabelText("More actions").click();
+    await page.getByText("Copy file", { exact: true }).click();
+    await vi.waitFor(() =>
+      expect(harness.toastAdd).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "error", title: "Failed to copy file" }),
+      ),
+    );
+    expect(harness.toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ type: "success" }));
+  });
+
   it("preserves a diff-relative path when the Clipboard API is unavailable", async () => {
     setClipboard(undefined);
     const execCommand = installSuccessfulFallbackCopy();

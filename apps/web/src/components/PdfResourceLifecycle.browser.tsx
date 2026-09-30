@@ -234,6 +234,8 @@ describe("PDF page draft", () => {
           </button>
           <PdfViewerToolbar
             fileName="document.pdf"
+            filePath="document.pdf"
+            fileForCopy={{ url: "/api/local-image?path=document.pdf&download=1" }}
             currentPage={currentPage}
             numPages={9}
             onJumpToPage={setCurrentPage}
@@ -260,5 +262,42 @@ describe("PDF page draft", () => {
         document.querySelector<HTMLInputElement>('input[aria-label="Current page"]')?.value,
       ).toBe("1"),
     );
+  });
+
+  it("shows shared file clipboard actions in the PDF toolbar", async () => {
+    const previousBridge = window.desktopBridge;
+    Object.defineProperty(window, "desktopBridge", {
+      configurable: true,
+      value: { clipboard: { writeFile: vi.fn().mockResolvedValue(true) } },
+    });
+    try {
+      await render(
+        <PdfViewerToolbar
+          fileName="document.pdf"
+          filePath="docs/document.pdf"
+          fileForCopy={{ url: "/api/local-image?path=docs%2Fdocument.pdf&download=1" }}
+          currentPage={1}
+          numPages={1}
+          onJumpToPage={vi.fn()}
+          zoomMode={{ type: "custom", scale: 1 }}
+          scale={1}
+          onZoomIn={vi.fn()}
+          onZoomOut={vi.fn()}
+          onSetScale={vi.fn()}
+          onFitWidth={vi.fn()}
+          onFitPage={vi.fn()}
+          openInTarget={null}
+        />,
+      );
+
+      await browserPage.getByRole("button", { name: "More actions" }).click();
+      await expect.element(browserPage.getByText("Copy file", { exact: true })).toBeVisible();
+      await expect.element(browserPage.getByText("Download file", { exact: true })).toBeVisible();
+    } finally {
+      Object.defineProperty(window, "desktopBridge", {
+        configurable: true,
+        value: previousBridge,
+      });
+    }
   });
 });

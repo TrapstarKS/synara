@@ -1,6 +1,10 @@
+import type { FileClipboardSource } from "~/lib/desktopClipboard";
+
 export interface ExpandedImageItem {
   src: string;
   name: string;
+  filePath?: string;
+  fileForCopy?: FileClipboardSource;
 }
 
 export interface ExpandedImagePreview {

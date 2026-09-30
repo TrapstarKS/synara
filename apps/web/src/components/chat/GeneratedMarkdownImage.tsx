@@ -13,6 +13,8 @@ import { type MouseEvent, useEffect, useRef, useState } from "react";
 
 import { DownloadIcon, Loader2Icon, Maximize2 } from "~/lib/icons";
 import { buildLocalImageUrl, localImageAbsolutePath } from "~/lib/localImageUrls";
+import { createLocalFileClipboardSource } from "~/lib/desktopClipboard";
+import { showFileReferenceContextMenu } from "~/lib/fileReferenceContextMenu";
 import {
   isLocalPreviewGrantUsable,
   projectLocalPreviewGrantQueryOptions,
@@ -109,6 +111,7 @@ function GeneratedMarkdownImageContent(props: GeneratedMarkdownImageProps) {
     return buildLocalImageUrl({ src, cwd, download, grant: grant.grant });
   };
   const accessibleName = alt?.trim() || "Generated image";
+  const fileForCopy = createLocalFileClipboardSource({ path: src, cwd });
   const downloadImage = useLocalImageDownloadClick({
     downloadUrl,
     downloadName,
@@ -123,13 +126,19 @@ function GeneratedMarkdownImageContent(props: GeneratedMarkdownImageProps) {
     }
     if (!onImageExpand) return;
     if (!needsGrant) {
-      onImageExpand({ images: [{ src: previewUrl, name: fileName || accessibleName }], index: 0 });
+      onImageExpand({
+        images: [{ src: previewUrl, name: fileName || accessibleName, filePath: src, fileForCopy }],
+        index: 0,
+      });
       return;
     }
     void resolveGrantedUrl(false)
       .then((url) => {
         if (mounted.current) {
-          onImageExpand({ images: [{ src: url, name: fileName || accessibleName }], index: 0 });
+          onImageExpand({
+            images: [{ src: url, name: fileName || accessibleName, filePath: src, fileForCopy }],
+            index: 0,
+          });
         }
       })
       .catch((error: unknown) => {
@@ -156,7 +165,20 @@ function GeneratedMarkdownImageContent(props: GeneratedMarkdownImageProps) {
   }
 
   return (
-    <span className="chat-generated-image" data-status={resolvingGrant ? "loading" : status}>
+    <span
+      className="chat-generated-image"
+      data-status={resolvingGrant ? "loading" : status}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void showFileReferenceContextMenu({
+          path: src,
+          fileForCopy,
+          position: { x: event.clientX, y: event.clientY },
+          onReferenceInChat: undefined,
+        });
+      }}
+    >
       <button
         type="button"
         className="chat-generated-image__frame"

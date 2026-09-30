@@ -1,20 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { isSupportedLocalPreviewFilePath, isSupportedLocalVideoPath } from "./localPreviewFiles";
+import { lowerCaseExtensionOf } from "./localPreviewFiles";
 
-describe("local preview file extensions", () => {
-  it.each(["clip.mp4", "recording.MOV", "animation.webm", "archive.mkv", "capture.avi"])(
-    "recognizes %s as a video preview",
-    (filePath) => {
-      expect(isSupportedLocalVideoPath(filePath)).toBe(true);
-      expect(isSupportedLocalPreviewFilePath(filePath)).toBe(true);
-    },
-  );
-
-  it.each(["notes.ts", "photo.png.tmp", "video.mp4.txt"])(
-    "does not recognize %s as a video preview",
-    (filePath) => {
-      expect(isSupportedLocalVideoPath(filePath)).toBe(false);
-    },
-  );
+describe("lowerCaseExtensionOf", () => {
+  it.each([
+    ["Artifacts/archive", null],
+    ["build.v2/archive", null],
+    ["build.v2/archive.ZIP", ".zip"],
+    ["C:\\Build.v2\\archive", null],
+    ["C:\\Build.v2\\archive.PDF", ".pdf"],
+    [".env", null],
+  ])("reads only the filename extension from %s", (filePath, expected) => {
+    expect(lowerCaseExtensionOf(filePath)).toBe(expected);
+  });
 });

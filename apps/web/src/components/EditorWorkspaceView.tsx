@@ -38,6 +38,7 @@ import {
   summarizeFileDiffStats,
 } from "~/lib/diffRendering";
 import { showFileReferenceContextMenu } from "~/lib/fileReferenceContextMenu";
+import { createLocalFileClipboardSource } from "~/lib/desktopClipboard";
 import type { ChatFileReference } from "~/lib/chatReferences";
 import type { DiffEditBaseRev } from "~/lib/diffEditBaseRev";
 import {
@@ -258,6 +259,7 @@ function DiffFilesLoadingRows() {
 
 function DiffFilesSidebar(props: {
   files: ReadonlyArray<FileDiffMetadata>;
+  workspaceRoot: string | null;
   isLoading: boolean;
   selectedFilePath: string | null;
   optionsControl?: ReactNode;
@@ -274,6 +276,14 @@ function DiffFilesSidebar(props: {
   const handleFileContextMenu = (filePath: string, position: { x: number; y: number }) => {
     void showFileReferenceContextMenu({
       path: filePath,
+      ...(props.workspaceRoot
+        ? {
+            fileForCopy: createLocalFileClipboardSource({
+              path: filePath,
+              cwd: props.workspaceRoot,
+            }),
+          }
+        : {}),
       position,
       onReferenceInChat,
       onAskWhyInChat,
@@ -668,6 +678,7 @@ export function EditorWorkspaceView(props: EditorWorkspaceViewProps) {
           ) : centerFamily === "diff" ? (
             <DiffFilesSidebar
               files={props.diffFiles}
+              workspaceRoot={props.workspaceRoot}
               isLoading={props.diffFilesLoading ?? false}
               selectedFilePath={props.selectedDiffFilePath}
               optionsControl={props.diffOptionsControl}

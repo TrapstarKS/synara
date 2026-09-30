@@ -135,13 +135,15 @@ export async function resolveAllowedLocalPreviewFile(input: {
   }>;
   readonly scratchWorkspacesRoot?: string;
   readonly allowAbsoluteLocalPreviewFile?: boolean;
+  /** Allows arbitrary regular files only through authenticated download responses. */
+  readonly allowGenericDownloadFile?: boolean;
   readonly previewGrant?: string | null;
 }): Promise<ResolvedLocalPreviewFile | null> {
   const requestedPath = input.requestedPath?.trim();
   if (
     !requestedPath ||
     requestedPath.includes("\0") ||
-    !isSupportedLocalPreviewFilePath(requestedPath)
+    (!input.allowGenericDownloadFile && !isSupportedLocalPreviewFilePath(requestedPath))
   ) {
     return null;
   }
@@ -150,7 +152,10 @@ export async function resolveAllowedLocalPreviewFile(input: {
     ? path.resolve(requestedPath)
     : path.resolve(input.cwd ?? process.cwd(), requestedPath);
   const realFilePath = await realpathOrNull(resolvedRequestedPath);
-  if (!realFilePath || !isSupportedLocalPreviewFilePath(realFilePath)) {
+  if (
+    !realFilePath ||
+    (!input.allowGenericDownloadFile && !isSupportedLocalPreviewFilePath(realFilePath))
+  ) {
     return null;
   }
 
@@ -194,6 +199,12 @@ export async function resolveAllowedLocalPreviewFile(input: {
     hasValidPreviewGrant({ token: input.previewGrant, realFilePath })
   ) {
     return resolved;
+  }
+
+  // Generic files are intentionally limited to the workspace/scratch/grant
+  // checks above. Generated-image roots and broad temp roots stay image-only.
+  if (!isSupportedLocalPreviewFilePath(realFilePath)) {
+    return null;
   }
 
   // The generated-image and temp-dir roots exist for agent-produced images in

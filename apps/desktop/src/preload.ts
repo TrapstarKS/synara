@@ -125,6 +125,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   clipboard: {
     writeImagePngDataUrl: (dataUrl: string) => ipcRenderer.invoke(IPC.clipboardWriteImage, dataUrl),
+    writeFile: (file) => ipcRenderer.invoke(IPC.clipboardWriteFile, file),
   },
   windowControls: {
     minimize: () => ipcRenderer.invoke(IPC.windowMinimize),

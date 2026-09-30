@@ -758,6 +758,15 @@ export interface DesktopAgentCursorStyle {
   readonly shadow?: string;
 }
 
+/** Bounds renderer-to-main file copies before either side allocates a staging file. */
+export const MAX_DESKTOP_CLIPBOARD_FILE_BYTES = 64 * 1024 * 1024;
+
+export interface DesktopClipboardFile {
+  readonly name: string;
+  /** Already fetched through the scoped file resource; never a host filesystem path. */
+  readonly bytes: Uint8Array;
+}
+
 export interface DesktopBridge {
   safariAccess?: {
     getInfo: () => Promise<DesktopSafariAccessInfo>;
@@ -791,6 +800,7 @@ export interface DesktopBridge {
   };
   clipboard?: {
     writeImagePngDataUrl: (dataUrl: string) => Promise<boolean>;
+    writeFile?: (file: DesktopClipboardFile) => Promise<boolean>;
   };
   windowControls?: {
     minimize: () => Promise<void>;

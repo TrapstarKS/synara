@@ -30,6 +30,18 @@ test("only the owner's online computers are discovery candidates", () => {
   assert.throws(() => parseStatus({}));
 });
 
+test("a remembered DNS name does not make a stopped Tailscale daemon ready", () => {
+  const Self = { DNSName: "pc.tail.ts.net.", HostName: "PC", UserID: 1 };
+  for (const BackendState of ["Stopped", "Starting", "NeedsLogin", "NeedsMachineAuth"]) {
+    assert.throws(() => parseStatus({ Self, BackendState }), /Tailscale is not connected/);
+  }
+  assert.throws(
+    () => parseStatus({ Self: { ...Self, Online: false }, BackendState: "Running" }),
+    /Tailscale is not connected/,
+  );
+  assert.equal(parseStatus({ Self, BackendState: "Running" }).dnsName, "pc.tail.ts.net");
+});
+
 test("serve is added only when the HTTPS port is free", async () => {
   const fake = (serveStatus) => {
     const calls = [];

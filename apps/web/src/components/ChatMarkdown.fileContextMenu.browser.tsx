@@ -283,6 +283,10 @@ describe("ChatMarkdown file context menu", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(harness.showFileReferenceContextMenu).toHaveBeenCalledWith({
       path: "/repo/output/video.mp4",
+      fileForCopy: {
+        url: expect.stringContaining("/api/local-image?"),
+        resolveUrl: expect.any(Function),
+      },
       revealPath: "/repo/output/video.mp4",
       position: { x: 15, y: 28 },
       onReferenceInChat: undefined,

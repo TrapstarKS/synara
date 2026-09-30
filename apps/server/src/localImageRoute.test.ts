@@ -46,8 +46,12 @@ function makeServerConfig(overrides: Partial<ServerConfigShape> = {}): ServerCon
     host: undefined,
     cwd: baseDir,
     homeDir: os.homedir(),
-    chatWorkspaceRoot: resolveDefaultChatWorkspaceRoot({ homeDir: os.homedir() }),
-    studioWorkspaceRoot: resolveDefaultStudioWorkspaceRoot({ homeDir: os.homedir() }),
+    chatWorkspaceRoot: resolveDefaultChatWorkspaceRoot({
+      homeDir: os.homedir(),
+    }),
+    studioWorkspaceRoot: resolveDefaultStudioWorkspaceRoot({
+      homeDir: os.homedir(),
+    }),
     baseDir,
     keybindingsConfigPath: path.join(baseDir, "keybindings.json"),
     serverRuntimeStatePath: path.join(baseDir, "runtime.json"),
@@ -102,7 +106,11 @@ function makeFakeServerAuth(): ServerAuthShape {
         sessionToken: "bearer-session-token",
       }),
     issuePairingCredential: () =>
-      Effect.succeed({ id: "pairing-id", credential: "PAIRINGTOKEN", expiresAt }),
+      Effect.succeed({
+        id: "pairing-id",
+        credential: "PAIRINGTOKEN",
+        expiresAt,
+      }),
     listPairingLinks: () => Effect.succeed([]),
     revokePairingLink: () => Effect.succeed(true),
     listClientSessions: () => Effect.succeed([]),
@@ -188,6 +196,28 @@ describe("localImageEffectRouteLayer", () => {
     });
   });
 
+  it("serves unsupported workspace files only as explicit downloads", async () => {
+    const workspace = makeTempDir("synara-effect-generic-download-");
+    writeFileSync(path.join(workspace, ".git"), "gitdir: .git");
+    const zipPath = path.join(workspace, "Artifacts", "agent output.zip");
+    mkdirSync(path.dirname(zipPath), { recursive: true });
+    const bytes = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+    writeFileSync(zipPath, bytes);
+    const config = makeServerConfig({ cwd: workspace });
+
+    await withEffectServer(config, localImageEffectRouteLayer, async (origin) => {
+      const params = new URLSearchParams({ path: zipPath, cwd: workspace });
+      expect((await fetch(`${origin}/api/local-image?${params}`)).status).toBe(404);
+
+      params.set("download", "1");
+      const response = await fetch(`${origin}/api/local-image?${params}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-disposition")).toContain("agent output.zip");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+    });
+  });
+
   it("serves an allowlisted workspace video without routing it through text reads", async () => {
     const workspace = makeTempDir("synara-effect-video-workspace-");
     writeFileSync(path.join(workspace, ".git"), "gitdir: .git");
@@ -219,7 +249,11 @@ describe("localImageEffectRouteLayer", () => {
     const grant = await createLocalPreviewGrant({ requestedPath: imagePath });
 
     await withEffectServer(config, localImageEffectRouteLayer, async (origin) => {
-      const params = new URLSearchParams({ path: imagePath, cwd: workspace, grant: grant.grant });
+      const params = new URLSearchParams({
+        path: imagePath,
+        cwd: workspace,
+        grant: grant.grant,
+      });
       const response = await fetch(`${origin}/api/local-image?${params}`);
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toContain("application/pdf");
@@ -244,12 +278,17 @@ describe("localImageEffectRouteLayer", () => {
     const config = makeServerConfig();
 
     await withEffectServer(config, localImageEffectRouteLayer, async (origin) => {
-      const params = new URLSearchParams({ path: imagePath, cwd: config.cwd });
+      const params = new URLSearchParams({
+        path: imagePath,
+        cwd: config.cwd,
+      });
       expect((await fetch(`${origin}/api/local-image?${params}`)).status).toBe(404);
       params.set("download", "1");
       expect((await fetch(`${origin}/api/local-image?${params}`)).status).toBe(404);
 
-      const grant = await createLocalPreviewGrant({ requestedPath: imagePath });
+      const grant = await createLocalPreviewGrant({
+        requestedPath: imagePath,
+      });
       params.set("grant", grant.grant);
       for (const download of [false, true]) {
         if (download) params.set("download", "1");
@@ -340,7 +379,11 @@ describe("localImageEffectRouteLayer", () => {
     const workspace = makeTempDir("synara-effect-missing-image-");
     const config = makeServerConfig({ cwd: workspace });
     await withEffectServer(config, localImageEffectRouteLayer, async (origin) => {
-      const params = new URLSearchParams({ path: "missing.png", cwd: workspace, download: "1" });
+      const params = new URLSearchParams({
+        path: "missing.png",
+        cwd: workspace,
+        download: "1",
+      });
       for (const requestOrigin of ["synara://app", "https://example.test"]) {
         const response = await fetch(`${origin}/api/local-image?${params}`, {
           headers: { Origin: requestOrigin },

@@ -31,16 +31,12 @@ import { ensureServe, tailnetStatus } from "./lib/tailscale.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 // Without an explicit origin, serve this computer's own MagicDNS name on :8443.
+// If Tailscale is not ready at login, let the desktop supervisor retry. A
+// localhost fallback would permanently reject the real tailnet host on recovery.
 const automaticOrigin = !process.env.SYNARA_MOBILE_ORIGIN;
-const startupTailnet = automaticOrigin
-  ? await tailnetStatus().catch((error) => {
-      console.error(`Tailscale unavailable: ${error.message}`);
-      return null;
-    })
-  : null;
+const startupTailnet = automaticOrigin ? await tailnetStatus() : null;
 const publicUrl = new URL(
-  process.env.SYNARA_MOBILE_ORIGIN ??
-    (startupTailnet ? `https://${startupTailnet.dnsName}:8443` : "https://localhost:8443"),
+  process.env.SYNARA_MOBILE_ORIGIN ?? `https://${startupTailnet.dnsName}:8443`,
 );
 const configuredUpstream = process.env.SYNARA_MOBILE_UPSTREAM?.trim() || undefined;
 const upstreamResolver = createUpstreamResolver({
@@ -201,7 +197,7 @@ function offline(req, res) {
       "Retry-After": "2",
     });
     return res.end(
-      '<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="2"><title>Synara</title><style>html{color-scheme:light dark;font:16px system-ui}body{display:grid;min-height:90vh;place-items:center;margin:0;background:#101010;color:#ededed}main{max-width:28rem;padding:2rem;text-align:center}p{color:#a1a1a1}</style><main><h1>Synara está iniciando</h1><p>Abra o Synara no computador. Esta tela reconecta automaticamente.</p></main></html>',
+      '<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="2"><title>Synara</title><style>html{color-scheme:light dark;font:16px system-ui}body{display:grid;min-height:90vh;place-items:center;margin:0;background:#101010;color:#ededed}main{max-width:28rem;padding:2rem;text-align:center}p{color:#a1a1a1}a{color:inherit}</style><main><h1>Reconectando ao Synara</h1><p>Abra o Synara no computador escolhido. Esta tela reconecta automaticamente.</p><a href="/mobile">Escolher outro computador</a></main></html>',
     );
   }
   return json(res, 503, { error: "Synara desktop is not running" }, { "Retry-After": "2" });
@@ -218,6 +214,13 @@ function proxyPeer(req, res, peer) {
     targetUrl,
     { method: req.method, headers: peerHeaders(req, peer) },
     (response) => {
+      // A reachable Tailscale daemon can return an empty gateway error while
+      // its companion restarts. Keep browser navigation on the reconnect page.
+      if ([502, 503, 504].includes(response.statusCode)) {
+        response.resume();
+        offline(req, res);
+        return;
+      }
       res.writeHead(response.statusCode, { ...response.headers, "cache-control": "no-store" });
       response.pipe(res);
     },
@@ -291,8 +294,7 @@ async function proxy(req, res) {
   );
   target.on("error", () => {
     upstreamResolver.invalidate();
-    if (!res.headersSent)
-      json(res, 502, { error: "Synara is offline. Start it on the computer and retry." });
+    if (!res.headersSent) offline(req, res);
     else res.destroy();
   });
   target.setTimeout(120_000, () => target.destroy());
@@ -614,9 +616,11 @@ function watchPeer(peer) {
     });
     link.ws = ws;
     let ping;
+    let alive = true;
     // ponytail: alerts raised while this link is down are not replayed.
     const retry = () => {
       clearInterval(ping);
+      if (link.ws !== ws) return;
       link.online = false;
       if (link.stopped || link.timer) return;
       link.timer = setTimeout(() => {
@@ -625,9 +629,26 @@ function watchPeer(peer) {
       }, 5000);
     };
     ws.on("open", () => {
+      if (link.stopped || link.ws !== ws) {
+        ws.terminate();
+        return;
+      }
       link.online = true;
+      link.unauthorized = false;
       delete link.error;
-      ping = setInterval(() => ws.ping(), 30_000);
+      ping = setInterval(() => {
+        if (!alive) {
+          link.error = "Conexão interrompida. Reconectando…";
+          ws.terminate();
+          retry();
+          return;
+        }
+        alive = false;
+        if (ws.readyState === WebSocket.OPEN) ws.ping();
+      }, 30_000);
+    });
+    ws.on("pong", () => {
+      alive = true;
     });
     ws.on("message", (data) => {
       const event = peerEvent(peer, String(data));
@@ -635,9 +656,10 @@ function watchPeer(peer) {
     });
     ws.on("unexpected-response", (request, response) => {
       link.unauthorized = [401, 403].includes(response.statusCode);
-      link.error =
-        response.statusCode === 403
-          ? "Pareie este computador de novo."
+      link.error = link.unauthorized
+        ? "Pareie este computador de novo."
+        : [502, 503, 504].includes(response.statusCode)
+          ? "Acesso remoto indisponível. Abra o Synara no computador; reconectando…"
           : `HTTP ${response.statusCode}`;
       response.resume();
       request.destroy();
@@ -661,29 +683,52 @@ function upsertPeer(paired) {
   return peer;
 }
 const discoveryBackoff = new Map();
+let discovering = false;
+let stopping = false;
 async function discoverPeers() {
-  let tailnet;
+  if (discovering || stopping) return;
+  discovering = true;
   try {
-    tailnet = await tailnetStatus();
-  } catch {
-    return;
-  }
-  for (const computer of tailnet.computers) {
-    const origin = `https://${computer.dnsName}:${publicUrl.port || 443}`;
-    const known = state.peers.find((peer) => peer.origin === origin);
-    if (known && !peerLinks.get(known.id)?.unauthorized) continue;
-    if ((discoveryBackoff.get(origin) ?? 0) > Date.now()) continue;
-    discoveryBackoff.set(origin, Date.now() + 10 * 60_000);
-    const nonce = secret();
-    pendingNonces.add(nonce);
+    let tailnet;
     try {
-      upsertPeer(await pairWithTailnetPeer(origin, publicUrl.origin, nonce, computer.name));
-      discoveryBackoff.delete(origin);
+      tailnet = await tailnetStatus();
     } catch {
-      // No companion there yet, or an older one; retry after the backoff.
-    } finally {
-      pendingNonces.delete(nonce);
+      return;
     }
+    if (stopping) return;
+    // Recheck after wake/reconnect or an initial Serve failure. ensureServe
+    // leaves occupied ports and every other service's routes untouched.
+    if (automaticOrigin) {
+      try {
+        const result = await ensureServe(port, publicUrl.port || "443");
+        if (result === "occupied")
+          console.error(`Tailscale HTTPS ${publicUrl.port} is used by another service.`);
+      } catch (error) {
+        console.error(`Tailscale Serve failed; will retry: ${error.message}`);
+      }
+    }
+    for (const computer of tailnet.computers) {
+      if (stopping) return;
+      const origin = `https://${computer.dnsName}:${publicUrl.port || 443}`;
+      const known = state.peers.find((peer) => peer.origin === origin);
+      if (known && !peerLinks.get(known.id)?.unauthorized) continue;
+      if ((discoveryBackoff.get(origin) ?? 0) > Date.now()) continue;
+      discoveryBackoff.set(origin, Date.now() + 10 * 60_000);
+      const nonce = secret();
+      pendingNonces.add(nonce);
+      try {
+        const paired = await pairWithTailnetPeer(origin, publicUrl.origin, nonce, computer.name);
+        if (stopping) return;
+        upsertPeer(paired);
+        discoveryBackoff.delete(origin);
+      } catch {
+        // No companion there yet, or an older one; retry after the backoff.
+      } finally {
+        pendingNonces.delete(nonce);
+      }
+    }
+  } finally {
+    discovering = false;
   }
 }
 function stopPeer(id) {
@@ -709,13 +754,6 @@ const expiryTimer = setInterval(() => {
 server.listen(port, "127.0.0.1", () => {
   console.log(`Synara Mobile listening on 127.0.0.1:${port}`);
   console.log(`Open ${publicUrl.origin}/mobile; run node cli.mjs pair for a private pairing link.`);
-  if (automaticOrigin && startupTailnet)
-    ensureServe(port, publicUrl.port || "443")
-      .then((result) => {
-        if (result === "occupied")
-          console.error(`Tailscale HTTPS ${publicUrl.port} is used by another service.`);
-      })
-      .catch((error) => console.error(`Tailscale Serve failed: ${error.message}`));
   if (discoveryTimer) void discoverPeers();
 });
 // Windows named pipes additionally require a credential held in the private store.
@@ -785,6 +823,8 @@ admin.listen(adminPath, () => {
   if (process.platform !== "win32") chmodSync(adminPath, 0o600);
 });
 function shutdown() {
+  if (stopping) return;
+  stopping = true;
   clearInterval(expiryTimer);
   clearInterval(discoveryTimer);
   stopMonitor();

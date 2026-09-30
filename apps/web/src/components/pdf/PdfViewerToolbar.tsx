@@ -7,6 +7,8 @@
 
 import { useState } from "react";
 
+import type { FileClipboardSource } from "~/lib/desktopClipboard";
+import { getFileReferenceClipboardActions } from "~/lib/fileReferenceContextMenu";
 import {
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -14,6 +16,7 @@ import {
   MinusIcon,
   PlusIcon,
   RefreshCwIcon,
+  EllipsisIcon,
 } from "~/lib/icons";
 import { formatZoomPercent, PDF_ZOOM_PRESETS, type PdfZoomMode } from "~/lib/pdf/pdfZoom";
 import { cn } from "~/lib/utils";
@@ -25,7 +28,14 @@ import {
 } from "../chat/chatHeaderControls";
 import { OpenInPicker } from "../chat/OpenInPicker";
 import { Badge } from "../ui/badge";
-import { Menu, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 
 interface PdfViewerToolbarProps {
   fileName: string;
@@ -40,6 +50,8 @@ interface PdfViewerToolbarProps {
   onFitWidth: () => void;
   onFitPage: () => void;
   openInTarget: string | null;
+  filePath: string;
+  fileForCopy: FileClipboardSource;
   onReload?: (() => void) | undefined;
 }
 
@@ -55,6 +67,10 @@ function zoomSelectionValue(mode: PdfZoomMode, scale: number): string {
 
 export const PdfViewerToolbar = function PdfViewerToolbar(props: PdfViewerToolbarProps) {
   const selectionValue = zoomSelectionValue(props.zoomMode, props.scale);
+  const clipboardActions = getFileReferenceClipboardActions({
+    path: props.filePath,
+    fileForCopy: props.fileForCopy,
+  });
 
   return (
     <div
@@ -153,6 +169,18 @@ export const PdfViewerToolbar = function PdfViewerToolbar(props: PdfViewerToolba
             <RefreshCwIcon aria-hidden="true" className="size-3.5" />
           </ChatHeaderIconButton>
         ) : null}
+        <Menu>
+          <MenuTrigger render={<ChatHeaderIconButton label="More actions" tone="plain" />}>
+            <EllipsisIcon aria-hidden="true" className="size-3.5" />
+          </MenuTrigger>
+          <ComposerPickerMenuPopup align="end" side="bottom" className="w-52 min-w-52">
+            {clipboardActions.map((action) => (
+              <MenuItem key={action.id} onClick={() => void action.run()}>
+                {action.label}
+              </MenuItem>
+            ))}
+          </ComposerPickerMenuPopup>
+        </Menu>
         <OpenInPicker
           openInTarget={props.openInTarget}
           labelMode="always"

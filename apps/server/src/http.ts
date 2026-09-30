@@ -184,7 +184,11 @@ function localPreviewCorsHeaders(input: {
   const origin = normalizeCorsOrigin(input.request.headers.origin);
   if (
     !origin ||
-    !isTrustedAppOrigin({ origin, requestOrigin: input.url.origin, config: input.config })
+    !isTrustedAppOrigin({
+      origin,
+      requestOrigin: input.url.origin,
+      config: input.config,
+    })
   ) {
     return {};
   }
@@ -229,11 +233,17 @@ export function makeDesktopShutdownEffectRouteLayer(shutdownController: ServerSh
 
       if (!authorization.authorized) {
         return HttpServerResponse.jsonUnsafe(
-          { error: authorization.reason === "unavailable" ? "Not Found" : "Unauthorized" },
+          {
+            error: authorization.reason === "unavailable" ? "Not Found" : "Unauthorized",
+          },
           {
             status: authorization.status,
             ...(authorization.status === 401
-              ? { headers: { "WWW-Authenticate": 'Bearer realm="synara-desktop-shutdown"' } }
+              ? {
+                  headers: {
+                    "WWW-Authenticate": 'Bearer realm="synara-desktop-shutdown"',
+                  },
+                }
               : {}),
           },
         );
@@ -266,11 +276,17 @@ export function makeDesktopComputerEmergencyStopRouteLayer() {
 
       if (!authorization.authorized) {
         return HttpServerResponse.jsonUnsafe(
-          { error: authorization.reason === "unavailable" ? "Not Found" : "Unauthorized" },
+          {
+            error: authorization.reason === "unavailable" ? "Not Found" : "Unauthorized",
+          },
           {
             status: authorization.status,
             ...(authorization.status === 401
-              ? { headers: { "WWW-Authenticate": 'Bearer realm="synara-desktop-emergency-stop"' } }
+              ? {
+                  headers: {
+                    "WWW-Authenticate": 'Bearer realm="synara-desktop-emergency-stop"',
+                  },
+                }
               : {}),
           },
         );
@@ -364,7 +380,13 @@ function trustedMutationCorsHeaders(input: {
 }): Record<string, string> | null {
   const origin = normalizeCorsOrigin(input.request.headers.origin);
   if (!origin) return {};
-  if (!isTrustedAppOrigin({ origin, requestOrigin: input.url.origin, config: input.config })) {
+  if (
+    !isTrustedAppOrigin({
+      origin,
+      requestOrigin: input.url.origin,
+      config: input.config,
+    })
+  ) {
     return null;
   }
   return {
@@ -404,7 +426,10 @@ function isBodyCapacityError(cause: unknown): boolean {
   if (Cause.isExceededCapacityError(cause)) return true;
   if (cause instanceof Error && cause.message === "maxBytes exceeded") return true;
   if (!cause || typeof cause !== "object") return false;
-  const record = cause as { readonly reason?: unknown; readonly cause?: unknown };
+  const record = cause as {
+    readonly reason?: unknown;
+    readonly cause?: unknown;
+  };
   return (
     (record.cause !== undefined && record.cause !== cause && isBodyCapacityError(record.cause)) ||
     (record.reason !== undefined && isBodyCapacityError(record.reason))
@@ -418,7 +443,11 @@ function mapPayloadError(message: string, cause: unknown) {
     "status" in cause &&
     (cause as { readonly status?: unknown }).status === 413
   ) {
-    return cause as { readonly message: string; readonly status: 413; readonly cause?: unknown };
+    return cause as {
+      readonly message: string;
+      readonly status: 413;
+      readonly cause?: unknown;
+    };
   }
   return { message, status: 400 as const, cause };
 }
@@ -454,11 +483,18 @@ const readEffectBinary = (
   maxBytes: number,
 ): Effect.Effect<
   Uint8Array,
-  { readonly message: string; readonly status: number; readonly cause?: unknown }
+  {
+    readonly message: string;
+    readonly status: number;
+    readonly cause?: unknown;
+  }
 > => {
   const declaredLength = Number(request.headers["content-length"] ?? "0");
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    return Effect.fail({ message: "Request body too large.", status: 413 as const });
+    return Effect.fail({
+      message: "Request body too large.",
+      status: 413 as const,
+    });
   }
   return request.arrayBuffer.pipe(
     Effect.provideService(HttpServerRequest.MaxBodySize, FileSystem.Size(maxBytes)),
@@ -714,7 +750,10 @@ const siteFaviconEffectRouteLayer = HttpRouter.add(
     }
 
     const domainParam = url.searchParams.get("domain") ?? url.searchParams.get("url");
-    if (!domainParam) return HttpServerResponse.text("Missing domain parameter", { status: 400 });
+    if (!domainParam)
+      return HttpServerResponse.text("Missing domain parameter", {
+        status: 400,
+      });
     const host = tryParseHost(domainParam);
     if (!host) return HttpServerResponse.text("Invalid domain", { status: 400 });
 
@@ -776,15 +815,24 @@ const threadExportEffectRouteLayer = HttpRouter.add(
       ThreadId.makeUnsafe(threadIdParam),
     );
     if (Option.isNone(threadOption))
-      return HttpServerResponse.text("Not Found", { status: 404, headers: corsHeaders });
+      return HttpServerResponse.text("Not Found", {
+        status: 404,
+        headers: corsHeaders,
+      });
     const thread = threadOption.value;
 
     const blockedReason = threadExportBlockedReason(thread);
     if (blockedReason !== null) {
-      return HttpServerResponse.text(blockedReason, { status: 409, headers: corsHeaders });
+      return HttpServerResponse.text(blockedReason, {
+        status: 409,
+        headers: corsHeaders,
+      });
     }
 
-    const fileName = threadArchiveFileName({ title: thread.title, isoTimestamp: thread.updatedAt });
+    const fileName = threadArchiveFileName({
+      title: thread.title,
+      isoTimestamp: thread.updatedAt,
+    });
     return HttpServerResponse.stream(
       Stream.fromAsyncIterable(threadArchiveChunks(thread), (cause) => cause),
       {
@@ -912,6 +960,7 @@ export const localImageEffectRouteLayer = HttpRouter.add(
 
     const serverSettings = yield* ServerSettingsService;
     const settings = yield* serverSettings.getSettings;
+    const isDownload = url.searchParams.get("download") === "1";
     const previewFile = yield* Effect.promise(() =>
       resolveAllowedLocalPreviewFile({
         requestedPath: url.searchParams.get("path"),
@@ -922,6 +971,7 @@ export const localImageEffectRouteLayer = HttpRouter.add(
         })),
         scratchWorkspacesRoot: resolveScratchWorkspacesRoot(),
         allowAbsoluteLocalPreviewFile: true,
+        allowGenericDownloadFile: isDownload,
         previewGrant: url.searchParams.get("grant"),
       }).catch(() => null),
     );
@@ -935,7 +985,6 @@ export const localImageEffectRouteLayer = HttpRouter.add(
     // Stream (don't use HttpServerResponse.file, which depends on
     // Etag.Generator/Path services and was failing with a 500 here).
     const fileSystem = yield* FileSystem.FileSystem;
-    const isDownload = url.searchParams.get("download") === "1";
     const safeFileName = previewFile.fileName.replaceAll('"', "");
     const isSvg = nodePath.extname(previewFile.path).toLowerCase() === ".svg";
     const headers = {
@@ -972,7 +1021,9 @@ export const localImageEffectRouteLayer = HttpRouter.add(
       headers,
       acceptRanges: true,
       ...(requestedRange.kind === "range"
-        ? { byteRange: { start: requestedRange.start, end: requestedRange.end } }
+        ? {
+            byteRange: { start: requestedRange.start, end: requestedRange.end },
+          }
         : {}),
     });
   }).pipe(Effect.catchTag("AuthError", (error) => Effect.succeed(authErrorResponse(error)))),
@@ -994,7 +1045,10 @@ const binaryUploadEffectHandler = Effect.gen(function* () {
     return HttpServerResponse.empty({ status: 204, headers: corsHeaders });
   }
   if (request.method !== "POST") {
-    return HttpServerResponse.text("Method Not Allowed", { status: 405, headers: corsHeaders });
+    return HttpServerResponse.text("Method Not Allowed", {
+      status: 405,
+      headers: corsHeaders,
+    });
   }
   const attachmentPrincipal = isLegacyTokenAuthorized({ config, url })
     ? LOCAL_LOOPBACK_ATTACHMENT_PRINCIPAL
@@ -1057,7 +1111,10 @@ const binaryUploadEffectHandler = Effect.gen(function* () {
       principal: attachmentPrincipal,
       repository,
     });
-    return HttpServerResponse.jsonUnsafe(attachment, { status: 201, headers: corsHeaders });
+    return HttpServerResponse.jsonUnsafe(attachment, {
+      status: 201,
+      headers: corsHeaders,
+    });
   }
 
   if (url.pathname === ATTACHMENT_CANCEL_ROUTE_PATH) {
@@ -1131,7 +1188,9 @@ const binaryUploadEffectHandler = Effect.gen(function* () {
       const adapter = yield* getEnabledProviderAdapter(provider as never, serverSettings, registry);
       if (!adapter.transcribeVoice) {
         return HttpServerResponse.jsonUnsafe(
-          { error: `Voice transcription is unavailable for provider '${provider}'.` },
+          {
+            error: `Voice transcription is unavailable for provider '${provider}'.`,
+          },
           { status: 400, headers: corsHeaders },
         );
       }
@@ -1144,11 +1203,17 @@ const binaryUploadEffectHandler = Effect.gen(function* () {
         durationMs,
         audioBase64: Buffer.from(bytes).toString("base64"),
       });
-      return HttpServerResponse.jsonUnsafe(result, { status: 200, headers: corsHeaders });
+      return HttpServerResponse.jsonUnsafe(result, {
+        status: 200,
+        headers: corsHeaders,
+      });
     }).pipe(Effect.ensuring(Effect.sync(releaseUpload)));
   }
 
-  return HttpServerResponse.text("Not Found", { status: 404, headers: corsHeaders });
+  return HttpServerResponse.text("Not Found", {
+    status: 404,
+    headers: corsHeaders,
+  });
 }).pipe(
   Effect.catch((error) =>
     Effect.succeed(
@@ -1198,7 +1263,9 @@ export const attachmentsEffectRouteLayer = HttpRouter.add(
     const rawRelativePath = url.pathname.slice(ATTACHMENTS_ROUTE_PREFIX.length);
     const normalizedRelativePath = normalizeAttachmentRelativePath(rawRelativePath);
     if (!normalizedRelativePath) {
-      return HttpServerResponse.text("Invalid attachment path", { status: 400 });
+      return HttpServerResponse.text("Invalid attachment path", {
+        status: 400,
+      });
     }
     if (
       normalizedRelativePath.startsWith("objects/") ||
@@ -1279,7 +1346,9 @@ export const staticAndDevEffectRouteLayer = HttpRouter.add(
 
     const config = yield* ServerConfig;
     if (config.devUrl) {
-      return HttpServerResponse.redirect(config.devUrl.toString(), { status: 302 });
+      return HttpServerResponse.redirect(config.devUrl.toString(), {
+        status: 302,
+      });
     }
 
     if (!config.staticDir) {
@@ -1300,7 +1369,9 @@ export const staticAndDevEffectRouteLayer = HttpRouter.add(
       relativePath.startsWith("..") ||
       relativePath.includes("\0")
     ) {
-      return HttpServerResponse.text("Invalid static file path", { status: 400 });
+      return HttpServerResponse.text("Invalid static file path", {
+        status: 400,
+      });
     }
     if (isSidecarRequestPath(relativePath)) {
       return HttpServerResponse.text("Not Found", { status: 404 });
@@ -1335,12 +1406,16 @@ export const staticAndDevEffectRouteLayer = HttpRouter.add(
 
     let filePath = path.resolve(staticRoot, relativePath);
     if (!isWithinStaticRoot(filePath)) {
-      return HttpServerResponse.text("Invalid static file path", { status: 400 });
+      return HttpServerResponse.text("Invalid static file path", {
+        status: 400,
+      });
     }
     if (!path.extname(filePath)) {
       filePath = path.resolve(filePath, "index.html");
       if (!isWithinStaticRoot(filePath)) {
-        return HttpServerResponse.text("Invalid static file path", { status: 400 });
+        return HttpServerResponse.text("Invalid static file path", {
+          status: 400,
+        });
       }
     }
 
@@ -1378,7 +1453,11 @@ export const staticAndDevEffectRouteLayer = HttpRouter.add(
           .readFile(servedPath)
           .pipe(Effect.catch(() => Effect.succeed(null)));
         if (!data) return null;
-        return HttpServerResponse.uint8Array(data, { status: 200, contentType, headers });
+        return HttpServerResponse.uint8Array(data, {
+          status: 200,
+          contentType,
+          headers,
+        });
       });
       const preference = negotiateStaticEncodingPreference(request.headers["accept-encoding"]);
       // Candidates are ranked by client weight with identity (null) in its own

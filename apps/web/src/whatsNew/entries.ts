@@ -22,6 +22,30 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.18",
+    date: "Sep 30",
+    features: [
+      {
+        id: "remote-recovery",
+        title: "Remote access reconnects after interruptions",
+        description:
+          "The desktop retries remote access after startup failures and delayed Tailscale connections. Temporary gateway errors now show a reconnecting page.",
+      },
+      {
+        id: "file-links-and-audio",
+        title: "More useful file links and previews",
+        description:
+          "File links with spaces open reliably, audio files play in the preview, and ZIPs and other binary files offer a download instead of a text error.",
+      },
+      {
+        id: "copy-files",
+        title: "Copy files from chat and previews",
+        description:
+          "Copy images, text, or the file itself from file menus. Desktop file copying supports files up to 64 MB; larger files can be downloaded.",
+      },
+    ],
+  },
+  {
     version: "0.9.17",
     date: "Sep 28",
     features: [

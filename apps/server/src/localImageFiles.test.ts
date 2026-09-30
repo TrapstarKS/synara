@@ -215,4 +215,41 @@ describe("resolveAllowedLocalPreviewFile", () => {
 
     assert.equal(result, null);
   });
+
+  it("allows generic workspace files only when requested for download", async () => {
+    const workspace = makeTempDir("synara-generic-download-");
+    writeFileSync(path.join(workspace, ".git"), "gitdir: .git");
+    const zipPath = path.join(workspace, "Artifacts", "agent output.zip");
+    mkdirSync(path.dirname(zipPath), { recursive: true });
+    writeFileSync(zipPath, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+
+    const preview = await resolveAllowedLocalPreviewFile({
+      requestedPath: zipPath,
+      cwd: workspace,
+    });
+    const download = await resolveAllowedLocalPreviewFile({
+      requestedPath: zipPath,
+      cwd: workspace,
+      allowGenericDownloadFile: true,
+    });
+
+    assert.equal(preview, null);
+    assert.equal(download?.path, realpathSync(zipPath));
+    assert.equal(download?.fileName, "agent output.zip");
+    assert.equal(download?.sizeBytes, 4);
+  });
+
+  it("does not broaden generic downloads to arbitrary temp files", async () => {
+    const tempDir = makeTempDir("synara-generic-outside-");
+    const zipPath = path.join(tempDir, "outside.zip");
+    writeFileSync(zipPath, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+
+    const result = await resolveAllowedLocalPreviewFile({
+      requestedPath: zipPath,
+      cwd: null,
+      allowGenericDownloadFile: true,
+    });
+
+    assert.equal(result, null);
+  });
 });

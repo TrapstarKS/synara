@@ -18,6 +18,7 @@ export const DESKTOP_IPC_CHANNELS = {
   },
   showInFolder: "desktop:show-in-folder",
   clipboardWriteImage: "desktop:clipboard-write-image",
+  clipboardWriteFile: "desktop:clipboard-write-file",
   windowMinimize: "desktop:window-minimize",
   windowToggleMaximize: "desktop:window-toggle-maximize",
   windowClose: "desktop:window-close",

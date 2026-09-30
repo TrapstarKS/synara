@@ -14,6 +14,7 @@
 import { useEffect, useState } from "react";
 
 import { basenameOfPath } from "~/file-icons";
+import { createLocalFileClipboardSource } from "~/lib/desktopClipboard";
 import { Loader2Icon, TriangleAlertIcon } from "~/lib/icons";
 import { buildLocalImageUrl } from "~/lib/localImageUrls";
 import { useContainerSize } from "~/lib/pdf/useContainerSize";
@@ -47,6 +48,7 @@ export function PdfFilePreview(props: {
     cacheKey: props.cacheKey,
   });
   const fileName = basenameOfPath(props.filePath);
+  const fileForCopy = createLocalFileClipboardSource({ path: props.filePath, cwd: props.cwd });
   const doc = usePdfDocument(previewUrl);
 
   useEffect(() => {
@@ -98,6 +100,8 @@ export function PdfFilePreview(props: {
           onFitWidth={zoom.onFitWidth}
           onFitPage={zoom.onFitPage}
           openInTarget={props.openInTarget}
+          filePath={props.filePath}
+          fileForCopy={fileForCopy}
           onReload={props.onReload}
         />
         <div ref={setScrollRoot} className="pdf-viewer-scroll min-h-0 flex-1 overflow-auto">

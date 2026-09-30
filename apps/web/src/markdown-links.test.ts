@@ -27,6 +27,35 @@ describe("resolveMarkdownFileLinkTarget", () => {
     );
   });
 
+  it("opens encoded relative text files with spaces and ignores URL query metadata", () => {
+    expect(
+      resolveMarkdownFileLinkTarget(
+        "notes/Agent%20handoff.txt?download=1#L12C4",
+        "/Users/julius/project",
+      ),
+    ).toBe("/Users/julius/project/notes/Agent handoff.txt:12:4");
+  });
+
+  it("preserves Windows file URL paths with spaces while stripping query metadata", () => {
+    expect(resolveMarkdownFileLinkTarget("file:///C:/Work/My%20Project/readme.txt?raw=1#L7")).toBe(
+      "C:/Work/My Project/readme.txt:7",
+    );
+  });
+
+  it.each([
+    "/Applications/Synara Beta.app/Contents/Resources/readme.txt",
+    "/Library/Application Support/Synara/readme.txt",
+    "/System/Library/CoreServices/readme.txt",
+  ])("keeps system-folder absolute file links openable: %s", (path) => {
+    expect(resolveMarkdownFileLinkTarget(path)).toBe(path);
+  });
+
+  it("keeps the v0.9.16 /C:/ normalization for external Windows paths", () => {
+    expect(resolveMarkdownFileLinkTarget("/C:/Users/Jane%20Doe/Downloads/report.txt#L3")).toBe(
+      "C:/Users/Jane Doe/Downloads/report.txt:3",
+    );
+  });
+
   it("ignores external urls", () => {
     expect(resolveMarkdownFileLinkTarget("https://example.com/docs")).toBeNull();
   });

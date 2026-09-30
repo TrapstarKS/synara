@@ -8,6 +8,7 @@ import { useLayoutEffect } from "react";
 import { Button } from "~/components/ui/button";
 import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "~/lib/icons";
 import { notifyNativeSurfaceOcclusionChange } from "~/lib/nativeSurfaceOcclusion";
+import { showFileReferenceContextMenu } from "~/lib/fileReferenceContextMenu";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 
 interface ExpandedImageOverlayProps {
@@ -75,6 +76,17 @@ export function ExpandedImageOverlay({
         </Button>
         <img
           src={expandedImageItem.src}
+          onContextMenu={(event) => {
+            if (!expandedImageItem.fileForCopy) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void showFileReferenceContextMenu({
+              path: expandedImageItem.filePath ?? expandedImageItem.name,
+              fileForCopy: expandedImageItem.fileForCopy,
+              position: { x: event.clientX, y: event.clientY },
+              onReferenceInChat: undefined,
+            });
+          }}
           alt={expandedImageItem.name}
           className="max-h-[86vh] max-w-[92vw] select-none rounded-lg border border-[color:var(--color-border)] bg-[var(--color-background-elevated-primary-opaque)] object-contain shadow-2xl"
           draggable={false}

@@ -24,6 +24,7 @@ import {
 } from "~/lib/chatReferences";
 import { splitRepoRelativePath } from "~/lib/diffRendering";
 import { showFileReferenceContextMenu } from "~/lib/fileReferenceContextMenu";
+import { createLocalFileClipboardSource } from "~/lib/desktopClipboard";
 import {
   projectListDirectoriesQueryOptions,
   projectReadFileQueryOptions,
@@ -307,17 +308,31 @@ function WorkspaceDirectory(props: {
 // instead of being re-declared in every sidebar that renders these rows.
 function useTreeEntryContextMenu(
   onReferenceInChat: ((reference: ChatFileReference) => void) | undefined,
+  cwd: string | null,
 ) {
   return (entry: ProjectFileSystemEntry, position: { x: number; y: number }) => {
-    void showFileReferenceContextMenu({ path: entry.path, position, onReferenceInChat });
+    void showFileReferenceContextMenu({
+      path: entry.path,
+      position,
+      onReferenceInChat,
+      ...(cwd && entry.kind === "file"
+        ? { fileForCopy: createLocalFileClipboardSource({ path: entry.path, cwd }) }
+        : {}),
+    });
   };
 }
 
 function useResultEntryContextMenu(
   onReferenceInChat: ((reference: ChatFileReference) => void) | undefined,
+  cwd: string | null,
 ) {
   return (path: string, position: { x: number; y: number }) => {
-    void showFileReferenceContextMenu({ path, position, onReferenceInChat });
+    void showFileReferenceContextMenu({
+      path,
+      position,
+      onReferenceInChat,
+      ...(cwd ? { fileForCopy: createLocalFileClipboardSource({ path, cwd }) } : {}),
+    });
   };
 }
 
@@ -365,7 +380,10 @@ export function WorkspaceFilesSidebar(props: {
   onReferenceInChat: ((reference: ChatFileReference) => void) | undefined;
 }) {
   const prefetchEntry = useExplorerEntryPrefetch(props.workspaceRoot);
-  const handleEntryContextMenu = useTreeEntryContextMenu(props.onReferenceInChat);
+  const handleEntryContextMenu = useTreeEntryContextMenu(
+    props.onReferenceInChat,
+    props.workspaceRoot,
+  );
   const handleListKeyDown = useExplorerListNavigation();
   return (
     <aside
@@ -592,7 +610,10 @@ export function WorkspaceSearchSidebar(props: {
   onReferenceInChat: ((reference: ChatFileReference) => void) | undefined;
 }) {
   const prefetchEntry = useExplorerEntryPrefetch(props.workspaceRoot);
-  const handleEntryContextMenu = useResultEntryContextMenu(props.onReferenceInChat);
+  const handleEntryContextMenu = useResultEntryContextMenu(
+    props.onReferenceInChat,
+    props.workspaceRoot,
+  );
   const handleListKeyDown = useExplorerListNavigation();
   const search = useWorkspaceFileSearch(props.workspaceRoot, props.query);
 
@@ -643,8 +664,14 @@ export function WorkspaceExplorerSidebar(props: {
   onReferenceInChat: ((reference: ChatFileReference) => void) | undefined;
 }) {
   const prefetchEntry = useExplorerEntryPrefetch(props.workspaceRoot);
-  const handleTreeEntryContextMenu = useTreeEntryContextMenu(props.onReferenceInChat);
-  const handleResultEntryContextMenu = useResultEntryContextMenu(props.onReferenceInChat);
+  const handleTreeEntryContextMenu = useTreeEntryContextMenu(
+    props.onReferenceInChat,
+    props.workspaceRoot,
+  );
+  const handleResultEntryContextMenu = useResultEntryContextMenu(
+    props.onReferenceInChat,
+    props.workspaceRoot,
+  );
   const handleListKeyDown = useExplorerListNavigation();
   const search = useWorkspaceFileSearch(props.workspaceRoot, props.query);
 

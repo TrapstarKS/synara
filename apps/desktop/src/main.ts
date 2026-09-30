@@ -178,6 +178,11 @@ import { openInitialBackendWindow } from "./initialBackendWindowOpen";
 import { isTrustedMediaPermissionRequest } from "./mediaPermissions";
 import { isClipboardWritePermission } from "./clipboardPermissions";
 import {
+  createFileClipboardWriter,
+  registerFileClipboardIpc,
+  writeNativeClipboardFile,
+} from "./fileClipboard";
+import {
   installResumableUpdateDownloader,
   type ResumableDownloaderTarget,
 } from "./resumableUpdateDownload";
@@ -5150,6 +5155,15 @@ function registerIpcHandlers(): void {
 
     clipboard.writeImage(image);
     return true;
+  });
+
+  registerFileClipboardIpc(ipcMain, {
+    isTrustedRenderer: (id) => browserManager.isTrustedRenderer(id),
+    writeFile: createFileClipboardWriter({
+      directory: Path.join(app.getPath("userData"), "clipboard-files"),
+      writeFile: (filePath) =>
+        writeNativeClipboardFile(filePath, { platform: process.platform, clipboard }),
+    }),
   });
 
   ipcMain.removeHandler(IPC.showInFolder);

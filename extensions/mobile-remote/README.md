@@ -76,7 +76,9 @@ Each computer has a separate HTTPS origin, pairing and project/thread history. T
 
 ### One app for several computers
 
-Packaged desktop builds ship this companion and start it with the app, so a computer needs only Synara and Tailscale. Without `SYNARA_MOBILE_ORIGIN` the companion uses its own MagicDNS name on `:8443` and adds `tailscale serve --bg --https=8443` only when that port has no route yet; existing Serve routes are never changed. If a login service already holds `~/.synara-mobile`, the bundled copy exits and the service keeps serving.
+Packaged desktop builds ship this companion and start it with the app, so a computer needs only Synara and Tailscale. Without `SYNARA_MOBILE_ORIGIN` the companion uses its own MagicDNS name on `:8443` and adds `tailscale serve --bg --https=8443` only when that port has no route yet; existing Serve routes are never changed. If Tailscale is still starting at login, the desktop retries the companion after 5 seconds, backing off to at most once a minute. Early crashes and temporary lock conflicts are retried too. If a login service already holds `~/.synara-mobile`, the bundled copy backs off while the service keeps serving and can take over once that service exits.
+
+Automatic companions recheck their Serve route every minute, recovering an initially failed setup or a cleared route after reconnect. Peer connections check WebSocket pongs and reconnect when a connection stops responding after sleep. Closing the desktop requests a graceful companion shutdown before force-stopping only its own child if it stalls.
 
 Every minute each companion looks for the owner's other online computers in `tailscale status` and pairs with their companions automatically. The peer accepts a pairing only over Tailscale Serve HTTPS, when the `Tailscale-User-Login` header is its own owner, the caller is one of that owner's online computers, and a callback to the caller's origin confirms the one-time nonce. The phone then picks the computer in **Celular → Computador**. A manual link still works:
 
@@ -105,14 +107,14 @@ To remove the login services, run `node extensions/mobile-remote/service.mjs uni
 
 ## Configuration
 
-| Environment variable           | Default                  | Meaning                                                              |
-| ------------------------------ | ------------------------ | -------------------------------------------------------------------- |
-| `SYNARA_MOBILE_ORIGIN`         | `https://localhost:8443` | Exact HTTPS origin used by the phone.                                |
-| `SYNARA_MOBILE_UPSTREAM`       | auto-discovered          | Explicit loopback origin override for development and tests.         |
-| `SYNARA_MOBILE_DESKTOP_HOME`   | `~/.synara`              | Desktop data home used for discovery.                                |
-| `SYNARA_MOBILE_UPSTREAM_TOKEN` | unset                    | Token for an explicit development upstream.                          |
-| `SYNARA_MOBILE_PORT`           | `58091`                  | Companion loopback port.                                             |
-| `SYNARA_MOBILE_HOME`           | `~/.synara-mobile`       | Private keys, sessions, preferences, checkpoint, and pending pushes. |
+| Environment variable           | Default                                        | Meaning                                                              |
+| ------------------------------ | ---------------------------------------------- | -------------------------------------------------------------------- |
+| `SYNARA_MOBILE_ORIGIN`         | this computer's MagicDNS name on HTTPS `:8443` | Exact HTTPS origin used by the phone.                                |
+| `SYNARA_MOBILE_UPSTREAM`       | auto-discovered                                | Explicit loopback origin override for development and tests.         |
+| `SYNARA_MOBILE_DESKTOP_HOME`   | `~/.synara`                                    | Desktop data home used for discovery.                                |
+| `SYNARA_MOBILE_UPSTREAM_TOKEN` | unset                                          | Token for an explicit development upstream.                          |
+| `SYNARA_MOBILE_PORT`           | `58091`                                        | Companion loopback port.                                             |
+| `SYNARA_MOBILE_HOME`           | `~/.synara-mobile`                             | Private keys, sessions, preferences, checkpoint, and pending pushes. |
 
 Automatic discovery supports macOS and Windows. An explicit upstream override must accept the read-only companion connection from loopback; use it only for development or tests. The browser proxy preserves Synara's authentication policy and never sends the desktop credential to the phone.
 
@@ -138,9 +140,11 @@ The monitor negotiates Synara protocol epoch/revision 1 and stops on incompatibi
 
 If a device cannot resolve the `ts.net` name, check `tailscale dns status`. MagicDNS may be disabled locally even while it is enabled for the tailnet. Configure Tailscale DNS on the device used to open the app. Do not bypass a certificate warning.
 
+An online Tailscale device can still return HTTP 502 when its Serve route has no local companion listening. Keep Synara open on that computer and update it there to receive the bundled recovery fixes. The peer selector now explains that remote access is unavailable and is reconnecting; gateway failures during navigation show a page that retries automatically instead of an empty response. Failed uploads and other mutations are never automatically replayed. An independently installed login service must be updated separately, because it owns the companion while running.
+
 ## Desktop consumer signature
 
-macOS releases use the persistent ad-hoc `TrapRAM Signing` identity so updates keep the same code-signing identity. Before local publication, verify leaf SHA-1 `0a15f0539b0f02a8d880e637b0c2744f1f0b5dfb`, select the identity explicitly with `CSC_NAME=TrapRAM Signing`, and use `SYNARA_MAC_SIGNING_MODE=adhoc`. The manually dispatched **Release Desktop** workflow uses this same identity from repository secrets, publishes macOS and Windows artifacts, and includes both updater channels. The companion remains a separate installation; a desktop release does not restart or deploy it. This certificate is not notarized, so macOS may require `xattr -cr /Applications/Synara.app` once after the first DMG download, just as with TrapRAM.
+macOS releases use the persistent ad-hoc `TrapRAM Signing` identity so updates keep the same code-signing identity. Before local publication, verify leaf SHA-1 `0a15f0539b0f02a8d880e637b0c2744f1f0b5dfb`, select the identity explicitly with `CSC_NAME=TrapRAM Signing`, and use `SYNARA_MAC_SIGNING_MODE=adhoc`. The manually dispatched **Release Desktop** workflow uses this same identity from repository secrets, publishes macOS and Windows artifacts, and includes both updater channels. Applying a desktop update replaces its bundled companion; a separately installed login service keeps its existing checkout until updated locally. This certificate is not notarized, so macOS may require `xattr -cr /Applications/Synara.app` once after the first DMG download, just as with TrapRAM.
 
 ## Update the fork
 

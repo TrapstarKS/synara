@@ -33,7 +33,12 @@ const dnsName = (name) => String(name ?? "").replace(/\.$/, "");
 /** This node's MagicDNS name, owner login, and the owner's other online computers. */
 export function parseStatus(status) {
   const self = status.Self;
-  if (!self?.DNSName) throw new Error("Tailscale is not connected");
+  if (
+    !self?.DNSName ||
+    self.Online === false ||
+    (status.BackendState !== undefined && status.BackendState !== "Running")
+  )
+    throw new Error("Tailscale is not connected");
   return {
     dnsName: dnsName(self.DNSName),
     name: String(self.HostName ?? "").slice(0, 40),

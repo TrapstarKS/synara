@@ -308,11 +308,16 @@ export function resolveMarkdownFileLinkTarget(
     cwd !== undefined &&
     (localPathsEqual(pathWithoutPosition, cwd) ||
       workspaceRelativePathOf(pathWithoutPosition, cwd) !== null);
+  const isSafeWorkspaceRelativePath =
+    cwd !== undefined &&
+    isRelativePath(pathWithoutPosition) &&
+    isWorkspaceRelativePathSafe(pathWithoutPosition);
   if (
     !fileUrlTarget &&
     !isLikelyPathCandidate(decodedPath) &&
     !isExplicitRelativeDirectory &&
-    !isWorkspacePath
+    !isWorkspacePath &&
+    !isSafeWorkspaceRelativePath
   ) {
     return null;
   }
