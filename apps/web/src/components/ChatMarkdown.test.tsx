@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { encodeFilePathForUrl } from "@synara/shared/fileUrls";
 
 vi.mock("@pierre/diffs", () => ({
   getFiletypeFromFileName: (fileName: string) => (fileName.endsWith(".ts") ? "ts" : "text"),
@@ -39,6 +40,101 @@ async function renderUserMarkdown(text: string) {
     <ChatMarkdown text={text} cwd={undefined} isStreaming={false} variant="user" />,
   );
 }
+
+function localImagePaths(markup: string): string[] {
+  const urls = [...markup.matchAll(/(?:src|href)="([^"]*\/api\/local-image\?[^"]*)"/g)];
+  return urls.map(
+    (match) =>
+      new URL(match[1]!.replaceAll("&amp;", "&"), "http://localhost").searchParams.get("path")!,
+  );
+}
+
+describe("ChatMarkdown local image paths", () => {
+  // Load the heavy renderer before the short per-path cases. A cold full-suite
+  // run compiles the route graph concurrently with the other workspaces.
+  beforeAll(async () => {
+    await import("./ChatMarkdown");
+  }, HEAVY_MODULE_TEST_TIMEOUT_MS);
+  it.each([
+    [
+      String.raw`C:\Users\pedro\.synara\codex-home-overlay\generated_images\thread\call.png`,
+      "C:/Users/pedro/.synara/codex-home-overlay/generated_images/thread/call.png",
+    ],
+    [String.raw`C:\Users\José\image %20 (draft).png`, "C:/Users/José/image %20 (draft).png"],
+    [
+      String.raw`\\server\share\.synara\image %20 (draft).png`,
+      "//server/share/.synara/image %20 (draft).png",
+    ],
+    [
+      String.raw`/Users/José/.synara/image %20 (draft) #? &copy;\name.png`,
+      String.raw`/Users/José/.synara/image %20 (draft) #? &copy;\name.png`,
+    ],
+  ])("round-trips generated destinations through the real renderer: %s", async (path, expected) => {
+    const markup = await renderMarkdown(`![Generated image](${encodeFilePathForUrl(path)})`);
+    const paths = localImagePaths(markup);
+    expect(paths).toHaveLength(2);
+    expect(paths).toEqual([expected, expected]);
+    expect(markup).toContain('aria-label="Expand generated image"');
+    expect(markup).toContain('aria-label="Download generated image"');
+  });
+
+  it.each([
+    [
+      String.raw`![Generated image](C:\Users\pedro\.synara\codex-home-overlay\generated_images\thread\call.png)`,
+      "C:/Users/pedro/.synara/codex-home-overlay/generated_images/thread/call.png",
+    ],
+    [
+      String.raw`![Generated image](<C:\Users\José\.synara\image %2520 (draft%29.png>)`,
+      "C:/Users/José/.synara/image %20 (draft).png",
+    ],
+    [
+      String.raw`![Generated image](\\server\share\.synara\call.png)`,
+      "//server/share/.synara/call.png",
+    ],
+    [
+      String.raw`![preview](C:\Users\pedro\.synara\call.png "Image title")`,
+      "C:/Users/pedro/.synara/call.png",
+    ],
+    [
+      String.raw`![Generated image](</Users/José/.synara/image %2520 (draft%29.png>)`,
+      "/Users/José/.synara/image %20 (draft).png",
+    ],
+  ])("recovers persisted image Markdown: %s", async (text, expected) => {
+    const markup = await renderMarkdown(text);
+    expect(localImagePaths(markup)).toEqual([expected, expected]);
+  });
+
+  it("preserves find offsets after recovering a historical Windows image", async () => {
+    const { default: ChatMarkdown } = await import("./ChatMarkdown");
+    const text = String.raw`Use $PATH ![Generated image](C:\Users\pedro\.synara\call.png) after`;
+    const startOffset = text.indexOf("after");
+    const markup = renderWithQueryClient(
+      <ChatMarkdown
+        text={text}
+        cwd={undefined}
+        findQuery="after"
+        findActiveRange={{ startOffset, endOffset: startOffset + 5 }}
+      />,
+    );
+    expect(localImagePaths(markup)).toEqual([
+      "C:/Users/pedro/.synara/call.png",
+      "C:/Users/pedro/.synara/call.png",
+    ]);
+    expect(markup).toContain(`data-chat-find-start="${startOffset}"`);
+    expect(markup).toContain('data-chat-find-match="active"');
+  });
+
+  it("leaves code examples and remote images alone and retains unsafe URL filtering", async () => {
+    const code = String.raw`![Generated image](C:\Users\pedro\.synara\call.png)`;
+    const markup = await renderMarkdown(
+      `\`${code}\`\n\n![remote](https://example.com/image.png)\n\n![unsafe](javascript:bad.png)`,
+    );
+    expect(localImagePaths(markup)).toEqual([]);
+    expect(markup).toContain(`<code>${code}</code>`);
+    expect(markup).toContain('src="https://example.com/image.png"');
+    expect(markup).not.toContain('src="javascript:');
+  });
+});
 
 describe("streamingCodeHighlightIntervalMs", () => {
   it(

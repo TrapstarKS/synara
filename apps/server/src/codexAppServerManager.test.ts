@@ -1,17 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import {
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -24,13 +15,10 @@ import {
   type ProviderEvent,
   type RuntimeMode,
 } from "@synara/contracts";
-import { SYNARA_MANAGED_CODEX_BIN_DIR_ENV } from "@synara/shared/managedCodexRuntime";
 
 import {
   buildCodexProcessEnv,
-  disableCodexConfigSections,
   serializeCodexConfigAccess,
-  SYNARA_COMPETING_BROWSER_PLUGIN_SECTION_HEADERS,
   waitForCodexConfigAccess,
 } from "./codexProcessEnv";
 import {
@@ -69,6 +57,19 @@ import {
   MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION,
   MINIMUM_CODEX_EXCLUDE_TURNS_CLI_VERSION,
 } from "./provider/codexCliVersion.ts";
+
+let testCodexRoot: string;
+beforeEach(() => {
+  testCodexRoot = mkdtempSync(path.join(os.tmpdir(), "synara-codex-manager-"));
+  const home = path.join(testCodexRoot, ".codex");
+  mkdirSync(home);
+  vi.stubEnv("CODEX_HOME", home);
+  vi.stubEnv("SYNARA_HOME", path.join(testCodexRoot, ".synara"));
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(testCodexRoot, { recursive: true, force: true });
+});
 
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
 
@@ -198,10 +199,10 @@ function createSyntheticCodexManager(fake: ReturnType<typeof createSyntheticCode
   });
   const internals = manager as unknown as {
     assertSupportedCodexCliVersion: () => Promise<void>;
-    buildSessionProcessEnv: () => Promise<NodeJS.ProcessEnv>;
+    buildSessionProcess: () => Promise<{ env: NodeJS.ProcessEnv; configOverrides: string[] }>;
   };
   vi.spyOn(internals, "assertSupportedCodexCliVersion").mockResolvedValue(undefined);
-  vi.spyOn(internals, "buildSessionProcessEnv").mockResolvedValue({});
+  vi.spyOn(internals, "buildSessionProcess").mockResolvedValue({ env: {}, configOverrides: [] });
   return { manager, teardownProcessTree };
 }
 
@@ -306,14 +307,16 @@ describe("Codex Synara harness policy", () => {
       endpointUrl = "http://127.0.0.1:48123/mcp";
       const env = await (
         manager as unknown as {
-          buildSessionProcessEnv: (
+          buildSessionProcess: (
             homePath: string | undefined,
+            profileId: undefined,
             token: string | undefined,
-          ) => Promise<NodeJS.ProcessEnv>;
+          ) => Promise<{ env: NodeJS.ProcessEnv; configOverrides: string[] }>;
         }
-      ).buildSessionProcessEnv(homePath, "token");
-      const configPath = path.join(env.CODEX_HOME ?? homePath, "config.toml");
-      expect(readFileSync(configPath, "utf8")).toContain('url = "http://127.0.0.1:48123/mcp"');
+      ).buildSessionProcess(homePath, undefined, "token");
+      expect(env.env.CODEX_HOME).toBe(homePath);
+      expect(env.env.SYNARA_AGENT_GATEWAY_TOKEN).toBe("token");
+      expect(env.configOverrides.join("\n")).toContain('url="http://127.0.0.1:48123/mcp"');
     } finally {
       if (previousSynaraHome === undefined) {
         delete process.env.SYNARA_HOME;
@@ -1085,7 +1088,6 @@ describe("codex CLI version gate", () => {
     // This test owns PATH resolution. A Synara-launched test process may inherit
     // the managed Codex bin directory, which buildCodexProcessEnv deliberately
     // prepends and would make the real managed binary win over this fake one.
-    vi.stubEnv(SYNARA_MANAGED_CODEX_BIN_DIR_ENV, "");
 
     const isWindows = process.platform === "win32";
     const binaryPath = path.join(dir, isWindows ? "codex.cmd" : "codex");
@@ -1197,7 +1199,7 @@ describe("buildCodexProcessEnv", () => {
         "SSH_AUTH_SOCK",
         "MY_COMPANY_PROXY_KEY",
       ]);
-      expect(env.CODEX_HOME).toContain("codex-home-overlay");
+      expect(env.CODEX_HOME).toBe(tempDir);
       expect(env.MY_COMPANY_PROXY_KEY).toBe("proxy-secret");
       expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
     } finally {
@@ -1248,262 +1250,6 @@ describe("buildCodexProcessEnv", () => {
       expect(env.NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS).toBeUndefined();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it("applies durable section suppressions inside Synara's Codex overlay", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "synara-codex-env-"));
-    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-runtime-home-"));
-    try {
-      writeFileSync(
-        path.join(tempDir, "config.toml"),
-        [
-          '[plugins."github@openai-curated"]',
-          "enabled = true",
-          "",
-          ...SYNARA_COMPETING_BROWSER_PLUGIN_SECTION_HEADERS.flatMap((header) => [
-            header,
-            "enabled = true",
-            "",
-          ]),
-          '[plugins."historical-plugin@local"]',
-          "enabled = true",
-        ].join("\n"),
-        "utf8",
-      );
-
-      const overlayHome = path.join(runtimeHome, "codex-home-overlay");
-      mkdirSync(overlayHome, { recursive: true });
-      writeFileSync(
-        path.join(overlayHome, "synara-config-suppressions-v1.json"),
-        `${JSON.stringify({
-          version: 1,
-          sectionHeaders: ['[plugins."historical-plugin@local"]'],
-        })}\n`,
-        "utf8",
-      );
-
-      const env = await buildCodexProcessEnv({
-        env: { SYNARA_HOME: runtimeHome },
-        homePath: tempDir,
-        platform: "darwin",
-      });
-
-      expect(env.CODEX_HOME).toBe(path.join(runtimeHome, "codex-home-overlay"));
-      const codexHome = env.CODEX_HOME;
-      if (typeof codexHome !== "string") {
-        throw new Error("Expected CODEX_HOME to be set.");
-      }
-      expect(readFileSync(path.join(codexHome, "config.toml"), "utf8")).toContain(
-        '[plugins."historical-plugin@local"]\nenabled = false',
-      );
-      for (const header of SYNARA_COMPETING_BROWSER_PLUGIN_SECTION_HEADERS) {
-        expect(readFileSync(path.join(codexHome, "config.toml"), "utf8")).toContain(
-          `${header}\nenabled = false`,
-        );
-        expect(readFileSync(path.join(tempDir, "config.toml"), "utf8")).toContain(
-          `${header}\nenabled = true`,
-        );
-      }
-      expect(readFileSync(path.join(tempDir, "config.toml"), "utf8")).toContain(
-        '[plugins."historical-plugin@local"]\nenabled = true',
-      );
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-      rmSync(runtimeHome, { recursive: true, force: true });
-    }
-  });
-
-  it("seeds markerless suppressions for conflicting local browser plugins", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "synara-codex-env-"));
-    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-runtime-home-"));
-    try {
-      const conflictingHeader = '[plugins."bridge-browser@local"]';
-      writeFileSync(
-        path.join(tempDir, "config.toml"),
-        [conflictingHeader, "enabled = true", "", '[plugins."other@local"]', "enabled = true"].join(
-          "\n",
-        ),
-        "utf8",
-      );
-
-      const overlayHome = path.join(runtimeHome, "codex-home-overlay");
-      const env = await buildCodexProcessEnv({
-        env: { SYNARA_HOME: runtimeHome },
-        homePath: tempDir,
-        platform: "darwin",
-      });
-
-      expect(env.CODEX_HOME).toBe(overlayHome);
-      const overlayConfig = readFileSync(path.join(overlayHome, "config.toml"), "utf8");
-      expect(overlayConfig).toContain(`${conflictingHeader}\nenabled = false`);
-      expect(overlayConfig).toContain('[plugins."other@local"]\nenabled = true');
-      expect(readFileSync(path.join(tempDir, "config.toml"), "utf8")).toContain(
-        `${conflictingHeader}\nenabled = true`,
-      );
-      const suppressionMarker = JSON.parse(
-        readFileSync(path.join(overlayHome, "synara-config-suppressions-v1.json"), "utf8"),
-      ) as { sectionHeaders?: string[] };
-      expect(suppressionMarker.sectionHeaders).toContain(conflictingHeader);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-      rmSync(runtimeHome, { recursive: true, force: true });
-    }
-  });
-
-  it("preserves a recorded suppression after its plugin disappears from source config", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "synara-codex-env-"));
-    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-runtime-home-"));
-    try {
-      writeFileSync(path.join(tempDir, "config.toml"), 'model = "gpt-5.5"', "utf8");
-
-      const overlayHome = path.join(runtimeHome, "codex-home-overlay");
-      mkdirSync(overlayHome, { recursive: true });
-      writeFileSync(
-        path.join(overlayHome, "synara-config-suppressions-v1.json"),
-        `${JSON.stringify({
-          version: 1,
-          sectionHeaders: ['[plugins."historical-plugin@local"]'],
-        })}\n`,
-        "utf8",
-      );
-
-      const env = await buildCodexProcessEnv({
-        env: { SYNARA_HOME: runtimeHome },
-        homePath: tempDir,
-        platform: "darwin",
-      });
-
-      const codexHome = env.CODEX_HOME;
-      if (typeof codexHome !== "string") {
-        throw new Error("Expected CODEX_HOME to be set.");
-      }
-      expect(readFileSync(path.join(codexHome, "config.toml"), "utf8")).toContain(
-        '[plugins."historical-plugin@local"]\nenabled = false',
-      );
-      expect(readFileSync(path.join(tempDir, "config.toml"), "utf8")).not.toContain(
-        "historical-plugin@local",
-      );
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-      rmSync(runtimeHome, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps Codex SQLite state out of Synara's Codex home overlay", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "synara-codex-env-"));
-    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-runtime-home-"));
-    const lstatOrUndefined = (target: string) => {
-      try {
-        return lstatSync(target);
-      } catch {
-        return undefined;
-      }
-    };
-    try {
-      writeFileSync(path.join(tempDir, "config.toml"), 'model = "gpt-5.5"', "utf8");
-      writeFileSync(path.join(tempDir, "history.jsonl"), "", "utf8");
-      const sourceSqliteEntries = [
-        "state_5.sqlite",
-        "state_5.sqlite-wal",
-        "state_5.sqlite-shm",
-        "memories_1.sqlite",
-      ];
-      for (const entry of sourceSqliteEntries) {
-        writeFileSync(path.join(tempDir, entry), "source-db", "utf8");
-      }
-
-      const overlayHome = path.join(runtimeHome, "codex-home-overlay");
-      mkdirSync(overlayHome, { recursive: true });
-      // Links left behind by releases that mirrored SQLite state per file,
-      // including a WAL sidecar whose source Codex has since checkpointed away.
-      const legacyLinks = ["state_5.sqlite", "thread_history_1.sqlite-wal"];
-      for (const entry of legacyLinks) {
-        symlinkSync(path.join(tempDir, entry), path.join(overlayHome, entry), "file");
-      }
-      const staleOverlayDbPath = path.join(overlayHome, "memories_1.sqlite");
-      writeFileSync(staleOverlayDbPath, "stale-overlay-db", "utf8");
-
-      const env = await buildCodexProcessEnv({
-        env: { SYNARA_HOME: runtimeHome },
-        homePath: tempDir,
-        platform: "darwin",
-      });
-
-      expect(env.CODEX_HOME).toBe(overlayHome);
-      expect(env.CODEX_SQLITE_HOME).toBe(tempDir);
-      for (const entry of [...sourceSqliteEntries, ...legacyLinks]) {
-        if (entry === "memories_1.sqlite") continue;
-        expect(lstatOrUndefined(path.join(overlayHome, entry))).toBeUndefined();
-      }
-      // A regular database file in the overlay is not Synara's to destroy.
-      expect(lstatSync(staleOverlayDbPath).isSymbolicLink()).toBe(false);
-      expect(readFileSync(staleOverlayDbPath, "utf8")).toBe("stale-overlay-db");
-      const overlayHistoryPath = path.join(overlayHome, "history.jsonl");
-      expect(lstatSync(overlayHistoryPath).isSymbolicLink()).toBe(true);
-      expect(readlinkSync(overlayHistoryPath)).toBe(path.join(tempDir, "history.jsonl"));
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-      rmSync(runtimeHome, { recursive: true, force: true });
-    }
-  });
-
-  it("repairs stale auth.json files in Synara's Codex home overlay", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "synara-codex-env-"));
-    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-runtime-home-"));
-    try {
-      const sourceAuthPath = path.join(tempDir, "auth.json");
-      writeFileSync(path.join(tempDir, "config.toml"), 'model = "gpt-5.5"', "utf8");
-      writeFileSync(sourceAuthPath, '{"tokens":{"access_token":"fresh"}}', "utf8");
-
-      const overlayHome = path.join(runtimeHome, "codex-home-overlay");
-      const overlayAuthPath = path.join(overlayHome, "auth.json");
-      mkdirSync(overlayHome, { recursive: true });
-      writeFileSync(overlayAuthPath, '{"tokens":{"access_token":"stale"}}', "utf8");
-
-      const env = await buildCodexProcessEnv({
-        env: { SYNARA_HOME: runtimeHome },
-        homePath: tempDir,
-        platform: "darwin",
-      });
-
-      expect(env.CODEX_HOME).toBe(overlayHome);
-      expect(lstatSync(overlayAuthPath).isSymbolicLink()).toBe(true);
-      expect(readlinkSync(overlayAuthPath)).toBe(sourceAuthPath);
-      expect(readFileSync(overlayAuthPath, "utf8")).toContain("fresh");
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-      rmSync(runtimeHome, { recursive: true, force: true });
-    }
-  });
-
-  it("preserves real generated image directories in Synara's Codex home overlay", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "synara-codex-env-"));
-    const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-runtime-home-"));
-    try {
-      writeFileSync(path.join(tempDir, "config.toml"), 'model = "gpt-5.5"', "utf8");
-      const sourceGeneratedImagesDir = path.join(tempDir, "generated_images");
-      mkdirSync(sourceGeneratedImagesDir, { recursive: true });
-      writeFileSync(path.join(sourceGeneratedImagesDir, "source.png"), "source-image", "utf8");
-
-      const overlayHome = path.join(runtimeHome, "codex-home-overlay");
-      const overlayGeneratedImagesDir = path.join(overlayHome, "generated_images");
-      mkdirSync(overlayGeneratedImagesDir, { recursive: true });
-      const overlayImagePath = path.join(overlayGeneratedImagesDir, "overlay.png");
-      writeFileSync(overlayImagePath, "overlay-image", "utf8");
-
-      const env = await buildCodexProcessEnv({
-        env: { SYNARA_HOME: runtimeHome },
-        homePath: tempDir,
-        platform: "darwin",
-      });
-
-      expect(env.CODEX_HOME).toBe(overlayHome);
-      expect(lstatSync(overlayGeneratedImagesDir).isDirectory()).toBe(true);
-      expect(readFileSync(overlayImagePath, "utf8")).toBe("overlay-image");
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-      rmSync(runtimeHome, { recursive: true, force: true });
     }
   });
 });
@@ -2685,10 +2431,10 @@ describe("CodexAppServerManager discovery", () => {
     ]);
   });
 
-  it("serializes a new MCP server write behind an in-flight overlay refresh", async () => {
+  it("serializes a new MCP server write behind an in-flight native-home migration", async () => {
     const manager = new CodexAppServerManager();
     const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-mcp-queue-runtime-"));
-    const overlayHome = path.join(runtimeHome, "codex-home-overlay");
+    const overlayHome = path.join(runtimeHome, ".codex");
     mkdirSync(overlayHome, { recursive: true });
     const previousSynaraHome = process.env.SYNARA_HOME;
     process.env.SYNARA_HOME = runtimeHome;
@@ -2732,7 +2478,7 @@ describe("CodexAppServerManager discovery", () => {
         command: "roblox-studio-mcp",
       });
 
-      // The overlay refresh is still in flight, so the write must wait.
+      // The native-home migration is still in flight, so the write must wait.
       await Promise.resolve();
       await Promise.resolve();
       expect(sendRequest).not.toHaveBeenCalled();
@@ -2754,10 +2500,10 @@ describe("CodexAppServerManager discovery", () => {
     }
   });
 
-  it("serializes writes for a profile-specific Codex overlay", async () => {
+  it("serializes writes for a profile-specific Codex home", async () => {
     const manager = new CodexAppServerManager();
     const runtimeHome = mkdtempSync(path.join(os.tmpdir(), "synara-mcp-profile-queue-runtime-"));
-    const profileOverlayHome = path.join(runtimeHome, "codex-home-overlays", "profile-1");
+    const profileOverlayHome = path.join(runtimeHome, "codex-profiles", "profile-1");
     mkdirSync(profileOverlayHome, { recursive: true });
 
     let releaseRefresh!: () => void;
@@ -4102,7 +3848,7 @@ describe("MCP tool call elicitation approvals", () => {
   const approvalParams = (persist: ReadonlyArray<string> | string = ["session"]) => ({
     threadId: "provider_parent",
     turnId: "turn_mcp",
-    serverName: "synara",
+    serverName: "synara_session1",
     mode: "form",
     message: "Allow Synara to launch the calculator?",
     requestedSchema: { type: "object", properties: {} },
@@ -4119,6 +3865,7 @@ describe("MCP tool call elicitation approvals", () => {
     const harness = createCollabNotificationHarness();
     const context = Object.assign(harness.context, {
       enableComputerControl: true,
+      gatewayMcpServerName: "synara_session1",
       activeInteractionMode: "default",
       gatewaySessionLease: { release: vi.fn() } as { release: () => void } | undefined,
     });
@@ -4147,11 +3894,11 @@ describe("MCP tool call elicitation approvals", () => {
   });
 
   it.each([
-    ['Allow the synara MCP server to run tool "computer_click"?', true],
-    ['Allow the synara MCP server to run tool "shell"?', false],
+    ['Allow the synara_session1 MCP server to run tool "computer_click"?', true],
+    ['Allow the synara_session1 MCP server to run tool "shell"?', false],
     ['Allow the other MCP server to run tool "computer_click"?', false],
     ["Please approve computer_click", false],
-    ['Allow the synara MCP server to run tool "computer_click"? Extra text', false],
+    ['Allow the synara_session1 MCP server to run tool "computer_click"? Extra text', false],
   ])(
     "handles the installed Codex approval envelope without tool_name: %s",
     async (message, accepted) => {
@@ -4169,6 +3916,8 @@ describe("MCP tool call elicitation approvals", () => {
 
   it.each([
     "other-server",
+    "legacy-name",
+    "missing-namespace",
     "disabled",
     "no-lease",
     "retired",
@@ -4183,6 +3932,12 @@ describe("MCP tool call elicitation approvals", () => {
     switch (condition) {
       case "other-server":
         params.serverName = "other";
+        break;
+      case "legacy-name":
+        params.serverName = "synara";
+        break;
+      case "missing-namespace":
+        Reflect.deleteProperty(context, "gatewayMcpServerName");
         break;
       case "disabled":
         context.enableComputerControl = false;
@@ -5578,6 +5333,7 @@ describe("handleServerNotification error normalization", () => {
     const retireTurn = vi.fn(() => Promise.resolve());
     const release = vi.fn();
     Object.assign(context, {
+      gatewayMcpServerName: "synara_child1",
       gatewaySessionLease: {
         connection: { url: "http://localhost/mcp", bearerToken: "token" },
         nativeMcpCalls,
@@ -5605,7 +5361,7 @@ describe("handleServerNotification error normalization", () => {
       item: {
         id: "child-call",
         type: "mcpToolCall",
-        server: "synara",
+        server: "synara_child1",
         tool: "write",
         arguments: { x: 1 },
       },

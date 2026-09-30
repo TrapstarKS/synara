@@ -40,14 +40,12 @@ export function resolveSynaraCodexHomeOverlayPath(
 
 /**
  * Returns the home directory that the codex app-server child process actually
- * writes under. Synara keeps its generated config isolated from the user's
- * source Codex home while linking shared state such as authentication.
+ * writes under. Interactive sessions use the user's normal Codex home, or the
+ * explicitly selected account home. Legacy overlays remain readable below.
  */
 export function resolveActiveCodexHomeWritePath(input: CodexHomePathsInput = {}): string {
   const env = input.env ?? process.env;
-  const source = resolveBaseCodexHomePath(env, input.homePath);
-  const overlay = resolveSynaraCodexHomeOverlayPath(env, source, input.profileId);
-  return path.resolve(source) === path.resolve(overlay) ? source : overlay;
+  return resolveBaseCodexHomePath(env, input.homePath);
 }
 
 /**

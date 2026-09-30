@@ -153,7 +153,6 @@ import { addSelectionToSide, startSelectionChat } from "../lib/selectionChat";
 import { waitForSidechatCreator } from "../lib/sidechatCreatorRegistry";
 import { isStudioContainerProject } from "../lib/studioProjects";
 import { resolveSubagentPresentationForThread } from "../lib/subagentPresentation";
-import { isLunaFastSubagent } from "../lib/threadModelSummary";
 import {
   insertInlineTerminalContextPlaceholder,
   type TerminalContextSelection,
@@ -4343,11 +4342,6 @@ export default function ChatView({
     snapshot: runtimeUsageContextWindow,
     status: contextWindowSelectionStatus,
   });
-  const forceFastModeBadge = isLunaFastSubagent({
-    provider: selectedProvider,
-    model: selectedModelForPickerWithCustomFallback,
-    parentThreadId: activeThread?.parentThreadId ?? null,
-  });
   const composerFooterControlsPlan = useMemo(
     () => composerFooterPlanForTier(composerFooterTier, Boolean(runtimeUsageContextWindow)),
     [composerFooterTier, runtimeUsageContextWindow],
@@ -4368,7 +4362,6 @@ export default function ChatView({
     modelOptions: selectedProviderModelOptions,
     ...(selectedRuntimeModel ? { runtimeModel: selectedRuntimeModel } : {}),
     runtimeAgents: dynamicAgents,
-    forceFastModeBadge,
   });
   const composerFooterPlanInputsKey = [
     composerFooterModelLabel,
@@ -4451,7 +4444,6 @@ export default function ChatView({
       prompt={prompt}
       onPromptChange={setPromptFromTraits}
       onProviderModelChange={onProviderModelSelect}
-      forceFastModeBadge={forceFastModeBadge}
       onSelectionCommitted={scheduleComposerFocus}
       open={isComposerModelEffortPickerOpen}
       onOpenChange={handleComposerModelEffortPickerOpenChange}

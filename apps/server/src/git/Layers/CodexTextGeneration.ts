@@ -10,6 +10,7 @@ import {
 } from "@synara/contracts";
 import { sanitizeGeneratedThreadTitle } from "@synara/shared/chatThreads";
 import { resolveCodexHome } from "@synara/shared/codexConfig";
+import { resolveCodexExecutable } from "@synara/shared/codexExecutable";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@synara/shared/git";
 
 import { resolveProviderAttachmentPath } from "../../provider/providerAttachmentPaths.ts";
@@ -342,7 +343,16 @@ const makeCodexTextGeneration = Effect.gen(function* () {
           ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
           "-",
         ];
-        const command = makeEffectProcessCommand(codexBinaryPath, args, {
+        const executable = resolveCodexExecutable(codexBinaryPath, { env, cwd });
+        if (!executable) {
+          return yield* normalizeCodexError(
+            codexBinaryPath,
+            operation,
+            new Error(`Command not found: ${codexBinaryPath}`),
+            "Could not start Codex",
+          );
+        }
+        const command = makeEffectProcessCommand(executable, args, {
           cwd,
           env,
           stdin: {

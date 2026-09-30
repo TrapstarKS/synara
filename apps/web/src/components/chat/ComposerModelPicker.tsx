@@ -96,8 +96,6 @@ type ComposerModelPickerProps = {
   hideModelLabel?: boolean;
   hideStatusLabel?: boolean;
   contextWindowLabel?: string | null;
-  /** UI-only badge for provider-native models whose service tier is runtime-defined. */
-  forceFastModeBadge?: boolean;
   disabled?: boolean;
   // "menu" (default) lists effort as a footer row; "slider" renders the ladder as a
   // stepped slider card in the footer instead.
@@ -397,9 +395,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
         modelLabel={modelLabel}
         statusLabel={resolveComposerTraitStatusLabel(currentTraitSelection)}
         contextWindowLabel={activeProvider === "claudeAgent" ? props.contextWindowLabel : null}
-        showsFastBadge={
-          props.forceFastModeBadge === true || showsComposerFastModeBadge(currentTraitSelection)
-        }
+        showsFastBadge={showsComposerFastModeBadge(currentTraitSelection)}
         hideModelLabel={props.hideModelLabel}
         hideStatusLabel={props.hideStatusLabel}
         disabled={props.disabled}

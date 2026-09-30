@@ -19,6 +19,7 @@ import {
 } from "@synara/contracts";
 import { deepMerge, type DeepPartial } from "@synara/shared/Struct";
 import { applyServerSettingsPatch } from "@synara/shared/serverSettings";
+import { isRetiredCodexExecutable } from "@synara/shared/codexExecutable";
 import {
   Cause,
   Deferred,
@@ -69,29 +70,33 @@ export interface ServerSettingsSnapshot {
   readonly settings: ServerSettings;
 }
 
-const SERVER_SETTINGS_MIGRATION_VERSION = 3;
+const SERVER_SETTINGS_MIGRATION_VERSION = 4;
 const PREVIOUS_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
 const PREVIOUS_LUNA_GIT_TEXT_GENERATION_MODEL = "gpt-5.6-luna";
 
 function migrateSettings(settings: ServerSettings, migrationVersion: number): ServerSettings {
   const selection = settings.textGenerationModelSelection;
   if (
-    selection.provider !== "codex" ||
-    !(
-      (migrationVersion < 2 && selection.model === PREVIOUS_GIT_TEXT_GENERATION_MODEL) ||
-      (migrationVersion < 3 && selection.model === PREVIOUS_LUNA_GIT_TEXT_GENERATION_MODEL)
-    )
+    selection.provider === "codex" &&
+    ((migrationVersion < 2 && selection.model === PREVIOUS_GIT_TEXT_GENERATION_MODEL) ||
+      (migrationVersion < 3 && selection.model === PREVIOUS_LUNA_GIT_TEXT_GENERATION_MODEL))
   ) {
-    return settings;
+    settings = {
+      ...settings,
+      textGenerationModelSelection: { ...selection, model: DEFAULT_GIT_TEXT_GENERATION_MODEL },
+    };
   }
 
-  return {
-    ...settings,
-    textGenerationModelSelection: {
-      ...selection,
-      model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
-    },
-  };
+  if (migrationVersion < 4 && isRetiredCodexExecutable(settings.providers.codex.binaryPath)) {
+    settings = {
+      ...settings,
+      providers: {
+        ...settings.providers,
+        codex: { ...settings.providers.codex, binaryPath: "codex" },
+      },
+    };
+  }
+  return settings;
 }
 
 export function toServerSettingsView(settings: ServerSettings): ServerSettingsView {

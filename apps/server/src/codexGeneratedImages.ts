@@ -14,6 +14,7 @@ import {
   type ThreadId,
 } from "@synara/contracts";
 import { isSupportedLocalImagePath as isSupportedLocalImagePathShared } from "@synara/shared/localPreviewFiles";
+import { encodeFilePathForUrl } from "@synara/shared/fileUrls";
 
 import {
   resolveActiveCodexHomeWritePath,
@@ -69,8 +70,8 @@ export const isSupportedLocalImagePath = isSupportedLocalImagePathShared;
 
 /**
  * Resolves the home directory the codex app-server child process actually
- * writes images under for the current process env. Synara uses its isolated
- * Codex overlay, not the user's source `~/.codex` directory.
+ * writes images under for the current process env: the native Codex home or
+ * the explicitly selected account home.
  */
 export function resolveCodexHomePath(homePath?: string, profileId?: CodexProfileId): string {
   return resolveActiveCodexHomeWritePath({
@@ -79,7 +80,7 @@ export function resolveCodexHomePath(homePath?: string, profileId?: CodexProfile
   });
 }
 
-/** The single generated-images directory we predict against (overlay-aware). */
+/** The generated-images directory used by new sessions. */
 export function resolveCodexGeneratedImagesRoot(
   homePath?: string,
   profileId?: CodexProfileId,
@@ -264,12 +265,7 @@ export function isCodexGeneratedImageArtifact(
 }
 
 export function markdownImagePath(filePath: string): string {
-  const trimmed = filePath.trim();
-  if (trimmed.includes(")") || trimmed.includes(" ") || trimmed.includes("%")) {
-    const escaped = trimmed.replaceAll("%", "%25").replaceAll(">", "%3E").replaceAll(")", "%29");
-    return `<${escaped}>`;
-  }
-  return trimmed;
+  return encodeFilePathForUrl(filePath.trim());
 }
 
 export function generatedImageMarkdown(filePath: string): string {

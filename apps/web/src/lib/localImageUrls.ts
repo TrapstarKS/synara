@@ -10,6 +10,7 @@ import {
   SUPPORTED_LOCAL_IMAGE_EXTENSION_REGEX,
 } from "@synara/shared/localPreviewFiles";
 import { isLocalAbsolutePath, isWindowsAbsolutePath } from "@synara/shared/path";
+import { parseFileUrlHref } from "@synara/shared/fileUrls";
 
 import { resolveWsHttpUrl } from "./wsHttpUrl";
 
@@ -20,12 +21,8 @@ function normalizeMarkdownImagePath(src: string): string {
 
 function decodeMarkdownImagePath(src: string): string {
   const trimmed = src.trim();
-  if (trimmed.startsWith("file://")) {
-    try {
-      return decodeURIComponent(new URL(trimmed).pathname);
-    } catch {
-      return trimmed;
-    }
+  if (/^file:/i.test(trimmed)) {
+    return parseFileUrlHref(trimmed)?.path ?? trimmed;
   }
   try {
     return decodeURIComponent(trimmed);
@@ -93,6 +90,9 @@ export function buildLocalImageUrl(input: {
 
 export function localImageFileName(src: string): string {
   const normalized = normalizeMarkdownImagePath(src);
-  const slash = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  // A backslash can be part of a macOS/POSIX filename, rather than a separator.
+  const slash = normalized.startsWith("/")
+    ? normalized.lastIndexOf("/")
+    : Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
   return slash >= 0 ? normalized.slice(slash + 1) : normalized;
 }

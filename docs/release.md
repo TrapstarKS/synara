@@ -70,9 +70,14 @@ helper still checks its source fingerprint and signature before reusing a cached
 binary; publication signs a separate staging copy. A local Apple Silicon probe
 measured 98.08s for a cold build and 0.69s for a cache hit, with byte-identical
 outputs. Corrupt-cache recovery rebuilt and verified the helper. These are local
-observations, not hosted-runner timing guarantees. The macOS runtime archive is
-also excluded from the redundant `prod-resources` copy while remaining in its
-existing packaged runtime location; production icon copies remain available.
+observations, not hosted-runner timing guarantees. The retired Codex Luna Max Fast
+archive is no longer downloaded or packaged. Production icon copies remain available.
+
+Both native release jobs run local-image path and Codex-home regressions, then
+install official Codex `0.159.2` in the runner's temporary directory for an
+opt-in startup/MCP smoke. This checks the normal home, process-local config,
+authenticated MCP discovery, and process teardown without an account login or
+model turn. The test CLI is not included in the desktop artifact.
 
 ### Verification record: September 19, 2026
 

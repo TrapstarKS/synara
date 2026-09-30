@@ -64,11 +64,7 @@ import {
   MINIMUM_CODEX_EXCLUDE_TURNS_CLI_VERSION,
   parseCodexCliVersion,
 } from "./provider/codexCliVersion";
-import {
-  buildCodexMcpConfigToml,
-  SYNARA_AGENT_GATEWAY_TOKEN_ENV,
-  SYNARA_MCP_SERVER_NAME,
-} from "./agentGateway/mcpInjection.ts";
+import { SYNARA_AGENT_GATEWAY_TOKEN_ENV } from "./agentGateway/mcpInjection.ts";
 import { shouldAllowSynaraComputerProviderTool } from "./agentGateway/computerToolPermission.ts";
 import {
   SYNARA_GATEWAY_HARNESS_POLICY,
@@ -81,9 +77,12 @@ import {
 } from "./agentGateway/sessionLease.ts";
 import { CodexSessionStartError, isNonFatalCodexErrorMessage } from "./codexErrorClassification.ts";
 import { buildCodexProcessEnv, serializeCodexConfigAccess } from "./codexProcessEnv.ts";
+import { buildCodexRuntimeConfig } from "./codexRuntimeConfig.ts";
+import { migrateLegacyCodexHome } from "./codexLegacyHome.ts";
+import { resolveCodexExecutable } from "@synara/shared/codexExecutable";
 import { resolveCodexServiceTier } from "./codexServiceTier.ts";
 import { assertCodexWorkingDirectoryExists } from "./codexWorkingDirectory.ts";
-import { executableIdentity, resolveExecutable } from "./executableLookup.ts";
+import { executableIdentity } from "./executableLookup.ts";
 import {
   teardownChildProcessTree,
   teardownProviderProcessTree,
@@ -211,6 +210,8 @@ type CodexSessionApprovalOverride = {
 interface CodexSessionContext {
   readonly enableComputerControl?: boolean;
   readonly gatewaySessionLease?: AgentGatewaySessionLease;
+  /** Exact process-local MCP namespace that owns this runtime's gateway lease. */
+  readonly gatewayMcpServerName?: string;
   /** The only process-environment value needed to serialize MCP config writes. */
   readonly codexHomePath?: string;
   /** Set once this runtime's bearer is permanently fenced to a terminal turn. */
@@ -846,13 +847,21 @@ function spawnCodexAppServer(input: {
   readonly binaryPath: string;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly configOverrides?: readonly string[];
 }): ChildProcessWithoutNullStreams {
-  return spawnProcess(input.binaryPath, ["app-server"], {
-    requireExecutable: true,
-    cwd: input.cwd,
-    env: input.env,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const binaryPath = resolveCodexExecutable(input.binaryPath, { env: input.env, cwd: input.cwd });
+  if (!binaryPath)
+    throw new Error(`Codex CLI (${input.binaryPath}) is not installed or not executable.`);
+  return spawnProcess(
+    binaryPath,
+    ["app-server", ...(input.configOverrides ?? []).flatMap((value) => ["-c", value])],
+    {
+      requireExecutable: true,
+      cwd: input.cwd,
+      env: input.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
 }
 
 // Codex `config/value/write` persists into the app-server process CODEX_HOME.
@@ -907,6 +916,7 @@ export function buildCodexCollaborationMode(input: {
   readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: string;
+  readonly gatewayMcpServerName?: string;
 }):
   | {
       mode: "default" | "plan";
@@ -922,25 +932,28 @@ export function buildCodexCollaborationMode(input: {
   }
   const model = normalizeCodexModelSlug(input.model) ?? "gpt-5.3-codex";
   const nativeMode = input.interactionMode === "plan" ? "plan" : "default";
-  const instructions =
+  const baseInstructions =
     nativeMode === "plan"
       ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
       : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS;
+  const instructions =
+    input.enableComputerControl === true
+      ? baseInstructions.replace(
+          SYNARA_GATEWAY_HARNESS_POLICY,
+          renderSynaraHarnessPolicy({
+            gatewayControlAvailable: true,
+            enableComputerControl: true,
+          }),
+        )
+      : baseInstructions;
   return {
     mode: nativeMode,
     settings: {
       model,
       reasoning_effort: input.effort ?? "medium",
-      developer_instructions:
-        input.enableComputerControl === true
-          ? instructions.replace(
-              SYNARA_GATEWAY_HARNESS_POLICY,
-              renderSynaraHarnessPolicy({
-                gatewayControlAvailable: true,
-                enableComputerControl: true,
-              }),
-            )
-          : instructions,
+      developer_instructions: input.gatewayMcpServerName
+        ? instructions.replaceAll("mcp__synara__", `mcp__${input.gatewayMcpServerName}__`)
+        : instructions,
     },
   };
 }
@@ -1184,25 +1197,29 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     );
   }
 
-  // The Synara MCP server rides on the shared overlay config (no secrets),
-  // while the per-thread bearer token travels through the app-server process
-  // env referenced by `bearer_token_env_var`.
-  private async buildSessionProcessEnv(
+  // Gateway settings are process-local; the normal Codex config remains the
+  // user's own. Bearer tokens never enter config files or command arguments.
+  private async buildSessionProcess(
     homePath: string | undefined,
     profileId: CodexProfileId | undefined,
     gatewayBearerToken: string | undefined,
   ) {
+    await migrateLegacyCodexHome({
+      ...(homePath ? { homePath } : {}),
+      ...(profileId ? { profileId } : {}),
+    });
     const env = await buildCodexProcessEnv({
       ...(homePath ? { homePath } : {}),
       ...(profileId ? { profileId } : {}),
-      ...(this.agentGatewayMcp
-        ? { appendConfigToml: buildCodexMcpConfigToml(this.agentGatewayMcp.endpointUrl()) }
-        : {}),
     });
     if (gatewayBearerToken) {
       env[SYNARA_AGENT_GATEWAY_TOKEN_ENV] = gatewayBearerToken;
     }
-    return env;
+    const config = await buildCodexRuntimeConfig({
+      homePath: env.CODEX_HOME!,
+      ...(this.agentGatewayMcp ? { endpointUrl: this.agentGatewayMcp.endpointUrl() } : {}),
+    });
+    return { env, ...config };
   }
 
   // Registers `~/.synara/skills` as a codex skill root so portable skills are
@@ -1297,7 +1314,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadId,
         input.agentGatewayCapabilityInput,
       );
-      const processEnv = await this.buildSessionProcessEnv(
+      const { env: processEnv, ...runtimeConfig } = await this.buildSessionProcess(
         codexHomePath,
         codexProfileId,
         gatewaySessionLease?.connection.bearerToken,
@@ -1306,6 +1323,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
         env: processEnv,
+        configOverrides: runtimeConfig.configOverrides,
       });
 
       context = {
@@ -1313,6 +1331,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           gatewaySessionLease !== undefined &&
           input.agentGatewayCapabilityInput.enableComputerControl === true,
         ...(gatewaySessionLease ? { gatewaySessionLease } : {}),
+        ...(runtimeConfig.gatewayMcpServerName
+          ? { gatewayMcpServerName: runtimeConfig.gatewayMcpServerName }
+          : {}),
         ...(processEnv.CODEX_HOME?.trim() ? { codexHomePath: processEnv.CODEX_HOME.trim() } : {}),
         session,
         ...(input.lifecycleGeneration !== undefined
@@ -1618,6 +1639,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     const collaborationMode = buildCodexCollaborationMode({
       enableComputerControl: context.enableComputerControl === true,
+      ...(context.gatewayMcpServerName
+        ? { gatewayMcpServerName: context.gatewayMcpServerName }
+        : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
@@ -2208,7 +2232,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       gatewaySessionLease = this.agentGatewayMcp?.acquireSessionLease(threadId, {
         enableComputerControl: input.enableComputerControl === true,
       });
-      const processEnv = await this.buildSessionProcessEnv(
+      const { env: processEnv, ...runtimeConfig } = await this.buildSessionProcess(
         codexHomePath,
         codexProfileId,
         gatewaySessionLease?.connection.bearerToken,
@@ -2218,12 +2242,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
         env: processEnv,
+        configOverrides: runtimeConfig.configOverrides,
       });
 
       context = {
         enableComputerControl:
           gatewaySessionLease !== undefined && input.enableComputerControl === true,
         ...(gatewaySessionLease ? { gatewaySessionLease } : {}),
+        ...(runtimeConfig.gatewayMcpServerName
+          ? { gatewayMcpServerName: runtimeConfig.gatewayMcpServerName }
+          : {}),
         ...(processEnv.CODEX_HOME?.trim() ? { codexHomePath: processEnv.CODEX_HOME.trim() } : {}),
         ...(input.lifecycleGeneration !== undefined
           ? { lifecycleGeneration: input.lifecycleGeneration }
@@ -2962,6 +2990,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   async addMcpServer(input: ProviderAddMcpServerInput): Promise<ProviderMcpServerActionResult> {
     const context = await this.resolveContextForDiscovery(input.threadId);
     const name = validateMcpServerName(input.name);
+    if (name === context.gatewayMcpServerName)
+      throw new Error("The built-in Synara MCP server cannot be changed.");
     await runOnMcpConfigOverlay(context, async () => {
       await this.sendRequest<Record<string, unknown>>(context, "config/value/write", {
         keyPath: `mcp_servers.${name}`,
@@ -2995,6 +3025,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     name: string,
     enabled: boolean,
   ): Promise<void> {
+    if (name === context.gatewayMcpServerName)
+      throw new Error("The built-in Synara MCP server cannot be changed.");
     await runOnMcpConfigOverlay(context, async () => {
       await this.sendRequest<Record<string, unknown>>(context, "config/value/write", {
         keyPath: `mcp_servers.${name}.enabled`,
@@ -3025,7 +3057,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         },
       );
       const parsed = parseCodexMcpServerListResponse(response);
-      for (const server of parsed.servers) servers.set(server.name, server);
+      for (const server of parsed.servers) {
+        if (server.name !== context.gatewayMcpServerName) servers.set(server.name, server);
+      }
       if (!parsed.nextCursor || cursors.has(parsed.nextCursor)) break;
       cursors.add(parsed.nextCursor);
       cursor = parsed.nextCursor;
@@ -3298,14 +3332,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       cwd: normalizedCwd,
       ...(providerOptions?.codex?.homePath ? { homePath: providerOptions.codex.homePath } : {}),
     });
+    await migrateLegacyCodexHome({
+      ...(providerOptions?.codex?.homePath ? { homePath: providerOptions.codex.homePath } : {}),
+      ...(providerOptions?.codex?.profileId ? { profileId: providerOptions.codex.profileId } : {}),
+    });
     const processEnv = await buildCodexProcessEnv({
       ...(providerOptions?.codex?.homePath ? { homePath: providerOptions.codex.homePath } : {}),
       ...(providerOptions?.codex?.profileId ? { profileId: providerOptions.codex.profileId } : {}),
     });
+    const runtimeConfig = await buildCodexRuntimeConfig({ homePath: processEnv.CODEX_HOME! });
     const child = this.spawnAppServer({
       binaryPath: providerOptions?.codex?.binaryPath ?? "codex",
       cwd: normalizedCwd,
       env: processEnv,
+      configOverrides: runtimeConfig.configOverrides,
     });
     const context: CodexSessionContext = {
       ...(processEnv.CODEX_HOME?.trim() ? { codexHomePath: processEnv.CODEX_HOME.trim() } : {}),
@@ -3878,7 +3918,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (
         notification.method === "item/started" &&
         item?.type === "mcpToolCall" &&
-        item.server === SYNARA_MCP_SERVER_NAME &&
+        context.gatewayMcpServerName !== undefined &&
+        item.server === context.gatewayMcpServerName &&
         callId &&
         nativeTurnId &&
         typeof item.tool === "string"
@@ -4136,7 +4177,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.isMcpToolCallApprovalRequest(request.params);
     if (
       isMcpToolCallApproval &&
-      this.readString(request.params, "serverName") === SYNARA_MCP_SERVER_NAME &&
+      context.gatewayMcpServerName !== undefined &&
+      this.readString(request.params, "serverName") === context.gatewayMcpServerName &&
       context.gatewaySessionLease !== undefined &&
       context.gatewayCredentialRetired !== true &&
       !context.stopping &&
@@ -4606,9 +4648,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     // Current Codex builds omit tool_name from native MCP approvals. Accept
     // only their complete generated message, after checking the reserved
     // server and native approval kind above; never infer from descriptions.
-    const name = /^Allow the synara MCP server to run tool "([a-z_]+)"\?$/.exec(
-      this.readString(params, "message") ?? "",
-    )?.[1];
+    const prefix = `Allow the ${this.readString(params, "serverName")} MCP server to run tool "`;
+    const message = this.readString(params, "message") ?? "";
+    const name = message.startsWith(prefix)
+      ? /^([a-z_]+)"\?$/.exec(message.slice(prefix.length))?.[1]
+      : undefined;
     return name === undefined ? undefined : `mcp__synara__${name}`;
   }
 
@@ -5118,10 +5162,14 @@ async function runCodexCliVersionGate(input: {
   // `buildCodexProcessEnv` can replace PATH with the login shell's, so resolving through the
   // process environment could fingerprint a different `codex` than the one being probed — or
   // none at all — and the staleness check would then be watching the wrong file.
-  const resolvedPath = resolveExecutable(input.binaryPath, { env });
+  const resolvedPath = resolveCodexExecutable(input.binaryPath, { env, cwd: input.cwd });
+  if (!resolvedPath) {
+    assertCodexWorkingDirectoryExists(input.cwd);
+    throw new Error(`Codex CLI (${input.binaryPath}) is not installed or not executable.`);
+  }
   const identity = resolvedPath ? executableIdentity(resolvedPath) : null;
   const result = await runCodexVersionCommand({
-    binaryPath: input.binaryPath,
+    binaryPath: resolvedPath,
     cwd: input.cwd,
     env,
   });

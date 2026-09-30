@@ -9,6 +9,8 @@ import { Effect, FileSystem, Path } from "effect";
 // Contents/Resources. Copying them into the runtime tree would ship megabytes
 // of artwork the app never resolves.
 const BUNDLE_ONLY_RESOURCE_ENTRIES = new Set(["dmgly", "Assets.car", "Synara.icns"]);
+// Old local build output must not reintroduce the retired fork into an artifact.
+const RETIRED_CODEX_ARCHIVE = "codex-luna-max-fast-aarch64-apple-darwin.tar.gz";
 
 export const stageDesktopRuntimeResources = Effect.fn("stageDesktopRuntimeResources")(function* (
   buildResourcesDir: string,
@@ -21,7 +23,7 @@ export const stageDesktopRuntimeResources = Effect.fn("stageDesktopRuntimeResour
   const entries = yield* fs.readDirectory(buildResourcesDir);
   yield* fs.makeDirectory(runtimeResourcesDir, { recursive: true });
   for (const entry of entries) {
-    if (BUNDLE_ONLY_RESOURCE_ENTRIES.has(entry)) continue;
+    if (BUNDLE_ONLY_RESOURCE_ENTRIES.has(entry) || entry === RETIRED_CODEX_ARCHIVE) continue;
     yield* fs.copy(path.join(buildResourcesDir, entry), path.join(runtimeResourcesDir, entry));
   }
 });

@@ -15,7 +15,6 @@ import {
   createDesktopBundleFilePatterns,
   preserveDependencyDiagnostics,
 } from "./desktop-bundle-files.ts";
-import { MANAGED_CODEX_RUNTIME_MANIFEST } from "@synara/shared/managedCodexRuntime";
 
 export const MICROPHONE_USAGE_DESCRIPTION =
   "Synara needs microphone access so you can record voice notes and transcribe them into the chat composer.";
@@ -28,9 +27,6 @@ export const MAC_APPSNAP_HELPER_ASAR_EXCLUSION = "!apps/desktop/native/appsnap/b
 export const MAC_APPSNAP_HELPER_BUNDLE_PATH = "Contents/Helpers/synara-appsnap-helper";
 export const MAC_DEVICE_HELPER_STAGE_PATH = "apps/server/dist/device-helper";
 export const MAC_DEVICE_HELPER_RESOURCE_PATH = "Resources/device-helper";
-export const MAC_CODEX_RUNTIME_STAGE_PATH = `apps/desktop/resources/${MANAGED_CODEX_RUNTIME_MANIFEST.assetFileName}`;
-export const MAC_CODEX_RUNTIME_RESOURCE_PATH = `Resources/${MANAGED_CODEX_RUNTIME_MANIFEST.assetFileName}`;
-export const MAC_CODEX_RUNTIME_ASAR_EXCLUSION = `!${MAC_CODEX_RUNTIME_STAGE_PATH}`;
 export const WINDOWS_INSTALLER_GUID = SYNARA_STABLE_WINDOWS_INSTALLER_GUID;
 // Asset catalog name of the compiled Icon Composer icon. macOS 26 reads
 // CFBundleIconName out of Assets.car and renders that layered icon with the
@@ -114,7 +110,6 @@ export function createDesktopPlatformBuildConfig(
 
   if (input.platform === "mac") {
     const macSigningMode = input.macSigningMode ?? "developer-id";
-    const includeManagedCodexRuntime = input.arch === "arm64" || input.arch === "universal";
     const mac = {
       target: input.target === "dmg" ? [input.target, "zip"] : [input.target],
       icon: MAC_DMG_ICON_PATH,
@@ -170,12 +165,7 @@ export function createDesktopPlatformBuildConfig(
         // macOS auto-updates use the separately finalized ZIP artifact.
         writeUpdateInfo: false,
       },
-      files: [
-        ...files,
-        MAC_APPSNAP_HELPER_ASAR_EXCLUSION,
-        "!apps/desktop/resources/cua-driver/**",
-        ...(includeManagedCodexRuntime ? [MAC_CODEX_RUNTIME_ASAR_EXCLUSION] : []),
-      ],
+      files: [...files, MAC_APPSNAP_HELPER_ASAR_EXCLUSION, "!apps/desktop/resources/cua-driver/**"],
       extraFiles: [
         { from: "apps/desktop/resources/cua-driver", to: "Resources/cua-driver" },
         {
@@ -192,14 +182,6 @@ export function createDesktopPlatformBuildConfig(
           from: MAC_ICON_ASSETS_CAR_STAGE_PATH,
           to: MAC_ICON_ASSETS_CAR_BUNDLE_PATH,
         },
-        ...(includeManagedCodexRuntime
-          ? [
-              {
-                from: MAC_CODEX_RUNTIME_STAGE_PATH,
-                to: MAC_CODEX_RUNTIME_RESOURCE_PATH,
-              },
-            ]
-          : []),
       ],
       mac,
     };

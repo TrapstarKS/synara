@@ -4,9 +4,14 @@ import {
   buildLocalImageUrl,
   isLocalImageMarkdownSrc,
   localImageAbsolutePath,
+  localImageFileName,
 } from "./localImageUrls";
 
 describe("local image URL helpers", () => {
+  it("preserves literal backslashes in POSIX download names while recognizing Windows separators", () => {
+    expect(localImageFileName("/Users/me/image%5Cpreview.png")).toBe(String.raw`image\preview.png`);
+    expect(localImageFileName(String.raw`C:\Users\me\image.png`)).toBe("image.png");
+  });
   afterEach(() => {
     delete (globalThis as { window?: unknown }).window;
   });
@@ -74,6 +79,29 @@ describe("local image URL helpers", () => {
         cacheKey: 3,
       }),
     ).toBe("/api/local-image?path=preview.png&cwd=%2FUsers%2Fme%2Fproject&v=3");
+  });
+
+  it.each([
+    [
+      "file://server/share/.synara/image%20%2520%281%29.png",
+      "//server/share/.synara/image %20(1).png",
+    ],
+    [
+      "FILE:///C:/Users/Jos%C3%A9/.synara/image%20%2520%281%29.png",
+      "C:/Users/José/.synara/image %20(1).png",
+    ],
+    ["/Users/Jos%C3%A9/.synara/image%20%2520%281%29.png", "/Users/José/.synara/image %20(1).png"],
+  ])("uses the same file for preview, download, filename and grant: %s", (src, path) => {
+    for (const download of [false, true]) {
+      const url = new URL(
+        buildLocalImageUrl({ src, cwd: undefined, download }),
+        "http://localhost",
+      );
+      expect(url.searchParams.get("path")).toBe(path);
+      expect(url.searchParams.get("download")).toBe(download ? "1" : null);
+    }
+    expect(localImageAbsolutePath(src)).toBe(path);
+    expect(localImageFileName(src)).toBe("image %20(1).png");
   });
 
   it("forwards the desktop bridge legacy token so <img> requests stay authenticated", () => {

@@ -61,7 +61,7 @@ describe("ServerSettingsService", () => {
     expect(result.updated.providers.codex.binaryPath).toBe("/usr/local/bin/codex");
     expect(result.parsed).toMatchObject({
       revision: 1,
-      migrationVersion: 3,
+      migrationVersion: 4,
       settings: {
         enableAssistantStreaming: true,
         enableProviderUpdateChecks: false,
@@ -112,9 +112,57 @@ describe("ServerSettingsService", () => {
     );
 
     expect(result.settings.textGenerationModelSelection.model).toBe(expected);
-    expect(result.persisted.migrationVersion).toBe(3);
+    expect(result.persisted.migrationVersion).toBe(4);
     expect(result.persisted.settings.textGenerationModelSelection.model).toBe(expected);
   });
+
+  it.each([
+    ["/Users/test/.synara/bin/codex-luna-max-fast", "codex"],
+    [String.raw`C:\Users\test\.synara\bin\codex-luna-max-fast.exe`, "codex"],
+    ["/opt/custom/codex", "/opt/custom/codex"],
+  ])(
+    "migrates a retired Codex binary without changing selected models: %s",
+    async (binaryPath, expected) => {
+      const settings = await runWithSettings(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsService;
+          const { settingsPath } = yield* ServerConfig;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(dirname(settingsPath), { recursive: true });
+          yield* fs.writeFileString(
+            settingsPath,
+            JSON.stringify({
+              revision: 2,
+              migrationVersion: 3,
+              settings: {
+                providers: {
+                  codex: {
+                    binaryPath,
+                    homePath: "/selected/account",
+                    customModels: ["custom-model"],
+                  },
+                },
+                textGenerationModelSelection: {
+                  provider: "codex",
+                  model: "gpt-6-luna",
+                  options: { reasoningEffort: "max", fastMode: false },
+                },
+              },
+            }),
+          );
+          yield* service.start;
+          return yield* service.getSettings;
+        }),
+      );
+      expect(settings.providers.codex.binaryPath).toBe(expected);
+      expect(settings.providers.codex.homePath).toBe("/selected/account");
+      expect(settings.providers.codex.customModels).toEqual(["custom-model"]);
+      expect(settings.textGenerationModelSelection).toMatchObject({
+        model: "gpt-6-luna",
+        options: { reasoningEffort: "max", fastMode: false },
+      });
+    },
+  );
 
   it("migrates a removed Kilo text-generation selection to OpenCode", async () => {
     const result = await runWithSettings(

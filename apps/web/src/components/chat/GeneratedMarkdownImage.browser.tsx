@@ -1,4 +1,5 @@
 import type { NativeApi } from "@synara/contracts";
+import { encodeFilePathForUrl } from "@synara/shared/fileUrls";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HttpResponse, http } from "msw";
 import { setupWorker } from "msw/browser";
@@ -8,6 +9,7 @@ import { render } from "vitest-browser-react";
 import { downloadUrlAsBlob } from "~/lib/browserDownload";
 import { projectLocalPreviewGrantQueryOptions } from "~/lib/projectReactQuery";
 import { GeneratedMarkdownImage } from "./GeneratedMarkdownImage";
+import ChatMarkdown from "../ChatMarkdown";
 
 vi.mock("~/lib/browserDownload", () => ({
   downloadUrlAsBlob: vi.fn(async ({ url }: { url: string }) => {
@@ -95,6 +97,52 @@ async function expectReady() {
     { timeout: 5_000 },
   );
 }
+
+it.each([
+  {
+    label: "persisted Windows Markdown",
+    markdown: String.raw`![Generated image](<C:\Users\pedro\.synara\generated_images\image (100%25%29.png>)`,
+    path: "C:/Users/pedro/.synara/generated_images/image (100%).png",
+  },
+  {
+    label: "new Windows Markdown",
+    markdown: `![Generated image](${encodeFilePathForUrl(String.raw`C:\Users\pedro\.codex\generated_images\image (100%).png`)})`,
+    path: "C:/Users/pedro/.codex/generated_images/image (100%).png",
+  },
+  {
+    label: "new macOS Markdown",
+    markdown: `![Generated image](${encodeFilePathForUrl("/Users/tester/.codex/generated_images/image (100%) &copy; #1.png")})`,
+    path: "/Users/tester/.codex/generated_images/image (100%) &copy; #1.png",
+  },
+])("previews, expands, downloads and reopens $label", async ({ markdown, path }) => {
+  const expand = vi.fn();
+  const chat = (text: string) => (
+    <QueryClientProvider client={client}>
+      <ChatMarkdown text={text} cwd={undefined} onImageExpand={expand} />
+    </QueryClientProvider>
+  );
+  const screen = await render(chat(markdown));
+  await expectReady();
+  expect(createLocalFilePreviewGrant).toHaveBeenCalledWith({ path });
+  expect(requests.every((url) => url.searchParams.get("path") === path)).toBe(true);
+
+  await screen.getByRole("button", { name: "Expand generated image" }).click();
+  await vi.waitFor(() => expect(expand).toHaveBeenCalledOnce());
+  const expandedUrl = new URL(expand.mock.calls[0]![0].images[0].src);
+  expect(expandedUrl.searchParams.get("path")).toBe(path);
+  expect((await fetch(expandedUrl)).status).toBe(200);
+
+  await screen.getByRole("link", { name: "Download generated image" }).click();
+  await vi.waitFor(() => expect(downloadUrlAsBlob).toHaveBeenCalledOnce());
+  await vi.mocked(downloadUrlAsBlob).mock.results[0]?.value;
+  expect(requests.some((url) => url.searchParams.get("download") === "1")).toBe(true);
+  expect(requests.every((url) => url.searchParams.get("path") === path)).toBe(true);
+
+  await screen.rerender(chat("Conversation closed"));
+  await screen.rerender(chat(markdown));
+  await expectReady();
+  expect(requests.every((url) => url.searchParams.get("path") === path)).toBe(true);
+});
 
 it("does not poll or reload a loaded image when another consumer renews its grant", async () => {
   await render(image(desktopPath));

@@ -91,7 +91,6 @@ export function resolveTraitsTriggerSummary(options: {
   modelOptions: ProviderOptions | null | undefined;
   runtimeModel?: ProviderModelDescriptor | undefined;
   runtimeAgents: ReadonlyArray<ProviderAgentDescriptor> | null | undefined;
-  forceFastModeBadge?: boolean;
 }): {
   contextWindowLabel: string | null;
   primaryLabel: string | null;
@@ -136,9 +135,7 @@ export function resolveTraitsTriggerSummary(options: {
   // Agent name stands in as the primary label for agent-driven providers
   // (opencode) that expose no effort/thinking controls.
   const resolvedPrimaryLabel = primaryLabel ?? agentLabel;
-  const showsFastBadge =
-    (options.forceFastModeBadge === true || showsComposerFastModeBadge(selection)) &&
-    !isFastOnlyControl;
+  const showsFastBadge = showsComposerFastModeBadge(selection) && !isFastOnlyControl;
   const summaryText = [resolvedPrimaryLabel, showsFastBadge ? "Fast" : null, contextWindowLabel]
     .filter((value): value is string => Boolean(value))
     .join(" · ");
@@ -286,8 +283,6 @@ export interface TraitsMenuContentProps {
   runtimeAgents?: ReadonlyArray<ProviderAgentDescriptor> | null | undefined;
   prompt: string;
   onPromptChange: (prompt: string) => void;
-  /** UI-only badge for provider-native models whose service tier is runtime-defined. */
-  forceFastModeBadge?: boolean;
   includeFastMode?: boolean;
   // Drop the Effort ladder and the Speed section; the slider card renders both
   // itself and only needs the remaining trait sections (thinking, context, agent).
@@ -492,7 +487,6 @@ export const TraitsPicker = memo(function TraitsPicker({
   runtimeAgents,
   prompt,
   onPromptChange,
-  forceFastModeBadge,
   includeFastMode: includeFastModeProp,
   modelOptions,
   open,
@@ -570,7 +564,6 @@ export const TraitsPicker = memo(function TraitsPicker({
     modelOptions,
     runtimeModel,
     runtimeAgents,
-    ...(forceFastModeBadge !== undefined ? { forceFastModeBadge } : {}),
   });
 
   const isCodexStyle = provider === "codex";

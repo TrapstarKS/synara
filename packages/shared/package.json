@@ -240,6 +240,10 @@
       "types": "./src/path.ts",
       "import": "./src/path.ts"
     },
+    "./fileUrls": {
+      "types": "./src/fileUrls.ts",
+      "import": "./src/fileUrls.ts"
+    },
     "./text": {
       "types": "./src/text.ts",
       "import": "./src/text.ts"
@@ -304,9 +308,9 @@
       "types": "./src/migrationRecovery.ts",
       "import": "./src/migrationRecovery.ts"
     },
-    "./managedCodexRuntime": {
-      "types": "./src/managedCodexRuntime.ts",
-      "import": "./src/managedCodexRuntime.ts"
+    "./codexExecutable": {
+      "types": "./src/codexExecutable.ts",
+      "import": "./src/codexExecutable.ts"
     },
     "./threadMentions": {
       "types": "./src/threadMentions.ts",

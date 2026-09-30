@@ -23,7 +23,6 @@ import {
 import {
   createDesktopPlatformBuildConfig,
   MAC_APPSNAP_HELPER_STAGE_PATH,
-  MAC_CODEX_RUNTIME_RESOURCE_PATH,
   MAC_DEVICE_HELPER_RESOURCE_PATH,
   MAC_ICON_ASSET_NAME,
   MAC_ICON_COMPOSER_DEPLOYMENT_TARGET,
@@ -35,7 +34,6 @@ import {
   SYNARA_PACKAGED_DESKTOP_FLAVORS,
   type SynaraPackagedDesktopFlavor,
 } from "@synara/shared/desktopIdentity";
-import { MANAGED_CODEX_RUNTIME_MANIFEST } from "@synara/shared/managedCodexRuntime";
 import { createDesktopArtifactIdentity } from "./lib/desktop-artifact-identity.ts";
 import { parseBooleanEnvValue } from "./lib/env-bool.ts";
 import { finalizeSignedMacDmg, rebuildUnsignedMacDmg } from "./lib/mac-dmg-finalize.ts";
@@ -989,66 +987,6 @@ const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(f
   }
 });
 
-export const stageManagedCodexRuntime = Effect.fn("stageManagedCodexRuntime")(function* (
-  stageResourcesDir: string,
-  arch: typeof BuildArch.Type,
-  verbose: boolean,
-  manifest = MANAGED_CODEX_RUNTIME_MANIFEST,
-) {
-  if (arch !== "arm64" && arch !== "universal") return;
-  const path = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
-  const archivePath = path.join(stageResourcesDir, manifest.assetFileName);
-  yield* Effect.log(`[desktop-artifact] Staging Codex Luna Max Fast ${manifest.version}...`);
-  const download = Effect.fn("downloadPinnedCodexRuntime")(function* (url: string) {
-    yield* runCommand(
-      ChildProcess.make({
-        ...commandOutputOptions(verbose),
-      })`/usr/bin/curl --fail --location --retry 3 --connect-timeout 10 --max-time 300 --output ${archivePath} ${url}`,
-    );
-    const checksum = yield* Effect.tryPromise({
-      try: () => resolveFileSha256(archivePath),
-      catch: (cause) =>
-        new BuildScriptError({
-          message: `Failed to hash the bundled Codex runtime at ${archivePath}`,
-          cause,
-        }),
-    });
-    if (checksum !== manifest.sha256) {
-      yield* fs.remove(archivePath).pipe(Effect.catch(() => Effect.void));
-      return yield* new BuildScriptError({
-        message: `Bundled Codex runtime checksum mismatch: expected ${manifest.sha256}, received ${checksum}.`,
-      });
-    }
-  });
-  // Bootstrap compatibility before the publisher has retained the original
-  // bundle. Both sources must satisfy the same pinned digest.
-  yield* manifest.pinnedDownloadUrl
-    ? download(manifest.pinnedDownloadUrl).pipe(Effect.catch(() => download(manifest.downloadUrl)))
-    : download(manifest.downloadUrl);
-});
-
-export const stageProductionResources = Effect.fn("stageProductionResources")(function* (
-  stageResourcesDir: string,
-  productionResourcesDir: string,
-  platform: typeof BuildPlatform.Type,
-) {
-  const path = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
-  yield* stageDesktopRuntimeResources(stageResourcesDir, productionResourcesDir);
-  if (platform === "mac") {
-    // macOS ships this archive through extraFiles, outside ASAR. Keep the
-    // upstream runtime-resource filtering while avoiding a duplicate ASAR copy.
-    const managedRuntimeCopy = path.join(
-      productionResourcesDir,
-      MANAGED_CODEX_RUNTIME_MANIFEST.assetFileName,
-    );
-    if (yield* fs.exists(managedRuntimeCopy)) {
-      yield* fs.remove(managedRuntimeCopy);
-    }
-  }
-});
-
 export const stageMacAppSnapHelper = Effect.fn("stageMacAppSnapHelper")(function* (
   stageAppDir: string,
   arch: typeof BuildArch.Type,
@@ -1110,39 +1048,6 @@ const assertPackagedMacDeviceHelper = Effect.fn("assertPackagedMacDeviceHelper")
   }
   return yield* new BuildScriptError({
     message: `Packaged macOS app is missing physical device helper sources under Contents/${MAC_DEVICE_HELPER_RESOURCE_PATH}`,
-  });
-});
-
-export const assertPackagedMacCodexRuntime = Effect.fn("assertPackagedMacCodexRuntime")(function* (
-  stageDistDir: string,
-  productName: string,
-) {
-  const path = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
-  const entries = yield* fs.readDirectory(stageDistDir);
-  for (const entry of entries) {
-    const packagedEntryPath = path.join(stageDistDir, entry);
-    const packagedEntryStat = yield* fs.stat(packagedEntryPath);
-    if (packagedEntryStat.type !== "Directory") continue;
-    const archivePath = path.join(
-      packagedEntryPath,
-      `${productName}.app`,
-      "Contents",
-      MAC_CODEX_RUNTIME_RESOURCE_PATH,
-    );
-    if (!(yield* fs.exists(archivePath))) continue;
-    const checksum = yield* Effect.tryPromise({
-      try: () => resolveFileSha256(archivePath),
-      catch: (cause) =>
-        new BuildScriptError({
-          message: `Failed to hash packaged Codex runtime at ${archivePath}`,
-          cause,
-        }),
-    });
-    if (checksum === MANAGED_CODEX_RUNTIME_MANIFEST.sha256) return;
-  }
-  return yield* new BuildScriptError({
-    message: `Packaged macOS app is missing the pinned Codex runtime under Contents/${MAC_CODEX_RUNTIME_RESOURCE_PATH}`,
   });
 });
 
@@ -1372,14 +1277,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     );
   }
   if (options.platform === "mac") {
-    yield* stageManagedCodexRuntime(stageResourcesDir, options.arch, options.verbose);
     yield* stageMacAppSnapHelper(stageAppDir, options.arch, options.verbose);
   }
 
-  yield* stageProductionResources(
+  yield* stageDesktopRuntimeResources(
     stageResourcesDir,
     path.join(stageAppDir, "apps/desktop/prod-resources"),
-    options.platform,
   );
 
   const resolvedBuildConfig = yield* createBuildConfig(
@@ -1482,9 +1385,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   if (options.platform === "mac") {
     yield* assertPackagedMacDeviceHelper(stageDistDir, artifactIdentity.identity.displayName);
-    if (options.arch === "arm64" || options.arch === "universal") {
-      yield* assertPackagedMacCodexRuntime(stageDistDir, artifactIdentity.identity.displayName);
-    }
   }
 
   if (options.platform === "mac" && options.target === "dmg" && !options.signed) {

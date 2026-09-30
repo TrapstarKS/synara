@@ -373,6 +373,22 @@ jobs:
           npm ci --prefix extensions/mobile-remote --ignore-scripts --no-audit --no-fund
           node --test extensions/mobile-remote/lib/*.test.mjs
 
+      - name: Test native image paths and Codex homes
+        shell: bash
+        run: |
+          bun run --cwd packages/shared test src/fileUrls.test.ts src/codexExecutable.test.ts
+          bun run --cwd apps/server test src/codexGeneratedImages.test.ts src/localImageRoute.test.ts src/codexLegacyHome.test.ts src/codexRuntimeConfig.test.ts src/codexProcessEnv.test.ts
+
+      - name: Test official Codex startup and MCP
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/synara-codex-smoke" --no-save --ignore-scripts --no-audit --no-fund @openai/codex@0.159.2
+          codex_smoke_binary="$RUNNER_TEMP/synara-codex-smoke/node_modules/.bin/codex"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            codex_smoke_binary="$codex_smoke_binary.cmd"
+          fi
+          SYNARA_CODEX_SMOKE_BINARY="$codex_smoke_binary" bun run --cwd apps/server test src/codexOfficialRuntime.test.ts
+
       - id: prepare_mac_signing
         name: Import persistent TrapRAM-compatible macOS signing certificate
         if: matrix.platform == 'mac'

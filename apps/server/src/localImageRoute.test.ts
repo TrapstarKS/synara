@@ -20,6 +20,7 @@ import {
 } from "./config";
 import { attachmentsEffectRouteLayer, localImageEffectRouteLayer } from "./http";
 import { createLocalPreviewGrant } from "./localImageFiles";
+import { generatedImageMarkdown } from "./codexGeneratedImages";
 import { ManagedAttachmentRepositoryLive } from "./persistence/Layers/ManagedAttachments";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite";
 import { ServerSettingsService } from "./serverSettings";
@@ -175,6 +176,33 @@ async function withEffectServer(
 }
 
 describe("localImageEffectRouteLayer", () => {
+  it("serves the exact native filename encoded in generated image Markdown", async () => {
+    const workspace = makeTempDir("synara-image-markdown-");
+    const imagePath = path.join(workspace, ".synara", "image (100%) &copy; #1.png");
+    mkdirSync(path.dirname(imagePath));
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    writeFileSync(imagePath, bytes);
+    const markdown = generatedImageMarkdown(imagePath);
+    const destination = markdown.slice("![Generated image](".length, -1);
+    const decodedPath = decodeURIComponent(destination);
+    expect(path.resolve(decodedPath)).toBe(path.resolve(imagePath));
+
+    await withEffectServer(
+      makeServerConfig({ cwd: workspace }),
+      localImageEffectRouteLayer,
+      async (origin) => {
+        for (const download of [false, true]) {
+          const params = new URLSearchParams({ path: decodedPath, cwd: workspace });
+          if (download) params.set("download", "1");
+          const response = await fetch(`${origin}/api/local-image?${params}`);
+          expect(response.status).toBe(200);
+          expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+          expect(response.headers.get("content-disposition") !== null).toBe(download);
+        }
+      },
+    );
+  });
+
   it("serves an allowlisted workspace image and signals downloads via Content-Disposition", async () => {
     const workspace = makeTempDir("synara-effect-image-workspace-");
     writeFileSync(path.join(workspace, ".git"), "gitdir: .git");

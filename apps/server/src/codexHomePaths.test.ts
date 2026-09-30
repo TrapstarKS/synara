@@ -46,13 +46,13 @@ describe("Codex home paths", () => {
     );
   });
 
-  it("uses the isolated overlay as Codex's write home", () => {
+  it("uses the native Codex write home", () => {
     assert.equal(
       resolveActiveCodexHomeWritePath({
         env: { SYNARA_HOME: "/synara/runtime" },
         homePath: "/users/me/.codex",
       }),
-      path.join("/synara/runtime", "codex-home-overlay"),
+      "/users/me/.codex",
     );
   });
 

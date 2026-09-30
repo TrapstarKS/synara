@@ -5,7 +5,7 @@
  * bearer token) into every provider's native MCP configuration format so the
  * injection rules cannot drift between adapters:
  *
- * - Codex: `[mcp_servers.synara]` TOML block (streamable HTTP +
+ * - Codex: process-local CLI overrides (streamable HTTP +
  *   `bearer_token_env_var` resolved from the per-session process env).
  * - Claude Agent SDK: `mcpServers` record with an HTTP entry.
  * - ACP agents (cursor/grok/droid): `mcpServers` session entries; HTTP when
@@ -30,26 +30,15 @@ function authorizationHeader(connection: AgentGatewayMcpConnection): string {
   return `Bearer ${connection.bearerToken}`;
 }
 
-/**
- * Codex reads MCP servers from `config.toml`; the config file is shared by all
- * sessions of one Codex home, so the token is never written into it. Instead
- * the block references an env var that Synara sets per app-server process.
- *
- * The shell_environment_policy table keeps that env var out of exec tool
- * subprocesses: codex defaults to `ignore_default_excludes = true`, so the
- * built-in *TOKEN* filter is inactive and workspace commands would otherwise
- * inherit the gateway bearer token. Appended per-table, so a user-defined
- * policy table is never duplicated (their policy then governs).
- */
-export function buildCodexMcpConfigToml(endpointUrl: string): string {
+/** Keep the gateway local to this process and mask its bearer in shell children. */
+export function buildCodexMcpConfigOverrides(endpointUrl: string, serverName: string): string[] {
+  if (!/^[A-Za-z0-9_-]+$/.test(serverName)) throw new Error("Invalid gateway MCP name.");
   return [
-    `[mcp_servers.${SYNARA_MCP_SERVER_NAME}]`,
-    `url = ${JSON.stringify(endpointUrl)}`,
-    `bearer_token_env_var = ${JSON.stringify(SYNARA_AGENT_GATEWAY_TOKEN_ENV)}`,
-    "",
-    "[shell_environment_policy]",
-    `exclude = [${JSON.stringify(SYNARA_AGENT_GATEWAY_TOKEN_ENV)}]`,
-  ].join("\n");
+    `mcp_servers.${serverName}={url=${JSON.stringify(endpointUrl)},bearer_token_env_var=${JSON.stringify(SYNARA_AGENT_GATEWAY_TOKEN_ENV)}}`,
+    // Preserve all user filters/excludes; an explicit empty value also defeats
+    // a user include-only policy without leaking the session's real bearer.
+    `shell_environment_policy.set.${SYNARA_AGENT_GATEWAY_TOKEN_ENV}=""`,
+  ];
 }
 
 export interface ClaudeMcpHttpServerConfig {

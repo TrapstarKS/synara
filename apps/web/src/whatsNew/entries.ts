@@ -22,6 +22,24 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.19",
+    date: "Sep 30",
+    features: [
+      {
+        id: "local-image-paths",
+        title: "Local images open reliably",
+        description:
+          "Generated images preserve Windows and macOS paths, including spaces, parentheses and percent signs. Older Windows image messages recover their original paths for preview, expansion and download.",
+      },
+      {
+        id: "official-codex-runtime",
+        title: "Back to the official Codex installation",
+        description:
+          "Synara now uses your normal Codex installation and home directory. The Luna Max Fast runtime is removed, saved account and model choices are preserved, and older conversation files remain available.",
+      },
+    ],
+  },
+  {
     version: "0.9.18",
     date: "Sep 30",
     features: [

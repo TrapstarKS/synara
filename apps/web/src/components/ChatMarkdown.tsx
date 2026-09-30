@@ -14,7 +14,8 @@ import {
   type LucideIcon,
 } from "~/lib/icons";
 import type { ProviderMentionReference } from "@synara/contracts";
-import { isLocalAbsolutePath } from "@synara/shared/path";
+import { isLocalAbsolutePath, isWindowsAbsolutePath } from "@synara/shared/path";
+import { encodeFilePathForUrl } from "@synara/shared/fileUrls";
 import "katex/dist/katex.min.css";
 import { matchWikiLinkAt, remarkWikiLinks } from "../lib/remarkWikiLinks";
 import { remarkGithubAlerts, type GithubAlertKind } from "../lib/remarkGithubAlerts";
@@ -47,7 +48,7 @@ import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { dedentCode, parseCodeFenceInfo, type CodeFenceInfo } from "../lib/codeFence";
 import { getFileIconName, inferEntryKindFromPath, pathLooksLikeKnownFile } from "../file-icons";
 import { CentralIcon } from "~/lib/central-icons";
-import { isLocalImageMarkdownSrc } from "../lib/localImageUrls";
+import { isLocalImageMarkdownSrc, localImageAbsolutePath } from "../lib/localImageUrls";
 import { repairMarkdownTableDelimiters } from "../lib/markdownTableRepair";
 import { showFileReferenceContextMenu } from "../lib/fileReferenceContextMenu";
 import { createLocalFileClipboardSource } from "../lib/desktopClipboard";
@@ -242,9 +243,28 @@ function restoreLiteralDollarPlaceholders(value: string): string {
     .replaceAll(encodeURIComponent(LITERAL_DOLLAR_PLACEHOLDER), "$");
 }
 
-function markdownUrlTransform(href: string): string {
+function markdownUrlTransform(href: string, key: string): string {
   const restoredHref = restoreLiteralDollarPlaceholders(href);
+  // Drive letters look like URI schemes to the default sanitizer. Image paths
+  // are consumed by our authenticated local-file route, never by a browser URL.
+  if (key === "src" && isLocalImageMarkdownSrc(restoredHref)) return restoredHref;
   return rewriteMarkdownFileUriHref(restoredHref) ?? defaultUrlTransform(restoredHref);
+}
+
+function restoreWindowsImageSource(raw: string): string | null {
+  if (!raw.startsWith("![") || !raw.endsWith(")") || !raw.includes("\\")) return null;
+  const bracketEnd = findMarkdownBracketEnd(raw, 1);
+  if (bracketEnd === -1 || raw[bracketEnd + 1] !== "(") return null;
+  const destination = raw.slice(bracketEnd + 2, -1).trim();
+  // The parser has already established that this is an inline image. Read its
+  // original destination before CommonMark removed separators such as `\.`.
+  // Optional titles follow whitespace (or the closing angle bracket).
+  const rawPath = destination.startsWith("<")
+    ? destination.slice(1, destination.indexOf(">"))
+    : destination.split(/\s/, 1)[0];
+  if (!rawPath || !isWindowsAbsolutePath(rawPath) || !rawPath.includes("\\")) return null;
+  const path = localImageAbsolutePath(restoreLiteralDollarPlaceholders(rawPath));
+  return path === null ? null : encodeFilePathForUrl(path);
 }
 
 function restoreLiteralDollarsInNode(node: unknown): void {
@@ -1213,10 +1233,18 @@ const MARKDOWN_COMPONENTS: Components = {
       </code>
     );
   },
-  img: function MarkdownImage({ node: _node, src, alt: altProp, ...props }) {
-    const { cwd, onImageExpand } = useContext(MarkdownRenderContext)!;
+  img: function MarkdownImage({ node, src, alt: altProp, ...props }) {
+    const { cwd, onImageExpand, sourceText } = useContext(MarkdownRenderContext)!;
     const alt = altProp ?? "";
-    const restoredSrc = src ? restoreLiteralDollarPlaceholders(src) : "";
+    const start = node?.position?.start.offset;
+    const end = node?.position?.end.offset;
+    // Repair at render time so previously persisted messages recover without
+    // rewriting history or changing source offsets used by find/task lists.
+    const legacySrc =
+      start === undefined || end === undefined
+        ? null
+        : restoreWindowsImageSource(sourceText.slice(start, end));
+    const restoredSrc = legacySrc ?? (src ? restoreLiteralDollarPlaceholders(src) : "");
     if (isLocalImageMarkdownSrc(restoredSrc)) {
       return (
         <GeneratedMarkdownImage

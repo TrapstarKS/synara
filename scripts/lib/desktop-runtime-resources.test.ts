@@ -20,8 +20,9 @@ it.layer(NodeServices.layer)("stageDesktopRuntimeResources", (it) => {
         "nested/runtime.dat",
       ];
       const installerFiles = ["dmgly/assets/dmg-background.png", "dmgly/assets/app-icon.png"];
+      const retiredArchive = "codex-luna-max-fast-aarch64-apple-darwin.tar.gz";
 
-      for (const file of [...runtimeFiles, ...installerFiles]) {
+      for (const file of [...runtimeFiles, ...installerFiles, retiredArchive]) {
         const target = path.join(buildResources, file);
         yield* fs.makeDirectory(path.dirname(target), { recursive: true });
         yield* fs.writeFileString(target, `contents of ${file}`);
@@ -36,6 +37,7 @@ it.layer(NodeServices.layer)("stageDesktopRuntimeResources", (it) => {
         );
       }
       assert.equal(yield* fs.exists(path.join(runtimeResources, "dmgly")), false);
+      assert.equal(yield* fs.exists(path.join(runtimeResources, retiredArchive)), false);
       for (const file of installerFiles) {
         assert.equal(
           yield* fs.readFileString(path.join(buildResources, file)),

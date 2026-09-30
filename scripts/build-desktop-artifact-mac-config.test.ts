@@ -8,9 +8,6 @@ import {
   MAC_APPSNAP_HELPER_ASAR_EXCLUSION,
   MAC_APPSNAP_HELPER_BUNDLE_PATH,
   MAC_APPSNAP_HELPER_STAGE_PATH,
-  MAC_CODEX_RUNTIME_ASAR_EXCLUSION,
-  MAC_CODEX_RUNTIME_RESOURCE_PATH,
-  MAC_CODEX_RUNTIME_STAGE_PATH,
   MAC_DEVICE_HELPER_RESOURCE_PATH,
   MAC_DEVICE_HELPER_STAGE_PATH,
   MAC_ENTITLEMENTS_PATH,
@@ -73,7 +70,6 @@ describe("createDesktopPlatformBuildConfig", () => {
     assert.equal(config.files?.[0], "**/*");
     assert.ok(config.files?.includes(MAC_APPSNAP_HELPER_ASAR_EXCLUSION));
     assert.ok(config.files?.includes("!apps/desktop/resources/cua-driver/**"));
-    assert.ok(config.files?.includes(MAC_CODEX_RUNTIME_ASAR_EXCLUSION));
     assert.deepStrictEqual(config.extraFiles, [
       {
         from: "apps/desktop/resources/cua-driver",
@@ -90,10 +86,6 @@ describe("createDesktopPlatformBuildConfig", () => {
       {
         from: MAC_ICON_ASSETS_CAR_STAGE_PATH,
         to: MAC_ICON_ASSETS_CAR_BUNDLE_PATH,
-      },
-      {
-        from: MAC_CODEX_RUNTIME_STAGE_PATH,
-        to: MAC_CODEX_RUNTIME_RESOURCE_PATH,
       },
     ]);
     assert.equal(MAC_ICON_ASSETS_CAR_STAGE_PATH, "apps/desktop/resources/Assets.car");
@@ -180,29 +172,16 @@ describe("createDesktopPlatformBuildConfig", () => {
     assert.equal(config.dmg?.sign, true);
   });
 
-  it("bundles the Apple Silicon Codex runtime only in arm64-capable macOS artifacts", () => {
-    const universal = createDesktopPlatformBuildConfig({
-      platform: "mac",
-      arch: "universal",
-      target: "dmg",
-    });
-    const x64 = createDesktopPlatformBuildConfig({
-      platform: "mac",
-      arch: "x64",
-      target: "dmg",
-    });
-
-    assert.equal(
-      universal.extraFiles?.some((entry) => entry.to === MAC_CODEX_RUNTIME_RESOURCE_PATH),
-      true,
-    );
-    assert.equal(
-      x64.extraFiles?.some((entry) => entry.to === MAC_CODEX_RUNTIME_RESOURCE_PATH),
-      false,
-    );
-    assert.equal(universal.files?.includes(MAC_CODEX_RUNTIME_ASAR_EXCLUSION), true);
-    assert.equal(x64.files?.includes(MAC_CODEX_RUNTIME_ASAR_EXCLUSION), false);
-  });
+  it.each(["arm64", "x64", "universal"] as const)(
+    "does not bundle a Codex fork for macOS %s",
+    (arch) => {
+      const config = createDesktopPlatformBuildConfig({ platform: "mac", arch, target: "dmg" });
+      assert.equal(
+        config.extraFiles?.some((entry) => /codex/i.test(entry.from ?? "")),
+        false,
+      );
+    },
+  );
 
   it("packages the Linux driver as an external executable and leaves Windows unchanged", () => {
     const linux = createDesktopPlatformBuildConfig({

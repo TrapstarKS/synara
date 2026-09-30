@@ -119,6 +119,30 @@ The session may preserve provider-specific behavior such as:
 
 Capabilities vary. Do not assume a control available for one provider exists for all of them.
 
+### Codex executable and home directory
+
+Synara uses the official Codex CLI installed on the host. It no longer packages,
+installs, updates, or selects the retired Luna Max Fast fork. Old settings that
+name that fork return to normal `codex` lookup; retired `bin/codex` symlinks are
+skipped, while unrelated explicit binary paths remain configured. Fast mode is
+reported from the selected options rather than inferred from a model name.
+
+Interactive sessions use the configured `CODEX_HOME`, normally `~/.codex`, or the
+explicitly selected account home. Synara's MCP endpoint and browser integration
+settings travel as process-local CLI overrides; the gateway bearer remains in
+that process's environment and is masked in its shell tools. A unique MCP name
+avoids merging the internal HTTP transport with an existing user or project
+stdio entry. Ordinary MCP changes made in Synara now persist in the native home.
+See [Codex configuration](https://developers.openai.com/codex/config-advanced).
+
+On first use, Synara recovers saved MCP edits from its corresponding legacy
+overlay, backing up the native configuration before changing it. Existing
+authentication is not replaced. Old rollout and generated-image paths remain
+readable, and the retired overlay cleanup no longer deletes those files. New
+generated images use the native home. Do not delete an old overlay while a saved
+conversation still depends on its files. Git text generation retains its
+temporary, tool-free home and uses the same official executable resolver.
+
 ### Codex prompt cache counts
 
 When Codex reports token usage, the context meter shows cache reads and writes from the latest model

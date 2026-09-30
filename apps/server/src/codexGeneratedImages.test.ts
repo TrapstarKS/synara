@@ -6,10 +6,38 @@ import type { ProviderRuntimeEvent } from "@synara/contracts";
 
 import {
   CODEX_GENERATED_IMAGE_ARTIFACT_KIND,
+  generatedImageMarkdown,
+  markdownImagePath,
   generatedImagePathFromRuntimeEvent,
   resolveCodexGeneratedImagesRoot,
   resolveCodexGeneratedImagesRoots,
 } from "./codexGeneratedImages.ts";
+
+describe("generated image Markdown destinations", () => {
+  it("normalizes Windows separators before Markdown can unescape hidden directories", () => {
+    assert.equal(
+      generatedImageMarkdown(
+        String.raw`C:\Users\pedro\.synara\codex-home-overlay\generated_images\thread\call.png`,
+      ),
+      "![Generated image](C:/Users/pedro/.synara/codex-home-overlay/generated_images/thread/call.png)",
+    );
+  });
+
+  it("escapes literal URL and Markdown characters on macOS without losing backslashes", () => {
+    const filePath = String.raw`/Users/José/.synara/preview (100%) #? &copy;\draft.png`;
+    const destination = markdownImagePath(filePath);
+    assert.equal(decodeURIComponent(destination), filePath);
+    assert.doesNotMatch(destination, /[\\\s()#?&]/);
+    assert.equal(generatedImageMarkdown(filePath), `![Generated image](${destination})`);
+  });
+
+  it("preserves literal percent escape names and UNC shares", () => {
+    assert.equal(
+      markdownImagePath(String.raw`\\server\share\.synara\image%20(1).png`),
+      "//server/share/.synara/image%2520%281%29.png",
+    );
+  });
+});
 
 function makeImageGenerationCompletedEvent(overrides?: {
   data?: unknown;
@@ -79,11 +107,11 @@ describe("resolveCodexGeneratedImagesRoot(s)", () => {
     else process.env.SYNARA_HOME = previousSynaraHome;
   });
 
-  it("returns the overlay generated_images directory as the active write root by default", () => {
+  it("returns the native generated_images directory as the active write root", () => {
     process.env.SYNARA_HOME = "/synara-test/runtime";
     assert.equal(
       resolveCodexGeneratedImagesRoot("/codex-test/.codex"),
-      path.join("/synara-test/runtime", "codex-home-overlay", "generated_images"),
+      path.join("/codex-test/.codex", "generated_images"),
     );
   });
 

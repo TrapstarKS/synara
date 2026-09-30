@@ -369,7 +369,7 @@ import {
 } from "~/lib/disclosureMotion";
 import { createClientPointMenuAnchor } from "~/lib/clientPointMenuAnchor";
 import { resolveRuntimeModelDescriptor } from "./chat/runtimeModelCapabilities";
-import { isLunaFastSubagent, resolveThreadModelSummary } from "~/lib/threadModelSummary";
+import { resolveThreadModelSummary } from "~/lib/threadModelSummary";
 import {
   canCreateThreadHandoff,
   resolveAvailableHandoffTargetProviders,
@@ -4654,13 +4654,6 @@ export default function Sidebar() {
               runtimeModels:
                 thread.modelSelection.provider === "codex" ? codexModelsQuery.data?.models : null,
             }),
-            {
-              fastModeOverride: isLunaFastSubagent({
-                provider: thread.modelSelection.provider,
-                model: thread.modelSelection.model,
-                parentThreadId: thread.parentThreadId ?? null,
-              }),
-            },
           )}
           status={hoverStatus}
         />

@@ -2,7 +2,6 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Path } from "effect";
 import { expect } from "vitest";
-import { SYNARA_MANAGED_CODEX_BIN_DIR_ENV } from "@synara/shared/managedCodexRuntime";
 
 import { ServerConfig } from "../../config.ts";
 import { CodexTextGenerationLive } from "./CodexTextGeneration.ts";
@@ -156,7 +155,6 @@ function withFakeCodexEnv<A, E, R>(
       yield* fs.makeDirectory(isolatedCodexHome);
       const previousPath = process.env.PATH;
       const previousSynaraHome = process.env.SYNARA_HOME;
-      const previousManagedBinDir = process.env[SYNARA_MANAGED_CODEX_BIN_DIR_ENV];
       const previousCodexHome = process.env.CODEX_HOME;
       const previousCodexSqliteHome = process.env.CODEX_SQLITE_HOME;
       const previousOutput = process.env.SYNARA_FAKE_CODEX_OUTPUT_B64;
@@ -178,9 +176,6 @@ function withFakeCodexEnv<A, E, R>(
       yield* Effect.sync(() => {
         process.env.PATH = `${binDir}:${previousPath ?? ""}`;
         process.env.SYNARA_HOME = tempDir;
-        // Desktop launches prioritize their managed bin directory over PATH.
-        // Override it too, so this fixture can never execute the operator's CLI.
-        process.env[SYNARA_MANAGED_CODEX_BIN_DIR_ENV] = binDir;
         process.env.CODEX_HOME = isolatedCodexHome;
         delete process.env.CODEX_SQLITE_HOME;
         process.env.SYNARA_FAKE_CODEX_OUTPUT_B64 = Buffer.from(input.output, "utf8").toString(
@@ -259,7 +254,6 @@ function withFakeCodexEnv<A, E, R>(
       return {
         previousPath,
         previousSynaraHome,
-        previousManagedBinDir,
         previousCodexHome,
         previousCodexSqliteHome,
         previousOutput,
@@ -282,7 +276,6 @@ function withFakeCodexEnv<A, E, R>(
       Effect.sync(() => {
         process.env.PATH = previous.previousPath;
         for (const [key, value] of [
-          [SYNARA_MANAGED_CODEX_BIN_DIR_ENV, previous.previousManagedBinDir],
           ["CODEX_HOME", previous.previousCodexHome],
           ["CODEX_SQLITE_HOME", previous.previousCodexSqliteHome],
         ] as const) {

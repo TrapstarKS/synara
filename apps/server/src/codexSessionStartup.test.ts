@@ -19,6 +19,10 @@ vi.mock("@synara/shared/processRuntime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@synara/shared/processRuntime")>()),
   spawnProcess: vi.fn(),
 }));
+vi.mock("@synara/shared/codexExecutable", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@synara/shared/codexExecutable")>()),
+  resolveCodexExecutable: vi.fn(() => "codex"),
+}));
 
 class FakeCodexChild extends EventEmitter {
   readonly pid = 42424;
@@ -81,10 +85,10 @@ function createStartupHarness(
   });
   const internals = manager as unknown as {
     assertSupportedCodexCliVersion: () => Promise<void>;
-    buildSessionProcessEnv: () => Promise<NodeJS.ProcessEnv>;
+    buildSessionProcess: () => Promise<{ env: NodeJS.ProcessEnv; configOverrides: string[] }>;
   };
   vi.spyOn(internals, "assertSupportedCodexCliVersion").mockResolvedValue(undefined);
-  vi.spyOn(internals, "buildSessionProcessEnv").mockResolvedValue({});
+  vi.spyOn(internals, "buildSessionProcess").mockResolvedValue({ env: {}, configOverrides: [] });
   const input = {
     threadId: ThreadId.makeUnsafe("thread-startup-failed"),
     cwd: process.cwd(),

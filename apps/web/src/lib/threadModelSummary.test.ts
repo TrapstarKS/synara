@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isLunaFastSubagent, resolveThreadModelSummary } from "./threadModelSummary";
+import { resolveThreadModelSummary } from "./threadModelSummary";
 
 describe("resolveThreadModelSummary", () => {
   it("summarizes a codex selection with its reasoning effort", () => {
@@ -43,32 +43,13 @@ describe("resolveThreadModelSummary", () => {
     expect(summary?.fastMode).toBe(false);
   });
 
-  it("marks a provider-native Luna child as Fast even without a persisted fast flag", () => {
-    expect(
-      isLunaFastSubagent({
-        provider: "codex",
-        model: "GPT-5.6-Luna",
-        parentThreadId: "parent-thread",
-      }),
-    ).toBe(true);
-    expect(
-      isLunaFastSubagent({
-        provider: "codex",
-        model: "gpt-5.6-luna",
-        parentThreadId: null,
-      }),
-    ).toBe(false);
-
-    const summary = resolveThreadModelSummary(
-      {
-        provider: "codex",
-        model: "gpt-5.6-luna",
-        options: { reasoningEffort: "max" },
-      },
-      undefined,
-      { fastModeOverride: true },
-    );
-    expect(summary?.fastMode).toBe(true);
+  it("does not infer Fast routing from a Luna model name", () => {
+    const summary = resolveThreadModelSummary({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      options: { reasoningEffort: "max" },
+    });
+    expect(summary?.fastMode).toBe(false);
     expect(summary?.statusLabel).toBe("Max");
   });
 });

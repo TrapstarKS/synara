@@ -67,10 +67,6 @@ import { isKeyboardShortcutsHelpChord } from "@synara/shared/browserShortcuts";
 import { getMacTrafficLightPosition } from "@synara/shared/desktopChrome";
 import { DEVICE_HELPER_SOURCE_DIR_ENV } from "@synara/shared/deviceHelperCache";
 import {
-  MANAGED_CODEX_RUNTIME_MANIFEST,
-  SYNARA_MANAGED_CODEX_BIN_DIR_ENV,
-} from "@synara/shared/managedCodexRuntime";
-import {
   desktopUpdateChannel,
   SYNARA_DESKTOP_SMOKE_USER_DATA_ENV,
   SYNARA_DESKTOP_BUNDLE_ID_ENV,
@@ -80,7 +76,8 @@ import {
   synaraDesktopIdentity,
 } from "@synara/shared/desktopIdentity";
 import { NetService } from "@synara/shared/Net";
-import { applyShellEnvironmentHydrationMarker, mergePathEntries } from "@synara/shared/shell";
+import { applyShellEnvironmentHydrationMarker } from "@synara/shared/shell";
+import { removeRetiredCodexEnvironment } from "@synara/shared/codexExecutable";
 import { RotatingFileSink } from "@synara/shared/logging";
 import {
   MIGRATION_DIVERGENCE_CONSENT_ENV,
@@ -316,7 +313,6 @@ import {
 } from "./desktopStorageMigration";
 import { DESKTOP_IPC_CHANNELS } from "./ipcChannels";
 import { DesktopAppSnapManager } from "./appSnapManager";
-import { ensureBundledCodexRuntime, settingsUseManagedCodexRuntime } from "./managedCodexRuntime";
 import { notifyBackendComputerEmergencyStop } from "./computerEmergencyStopNotice";
 import { EscapeKillSwitchMonitor } from "./escapeKillSwitchMonitor";
 import { hardenBrowserAnnotationWebviewPreferences } from "./browserAnnotations/webviewSecurity";
@@ -356,6 +352,10 @@ const startupBundleIdentity = captureStartupBundleIdentity();
 // (The probe also carries PATH, SSH_AUTH_SOCK and HOMEBREW_* for later provider spawns.
 // APPDATA on Windows is inherited from the process env, not hydrated here.)
 const shellEnvironmentSync = syncShellEnvironment();
+// An update launched by the old app can inherit its bundled-fork PATH prefix.
+Object.assign(process.env, removeRetiredCodexEnvironment(process.env));
+delete process.env.SYNARA_MANAGED_CODEX_BIN_DIR;
+delete process.env.SYNARA_LUNA_HOME;
 
 const IPC = DESKTOP_IPC_CHANNELS;
 const MAX_CLIPBOARD_IMAGE_DATA_URL_LENGTH = 16 * 1024 * 1024;
@@ -2003,50 +2003,6 @@ function resolveResourcePath(fileName: string): string | null {
   }
 
   return null;
-}
-
-async function prepareManagedCodexRuntime(): Promise<void> {
-  if (!app.isPackaged) return;
-  const managedBinaryPath = Path.join(BASE_DIR, "bin", "codex-luna-max-fast");
-  try {
-    const rawSettings = JSON.parse(FS.readFileSync(Path.join(STATE_DIR, "settings.json"), "utf8"));
-    if (!settingsUseManagedCodexRuntime(rawSettings, managedBinaryPath)) {
-      writeDesktopLogHeader("managed Codex runtime skipped for custom binary");
-      return;
-    }
-  } catch {
-    // Missing or invalid settings fall back to the server's default Codex configuration.
-  }
-  const archivePath = Path.join(
-    process.resourcesPath,
-    MANAGED_CODEX_RUNTIME_MANIFEST.assetFileName,
-  );
-  try {
-    const result = await ensureBundledCodexRuntime({
-      archivePath: FS.existsSync(archivePath) ? archivePath : null,
-      baseDir: BASE_DIR,
-    });
-    if (!result.binaryPath) {
-      if (result.status === "unavailable" && process.platform === "darwin") {
-        console.warn("[desktop] Bundled Codex Luna Max Fast runtime is unavailable.");
-      }
-      return;
-    }
-    process.env.SYNARA_LUNA_HOME = BASE_DIR;
-    process.env[SYNARA_MANAGED_CODEX_BIN_DIR_ENV] = Path.dirname(result.binaryPath);
-    process.env.PATH = mergePathEntries(
-      Path.dirname(result.binaryPath),
-      process.env.PATH,
-      process.platform,
-    );
-    writeDesktopLogHeader(
-      `managed Codex runtime ${result.status} version=${MANAGED_CODEX_RUNTIME_MANIFEST.version}`,
-    );
-  } catch (error) {
-    console.warn(
-      `[desktop] Failed to prepare bundled Codex Luna Max Fast runtime: ${formatErrorMessage(error)}`,
-    );
-  }
 }
 
 function resolveIconPath(ext: "ico" | "icns" | "png"): string | null {
@@ -5958,8 +5914,6 @@ async function bootstrap(): Promise<void> {
   if (migrationRecoveryOutcome !== "continue") {
     return;
   }
-
-  await prepareManagedCodexRuntime();
 
   backendAuthToken = Crypto.randomBytes(24).toString("hex");
   await reserveBackendEndpoint("bootstrap");

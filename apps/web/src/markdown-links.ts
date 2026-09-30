@@ -4,6 +4,9 @@ import {
   localPathsEqual,
   workspaceRelativePathOf,
 } from "@synara/shared/path";
+import { parseFileUrlHref } from "@synara/shared/fileUrls";
+
+export { markdownFilePathHref, parseFileUrlHref } from "@synara/shared/fileUrls";
 
 import { resolvePathLinkTarget } from "./terminal-links";
 
@@ -46,45 +49,6 @@ function stripSearchAndHash(value: string): { path: string; hash: string } {
   const queryIndex = pathWithSearch.indexOf("?");
   const path = queryIndex >= 0 ? pathWithSearch.slice(0, queryIndex) : pathWithSearch;
   return { path, hash: rawHash };
-}
-
-export function parseFileUrlHref(
-  href: string,
-  options?: { readonly decodePath?: boolean },
-): { path: string; hash: string } | null {
-  try {
-    const parsed = new URL(href);
-    if (parsed.protocol.toLowerCase() !== "file:") return null;
-
-    const rawPath = parsed.hostname ? `//${parsed.hostname}${parsed.pathname}` : parsed.pathname;
-    if (rawPath.length === 0) return null;
-
-    // Browser URL parser encodes "C:/foo" as "/C:/foo" for file URLs.
-    const normalizedPath = /^\/[A-Za-z]:[\\/]/.test(rawPath) ? rawPath.slice(1) : rawPath;
-
-    return {
-      path: options?.decodePath === false ? normalizedPath : safeDecode(normalizedPath),
-      hash: parsed.hash,
-    };
-  } catch {
-    return null;
-  }
-}
-
-// Encode literal filesystem names before Markdown treats percent/hash/query
-// characters as URL syntax. File URIs also preserve Windows drive paths through
-// the renderer's existing URL sanitization boundary.
-export function markdownFilePathHref(path: string): string {
-  const normalized = path.replaceAll("\\", "/");
-  const encoded = normalized
-    .split("/")
-    .map((segment, index) =>
-      index === 0 && /^[a-z]:$/i.test(segment) ? segment : encodeURIComponent(segment),
-    )
-    .join("/");
-  return encoded.startsWith("//")
-    ? `file:${encoded}`
-    : `file://${encoded.startsWith("/") ? "" : "/"}${encoded}`;
 }
 
 export function rewriteMarkdownFileUriHref(href: string | undefined): string | null {

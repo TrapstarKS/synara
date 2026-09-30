@@ -74,6 +74,8 @@ export function reconcileCodexMcpConfig(input: {
   readonly overlayConfig?: string;
   readonly stateText?: string;
   readonly managedServerNames: readonly string[];
+  /** A native-home migration must leave the user's own gateway entry intact. */
+  readonly preserveManagedSourceServers?: boolean;
 }): { readonly config: string; readonly stateText: string } {
   const state = readState(input.stateText);
   if (state && input.overlayConfig === undefined) {
@@ -95,7 +97,7 @@ export function reconcileCodexMcpConfig(input: {
   for (const name of names) {
     if (managed.has(name)) {
       owned.delete(name);
-      delete merged[name];
+      if (!input.preserveManagedSourceServers) delete merged[name];
       continue;
     }
     const overlayValue = Object.hasOwn(overlayServers, name) ? overlayServers[name] : undefined;
