@@ -1,8 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as executableLookup from "@synara/shared/executable";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { assert, it } from "@effect/vitest";
 import { assertSuccess } from "@effect/vitest/utils";
 import { EDITORS } from "@synara/contracts";
 import { FileSystem, Path, Effect } from "effect";
+import { vi } from "vitest";
 
 import { launchDetached, resolveAvailableEditors, resolveEditorLaunch } from "./open";
 import {
@@ -18,14 +22,6 @@ function encodeExpectedWindowsEditorUriPath(targetPath: string): string {
     .split("/")
     .map((segment) => encodeURIComponent(segment).replaceAll("%3A", ":"))
     .join("/");
-}
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function fakePowerShellAppxScript(installLocation: string): string {
-  return `#!/bin/sh\nprintf '%s\\n' ${shellSingleQuote(installLocation)}\n`;
 }
 
 it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
@@ -168,15 +164,32 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       yield* fs.writeFileString(path.join(binDir, "konsole"), "#!/bin/sh\n");
       yield* fs.chmod(path.join(binDir, "konsole"), 0o755);
 
-      const linuxTerminalLaunch = yield* resolveEditorLaunch(
-        { cwd: `${filePath}:71:5`, editor: "terminal" },
-        "linux",
-        { PATH: binDir },
-      );
-      assert.deepEqual(linuxTerminalLaunch, {
-        command: "konsole",
-        args: ["--workdir", path.dirname(filePath)],
-      });
+      const resolveExecutable = executableLookup.resolveExecutable;
+      const lookup =
+        process.platform === "win32"
+          ? vi
+              .spyOn(executableLookup, "resolveExecutable")
+              .mockImplementation((command, options) =>
+                options?.platform === "linux" && options.env?.PATH === binDir
+                  ? command === "konsole"
+                    ? path.join(binDir, "konsole")
+                    : null
+                  : resolveExecutable(command, options),
+              )
+          : null;
+      try {
+        const linuxTerminalLaunch = yield* resolveEditorLaunch(
+          { cwd: `${filePath}:71:5`, editor: "terminal" },
+          "linux",
+          { PATH: binDir },
+        );
+        assert.deepEqual(linuxTerminalLaunch, {
+          command: "konsole",
+          args: ["--workdir", path.dirname(filePath)],
+        });
+      } finally {
+        lookup?.mockRestore();
+      }
 
       const linuxTerminalFallbackLaunch = yield* resolveEditorLaunch(
         { cwd: `${filePath}:71:5`, editor: "terminal" },
@@ -470,21 +483,31 @@ it.layer(NodeServices.layer)("resolveAvailableEditors", (it) => {
       );
       yield* fs.makeDirectory(installLocation, { recursive: true });
       yield* fs.makeDirectory(binDir, { recursive: true });
-      yield* fs.writeFileString(
-        path.join(binDir, "powershell.exe"),
-        fakePowerShellAppxScript(installLocation),
-      );
-      yield* fs.chmod(path.join(binDir, "powershell.exe"), 0o755);
-
       clearWindowsStorePackageDiscoveryCache();
-
-      const editors = resolveAvailableEditors("win32", {
-        PATH: binDir,
-        PATHEXT: ".COM;.EXE;.BAT;.CMD",
-        ProgramFiles: programFiles,
-      });
-
-      assert.equal(editors.includes("vscode"), true);
+      const appxLookup = vi
+        .spyOn(childProcess, "execFileSync")
+        .mockReturnValue(Buffer.from(`${installLocation}\r\n`));
+      syncBuiltinESMExports();
+      try {
+        const editors = resolveAvailableEditors("win32", {
+          PATH: binDir,
+          PATHEXT: ".COM;.EXE;.BAT;.CMD",
+          ProgramFiles: programFiles,
+        });
+        assert.equal(editors.includes("vscode"), true);
+        assert.isTrue(
+          appxLookup.mock.calls.some(
+            ([command, args]) =>
+              command === "powershell.exe" &&
+              Array.isArray(args) &&
+              args.some((arg) => String(arg).includes("Get-AppxPackage")),
+          ),
+        );
+      } finally {
+        appxLookup.mockRestore();
+        syncBuiltinESMExports();
+        clearWindowsStorePackageDiscoveryCache();
+      }
     }),
   );
 
