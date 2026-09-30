@@ -3,13 +3,17 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { acquireProcessLock, isLockOwnerAlive, parseLockOwner } from "./process-lock.mjs";
+
+const fixtureEntry = fileURLToPath(new URL("../server.mjs", import.meta.url));
+const companionCommand = `"${process.execPath}" "${fixtureEntry}"`;
 
 test("does not mistake a live unrelated process for the mobile companion", () => {
   const inspect = {
-    entryPath: "/repo/extensions/mobile-remote/server.mjs",
+    entryPath: fixtureEntry,
     kill: () => {},
-    getProcessCommand: () => "/System/Library/PrivateFrameworks/IMCore.framework/imagent",
+    getProcessCommand: () => process.execPath,
   };
   assert.equal(isLockOwnerAlive({ pid: 762 }, inspect), false);
   assert.equal(
@@ -17,7 +21,7 @@ test("does not mistake a live unrelated process for the mobile companion", () =>
       { pid: 762 },
       {
         ...inspect,
-        getProcessCommand: () => "/usr/local/bin/node /repo/extensions/mobile-remote/server.mjs",
+        getProcessCommand: () => companionCommand,
       },
     ),
     true,
@@ -28,10 +32,10 @@ test("reclaims a legacy numeric lock and release cannot remove a replacement", a
   const directory = await mkdtemp(join(tmpdir(), "synara-process-lock-test-"));
   const lockPath = join(directory, "server.lock");
   const options = {
-    entryPath: "/repo/extensions/mobile-remote/server.mjs",
+    entryPath: fixtureEntry,
     pid: 4321,
     kill: () => {},
-    getProcessCommand: () => "/usr/bin/imagent",
+    getProcessCommand: () => process.execPath,
   };
 
   try {
@@ -56,10 +60,10 @@ test("keeps a lock held by the mobile companion", async () => {
   const directory = await mkdtemp(join(tmpdir(), "synara-process-lock-test-"));
   const lockPath = join(directory, "server.lock");
   const options = {
-    entryPath: "/repo/extensions/mobile-remote/server.mjs",
+    entryPath: fixtureEntry,
     pid: 4321,
     kill: () => {},
-    getProcessCommand: () => "/usr/local/bin/node /repo/extensions/mobile-remote/server.mjs",
+    getProcessCommand: () => companionCommand,
   };
 
   try {

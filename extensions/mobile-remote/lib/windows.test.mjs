@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, rmSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import { adminAddress } from "./admin.mjs";
 import { discoverRuntimeUpstream, createUpstreamResolver } from "./desktop-upstream.mjs";
 import { windowsTaskScript } from "./windows-service.mjs";
+import { createPrivateFixtureDirectory } from "./test-private-directory.mjs";
 
 test("Windows admin pipe is stable across path casing and isolated per home", () => {
   const first = adminAddress("C:\\Users\\Alice Smith\\.synara-mobile", "win32");
@@ -16,7 +16,7 @@ test("Windows admin pipe is stable across path casing and isolated per home", ()
 });
 
 test("runtime discovery proves the live endpoint and follows credentials after a restart", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "synara-mobile-runtime-"));
+  const directory = createPrivateFixtureDirectory("synara-mobile-runtime-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const data = join(directory, "userdata");
   mkdirSync(data, { mode: 0o700 });

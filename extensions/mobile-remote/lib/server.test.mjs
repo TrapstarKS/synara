@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, stat, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm, stat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { validatePreferences, validateSubscription } from "./store.mjs";
 import { adminAddress } from "./admin.mjs";
+import { createPrivateFixtureDirectory } from "./test-private-directory.mjs";
 
 test("preferences and outbound push URLs reject untrusted payloads", () => {
   assert.throws(() => validatePreferences({ completed: true }));
@@ -42,7 +42,7 @@ test(
   "pairing is one-use; proxy and mutations require a live device; logout cuts its websocket",
   { timeout: 20_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "synara-mobile-test-"));
+    const directory = createPrivateFixtureDirectory("synara-mobile-test-");
     let disconnectedRequests = 0;
     let peerUnavailable = true;
     const upstream = http.createServer((req, res) => {
