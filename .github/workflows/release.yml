@@ -379,6 +379,10 @@ jobs:
           bun run --cwd packages/shared test src/fileUrls.test.ts src/codexExecutable.test.ts
           bun run --cwd apps/server test src/codexGeneratedImages.test.ts src/localImageRoute.test.ts src/codexLegacyHome.test.ts src/codexRuntimeConfig.test.ts src/codexProcessEnv.test.ts
 
+      - name: Test native folder links and file-manager targets
+        shell: bash
+        run: bun run --cwd apps/server test src/workspaceFilesystemStat.test.ts src/open.test.ts
+
       - name: Test official Codex startup and MCP
         shell: bash
         run: |

@@ -8,7 +8,7 @@
  */
 import { createBatchExecutableResolver, resolveExecutable } from "@synara/shared/executable";
 import { spawnProcess } from "@synara/shared/processRuntime";
-import { statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { dirname, extname } from "node:path";
 import pathWin32 from "node:path/win32";
 
@@ -147,19 +147,25 @@ function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
   }
 }
 
-function shouldRevealInFinder(target: string): boolean {
+function fileManagerTargetIsDirectory(target: string): boolean | undefined {
   try {
-    return statSync(target, { throwIfNoEntry: false })?.isDirectory() === false;
+    return (
+      statSync(target, { throwIfNoEntry: false })?.isDirectory() ??
+      (lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink() ? false : undefined)
+    );
   } catch {
-    return false;
+    return undefined;
   }
 }
 
 function resolveFileManagerLaunch(target: string, platform: NodeJS.Platform): EditorLaunch {
   const command = fileManagerCommandForPlatform(platform);
-  const shouldReveal = platform === "darwin" && shouldRevealInFinder(target);
-
-  return { command, args: shouldReveal ? ["-R", target] : [target] };
+  const isDirectory = fileManagerTargetIsDirectory(target);
+  if (platform === "darwin") {
+    return { command, args: isDirectory === false ? ["-R", target] : ["-a", "Finder", target] };
+  }
+  const directory = platform === "win32" ? pathWin32.dirname(target) : dirname(target);
+  return { command, args: [isDirectory === false ? directory : target] };
 }
 
 // Terminal integrations should receive a directory even when the source target is file:line:column.

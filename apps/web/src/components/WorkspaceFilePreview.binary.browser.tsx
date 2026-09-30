@@ -27,20 +27,27 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-it("offers a download instead of decoding a ZIP as text", async () => {
+it("opens unsupported files in the file manager and still offers a download", async () => {
   const workspaceRoot = "/Users/tester/My Project";
   const filePath = "Artifacts/agent output.zip";
   const readFile = vi.fn().mockRejectedValue(new Error("File appears to be binary."));
   const resolveOutOfRootFileReference = vi.fn().mockResolvedValue({ fullPath: null });
+  const openInEditor = vi.fn().mockResolvedValue(undefined);
   const restoreNativeApi = installNativeApi({
     projects: { readFile, resolveOutOfRootFileReference },
+    shell: { openInEditor },
+    server: {
+      getConfig: vi
+        .fn()
+        .mockResolvedValue({ availableEditors: ["vscode", "file-manager"], keybindings: [] }),
+    },
   } as unknown as NativeApi);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
   try {
-    await render(
+    const screen = await render(
       <QueryClientProvider client={queryClient}>
         <WorkspaceFilePreview workspaceRoot={workspaceRoot} filePath={filePath} />
       </QueryClientProvider>,
@@ -53,6 +60,14 @@ it("offers a download instead of decoding a ZIP as text", async () => {
       expect(download?.href).toContain("path=Artifacts%2Fagent+output.zip");
       expect(download?.href).toContain("download=1");
     });
+    expect(openInEditor).not.toHaveBeenCalled();
+    await screen
+      .getByRole("group", { name: "Open in file manager", exact: true })
+      .getByRole("button", { name: "Open", exact: true })
+      .click();
+    await vi.waitFor(() =>
+      expect(openInEditor).toHaveBeenCalledWith(`${workspaceRoot}/${filePath}`, "file-manager"),
+    );
   } finally {
     restoreNativeApi();
   }

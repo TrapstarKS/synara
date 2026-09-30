@@ -18,19 +18,23 @@ import {
 } from "@synara/shared/path";
 import { isScratchWorkspacePath } from "@synara/shared/threadWorkspace";
 import type { QueryClient } from "@tanstack/react-query";
-import { createContext, useContext } from "react";
+import { createContext, useContext, useLayoutEffect, useRef } from "react";
 
 import { openInPreferredEditor } from "../editorPreferences";
 import { readNativeApi } from "../nativeApi";
-import { projectReadFileQueryOptions } from "./projectReactQuery";
+import { toastManager } from "../components/ui/toast";
+import { filesystemStatQueryOptions, projectReadFileQueryOptions } from "./projectReactQuery";
+
+interface WorkspaceFileOpenOptions {
+  external?: boolean;
+}
 
 export interface WorkspaceFileOpener {
   /**
-   * Opens a file referenced in the chat. Returns true when the reference was
-   * handled by an in-app viewer; false tells the caller to fall back to the
-   * external editor (path outside the workspace, no viewer on this surface).
+   * Handles activation of a local reference. False leaves the reference to the
+   * shared external fallback when this surface cannot handle it.
    */
-  openFile: (path: string) => boolean;
+  openFile: (path: string, options?: WorkspaceFileOpenOptions) => boolean;
   /** Optional hover warm-up for the file contents + syntax highlighter. */
   prefetchFile?: (path: string) => void;
 }
@@ -178,16 +182,110 @@ export function resolveDockFileOpenTarget(
  * reference isn't viewable in-app (path outside the workspace, no opener).
  * Pass a null opener to force the external editor (e.g. meta/ctrl-click).
  */
-export function openWorkspaceFileReference(opener: WorkspaceFileOpener | null, path: string): void {
-  if (opener?.openFile(path)) {
+export function openWorkspaceFileReference(
+  opener: WorkspaceFileOpener | null,
+  path: string,
+  options?: WorkspaceFileOpenOptions,
+): void {
+  if (options?.external ? opener?.openFile(path, options) : opener?.openFile(path)) {
     return;
   }
+  void activateWorkspacePath({ path, workspaceRoot: null, external: true }).catch(
+    showPathOpenError,
+  );
+}
+
+function showPathOpenError(error: unknown): void {
+  toastManager.add({
+    type: "error",
+    title: "Could not open this location",
+    description: error instanceof Error ? error.message : "The location is unavailable.",
+  });
+}
+
+interface WorkspacePathActions {
+  workspaceRoot: string | null;
+  openFile?: (path: string) => boolean;
+  openDirectory?: (relativePath: string) => void;
+}
+
+export async function activateWorkspacePath(
+  input: WorkspacePathActions & {
+    path: string;
+    external?: boolean;
+    isCurrent?: () => boolean;
+  },
+): Promise<void> {
   const api = readNativeApi();
-  if (api) {
-    void openInPreferredEditor(api, path).catch(() => undefined);
-  } else {
-    console.warn("Native API not found. Unable to open file in editor.");
+  if (!api) throw new Error("Connection is unavailable. Try again after reconnecting.");
+  const rawPath = input.path.trim();
+  const position = FILE_POSITION_SUFFIX_PATTERN.exec(rawPath)?.[0] ?? "";
+  const targetPath =
+    resolveSynaraPublicAssetOpenTarget(
+      rawPath.replace(FILE_POSITION_SUFFIX_PATTERN, ""),
+      input.workspaceRoot,
+    ) ?? rawPath.replace(FILE_POSITION_SUFFIX_PATTERN, "");
+  const target = await api.filesystem.stat({
+    path: targetPath,
+    ...(input.workspaceRoot ? { cwd: input.workspaceRoot } : {}),
+  });
+  if (input.isCurrent?.() === false) return;
+  if (target.kind === "directory" || target.kind === "other") {
+    if (
+      !input.external &&
+      target.kind === "directory" &&
+      target.workspaceRelativePath !== null &&
+      !target.workspaceRelativePath
+        .split("/")
+        .some((segment) => segment.toLowerCase() === ".git") &&
+      input.openDirectory
+    ) {
+      input.openDirectory(target.workspaceRelativePath);
+    } else {
+      await api.shell.openInEditor(target.path, "file-manager");
+    }
+    return;
   }
+  if (target.kind === "missing" && TRAILING_PATH_SEPARATOR_PATTERN.test(targetPath)) {
+    throw new Error("This folder no longer exists at the linked location.");
+  }
+  const filePath = target.kind === "file" ? `${target.path}${position}` : rawPath;
+  if (!input.external && input.openFile?.(filePath)) return;
+  if (target.kind === "missing") throw new Error("This location no longer exists.");
+  await openInPreferredEditor(api, filePath, input.isCurrent);
+}
+
+export function useWorkspacePathOpener(
+  input: WorkspacePathActions & {
+    scopeKey: string;
+    enabled: boolean;
+    prefetchFile?: (path: string) => void;
+  },
+): WorkspaceFileOpener {
+  const requestRef = useRef(0);
+  useLayoutEffect(() => {
+    requestRef.current += 1;
+    return () => {
+      requestRef.current += 1;
+    };
+  }, [input.scopeKey, input.workspaceRoot, input.enabled]);
+  return {
+    openFile: (path, options) => {
+      if (!input.enabled) return false;
+      const request = ++requestRef.current;
+      const isCurrent = () => requestRef.current === request;
+      void activateWorkspacePath({
+        ...input,
+        path,
+        ...(options?.external ? { external: true } : {}),
+        isCurrent,
+      }).catch((error: unknown) => {
+        if (isCurrent()) showPathOpenError(error);
+      });
+      return true;
+    },
+    ...(input.prefetchFile ? { prefetchFile: input.prefetchFile } : {}),
+  };
 }
 
 /**
@@ -214,10 +312,18 @@ export function prefetchWorkspaceFile(
   if (!relativePath.includes("/")) {
     return;
   }
-  void queryClient.prefetchQuery(projectReadFileQueryOptions({ cwd: workspaceRoot, relativePath }));
-  void import("./syntaxHighlighting")
-    .then((module) =>
-      module.getSyntaxHighlighterPromise(module.getSyntaxLanguageForPath(relativePath)),
-    )
+  void queryClient
+    .fetchQuery(filesystemStatQueryOptions({ cwd: workspaceRoot, path: relativePath }))
+    .then(async (target) => {
+      if (target.kind !== "file") return;
+      await Promise.all([
+        queryClient.prefetchQuery(
+          projectReadFileQueryOptions({ cwd: workspaceRoot, relativePath }),
+        ),
+        import("./syntaxHighlighting").then((module) =>
+          module.getSyntaxHighlighterPromise(module.getSyntaxLanguageForPath(relativePath)),
+        ),
+      ]);
+    })
     .catch(() => undefined);
 }

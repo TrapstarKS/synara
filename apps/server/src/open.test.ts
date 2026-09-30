@@ -343,7 +343,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       );
       assert.deepEqual(directoryLaunch, {
         command: "open",
-        args: [directoryPath],
+        args: ["-a", "Finder", directoryPath],
       });
     }),
   );
@@ -358,9 +358,39 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
       assert.deepEqual(launch, {
         command: "open",
-        args: [targetPath],
+        args: ["-a", "Finder", targetPath],
       });
     }),
+  );
+
+  it.effect(
+    "browses application bundles in Finder and reveals other objects through their parent on Windows and Linux",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "synara-native-folder-" });
+        const bundle = path.join(root, "Example.app");
+        const file = path.join(root, "do not execute.exe");
+        yield* fs.makeDirectory(bundle);
+        yield* fs.writeFileString(file, "fixture");
+        assert.deepEqual(
+          yield* resolveEditorLaunch({ cwd: bundle, editor: "file-manager" }, "darwin"),
+          {
+            command: "open",
+            args: ["-a", "Finder", bundle],
+          },
+        );
+        for (const platform of ["win32", "linux"] as const) {
+          const result = yield* resolveEditorLaunch(
+            { cwd: file, editor: "file-manager" },
+            platform,
+          );
+          assert.notInclude(result.args, file);
+          assert.lengthOf(result.args, 1);
+          assert.isTrue(result.args[0]!.endsWith(path.basename(root)));
+        }
+      }),
   );
 
   it.effect("maps file-manager editor to Windows and Linux open commands", () =>

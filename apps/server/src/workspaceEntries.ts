@@ -7,6 +7,8 @@ import { runProcess } from "./processRunner";
 import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
+  FilesystemStatInput,
+  FilesystemStatResult,
   ProjectDiscoverScriptsInput,
   ProjectDiscoverScriptsResult,
   ProjectDirectoryEntry,
@@ -36,7 +38,7 @@ import {
   isWorkspaceRelativePathSafe,
 } from "@synara/shared/path";
 import { normalizeWorkspaceEntrySearchQuery } from "@synara/shared/searchQuery";
-import { resolveRealPathWithinRoot } from "./workspace/realPathContainment";
+import { isContainedPath, resolveRealPathWithinRoot } from "./workspace/realPathContainment";
 
 const WORKSPACE_CACHE_TTL_MS = 15_000;
 const WORKSPACE_CACHE_MAX_KEYS = 4;
@@ -859,6 +861,71 @@ export async function browseWorkspaceEntries(
       }))
       .toSorted((left, right) => left.name.localeCompare(right.name)),
   };
+}
+
+export async function statFilesystemEntry(
+  input: FilesystemStatInput,
+): Promise<FilesystemStatResult> {
+  const expandedPath = expandHomePath(input.path);
+  const cwd = input.cwd ? expandHomePath(input.cwd) : undefined;
+  if (expandedPath.includes("\0") || cwd?.includes("\0")) {
+    throw new Error("Invalid filesystem path.");
+  }
+  if (
+    process.platform !== "win32" &&
+    (isWindowsAbsolutePath(expandedPath) || (cwd && isWindowsAbsolutePath(cwd)))
+  ) {
+    throw new Error("Windows-style paths are only supported on Windows.");
+  }
+  if (!isWindowsAbsolutePath(expandedPath) && /^[a-z][a-z0-9+.-]*:/i.test(expandedPath)) {
+    throw new Error("Expected a filesystem path, not a URL.");
+  }
+  if (!path.isAbsolute(expandedPath) && !cwd) {
+    throw new Error("Relative filesystem paths require a current project.");
+  }
+  if (cwd && !path.isAbsolute(cwd)) {
+    throw new Error("The current project path must be absolute.");
+  }
+  const absolutePath = cwd ? path.resolve(cwd, expandedPath) : path.resolve(expandedPath);
+  const fileInfo = await fs.stat(absolutePath).catch((cause: unknown) => {
+    const code = (cause as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw cause;
+  });
+  const danglingLink =
+    fileInfo === null &&
+    (await fs.lstat(absolutePath).then(
+      (info) => info.isSymbolicLink(),
+      (cause: unknown) => {
+        const code = (cause as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") return false;
+        throw cause;
+      },
+    ));
+  const kind = !fileInfo
+    ? danglingLink
+      ? "other"
+      : "missing"
+    : fileInfo.isDirectory()
+      ? "directory"
+      : fileInfo.isFile()
+        ? "file"
+        : "other";
+  let workspaceRelativePath: string | null = null;
+  if (kind === "directory" && cwd) {
+    const [realRoot, realTarget] = await Promise.all([
+      fs.realpath(cwd).catch((cause: unknown) => {
+        const code = (cause as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") return null;
+        throw cause;
+      }),
+      fs.realpath(absolutePath),
+    ]);
+    if (realRoot && isContainedPath(realRoot, realTarget)) {
+      workspaceRelativePath = path.relative(realRoot, realTarget).split(path.sep).join("/");
+    }
+  }
+  return { path: absolutePath, kind, workspaceRelativePath };
 }
 
 export async function searchWorkspaceEntries(

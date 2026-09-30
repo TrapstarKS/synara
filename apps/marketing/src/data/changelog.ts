@@ -26,6 +26,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    version: "0.9.20",
+    date: "Sep 30",
+    features: [
+      {
+        id: "folder-link-destinations",
+        title: "Folder links open in the explorer",
+        description:
+          "Folder links now open the appropriate explorer, including paths without a trailing slash, Windows shared folders and symbolic links. Files without a preview also offer a file-manager action alongside Download.",
+      },
+    ],
+  },
+  {
     version: "0.9.19",
     date: "Sep 30",
     features: [

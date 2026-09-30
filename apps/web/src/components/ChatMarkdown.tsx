@@ -15,7 +15,7 @@ import {
 } from "~/lib/icons";
 import type { ProviderMentionReference } from "@synara/contracts";
 import { isLocalAbsolutePath, isWindowsAbsolutePath } from "@synara/shared/path";
-import { encodeFilePathForUrl } from "@synara/shared/fileUrls";
+import { encodeFilePathForUrl, markdownFilePathHref } from "@synara/shared/fileUrls";
 import "katex/dist/katex.min.css";
 import { matchWikiLinkAt, remarkWikiLinks } from "../lib/remarkWikiLinks";
 import { remarkGithubAlerts, type GithubAlertKind } from "../lib/remarkGithubAlerts";
@@ -48,7 +48,7 @@ import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { dedentCode, parseCodeFenceInfo, type CodeFenceInfo } from "../lib/codeFence";
 import { getFileIconName, inferEntryKindFromPath, pathLooksLikeKnownFile } from "../file-icons";
 import { CentralIcon } from "~/lib/central-icons";
-import { isLocalImageMarkdownSrc, localImageAbsolutePath } from "../lib/localImageUrls";
+import { isLocalImageMarkdownSrc } from "../lib/localImageUrls";
 import { repairMarkdownTableDelimiters } from "../lib/markdownTableRepair";
 import { showFileReferenceContextMenu } from "../lib/fileReferenceContextMenu";
 import { createLocalFileClipboardSource } from "../lib/desktopClipboard";
@@ -248,23 +248,35 @@ function markdownUrlTransform(href: string, key: string): string {
   // Drive letters look like URI schemes to the default sanitizer. Image paths
   // are consumed by our authenticated local-file route, never by a browser URL.
   if (key === "src" && isLocalImageMarkdownSrc(restoredHref)) return restoredHref;
-  return rewriteMarkdownFileUriHref(restoredHref) ?? defaultUrlTransform(restoredHref);
+  if (key === "href" && /^[A-Za-z]:[\\/]/.test(restoredHref)) return restoredHref;
+  const localHref = rewriteMarkdownFileUriHref(restoredHref);
+  if (key === "href" && localHref !== null) return restoredHref;
+  return localHref ?? defaultUrlTransform(restoredHref);
 }
 
-function restoreWindowsImageSource(raw: string): string | null {
-  if (!raw.startsWith("![") || !raw.endsWith(")") || !raw.includes("\\")) return null;
-  const bracketEnd = findMarkdownBracketEnd(raw, 1);
+function restoreWindowsPathSource(raw: string, image: boolean): string | null {
+  if (!raw.startsWith(image ? "![" : "[") || !raw.endsWith(")") || !raw.includes("\\")) return null;
+  const bracketEnd = findMarkdownBracketEnd(raw, image ? 1 : 0);
   if (bracketEnd === -1 || raw[bracketEnd + 1] !== "(") return null;
   const destination = raw.slice(bracketEnd + 2, -1).trim();
-  // The parser has already established that this is an inline image. Read its
+  // The parser has already established that this is an inline link. Read its
   // original destination before CommonMark removed separators such as `\.`.
   // Optional titles follow whitespace (or the closing angle bracket).
   const rawPath = destination.startsWith("<")
     ? destination.slice(1, destination.indexOf(">"))
     : destination.split(/\s/, 1)[0];
-  if (!rawPath || !isWindowsAbsolutePath(rawPath) || !rawPath.includes("\\")) return null;
-  const path = localImageAbsolutePath(restoreLiteralDollarPlaceholders(rawPath));
-  return path === null ? null : encodeFilePathForUrl(path);
+  if (
+    !rawPath ||
+    !isWindowsAbsolutePath(rawPath) ||
+    (!/^[A-Za-z]:\\/.test(rawPath) && !rawPath.startsWith("\\\\"))
+  )
+    return null;
+  const path = restoreLiteralDollarPlaceholders(rawPath);
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
 }
 
 function restoreLiteralDollarsInNode(node: unknown): void {
@@ -787,7 +799,7 @@ function OpenableFileChip(props: {
         event.preventDefault();
         event.stopPropagation();
         const forceExternalEditor = event.metaKey || event.ctrlKey;
-        openWorkspaceFileReference(forceExternalEditor ? null : opener, props.targetPath);
+        openWorkspaceFileReference(opener, props.targetPath, { external: forceExternalEditor });
       }}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -1109,10 +1121,21 @@ const MARKDOWN_COMPONENTS: Components = {
       </blockquote>
     );
   },
-  a: function MarkdownLink({ node: _node, href, children, ...props }) {
-    const { isUserVariant, cwd, knownAbsoluteFilePaths, resolvedTheme } =
+  a: function MarkdownLink({ node, href, children, ...props }) {
+    const { isUserVariant, cwd, knownAbsoluteFilePaths, resolvedTheme, sourceText } =
       useContext(MarkdownRenderContext)!;
-    const restoredHref = href ? restoreLiteralDollarPlaceholders(href) : href;
+    const start = node?.position?.start.offset;
+    const end = node?.position?.end.offset;
+    const legacyPath =
+      start === undefined || end === undefined
+        ? null
+        : restoreWindowsPathSource(sourceText.slice(start, end), false);
+    const restoredHref =
+      legacyPath !== null
+        ? markdownFilePathHref(legacyPath)
+        : href
+          ? restoreLiteralDollarPlaceholders(href)
+          : href;
     const isExternalHttp = isExternalHttpHref(restoredHref);
     if (isUserVariant && isExternalHttp) {
       // GFM autolinks a pasted URL before the chips plugin can see it; when the
@@ -1153,7 +1176,9 @@ const MARKDOWN_COMPONENTS: Components = {
         targetPath={targetPath}
         theme={resolvedTheme}
         label={children}
-        {...(restoredHref ? { href: restoredHref } : {})}
+        {...(restoredHref
+          ? { href: rewriteMarkdownFileUriHref(restoredHref) ?? restoredHref }
+          : {})}
       />
     );
   },
@@ -1240,10 +1265,11 @@ const MARKDOWN_COMPONENTS: Components = {
     const end = node?.position?.end.offset;
     // Repair at render time so previously persisted messages recover without
     // rewriting history or changing source offsets used by find/task lists.
-    const legacySrc =
+    const legacyPath =
       start === undefined || end === undefined
         ? null
-        : restoreWindowsImageSource(sourceText.slice(start, end));
+        : restoreWindowsPathSource(sourceText.slice(start, end), true);
+    const legacySrc = legacyPath === null ? null : encodeFilePathForUrl(legacyPath);
     const restoredSrc = legacySrc ?? (src ? restoreLiteralDollarPlaceholders(src) : "");
     if (isLocalImageMarkdownSrc(restoredSrc)) {
       return (

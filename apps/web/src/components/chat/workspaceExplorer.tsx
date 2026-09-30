@@ -244,9 +244,12 @@ function WorkspaceDirectory(props: {
     );
   }
 
+  const entries = (query.data?.entries ?? []).filter(
+    (entry) => shouldShowExplorerEntry(entry) || props.expandedDirectories.has(entry.path),
+  );
   return (
     <>
-      {(query.data?.entries ?? []).filter(shouldShowExplorerEntry).map((entry) => {
+      {entries.map((entry) => {
         if (entry.kind !== "directory") {
           return (
             <ExplorerRow

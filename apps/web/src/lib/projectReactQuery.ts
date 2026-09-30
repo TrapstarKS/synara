@@ -1,4 +1,5 @@
 import type {
+  FilesystemStatResult,
   ProjectCreateLocalFilePreviewGrantResult,
   ProjectEntry,
   ProjectListDirectoriesResult,
@@ -231,6 +232,19 @@ export function projectListDirectoriesQueryOptions(input: {
     enabled: (input.enabled ?? true) && input.cwd !== null,
     staleTime: input.staleTime ?? DEFAULT_LIST_DIRECTORIES_STALE_TIME,
     placeholderData: (previous) => previous ?? { entries: [] },
+  });
+}
+
+export function filesystemStatQueryOptions(input: { cwd: string | null; path: string }) {
+  return queryOptions<FilesystemStatResult>({
+    queryKey: ["filesystem", "stat", input.cwd, input.path],
+    queryFn: () =>
+      ensureNativeApi().filesystem.stat({
+        path: input.path,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+      }),
+    staleTime: 5_000,
+    retry: false,
   });
 }
 

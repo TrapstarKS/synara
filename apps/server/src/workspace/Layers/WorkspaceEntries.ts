@@ -11,10 +11,16 @@ import {
   searchLocalEntries,
   searchWorkspaceContent,
   searchWorkspaceEntries,
+  statFilesystemEntry,
 } from "../../workspaceEntries";
 import { toWorkspaceEntriesError, WorkspaceEntries } from "../Services/WorkspaceEntries";
 
 export const WorkspaceEntriesLive = Layer.succeed(WorkspaceEntries, {
+  stat: (input) =>
+    Effect.tryPromise({
+      try: () => statFilesystemEntry(input),
+      catch: (cause) => toWorkspaceEntriesError("inspect filesystem path", cause),
+    }),
   browse: (input) =>
     Effect.tryPromise({
       try: () => browseWorkspaceEntries(input),

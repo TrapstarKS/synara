@@ -26,7 +26,7 @@ import { Terminal } from "@xterm/xterm";
 import { readNativeApi } from "~/nativeApi";
 import { suppressQueryResponses } from "~/lib/suppressQueryResponses";
 
-import { openInPreferredEditor } from "../../editorPreferences";
+import { activateWorkspacePath } from "../../lib/workspaceFileOpener";
 import { isTerminalClearShortcut, terminalNavigationShortcutData } from "../../keybindings";
 import {
   collectWrappedTerminalLinkLine,
@@ -957,7 +957,11 @@ export function createRuntimeEntry(config: TerminalRuntimeConfig): TerminalRunti
               }
 
               const target = resolvePathLinkTarget(match.text, entry.cwd);
-              void openInPreferredEditor(api, target).catch((error) => {
+              void activateWorkspacePath({
+                path: target,
+                workspaceRoot: entry.cwd,
+                external: true,
+              }).catch((error) => {
                 writeSystemMessage(terminal, describeErrorMessage(error, "Unable to open path"));
               });
             },

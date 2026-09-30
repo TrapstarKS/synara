@@ -90,6 +90,7 @@ import { FileLineCommentBox } from "./chat/FileLineCommentBox";
 import { PanelStateMessage } from "./chat/PanelStateMessage";
 import { useFileLineCommenting } from "./chat/useFileLineCommenting";
 import { WorkspaceFilePreviewHeader } from "./chat/WorkspaceFilePreviewHeader";
+import { OpenInPicker } from "./chat/OpenInPicker";
 import { TranscriptSelectionAction } from "./chat/TranscriptSelectionAction";
 import { useCodeSelectionAction } from "./chat/useCodeSelectionAction";
 import { LocalAudioPreview } from "./LocalAudioPreview";
@@ -559,6 +560,10 @@ function UnsupportedFilePreview(props: {
     errorTitle: "Could not download file",
   });
   const typeLabel = extension ? `${extension.slice(1).toUpperCase()} file` : "Binary file";
+  const openInTarget =
+    props.workspaceRoot && isWorkspaceRelativePathSafe(props.filePath)
+      ? joinWorkspaceRelativePath(props.workspaceRoot, props.filePath)
+      : props.filePath;
 
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
@@ -569,18 +574,26 @@ function UnsupportedFilePreview(props: {
         <div className="min-w-0">
           <p className="truncate font-medium text-foreground">{fileName}</p>
           <p className="mt-1 text-ui-sm text-muted-foreground">
-            {typeLabel} · This file can’t be shown as text.
+            {typeLabel} · Open its folder or download it to view this file.
           </p>
         </div>
-        <a
-          href={downloadUrl}
-          download={fileName}
-          onClick={handleDownloadClick}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-background px-3 py-1.5 text-ui-sm font-medium text-foreground hover:bg-muted/60"
-        >
-          <DownloadIcon className="size-3.5" aria-hidden="true" />
-          Download
-        </a>
+        <div className="flex items-center gap-2">
+          <OpenInPicker
+            openInTarget={openInTarget}
+            defaultEditor="file-manager"
+            groupLabel="Open in file manager"
+            labelMode="always"
+          />
+          <a
+            href={downloadUrl}
+            download={fileName}
+            onClick={handleDownloadClick}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-background px-3 py-1.5 text-ui-sm font-medium text-foreground hover:bg-muted/60"
+          >
+            <DownloadIcon className="size-3.5" aria-hidden="true" />
+            Download
+          </a>
+        </div>
       </div>
     </div>
   );

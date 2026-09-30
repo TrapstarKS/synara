@@ -3,6 +3,8 @@ import { Data, Effect, ServiceMap } from "effect";
 import type {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
+  FilesystemStatInput,
+  FilesystemStatResult,
   ProjectDiscoverScriptsInput,
   ProjectDiscoverScriptsResult,
   ProjectListDirectoriesInput,
@@ -20,6 +22,9 @@ import type {
 } from "@synara/contracts";
 
 export interface WorkspaceEntriesShape {
+  readonly stat: (
+    input: FilesystemStatInput,
+  ) => Effect.Effect<FilesystemStatResult, WorkspaceEntriesError>;
   readonly browse: (
     input: FilesystemBrowseInput,
   ) => Effect.Effect<FilesystemBrowseResult, WorkspaceEntriesError>;

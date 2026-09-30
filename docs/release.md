@@ -73,7 +73,8 @@ outputs. Corrupt-cache recovery rebuilt and verified the helper. These are local
 observations, not hosted-runner timing guarantees. The retired Codex Luna Max Fast
 archive is no longer downloaded or packaged. Production icon copies remain available.
 
-Both native release jobs run local-image path and Codex-home regressions, then
+Both native release jobs run regressions for local-image paths, Codex homes,
+folder classification, symbolic links and native file-manager targets. They then
 install official Codex `0.159.2` in the runner's temporary directory for an
 opt-in startup/MCP smoke. This checks the normal home, process-local config,
 authenticated MCP discovery, and process teardown without an account login or

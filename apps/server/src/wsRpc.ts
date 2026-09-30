@@ -1574,6 +1574,8 @@ const makeWsRpcHandlersLayer = () =>
           ),
         [WS_METHODS.filesystemBrowse]: (input) =>
           rpcEffect(workspaceEntries.browse(input), "Failed to browse filesystem"),
+        [WS_METHODS.filesystemStat]: (input) =>
+          rpcEffect(workspaceEntries.stat(input), "Failed to inspect filesystem path"),
         [WS_METHODS.shellOpenInEditor]: (input) =>
           rpcEffect(open.openInEditor(input), "Failed to open editor"),
 

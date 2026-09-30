@@ -20,3 +20,16 @@ export const FilesystemBrowseResult = Schema.Struct({
   entries: Schema.Array(FilesystemBrowseEntry),
 });
 export type FilesystemBrowseResult = typeof FilesystemBrowseResult.Type;
+
+export const FilesystemStatInput = Schema.Struct({
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
+  cwd: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(2048))),
+});
+export type FilesystemStatInput = typeof FilesystemStatInput.Type;
+
+export const FilesystemStatResult = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  kind: Schema.Literals(["file", "directory", "other", "missing"]),
+  workspaceRelativePath: Schema.NullOr(Schema.String),
+});
+export type FilesystemStatResult = typeof FilesystemStatResult.Type;

@@ -210,6 +210,16 @@ File and explorer panels can expand across the chat area. Restore returns to the
 split layout; closing the last maximized panel returns to the chat. Closing the
 last panel in the ordinary split layout keeps the panel launcher open.
 
+Local links are inspected on the active server before opening. Workspace folders
+open in the chat's Explorer even without a trailing slash or when their names
+have file extensions. External folders, Git metadata directories and non-file
+objects open in the host's file manager. Folder links in the full editor and
+Cmd/Ctrl-clicked folder links also use the file manager, preserving the current
+edit buffer. Symbolic links are resolved before choosing a workspace destination.
+Files retain their previews and line references; unsupported binary previews
+offer both a file-manager action and a download. A later click or chat switch
+cancels an earlier pending open.
+
 Editable workspace files autosave after a 400 ms pause in typing. Save or
 Cmd/Ctrl+S saves immediately. The file editor, diff editor, and explorer share
 the same buffer and writer for an open file. Successful saves update Unstaged

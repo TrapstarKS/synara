@@ -60,8 +60,8 @@ import {
   resolveDockFileOpenTarget,
   resolveWorkspaceDirectoryOpenTarget,
   resolveWorkspaceFileOpenTarget,
+  useWorkspacePathOpener,
   WorkspaceFileOpenerContext,
-  type WorkspaceFileOpener,
 } from "../../lib/workspaceFileOpener";
 import { requestExplorerReveal } from "../../explorerRevealRequestStore";
 import { selectRightDockState, useRightDockStore } from "../../rightDockStore";
@@ -593,19 +593,12 @@ export function SingleChatSurface(props: {
       prefetchWorkspaceFile(queryClient, workspaceRoot, relativePath);
     }
   };
-  // Chat surface: file references open in the right-dock file pane, while the
-  // workspace root and explicit directory references open in Explorer.
-  // Other references retain the existing dock file preview and external-editor
-  // fallback behavior.
-  const dockFileOpener: WorkspaceFileOpener = {
+  const dockFileOpener = useWorkspacePathOpener({
+    scopeKey: props.threadId,
+    workspaceRoot,
+    enabled: !editorViewActive,
+    openDirectory: handleOpenWorkspaceSearchDirectory,
     openFile: (path) => {
-      const directoryPath = resolveWorkspaceDirectoryOpenTarget(path, workspaceRoot);
-      if (directoryPath !== null) {
-        requestImmediateDockHydration("explorer");
-        openPane(props.threadId, { kind: "explorer" });
-        requestExplorerReveal(props.threadId, directoryPath);
-        return true;
-      }
       // In-workspace references map to relative paths for the file-read RPC;
       // binary previews in a session's scratch workspace (outside the chat
       // workspace) open by absolute path through the local-image route.
@@ -618,10 +611,13 @@ export function SingleChatSurface(props: {
       return true;
     },
     prefetchFile: prefetchOpenerFile,
-  };
+  });
   // Editor surface: the center file pane is already the file viewer, so file
   // references select into it instead of opening a dock pane.
-  const editorFileOpener: WorkspaceFileOpener = {
+  const editorFileOpener = useWorkspacePathOpener({
+    scopeKey: props.threadId,
+    workspaceRoot,
+    enabled: editorViewActive,
     openFile: (path) => {
       if (!workspaceRoot) {
         return false;
@@ -634,7 +630,7 @@ export function SingleChatSurface(props: {
       return true;
     },
     prefetchFile: prefetchOpenerFile,
-  };
+  });
 
   const handleSplitSurface = () => {
     if (!props.projectId) return;
