@@ -12,6 +12,7 @@ import type {
 
 import { ensureManagedCodexProfileHome } from "./codexProfiles.ts";
 import { resolveExecutable } from "./executableLookup.ts";
+import { resolveCodexExecutable } from "@synara/shared/codexExecutable";
 import { redactSensitiveProcessArgs } from "./processArgumentRedaction.ts";
 
 const DEVICE_LOGIN_TIMEOUT_MS = 20_000;
@@ -183,7 +184,10 @@ export class CodexAccountManager {
         : { CCP_CONFIG_DIR: proxyConfigDir }),
     };
     delete env.OPENAI_API_KEY;
-    const binary = resolveExecutable(configuredBinary, { env });
+    const binary =
+      input.target === "codex"
+        ? resolveCodexExecutable(configuredBinary, { env })
+        : resolveExecutable(configuredBinary, { env });
     if (!binary) {
       throw new Error(
         `${input.target === "codex" ? "Codex" : "Claude Code proxy"} binary '${configuredBinary}' was not found.`,

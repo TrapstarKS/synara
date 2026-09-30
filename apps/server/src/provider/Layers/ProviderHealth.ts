@@ -19,6 +19,7 @@ import type {
 } from "@synara/contracts";
 import { ServerProviderUpdateError } from "@synara/contracts";
 import { parseCodexConfigModelProvider } from "@synara/shared/codexConfig";
+import { resolveCodexExecutable } from "@synara/shared/codexExecutable";
 import { decodeJsonResult } from "@synara/shared/schemaJson";
 import { expandHomePath } from "@synara/shared/synaraHome";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -666,7 +667,11 @@ const runCodexCommand = (
   executable = "codex",
   env: NodeJS.ProcessEnv = providerCommandEnv(CODEX_PROVIDER),
 ) =>
-  runProviderCommand(executable, args, env).pipe(
+  Effect.gen(function* () {
+    const resolved = resolveCodexExecutable(executable, { env });
+    if (!resolved) return yield* Effect.fail(new Error(`spawn ${executable} ENOENT`));
+    return yield* runProviderCommand(resolved, args, env);
+  }).pipe(
     Effect.flatMap((result) =>
       isWindowsShellCommandMissingResult({ code: result.code, stderr: result.stderr })
         ? Effect.fail(new Error(`spawn ${executable} ENOENT`))

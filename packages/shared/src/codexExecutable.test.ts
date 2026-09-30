@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -56,7 +64,10 @@ describe("Codex executable selection", () => {
   ])("replaces the retired executable %s with normal PATH lookup", (retired) => {
     const f = fixture();
     expect(isRetiredCodexExecutable(retired)).toBe(true);
-    expect(resolveCodexExecutable(retired, { env: f.env })).toBe(f.official);
+    const resolved = resolveCodexExecutable(retired, { env: f.env });
+    expect(resolved).not.toBeNull();
+    // PATHEXT may produce .CMD while the fixture is named .cmd on Windows.
+    expect(realpathSync(resolved!)).toBe(realpathSync(f.official));
   });
 
   it("preserves an explicitly selected unrelated binary", () => {

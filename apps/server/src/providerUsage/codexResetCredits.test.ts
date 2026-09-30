@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveCodexExecutable } from "@synara/shared/codexExecutable";
 import {
   canUseCodexResetCredit,
   consumeCodexResetCredit,
@@ -11,6 +12,10 @@ import {
 
 const { spawn, signal } = vi.hoisted(() => ({ spawn: vi.fn(), signal: vi.fn() }));
 vi.mock("@synara/shared/processRuntime", () => ({ spawnProcess: spawn }));
+vi.mock("@synara/shared/codexExecutable", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@synara/shared/codexExecutable")>()),
+  resolveCodexExecutable: vi.fn((command: string) => command as string | null),
+}));
 vi.mock("../platform/processTreeController", () => ({ signalOwnedChildProcess: signal }));
 const input = {
   binaryPath: "codex.cmd",
@@ -129,6 +134,11 @@ describe("reset-credit parsing and eligibility", () => {
 });
 
 describe("isolated app-server reset flow", () => {
+  it("does not run a retired CLI when no official executable is available", async () => {
+    vi.mocked(resolveCodexExecutable).mockReturnValueOnce(null);
+    expect(await fetchCodexResetCredits(input)).toBeUndefined();
+    expect(spawn).not.toHaveBeenCalled();
+  });
   it("enriches only the same account through the shared process boundary", async () => {
     const { calls } = fakeServer();
     expect(await fetchCodexResetCredits(input)).toMatchObject({

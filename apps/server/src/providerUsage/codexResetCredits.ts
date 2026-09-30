@@ -8,6 +8,7 @@ import type {
   ServerConsumeCodexResetCreditInput,
 } from "@synara/contracts";
 import { spawnProcess } from "@synara/shared/processRuntime";
+import { resolveCodexExecutable } from "@synara/shared/codexExecutable";
 
 import { CodexJsonlFramer, CodexJsonlWriter } from "../codexAppServerTransport";
 import { createLogger } from "../logger";
@@ -101,7 +102,12 @@ async function withAppServer<T>(
   input: CodexResetCreditProbeInput,
   run: (request: Request) => Promise<T>,
 ): Promise<T> {
-  const child = spawnProcess(input.binaryPath?.trim() || "codex", ["app-server"], {
+  const binary = resolveCodexExecutable(input.binaryPath?.trim() || "codex", {
+    env: input.env,
+    cwd: input.cwd,
+  });
+  if (!binary) throw new Error("Codex CLI is not installed or not executable.");
+  const child = spawnProcess(binary, ["app-server"], {
     cwd: input.cwd,
     env: input.env,
     stdio: "pipe",

@@ -11,7 +11,7 @@ import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { vi } from "vitest";
 
-import { SYNARA_CODEX_HOME_OVERLAY_DIR } from "../../codexHomePaths";
+import { resolveCodexExecutable } from "@synara/shared/codexExecutable";
 import { ServerConfig } from "../../config";
 import { ServerSettingsService } from "../../serverSettings";
 import { ProviderHealth } from "../Services/ProviderHealth";
@@ -49,6 +49,11 @@ import {
 import { resolvePackageManagedProviderMaintenance } from "../providerMaintenance";
 
 // ── Test helpers ────────────────────────────────────────────────────
+
+vi.mock("@synara/shared/codexExecutable", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@synara/shared/codexExecutable")>()),
+  resolveCodexExecutable: vi.fn((command: string) => command as string | null),
+}));
 
 const encoder = new TextEncoder();
 
@@ -1128,7 +1133,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
       return Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const { tmpDir, runtimeDir } = yield* withTempCodexHome();
+        const { tmpDir } = yield* withTempCodexHome();
         yield* fileSystem.writeFileString(
           path.join(tmpDir, "config.toml"),
           'model_provider = "portkey"\n',
@@ -1140,7 +1145,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           path.join(configuredHome, "config.toml"),
           'model_provider = "openai"\n',
         );
-        expectedCodexHome = path.join(runtimeDir, SYNARA_CODEX_HOME_OVERLAY_DIR);
+        expectedCodexHome = configuredHome;
 
         const status = yield* makeCheckCodexProviderStatus("codex", configuredHome);
         assert.strictEqual(status.status, "ready");
@@ -1162,6 +1167,22 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         ),
       );
     });
+
+    it.effect("does not invoke a retired CLI when official executable lookup fails", () =>
+      Effect.gen(function* () {
+        yield* withTempCodexHome();
+        vi.mocked(resolveCodexExecutable).mockReturnValueOnce(null);
+        const status = yield* checkCodexProviderStatus;
+        assert.strictEqual(status.available, false);
+        assert.strictEqual(status.message, "Codex CLI (`codex`) is not installed or not on PATH.");
+      }).pipe(
+        Effect.provide(
+          mockSpawnerLayer(() => {
+            throw new Error("No CLI should be spawned");
+          }),
+        ),
+      ),
+    );
 
     it.effect("returns unavailable when codex is missing", () =>
       Effect.gen(function* () {
