@@ -7,7 +7,7 @@
  */
 import { Schema } from "effect";
 
-import { CodexProfileId, ProjectId, ThreadId, TurnId } from "./baseSchemas";
+import { CodexProfileId, MessageId, ProjectId, ThreadId, TurnId } from "./baseSchemas";
 import { ModelSelection, ProviderKind } from "./orchestration";
 import { ProviderModelDescriptor } from "./providerDiscovery";
 import { ServerProviderAuthStatus } from "./server";
@@ -67,6 +67,7 @@ export type SynaraContextResult = typeof SynaraContextResult.Type;
 export const SynaraCreateThreadSpec = Schema.Struct({
   prompt: Schema.String.check(Schema.isNonEmpty()),
   notifyCreatorOnComplete: Schema.optional(Schema.Boolean),
+  awaitResult: Schema.optional(Schema.Boolean),
   title: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
   target: ModelSelection,
   projectId: Schema.optional(ProjectId),
@@ -89,11 +90,28 @@ const SynaraGatewayRequestId = Schema.String.check(Schema.isNonEmpty()).check(
 
 export const SynaraCreateThreadsInput = Schema.Struct({
   requestId: SynaraGatewayRequestId,
+  awaitResult: Schema.optional(Schema.Boolean),
   threads: Schema.Array(SynaraCreateThreadSpec)
     .check(Schema.isMinLength(1))
     .check(Schema.isMaxLength(SYNARA_GATEWAY_MAX_THREADS_PER_OPERATION)),
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
 export type SynaraCreateThreadsInput = typeof SynaraCreateThreadsInput.Type;
+
+export const SynaraSendMessageInput = Schema.Struct({
+  threadId: ThreadId,
+  message: Schema.String.check(Schema.isNonEmpty()),
+  mode: Schema.optional(Schema.Literals(["queue", "steer"])),
+  awaitResult: Schema.optional(Schema.Boolean),
+  requestId: Schema.optional(SynaraGatewayRequestId),
+})
+  .check(
+    Schema.makeFilter(
+      (input) =>
+        input.awaitResult !== true || (input.requestId !== undefined && input.mode !== "steer"),
+    ),
+  )
+  .annotate({ parseOptions: { onExcessProperty: "error" } });
+export type SynaraSendMessageInput = typeof SynaraSendMessageInput.Type;
 
 export const SynaraProviderCatalog = Schema.Struct({
   provider: ProviderKind,
@@ -156,6 +174,8 @@ export type SynaraCapabilitiesResult = typeof SynaraCapabilitiesResult.Type;
 export const SynaraCreatedThreadResult = Schema.Struct({
   index: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   threadId: ThreadId,
+  messageId: Schema.optional(MessageId),
+  waitId: Schema.optional(Schema.String),
   projectId: ProjectId,
   title: Schema.String,
   target: ModelSelection,
@@ -176,6 +196,9 @@ export const SynaraCreateThreadsResult = Schema.Struct({
   createdCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   threadIds: Schema.Array(ThreadId),
   threads: Schema.Array(SynaraCreatedThreadResult),
+  waitId: Schema.optional(Schema.String),
+  awaitedThreadIds: Schema.optional(Schema.Array(ThreadId)),
+  instruction: Schema.optional(Schema.String),
 });
 export type SynaraCreateThreadsResult = typeof SynaraCreateThreadsResult.Type;
 
@@ -195,6 +218,22 @@ export const SynaraWaitForThreadsInput = Schema.Struct({
   ),
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
 export type SynaraWaitForThreadsInput = typeof SynaraWaitForThreadsInput.Type;
+
+export const SynaraAwaitThreadsInput = Schema.Struct({
+  threadIds: SynaraWaitForThreadsInput.fields.threadIds,
+  runIds: SynaraWaitForThreadsInput.fields.runIds,
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+export type SynaraAwaitThreadsInput = typeof SynaraAwaitThreadsInput.Type;
+
+export const SynaraAwaitThreadsResult = Schema.Struct({
+  waitId: Schema.String,
+  callerThreadId: ThreadId,
+  callerTurnId: TurnId,
+  status: Schema.Literals(["waiting", "dispatching", "dispatched", "cancelled"]),
+  threadIds: Schema.Array(ThreadId),
+  instruction: Schema.String,
+});
+export type SynaraAwaitThreadsResult = typeof SynaraAwaitThreadsResult.Type;
 
 export const SynaraWaitedThreadResult = Schema.Struct({
   threadId: ThreadId,

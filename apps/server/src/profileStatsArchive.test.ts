@@ -754,6 +754,101 @@ describe("ProfileStatsArchive", () => {
     );
   });
 
+  it("deletes caller-owned waits while retaining waits that target the purged thread", async () => {
+    await runArchiveTest(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const archive = yield* ProfileStatsArchive;
+        yield* seedTwoThreadsWithActivity;
+        yield* acknowledgeProviderCommandJournal(sql);
+        const retainedTargets = JSON.stringify([
+          {
+            pin: {
+              threadId: "thread-purge",
+              runId: "turn-purge-1",
+              messageId: "message-purge-1",
+            },
+            result: null,
+          },
+        ]);
+        for (const state of ["waiting", "dispatching", "dispatched", "cancelled"]) {
+          yield* sql`
+            INSERT INTO agent_gateway_waits (
+              wait_id, caller_thread_id, caller_turn_id, request_json, targets_json,
+              registered_sequence, created_at, state, dispatch_json
+            ) VALUES (
+              ${`purged-wait:${state}`}, 'thread-purge', ${`purged-turn:${state}`},
+              '{"threadIds":["thread-keep"]}', '[]', 1, '2026-06-14T10:00:00.000Z',
+              ${state}, '{"message":{"text":"private frozen context"}}'
+            )
+          `;
+        }
+        yield* sql`
+          INSERT INTO agent_gateway_waits (
+            wait_id, caller_thread_id, caller_turn_id, request_json, targets_json,
+            registered_sequence, created_at
+          ) VALUES (
+            'retained-wait', 'thread-keep', 'turn-keep-1',
+            '{"threadIds":["thread-purge"]}', ${retainedTargets}, 1,
+            '2026-06-14T10:00:00.000Z'
+          )
+        `;
+        expect(yield* archive.purgeThreadWithStatsSnapshot({ threadId: "thread-purge" })).toBe(
+          true,
+        );
+        expect(
+          yield* sql`
+            SELECT wait_id AS waitId, caller_thread_id AS callerThreadId,
+              targets_json AS targetsJson, state, dispatch_json AS dispatchJson
+            FROM agent_gateway_waits
+          `,
+        ).toEqual([
+          {
+            waitId: "retained-wait",
+            callerThreadId: "thread-keep",
+            targetsJson: retainedTargets,
+            state: "waiting",
+            dispatchJson: null,
+          },
+        ]);
+      }),
+    );
+  });
+
+  it.each(["coordinator", "executor"] as const)(
+    "purges question content and frozen answers when the %s is deleted",
+    async (role) => {
+      await runArchiveTest(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const archive = yield* ProfileStatsArchive;
+          yield* seedTwoThreadsWithActivity;
+          yield* acknowledgeProviderCommandJournal(sql);
+          yield* sql`INSERT INTO agent_gateway_coordinator_questions
+        (question_id, root_wait_id, wait_id, coordinator_thread_id, executor_thread_id, executor_turn_id,
+          registered_sequence, request_id, question, state, answer, answer_source, answer_wait_id, created_at, updated_at)
+        VALUES ('purged-question', 'root', 'parent-wait', ${role === "coordinator" ? "thread-purge" : "thread-keep"},
+          ${role === "executor" ? "thread-purge" : "thread-keep"}, 'question-turn', 1, 'question-request',
+          'Private task context?', 'answering', 'Private answer.', 'human', 'private-answer-wait',
+          '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z')`;
+          yield* sql`INSERT INTO agent_gateway_waits
+        (wait_id, caller_thread_id, caller_turn_id, request_json, targets_json, registered_sequence, created_at, dispatch_json)
+        VALUES ('private-answer-wait', 'thread-keep', 'answer-turn', '{"kind":"coordinator-answer"}', '[]', 1,
+          '2026-06-14T10:00:00.000Z', '{"message":{"text":"Private answer."}}')`;
+          expect(yield* archive.purgeThreadWithStatsSnapshot({ threadId: "thread-purge" })).toBe(
+            true,
+          );
+          expect(yield* sql`SELECT question_id FROM agent_gateway_coordinator_questions`).toEqual(
+            [],
+          );
+          expect(
+            yield* sql`SELECT wait_id FROM agent_gateway_waits WHERE wait_id = 'private-answer-wait'`,
+          ).toEqual([]);
+        }),
+      );
+    },
+  );
+
   it("deletes terminal gateway plans and redacts live recovery plans with a purged caller", async () => {
     await runArchiveTest(
       Effect.gen(function* () {

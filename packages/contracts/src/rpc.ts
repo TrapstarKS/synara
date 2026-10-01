@@ -1,4 +1,12 @@
 import { Schema } from "effect";
+import {
+  COORDINATION_WS_METHODS,
+  ThreadCoordinationListInput,
+  ThreadCoordinationListResult,
+  ThreadCoordinationCancelWaitInput,
+  ThreadCoordinationAnswerQuestionInput,
+  ThreadCoordinationActionResult,
+} from "./threadCoordination";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
@@ -1718,7 +1726,28 @@ export const WsMindProfileSetRpc = Rpc.make(WS_METHODS.mindProfileSet, {
 
 export const WsBootstrapRpcGroup = RpcGroup.make(WsBootstrapNegotiateRpc);
 
+export const WsCoordinationListRpc = Rpc.make(COORDINATION_WS_METHODS.list, {
+  payload: ThreadCoordinationListInput,
+  success: ThreadCoordinationListResult,
+  error: WsRpcError,
+});
+
+export const WsCoordinationCancelWaitRpc = Rpc.make(COORDINATION_WS_METHODS.cancelWait, {
+  payload: ThreadCoordinationCancelWaitInput,
+  success: ThreadCoordinationActionResult,
+  error: WsRpcError,
+});
+
+export const WsCoordinationAnswerQuestionRpc = Rpc.make(COORDINATION_WS_METHODS.answerQuestion, {
+  payload: ThreadCoordinationAnswerQuestionInput,
+  success: ThreadCoordinationActionResult,
+  error: WsRpcError,
+});
+
 export const WsFeatureRpcGroup = RpcGroup.make(
+  WsCoordinationListRpc,
+  WsCoordinationCancelWaitRpc,
+  WsCoordinationAnswerQuestionRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationImportThreadRpc,
   WsListProjectImportsRpc,

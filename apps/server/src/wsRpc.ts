@@ -1,8 +1,10 @@
 import { AgentGatewaySessionRegistry } from "./agentGateway/Services/AgentGatewaySessionRegistry";
+import { AgentGateway } from "./agentGateway/Services/AgentGateway";
 import { execFile } from "node:child_process";
 
 import {
   CommandId,
+  COORDINATION_WS_METHODS,
   COMPUTER_WS_METHODS,
   DEFAULT_TERMINAL_ID,
   DEVICE_WS_METHODS,
@@ -402,6 +404,7 @@ const makeWsRpcHandlersLayer = () =>
       const mindService = yield* MindService;
       const open = yield* Open;
       const orchestrationEngine = yield* OrchestrationEngineService;
+      const gateway = Option.getOrUndefined(yield* Effect.serviceOption(AgentGateway));
       const providerCommandReactor = yield* ProviderCommandReactor;
       const sidechatExpiryReactor = yield* SidechatExpiryReactor;
       const path = yield* Path.Path;
@@ -1029,6 +1032,27 @@ const makeWsRpcHandlersLayer = () =>
       });
 
       return AdmittedWsFeatureRpcGroup.of({
+        [COORDINATION_WS_METHODS.list]: (input) =>
+          rpcEffect(
+            gateway?.coordination
+              ? gateway.coordination.list(input)
+              : Effect.fail(new Error("Thread coordination is unavailable on this server.")),
+            "Failed to load thread coordination",
+          ),
+        [COORDINATION_WS_METHODS.cancelWait]: (input) =>
+          rpcEffect(
+            gateway?.coordination
+              ? gateway.coordination.cancelWait(input)
+              : Effect.fail(new Error("Thread coordination is unavailable on this server.")),
+            "Failed to cancel thread wait",
+          ),
+        [COORDINATION_WS_METHODS.answerQuestion]: (input) =>
+          rpcEffect(
+            gateway?.coordination
+              ? gateway.coordination.answerQuestion(input)
+              : Effect.fail(new Error("Thread coordination is unavailable on this server.")),
+            "Failed to answer the delegated question",
+          ),
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           rpcEffect(
             Effect.gen(function* () {

@@ -37,6 +37,7 @@ import {
   type TerminalEvent,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  COORDINATION_WS_METHODS,
   type ContextMenuItem,
   type NativeApi,
   ServerConfigUpdatedPayload,
@@ -859,6 +860,11 @@ export function createWsNativeApi(): NativeApi {
       },
       onShellEvent: orchestrationShellEventListeners.subscribe,
       onThreadEvent: orchestrationThreadEventListeners.subscribe,
+    },
+    coordination: {
+      list: (input = {}) => transport.request(COORDINATION_WS_METHODS.list, input),
+      cancelWait: (input) => transport.request(COORDINATION_WS_METHODS.cancelWait, input),
+      answerQuestion: (input) => transport.request(COORDINATION_WS_METHODS.answerQuestion, input),
     },
     automation: {
       list: (input) => transport.request(WS_METHODS.automationList, input),

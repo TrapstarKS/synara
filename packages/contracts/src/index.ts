@@ -22,6 +22,7 @@ export * from "./model";
 export * from "./mind";
 export * from "./agentMentions";
 export * from "./agentGateway";
+export * from "./threadCoordination";
 export * from "./externalMcp";
 export * from "./mcp";
 export * from "./ws";

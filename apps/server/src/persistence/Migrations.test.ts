@@ -319,6 +319,9 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [115, "ProjectImportOrigins"],
         [116, "ProjectionThreadsHumanMessage"],
         [117, "GatewayCompletions"],
+        [118, "GatewayWaits"],
+        [119, "AwaitedDispatches"],
+        [120, "CoordinatorQuestions"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -388,6 +391,9 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 115, name: "ProjectImportOrigins" },
           { migration_id: 116, name: "ProjectionThreadsHumanMessage" },
           { migration_id: 117, name: "GatewayCompletions" },
+          { migration_id: 118, name: "GatewayWaits" },
+          { migration_id: 119, name: "AwaitedDispatches" },
+          { migration_id: 120, name: "CoordinatorQuestions" },
         ],
       );
       const preserved = yield* sql<{ readonly count: number }>`
@@ -498,6 +504,9 @@ agentGatewayRetentionLegacyLayer(
           [115, "ProjectImportOrigins"],
           [116, "ProjectionThreadsHumanMessage"],
           [117, "GatewayCompletions"],
+          [118, "GatewayWaits"],
+          [119, "AwaitedDispatches"],
+          [120, "CoordinatorQuestions"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -610,6 +619,9 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [115, "ProjectImportOrigins"],
         [116, "ProjectionThreadsHumanMessage"],
         [117, "GatewayCompletions"],
+        [118, "GatewayWaits"],
+        [119, "AwaitedDispatches"],
+        [120, "CoordinatorQuestions"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -663,6 +675,9 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [115, "ProjectImportOrigins"],
           [116, "ProjectionThreadsHumanMessage"],
           [117, "GatewayCompletions"],
+          [118, "GatewayWaits"],
+          [119, "AwaitedDispatches"],
+          [120, "CoordinatorQuestions"],
         ],
       );
 
@@ -770,6 +785,9 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [115, "ProjectImportOrigins"],
         [116, "ProjectionThreadsHumanMessage"],
         [117, "GatewayCompletions"],
+        [118, "GatewayWaits"],
+        [119, "AwaitedDispatches"],
+        [120, "CoordinatorQuestions"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -819,6 +837,9 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [115, "ProjectImportOrigins"],
           [116, "ProjectionThreadsHumanMessage"],
           [117, "GatewayCompletions"],
+          [118, "GatewayWaits"],
+          [119, "AwaitedDispatches"],
+          [120, "CoordinatorQuestions"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -1006,6 +1027,9 @@ mindMigrationLayer("Mind migration", (it) => {
         [115, "ProjectImportOrigins"],
         [116, "ProjectionThreadsHumanMessage"],
         [117, "GatewayCompletions"],
+        [118, "GatewayWaits"],
+        [119, "AwaitedDispatches"],
+        [120, "CoordinatorQuestions"],
       ]);
 
       yield* sql`INSERT INTO mind_memories (id, project_id, text, type, text_hash, peak_weight, created_at, last_accessed_at) VALUES ('m1', 'p1', 'delete me', 'semantic', 'hash', 0.6, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`;
@@ -1054,6 +1078,9 @@ mindRuntimeIntegrityLayer("Mind runtime integrity migration", (it) => {
           [115, "ProjectImportOrigins"],
           [116, "ProjectionThreadsHumanMessage"],
           [117, "GatewayCompletions"],
+          [118, "GatewayWaits"],
+          [119, "AwaitedDispatches"],
+          [120, "CoordinatorQuestions"],
         ]);
         const rows = yield* sql<{
           readonly id: string;
@@ -1140,6 +1167,9 @@ mindTextRevisionsLayer("Mind text revisions migration", (it) => {
         [115, "ProjectImportOrigins"],
         [116, "ProjectionThreadsHumanMessage"],
         [117, "GatewayCompletions"],
+        [118, "GatewayWaits"],
+        [119, "AwaitedDispatches"],
+        [120, "CoordinatorQuestions"],
       ]);
 
       const columns = yield* sql<{ readonly name: string }>`
@@ -1189,6 +1219,9 @@ mindProfileLayer("Mind profiles migration", (it) => {
         [115, "ProjectImportOrigins"],
         [116, "ProjectionThreadsHumanMessage"],
         [117, "GatewayCompletions"],
+        [118, "GatewayWaits"],
+        [119, "AwaitedDispatches"],
+        [120, "CoordinatorQuestions"],
       ]);
 
       // Profiles are decoupled from the projection: deleting the project row
@@ -1253,6 +1286,9 @@ mindDecouplingLayer("Mind projection decoupling migration", (it) => {
         [115, "ProjectImportOrigins"],
         [116, "ProjectionThreadsHumanMessage"],
         [117, "GatewayCompletions"],
+        [118, "GatewayWaits"],
+        [119, "AwaitedDispatches"],
+        [120, "CoordinatorQuestions"],
       ]);
 
       const profileFks = yield* sql<{ readonly referenced: string }>`

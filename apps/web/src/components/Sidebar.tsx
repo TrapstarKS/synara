@@ -39,6 +39,8 @@ import { ThreadPrStatusBadge } from "~/components/pullRequest/ThreadPrStatusBadg
 import { PinStatusIcon, pinActionLabel } from "~/lib/pin";
 import { THREAD_CONTEXT_MENU_ICONS } from "~/lib/contextMenuIcons";
 import { ensureNativeApi } from "~/nativeApi";
+import { coordinationBadges } from "~/lib/threadCoordination";
+import { useThreadCoordination } from "~/lib/threadCoordinationQuery";
 import { autoAnimate } from "@formkit/auto-animate";
 import { FiGitBranch } from "react-icons/fi";
 import { IoIosGitCompare } from "react-icons/io";
@@ -1424,6 +1426,11 @@ export default function Sidebar() {
   const studioWorkspaceRoot = useWorkspacePathsStore((store) => store.studioWorkspaceRoot);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const coordinationQuery = useThreadCoordination();
+  const coordinationBadgeByThread = useMemo(
+    () => coordinationBadges(coordinationQuery.isError ? undefined : coordinationQuery.data),
+    [coordinationQuery.data, coordinationQuery.isError],
+  );
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = useLocation({
     select: (loc) => loc.pathname === "/settings",
@@ -4783,6 +4790,7 @@ export default function Sidebar() {
           >
             <SidebarThreadRowContent
               thread={thread}
+              coordinationStatus={coordinationBadgeByThread.get(thread.id)}
               terminalEntryPoint={threadEntryPoint === "terminal"}
               terminalStatus={terminalStatus}
               terminalCount={terminalCount}
@@ -4962,6 +4970,7 @@ export default function Sidebar() {
           >
             <SidebarThreadRowContent
               thread={thread}
+              coordinationStatus={coordinationBadgeByThread.get(thread.id)}
               terminalEntryPoint={threadEntryPoint === "terminal"}
               terminalStatus={terminalStatus}
               terminalCount={terminalCount}

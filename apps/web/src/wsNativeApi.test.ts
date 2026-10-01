@@ -10,6 +10,7 @@ import {
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  COORDINATION_WS_METHODS,
   type OrchestrationEvent,
   ProjectId,
   ThreadId,
@@ -152,6 +153,27 @@ afterEach(() => {
 });
 
 describe("wsNativeApi", () => {
+  it("binds coordination actions to the selected thread and exact question or wait", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi().coordination!;
+    const threadId = ThreadId.makeUnsafe("coordinator");
+    requestMock.mockResolvedValue({ accepted: true });
+    await api.list({ threadId });
+    await api.cancelWait({ threadId, waitId: "saved-wait" });
+    await api.answerQuestion({
+      threadId,
+      questionId: "executor-question",
+      answer: "Use the existing queue.",
+    });
+    expect(requestMock.mock.calls).toEqual([
+      [COORDINATION_WS_METHODS.list, { threadId }],
+      [COORDINATION_WS_METHODS.cancelWait, { threadId, waitId: "saved-wait" }],
+      [
+        COORDINATION_WS_METHODS.answerQuestion,
+        { threadId, questionId: "executor-question", answer: "Use the existing queue." },
+      ],
+    ]);
+  });
   it("gives a slow provider refresh a bounded deadline beyond the generic RPC timeout", async () => {
     const { createWsNativeApi } = await import("./wsNativeApi");
     const api = createWsNativeApi();

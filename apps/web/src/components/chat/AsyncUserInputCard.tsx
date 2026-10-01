@@ -20,12 +20,18 @@ export function AsyncUserInputCard({
   onRespond,
   draftKey: suppliedDraftKey,
   defaultOpen = false,
+  sourceLabel = "Codex",
+  footerLabel = "Codex can keep working",
+  maxAnswerLength,
 }: {
   messageId: MessageId;
   input: AsyncUserInput;
   onRespond?: ((messageId: MessageId, answers: readonly string[]) => Promise<void>) | undefined;
   draftKey?: string | undefined;
   defaultOpen?: boolean | undefined;
+  sourceLabel?: string;
+  footerLabel?: string;
+  maxAnswerLength?: number;
 }) {
   // Native questions have no IDs. Their positions are stable within this message.
   const questions = useMemo<ReadonlyArray<UserInputQuestion>>(
@@ -141,7 +147,7 @@ export function AsyncUserInputCard({
             </dl>
           ) : activeQuestion ? (
             <form
-              aria-label="Questions from Codex"
+              aria-label={`Questions from ${sourceLabel}`}
               onSubmit={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -174,6 +180,7 @@ export function AsyncUserInputCard({
                     value={progress.customAnswer}
                     disabled={disabled}
                     rows={2}
+                    maxLength={maxAnswerLength}
                     placeholder={
                       activeQuestion.options.length > 0
                         ? "Or type your own answer…"
@@ -194,7 +201,7 @@ export function AsyncUserInputCard({
                   )}
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-ui leading-snug text-muted-foreground">
-                      Codex can keep working
+                      {footerLabel}
                     </span>
                     <Button
                       type="submit"

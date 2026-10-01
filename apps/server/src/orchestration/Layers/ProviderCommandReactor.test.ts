@@ -135,6 +135,7 @@ import {
   type CheckpointStoreShape,
 } from "../../checkpointing/Services/CheckpointStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { makeThreadAwaitGuard, THREAD_AWAIT_DEFERRED } from "../threadAwaitGuard.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId =>
@@ -1268,6 +1269,509 @@ describe("ProviderCommandReactor", () => {
           } as ProviderRuntimeEvent),
     );
   }
+
+  describe("awaited continuations", () => {
+    async function seedAwait(harness: Awaited<ReturnType<typeof createHarness>>, old = false) {
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      const sourceTurnId = asTurnId("await-source-turn");
+      const now = new Date().toISOString();
+      const initial = await dispatchHarnessUserTurn(harness, {
+        messageId: "await-source-message",
+        text: "Delegate work and await its result",
+        createdAt: now,
+      });
+      await Effect.runPromise(
+        harness.deliveryRepository.claim({
+          consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+          eventSequence: initial.sequence,
+          threadId,
+          claimOwner: "fixture-source",
+          claimedAt: now,
+          claimExpiresAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.deliveryRepository.complete({
+          consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+          eventSequence: initial.sequence,
+          claimOwner: "fixture-source",
+          completedAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("await-source-running"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            activeTurnId: sourceTurnId,
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      const registeredSequence = await Effect.runPromise(harness.engine.getEventHighWaterSequence);
+      const command = {
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("await-resume-command"),
+        threadId,
+        message: {
+          messageId: asMessageId("await-resume-message"),
+          role: "user",
+          text: "Awaited result: task finished",
+          attachments: [],
+        },
+        dispatchOrigin: "agent",
+        dispatchMode: "queue",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        awaitPrecondition: { waitId: "await-test-wait", sourceTurnId, registeredSequence },
+        createdAt: old ? new Date(Date.now() - 90_000).toISOString() : now,
+      } satisfies Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
+      await Effect.runPromise(harness.sql`INSERT INTO agent_gateway_waits
+        (wait_id, caller_thread_id, caller_turn_id, request_json, targets_json,
+          registered_sequence, created_at, state, dispatch_json)
+        VALUES ('await-test-wait', ${threadId}, ${sourceTurnId}, '{}', '[]',
+          ${registeredSequence}, ${now}, 'dispatching', ${JSON.stringify(command)})`);
+      const finish = async (acknowledge = true) => {
+        const completedAt = new Date().toISOString();
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.makeUnsafe("await-source-ready"),
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              activeTurnId: null,
+              providerName: "codex",
+              runtimeMode: "approval-required",
+              lastError: null,
+              updatedAt: completedAt,
+            },
+            createdAt: completedAt,
+          }),
+        );
+        await Effect.runPromise(
+          harness.runtimeEventRepository.append({
+            type: "turn.completed",
+            eventId: asEventId("await-source-completed"),
+            provider: "codex",
+            threadId,
+            turnId: sourceTurnId,
+            createdAt: completedAt,
+            payload: { state: "completed" },
+          }),
+        );
+        if (acknowledge) await acknowledgeOutput();
+      };
+      const acknowledgeOutput = async () => {
+        await Effect.runPromise(
+          harness.runtimeEventRepository.advanceConsumerCursorThrough({
+            consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
+            throughSequence: await Effect.runPromise(
+              harness.runtimeEventRepository.getHighWaterSequence,
+            ),
+            updatedAt: new Date().toISOString(),
+          }),
+        );
+      };
+      const guard = await Effect.runPromise(
+        makeThreadAwaitGuard.pipe(Effect.provideService(SqlClient.SqlClient, harness.sql)),
+      );
+      return { command, finish, acknowledgeOutput, guard, initialSequence: initial.sequence };
+    }
+
+    it("defers the same command until the requesting turn and output finish, then admits it once", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      const dispatch = () => Effect.runPromise(h.engine.dispatch(a.command));
+      await expect(dispatch()).rejects.toThrow(THREAD_AWAIT_DEFERRED);
+      expect(
+        await Effect.runPromise(h.sql`SELECT command_id FROM orchestration_command_receipts
+        WHERE command_id = ${a.command.commandId}`),
+      ).toHaveLength(0);
+      await a.finish(false);
+      await expect(dispatch()).rejects.toThrow(THREAD_AWAIT_DEFERRED);
+      await a.acknowledgeOutput();
+      const receipts = await Promise.all([dispatch(), dispatch()]);
+      expect(receipts[0]).toEqual(receipts[1]);
+      expect(
+        await Effect.runPromise(h.sql`SELECT sequence FROM orchestration_events
+        WHERE event_type = 'thread.turn-start-requested'
+          AND json_extract(payload_json, '$.messageId') = ${a.command.message.messageId}`),
+      ).toHaveLength(1);
+      await h.startReactor();
+      await h.drain();
+      expect(h.sendTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["stop", "archive-unarchive", "new-message"] as const)(
+      "rejects a stale admitted plan after %s commits",
+      async (change) => {
+        const h = await createHarness({ startReactor: false });
+        const a = await seedAwait(h);
+        await a.finish();
+        expect(
+          (
+            await Effect.runPromise(
+              a.guard.check({
+                threadId: a.command.threadId,
+                precondition: a.command.awaitPrecondition,
+              }),
+            )
+          ).status,
+        ).toBe("ready");
+        if (change === "stop") {
+          await Effect.runPromise(
+            h.engine.dispatch({
+              type: "thread.turn.interrupt",
+              commandId: CommandId.makeUnsafe("await-stop"),
+              threadId: a.command.threadId,
+              createdAt: new Date().toISOString(),
+            }),
+          );
+        } else if (change === "archive-unarchive") {
+          await Effect.runPromise(
+            h.engine.dispatch({
+              type: "thread.archive",
+              commandId: CommandId.makeUnsafe("await-archive"),
+              threadId: a.command.threadId,
+            }),
+          );
+          await Effect.runPromise(
+            h.engine.dispatch({
+              type: "thread.unarchive",
+              commandId: CommandId.makeUnsafe("await-unarchive"),
+              threadId: a.command.threadId,
+            }),
+          );
+        } else {
+          await dispatchHarnessUserTurn(h, {
+            messageId: "new-user-work",
+            text: "Change the task",
+            createdAt: new Date().toISOString(),
+          });
+        }
+        await expect(Effect.runPromise(h.engine.dispatch(a.command))).rejects.toThrow(
+          /superseded|unavailable/,
+        );
+        expect(
+          await Effect.runPromise(h.sql`SELECT message_id FROM projection_thread_messages
+          WHERE message_id = ${a.command.message.messageId}`),
+        ).toHaveLength(0);
+      },
+    );
+
+    it("recovers an old unclaimed wake once and keeps its receipt idempotent", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h, true);
+      await a.finish();
+      const receipt = await Effect.runPromise(h.engine.dispatch(a.command));
+      await Effect.runPromise(
+        h.sql`UPDATE agent_gateway_waits SET state = 'dispatched' WHERE wait_id = 'await-test-wait'`,
+      );
+      await h.startReactor();
+      await h.drain();
+      expect(h.sendTurn).toHaveBeenCalledTimes(1);
+      expect(await Effect.runPromise(h.engine.dispatch(a.command))).toEqual(receipt);
+      await h.drain();
+      expect(h.sendTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("interrupts the actual accepted turn when stop races the awaited send", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      await a.finish();
+      const sendGate = Effect.runSync(Deferred.make<{ threadId: ThreadId; turnId: TurnId }>());
+      h.sendTurn.mockImplementationOnce(() => Deferred.await(sendGate));
+      await Effect.runPromise(h.engine.dispatch(a.command));
+      const starting = h.startReactor();
+      await waitFor(() => h.sendTurn.mock.calls.length === 1);
+      await Effect.runPromise(
+        h.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.makeUnsafe("await-stop-during-send"),
+          threadId: a.command.threadId,
+          turnId: a.command.awaitPrecondition.sourceTurnId,
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      const acceptedTurnId = asTurnId("await-accepted-after-stop");
+      await Effect.runPromise(
+        Deferred.succeed(sendGate, { threadId: a.command.threadId, turnId: acceptedTurnId }),
+      );
+      await starting;
+      await h.drain();
+      expect(h.interruptTurn.mock.calls.some(([input]) => input.turnId === acceptedTurnId)).toBe(
+        true,
+      );
+      expect(
+        (
+          await Effect.runPromise(h.sql<{ state: string }>`SELECT state FROM agent_gateway_waits
+        WHERE wait_id = 'await-test-wait'`)
+        )[0]?.state,
+      ).toBe("cancelled");
+      expect(h.sendTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not send the wake when a user message arrives during provider startup", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      await a.finish();
+      const startupGate = Effect.runSync(Deferred.make<void>());
+      const originalStart = h.startSession.getMockImplementation()!;
+      h.startSession.mockImplementationOnce((...args) =>
+        Deferred.await(startupGate).pipe(Effect.andThen(originalStart(...args))),
+      );
+      await Effect.runPromise(h.engine.dispatch(a.command));
+      const starting = h.startReactor();
+      await waitFor(() => h.startSession.mock.calls.length === 1);
+      await dispatchHarnessUserTurn(h, {
+        messageId: "await-human-during-startup",
+        text: "New human instruction",
+        createdAt: new Date().toISOString(),
+      });
+      await Effect.runPromise(Deferred.succeed(startupGate, undefined));
+      await starting;
+      await h.drain();
+      expect(
+        h.sendTurn.mock.calls.some(([input]) =>
+          input.input?.includes("Awaited result: task finished"),
+        ),
+      ).toBe(false);
+      expect(
+        (
+          await Effect.runPromise(h.sql<{ state: string }>`SELECT state FROM agent_gateway_waits
+        WHERE wait_id = 'await-test-wait'`)
+        )[0]?.state,
+      ).toBe("cancelled");
+    });
+
+    it("does not abandon an uncertain older delivery for an automatic wake", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      await a.finish();
+      await Effect.runPromise(h.engine.dispatch(a.command));
+      await Effect.runPromise(h.sql`UPDATE orchestration_event_deliveries SET state = 'uncertain', last_error = 'unconfirmed native send'
+        WHERE consumer_name = ${PROVIDER_COMMAND_REACTOR_CONSUMER} AND event_sequence = ${a.initialSequence}`);
+      await h.startReactor();
+      await h.drain();
+      expect(h.sendTurn).not.toHaveBeenCalled();
+      expect(
+        (
+          await Effect.runPromise(
+            h.deliveryRepository.getDelivery({
+              consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+              eventSequence: a.initialSequence,
+            }),
+          )
+        ).pipe(Option.getOrThrow).state,
+      ).toBe("uncertain");
+    });
+
+    it("keeps a previously claimed wake uncertain during restart recovery", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h, true);
+      await a.finish();
+      const receipt = await Effect.runPromise(h.engine.dispatch(a.command));
+      const old = new Date(Date.now() - 120_000).toISOString();
+      await Effect.runPromise(
+        h.deliveryRepository.claim({
+          consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+          eventSequence: receipt.sequence,
+          threadId: a.command.threadId,
+          claimOwner: "previous-server",
+          claimedAt: old,
+          claimExpiresAt: old,
+        }),
+      );
+      await h.startReactor();
+      await h.drain();
+      expect(h.sendTurn).not.toHaveBeenCalled();
+      expect(
+        Option.getOrThrow(
+          await Effect.runPromise(
+            h.deliveryRepository.getDelivery({
+              consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+              eventSequence: receipt.sequence,
+            }),
+          ),
+        ).state,
+      ).toBe("uncertain");
+    });
+
+    it("keeps source completion valid after raw runtime journal retention", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      await a.finish();
+      const activityId = asEventId("await-source-completed");
+      await Effect.runPromise(
+        h.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.makeUnsafe(
+            `provider:${activityId}:thread-activity-append:${a.command.threadId}:turn.completed:${activityId}`,
+          ),
+          threadId: a.command.threadId,
+          activity: {
+            id: activityId,
+            kind: "turn.completed",
+            tone: "info",
+            summary: "Turn completed",
+            turnId: a.command.awaitPrecondition.sourceTurnId,
+            createdAt: new Date().toISOString(),
+            sequence: await Effect.runPromise(h.runtimeEventRepository.getHighWaterSequence),
+            payload: { state: "completed" },
+          },
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      await Effect.runPromise(
+        h.sql`DELETE FROM provider_runtime_events WHERE thread_id = ${a.command.threadId}`,
+      );
+      await expect(Effect.runPromise(h.engine.dispatch(a.command))).resolves.toHaveProperty(
+        "sequence",
+      );
+    });
+
+    it("preserves a completed wait across a normal native session close", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      await a.finish();
+      const createdAt = new Date().toISOString();
+      await Effect.runPromise(
+        h.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("provider:native-close:thread-session-set:thread-1"),
+          threadId: a.command.threadId,
+          session: {
+            threadId: a.command.threadId,
+            status: "stopped",
+            activeTurnId: null,
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        }),
+      );
+      expect((await readHarnessThread(h))?.latestTurn?.state).toBe("completed");
+      await Effect.runPromise(h.engine.dispatch(a.command));
+      await h.startReactor();
+      await h.drain();
+      expect(h.sendTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("gives work queued before wait registration precedence over the wake", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      await dispatchHarnessUserTurn(h, {
+        messageId: "await-already-queued",
+        text: "Queued human instruction",
+        createdAt: new Date().toISOString(),
+      });
+      const registeredSequence = await Effect.runPromise(h.engine.getEventHighWaterSequence);
+      const command = {
+        ...a.command,
+        awaitPrecondition: { ...a.command.awaitPrecondition, registeredSequence },
+      };
+      await Effect.runPromise(h.sql`UPDATE agent_gateway_waits SET registered_sequence = ${registeredSequence}, dispatch_json = ${JSON.stringify(command)}
+        WHERE wait_id = 'await-test-wait'`);
+      await a.finish();
+      await expect(Effect.runPromise(h.engine.dispatch(command))).rejects.toThrow(
+        /Queued work|superseded/,
+      );
+      expect(
+        await Effect.runPromise(h.sql`SELECT message_id FROM projection_thread_messages
+        WHERE message_id = ${command.message.messageId}`),
+      ).toHaveLength(0);
+    });
+
+    it("does not clear a newer user's pending start when cleaning up a cancelled wake", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      await a.finish();
+      await Effect.runPromise(h.engine.dispatch(a.command));
+      const session = (await readHarnessThread(h))!.session!;
+      await dispatchHarnessUserTurn(h, {
+        messageId: "await-cleanup-new-user",
+        text: "New user work",
+        createdAt: new Date().toISOString(),
+      });
+      await expect(
+        Effect.runPromise(
+          h.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.makeUnsafe("await-stale-cleanup"),
+            threadId: a.command.threadId,
+            session: { ...session, status: "ready", updatedAt: new Date().toISOString() },
+            expectedSessionStatus: session.status,
+            expectedSessionUpdatedAt: session.updatedAt,
+            expectedPendingMessageId: a.command.message.messageId,
+            createdAt: new Date().toISOString(),
+          }),
+        ),
+      ).rejects.toThrow("Command produced no events.");
+      expect((await readHarnessThread(h))?.session?.status).toBe("starting");
+    });
+
+    it("defers unanswered asynchronous questions outside the pending-interaction table", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      await a.finish();
+      const now = new Date().toISOString();
+      await Effect.runPromise(h.sql`INSERT INTO projection_thread_messages
+        (message_id, thread_id, role, text, is_streaming, created_at, updated_at, async_user_input_json)
+        VALUES ('await-async-question', ${a.command.threadId}, 'assistant', 'Which approach?', 0, ${now}, ${now}, '{"response":null}')`);
+      await expect(Effect.runPromise(h.engine.dispatch(a.command))).rejects.toThrow(
+        "An asynchronous question needs attention.",
+      );
+      expect(
+        await Effect.runPromise(h.sql`SELECT command_id FROM orchestration_command_receipts
+        WHERE command_id = ${a.command.commandId}`),
+      ).toHaveLength(0);
+    });
+
+    it("defers goal continuation while a registered wait owns the next turn", async () => {
+      const h = await createHarness({ startReactor: false });
+      const a = await seedAwait(h);
+      await Effect.runPromise(
+        h.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("await-set-goal"),
+          threadId: a.command.threadId,
+          goal: "Complete delegated work",
+          goalStartBehavior: "defer",
+        }),
+      );
+      await a.finish();
+      const goalStartedAt = (await readHarnessThread(h))!.goalStartedAt!;
+      await Effect.runPromise(
+        h.engine.dispatch({
+          type: "thread.goal.continue",
+          commandId: CommandId.makeUnsafe("await-goal-event"),
+          threadId: a.command.threadId,
+          goalStartedAt,
+          trigger: "turn-completed",
+          sourceTurnId: a.command.awaitPrecondition.sourceTurnId,
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      await h.startReactor();
+      await h.drain();
+      expect(h.sendTurn).not.toHaveBeenCalled();
+      await Effect.runPromise(h.engine.dispatch(a.command));
+      await h.drain();
+      expect(h.sendTurn).toHaveBeenCalledTimes(1);
+      expect(h.sendTurn.mock.calls[0]?.[0].input).toContain("Awaited result: task finished");
+    });
+  });
 
   it.each([
     "grok",

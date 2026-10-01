@@ -47,6 +47,11 @@ describe("Synara harness policy", () => {
     assert.include(policy, "one exact synara_create_threads plan");
     assert.include(policy, "before returning an operationId");
     assert.include(policy, "synara_wait_for_threads");
+    assert.include(policy, "synara_await_threads");
+    assert.include(policy, "awaitResult:true");
+    assert.include(policy, "synara_ask_coordinator");
+    assert.include(policy, "Finish your current response");
+    assert.include(policy, "continue this thread automatically");
     assert.include(policy, "synara_set_thread_pull_request");
     assert.include(policy, "current thread's own deliverable");
     assert.include(policy, "only reviews, references, or discusses");

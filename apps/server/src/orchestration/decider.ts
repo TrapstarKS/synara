@@ -83,6 +83,7 @@ import {
   threadResumePreconditionDetail,
   threadResumePreconditionViolation,
 } from "./commandInvariants.ts";
+import { THREAD_AWAIT_DEFERRED } from "./threadAwaitGuard.ts";
 
 const nowIso = () => new Date().toISOString();
 // Commands from the web client always carry an explicit assistantDeliveryMode;
@@ -1743,6 +1744,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       yield* validateSidechatExecutionAvailable(command, targetThread);
       yield* validateNoPendingProviderHandoff(command, targetThread);
+      if (command.awaitPrecondition !== undefined) {
+        if (
+          targetThread.archivedAt != null ||
+          targetThread.parentThreadId != null ||
+          command.resumePrecondition !== undefined ||
+          command.dispatchOrigin !== "agent" ||
+          (command.dispatchMode ?? "queue") !== "queue"
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "The saved wait cannot resume this thread.",
+          });
+        }
+        if (threadHasInFlightTurn(targetThread) || targetThread.claudeCacheReview != null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `${THREAD_AWAIT_DEFERRED} The requesting thread is still busy.`,
+          });
+        }
+        if (
+          targetThread.latestTurn?.turnId !== command.awaitPrecondition.sourceTurnId ||
+          targetThread.latestTurn.state !== "completed"
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "The requesting turn did not finish or was superseded.",
+          });
+        }
+      }
       if (command.resumePrecondition !== undefined) {
         // Quit-resume continuations are only valid while the thread is exactly as
         // it was recorded; checked here so it holds inside the serialized dispatch.
@@ -1818,11 +1848,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Respect settings changed before its serialized dispatch instead of
       // replaying the planner's stale permission or interaction mode.
       const runtimeMode =
-        command.resumePrecondition === undefined && !questionResponse
+        command.resumePrecondition === undefined &&
+        command.awaitPrecondition === undefined &&
+        !questionResponse
           ? command.runtimeMode
           : targetThread.runtimeMode;
       const interactionMode =
-        command.resumePrecondition === undefined && !questionResponse
+        command.resumePrecondition === undefined &&
+        command.awaitPrecondition === undefined &&
+        !questionResponse
           ? command.interactionMode
           : targetThread.interactionMode;
       yield* validateAutoRuntimeMode(
@@ -1902,6 +1936,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const turnRequestPayload = {
         threadId: command.threadId,
         messageId: command.message.messageId,
+        ...(command.awaitPrecondition ? { awaitPrecondition: command.awaitPrecondition } : {}),
         ...(command.modelSelection !== undefined ? { modelSelection: command.modelSelection } : {}),
         ...(command.providerOptions !== undefined
           ? { providerOptions: command.providerOptions }
@@ -2138,6 +2173,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           messageId: command.messageId,
+          ...(command.awaitPrecondition ? { awaitPrecondition: command.awaitPrecondition } : {}),
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
             : {}),

@@ -1398,6 +1398,13 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 export const ComputerControlMode = Schema.Literals(["off", "request", "chat"]);
 export type ComputerControlMode = typeof ComputerControlMode.Type;
 
+export const ThreadAwaitPrecondition = Schema.Struct({
+  waitId: TrimmedNonEmptyString,
+  sourceTurnId: TurnId,
+  registeredSequence: NonNegativeInt,
+});
+export type ThreadAwaitPrecondition = typeof ThreadAwaitPrecondition.Type;
+
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   asyncUserInputResponse: Schema.optional(AsyncUserInputResponse),
@@ -1440,6 +1447,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
       recordedAt: IsoDateTime,
     }),
   ),
+  awaitPrecondition: Schema.optional(ThreadAwaitPrecondition),
+  awaitedDispatchId: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -1532,6 +1541,7 @@ const ThreadDispatchQueuedTurnCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
+  awaitPrecondition: Schema.optional(ThreadAwaitPrecondition),
   modelSelection: Schema.optional(ModelSelection),
   providerOptions: Schema.optional(ProviderStartOptions),
   enableComputerControl: Schema.optional(Schema.Boolean),
@@ -1704,6 +1714,7 @@ const ThreadSessionSetCommand = Schema.Struct({
   session: OrchestrationSession,
   expectedSessionStatus: Schema.optional(OrchestrationSessionStatus),
   expectedSessionUpdatedAt: Schema.optional(IsoDateTime),
+  expectedPendingMessageId: Schema.optional(Schema.NullOr(MessageId)),
   createdAt: IsoDateTime,
 });
 
@@ -2172,6 +2183,7 @@ export const ThreadClaudeCacheResponseRequestedPayload = Schema.Struct({
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
+  awaitPrecondition: Schema.optional(ThreadAwaitPrecondition),
   modelSelection: Schema.optional(ModelSelection),
   providerOptions: Schema.optional(ProviderStartOptions),
   enableComputerControl: Schema.optional(Schema.Boolean),

@@ -2,13 +2,17 @@ import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
 
 import {
+  SynaraAwaitThreadsInput,
+  SynaraAwaitThreadsResult,
   SynaraCapabilitiesResult,
   SynaraCreateThreadsInput,
   SynaraCreateThreadsResult,
   SynaraGatewayErrorResult,
+  SynaraSendMessageInput,
   SynaraWaitForThreadsInput,
   SynaraWaitForThreadsResult,
 } from "./agentGateway";
+import { ThreadId } from "./baseSchemas";
 
 const decodeCreate = Schema.decodeUnknownSync(SynaraCreateThreadsInput);
 const decodeWait = Schema.decodeUnknownSync(SynaraWaitForThreadsInput);
@@ -44,6 +48,39 @@ describe("agent gateway contracts", () => {
     assert.throws(() => decodeCreate({ requestId: "x".repeat(257), threads: [thread] }));
   });
 
+  it("decodes batch waiting and per-entry overrides without changing omitted defaults", () => {
+    const omitted = decodeCreate({ requestId: "ordinary", threads: [thread] });
+    assert.isUndefined(omitted.awaitResult);
+    assert.isUndefined(omitted.threads[0]?.awaitResult);
+    const batch = decodeCreate({
+      requestId: "awaited",
+      awaitResult: true,
+      threads: [thread, { ...thread, awaitResult: false }, { ...thread, awaitResult: true }],
+    });
+    assert.isTrue(batch.awaitResult);
+    assert.isFalse(batch.threads[1]?.awaitResult);
+    assert.isTrue(batch.threads[2]?.awaitResult);
+    assert.throws(() =>
+      decodeCreate({ requestId: "invalid", awaitResult: "true", threads: [thread] }),
+    );
+  });
+
+  it("requires a bounded stable request id and queue mode only for awaited messages", () => {
+    const decode = Schema.decodeUnknownSync(SynaraSendMessageInput);
+    const base = { threadId: "target", message: "new work" };
+    assert.doesNotThrow(() => decode({ ...base, mode: "steer" }));
+    assert.doesNotThrow(() => decode({ ...base, mode: "steer", awaitResult: false }));
+    assert.doesNotThrow(() => decode({ ...base, awaitResult: true, requestId: "exact-request" }));
+    for (const value of [
+      { ...base, awaitResult: true },
+      { ...base, awaitResult: true, requestId: "" },
+      { ...base, awaitResult: true, requestId: "x".repeat(257) },
+      { ...base, awaitResult: true, requestId: "exact-request", mode: "steer" },
+      { ...base, awaitResult: true, requestId: "exact-request", callerThreadId: "forged" },
+    ])
+      assert.throws(() => decode(value));
+  });
+
   it("accepts an exact Git base ref for detached worktree creation", () => {
     const decoded = decodeCreate({
       requestId: "detached-ref",
@@ -76,6 +113,32 @@ describe("agent gateway contracts", () => {
     assert.equal(decodeWait({ threadIds: ["thread-1"], timeoutMs: 60_000 }).timeoutMs, 60_000);
     assert.throws(() => decodeWait({ threadIds: [] }));
     assert.throws(() => decodeWait({ threadIds: ["thread-1"], timeoutMs: 60_001 }));
+  });
+
+  it("bounds durable waits and prevents caller or timeout overrides", () => {
+    const decode = Schema.decodeUnknownSync(SynaraAwaitThreadsInput);
+    assert.deepEqual(decode({ threadIds: ["child"], runIds: [null] }), {
+      threadIds: [ThreadId.makeUnsafe("child")],
+      runIds: [null],
+    });
+    for (const value of [
+      { threadIds: [] },
+      { threadIds: Array.from({ length: 21 }, (_, index) => `child-${index}`) },
+      { threadIds: ["child"], callerThreadId: "other" },
+      { threadIds: ["child"], timeoutMs: 30_000 },
+    ]) {
+      assert.throws(() => decode(value));
+    }
+    assert.doesNotThrow(() =>
+      Schema.decodeUnknownSync(SynaraAwaitThreadsResult)({
+        waitId: "wait-1",
+        callerThreadId: "parent",
+        callerTurnId: "parent-turn",
+        status: "waiting",
+        threadIds: ["child"],
+        instruction: "Finish this response to await the result.",
+      }),
+    );
   });
 
   it("decodes typed capability, creation, wait, and error results", () => {

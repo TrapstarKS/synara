@@ -12,6 +12,7 @@ import { useStore } from "../store";
 import { resolveSubagentPresentationForThread } from "../lib/subagentPresentation";
 import { resolveThreadHandoffBadgeLabel } from "../lib/threadHandoff";
 import { SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME } from "../sidebarRowStyles";
+import type { ThreadCoordinationBadge } from "../lib/threadCoordination";
 import type { SidebarThreadSummary } from "../types";
 import { TerminalIcon } from "../lib/icons";
 import { cn } from "../lib/utils";
@@ -172,6 +173,7 @@ export function SidebarThreadRowContent({
   variant,
   subagentIndentPx: subagentIndentPxProp,
   pendingStatusColorClass,
+  coordinationStatus,
   suffix,
 }: {
   thread: SidebarThreadSummary;
@@ -182,6 +184,7 @@ export function SidebarThreadRowContent({
   variant: "pinned" | "standard";
   subagentIndentPx?: number;
   pendingStatusColorClass?: string | null | undefined;
+  coordinationStatus?: ThreadCoordinationBadge | undefined;
   suffix?: ReactNode;
 }) {
   const subagentIndentPx = subagentIndentPxProp ?? 0;
@@ -250,6 +253,20 @@ export function SidebarThreadRowContent({
             thread.title
           )}
         </span>
+        {!isSubagentThread && !pendingStatusColorClass && coordinationStatus ? (
+          <span
+            aria-label={coordinationStatus.label}
+            title={coordinationStatus.label}
+            className={cn(
+              "max-w-[48%] shrink truncate text-ui-xs",
+              coordinationStatus.needsInput
+                ? "text-amber-600 dark:text-amber-300"
+                : "text-muted-foreground",
+            )}
+          >
+            {coordinationStatus.label}
+          </span>
+        ) : null}
         {!isSubagentThread && pendingStatusColorClass ? (
           <span
             aria-label="Pending approval"

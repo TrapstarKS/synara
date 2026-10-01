@@ -11,6 +11,13 @@
  */
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
+import type {
+  ThreadCoordinationListInput,
+  ThreadCoordinationListResult,
+  ThreadCoordinationCancelWaitInput,
+  ThreadCoordinationAnswerQuestionInput,
+  ThreadCoordinationActionResult,
+} from "@synara/contracts";
 
 export interface AgentGatewayHttpResult {
   readonly status: number;
@@ -19,6 +26,17 @@ export interface AgentGatewayHttpResult {
 }
 
 export interface AgentGatewayShape {
+  readonly coordination?: {
+    readonly list: (
+      input: ThreadCoordinationListInput,
+    ) => Effect.Effect<ThreadCoordinationListResult, unknown>;
+    readonly cancelWait: (
+      input: ThreadCoordinationCancelWaitInput,
+    ) => Effect.Effect<ThreadCoordinationActionResult, unknown>;
+    readonly answerQuestion: (
+      input: ThreadCoordinationAnswerQuestionInput,
+    ) => Effect.Effect<ThreadCoordinationActionResult, unknown>;
+  };
   /**
    * Handle one MCP streamable-HTTP POST. All failures are folded into
    * JSON-RPC error responses or HTTP status codes; the effect never fails.

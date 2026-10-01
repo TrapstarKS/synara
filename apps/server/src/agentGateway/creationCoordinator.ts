@@ -51,6 +51,9 @@ import {
 import { ToolInputError, errorText } from "./toolInput.ts";
 import { GatewayToolError, gatewayToolErrorResult } from "./toolRuntime.ts";
 import { inheritCodexProfile } from "./profileInheritance.ts";
+import type { AwaitedDispatch } from "./awaitedDispatch.ts";
+import type { AwaitRegistration } from "./awaitThreads.ts";
+import type { GatewayWaitRow, PinnedWaitScope } from "./awaitRepository.ts";
 
 const CREATION_REPLAY_WAIT_MS = 60_000;
 
@@ -93,6 +96,8 @@ interface CreationCoordinatorDependencies {
   readonly providerDiscovery: ProviderDiscoveryServiceShape;
   readonly operationRepository: AgentGatewayOperationRepositoryShape;
   readonly externalMcpRepository?: ExternalMcpRepositoryShape;
+  readonly awaitedDispatch?: AwaitedDispatch;
+  readonly announceWait?: AwaitRegistration["announceRegistration"];
   readonly serverConfig: ServerConfigShape;
   readonly loadProviderAvailabilities: Effect.Effect<
     ReadonlyMap<ProviderKind, AgentGatewayProviderAvailability>,
@@ -109,6 +114,7 @@ export type GatewayCreationContext =
       readonly callerThreadId: string;
       readonly callerTurnId: string | null;
       readonly assertAuthority: () => Effect.Effect<void, GatewayToolError>;
+      readonly prepareWait?: () => Effect.Effect<PinnedWaitScope, unknown>;
     }
   | {
       readonly kind: "external-client";
@@ -178,6 +184,8 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
     providerDiscovery,
     operationRepository,
     externalMcpRepository,
+    awaitedDispatch,
+    announceWait,
     serverConfig,
     loadProviderAvailabilities,
     requireThreadShell,
@@ -321,7 +329,8 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
       }
       if (
         context.kind !== "provider-session" &&
-        input.threads.some((spec) => spec.notifyCreatorOnComplete)
+        (input.awaitResult === true ||
+          input.threads.some((spec) => spec.notifyCreatorOnComplete || spec.awaitResult))
       ) {
         return yield* Effect.fail(
           new GatewayToolError(
@@ -330,6 +339,24 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
           ),
         );
       }
+      const shouldAwait = (spec: (typeof input.threads)[number]) =>
+        spec.awaitResult ?? input.awaitResult ?? false;
+      const hasAwaitedTargets = input.threads.some(shouldAwait);
+      if (
+        hasAwaitedTargets &&
+        (context.kind !== "provider-session" || !context.prepareWait || !awaitedDispatch)
+      ) {
+        return yield* Effect.fail(
+          new GatewayToolError(
+            "capability_denied",
+            "Awaited creation requires an authenticated creating thread with read/write capability.",
+          ),
+        );
+      }
+      const waitScope =
+        hasAwaitedTargets && context.kind === "provider-session"
+          ? yield* context.prepareWait!()
+          : null;
       const callerTurnId = context.kind === "provider-session" ? context.callerTurnId! : null;
       const caller =
         context.kind === "provider-session"
@@ -909,12 +936,13 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
         });
 
       let claimedByThisFiber = false;
+      const creationWait: { row: GatewayWaitRow | null } = { row: null };
       const outcome = yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           // Reservation and claim form one uninterruptible handshake. Once the
           // durable reservation exists, this fiber either claims it while the
           // compensation boundary is already installed or returns a replay.
-          const reservation = yield* operationStore
+          const reserveOperation = operationStore
             .reserve({
               operationId,
               requestId: input.requestId,
@@ -924,6 +952,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                 prepared.map((entry) => ({
                   index: entry.index,
                   notifyCreatorOnComplete: entry.spec.notifyCreatorOnComplete === true,
+                  ...(shouldAwait(entry.spec) ? { awaitResult: true } : {}),
                   projectId: entry.projectId,
                   workspaceRoot: entry.workspaceRoot,
                   environment: entry.environment,
@@ -938,6 +967,35 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
               now: gatewayIsoNow(),
             })
             .pipe(Effect.mapError((error) => new ToolInputError(errorText(error))));
+
+          // The operation and exact child pins exist together before any child
+          // can start or ask its coordinator. Delivery remains blocked by the
+          // dispatch reservation until this saga commits or finishes cleanup.
+          const reservation = yield* waitScope && awaitedDispatch
+            ? awaitedDispatch.transaction(
+                Effect.gen(function* () {
+                  const reserved = yield* reserveOperation;
+                  if (
+                    reserved.kind === "reserved" ||
+                    (reserved.kind === "replay" && reserved.operation.status === "reserved")
+                  ) {
+                    creationWait.row = yield* awaitedDispatch.reserveCreation({
+                      operationId,
+                      requestId: input.requestId,
+                      scope: waitScope,
+                      pins: prepared
+                        .filter((entry) => shouldAwait(entry.spec))
+                        .map((entry) => ({
+                          threadId: entry.ids.threadId,
+                          runId: null,
+                          messageId: entry.ids.messageId,
+                        })),
+                    });
+                  }
+                  return reserved;
+                }),
+              )
+            : reserveOperation;
 
           if (reservation.kind === "idempotency_conflict") {
             return yield* Effect.fail(
@@ -1172,6 +1230,12 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                   return {
                     index: entry.index,
                     threadId: entry.ids.threadId,
+                    ...(shouldAwait(entry.spec) && creationWait.row
+                      ? {
+                          messageId: entry.ids.messageId,
+                          waitId: creationWait.row.waitId,
+                        }
+                      : {}),
                     projectId: entry.projectId,
                     title: entry.title,
                     target: entry.target,
@@ -1194,15 +1258,30 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
             createdCount: results.length,
             threadIds: results.map((entry) => entry.threadId),
             threads: results,
+            ...(creationWait.row
+              ? {
+                  waitId: creationWait.row.waitId,
+                  awaitedThreadIds: results
+                    .filter((entry) => entry.waitId !== undefined)
+                    .map((entry) => entry.threadId),
+                  instruction:
+                    "Wait registered for the exact delegated messages. Finish this response when independent work is done; Synara will continue once with the results.",
+                }
+              : {}),
           } satisfies SynaraCreateThreadsResult;
           // Once every deterministic dispatch succeeded, durable completion is
           // the commit point. A late client cancellation must not roll back a
           // fully-created operation or strand it between dispatching/completed.
-          yield* operationStore.complete({
+          const completeOperation = operationStore.complete({
             operationId,
             resultJson: JSON.stringify(result),
             now: gatewayIsoNow(),
           });
+          yield* creationWait.row && awaitedDispatch
+            ? awaitedDispatch.transaction(
+                completeOperation.pipe(Effect.andThen(awaitedDispatch.accept(operationId))),
+              )
+            : completeOperation;
           return { kind: "created" as const, result };
         }).pipe(
           Effect.catchCause((cause) =>
@@ -1221,6 +1300,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
 
       if (outcome.kind === "replay") return outcome.result;
       const result = outcome.result;
+      if (creationWait.row && announceWait) yield* announceWait(creationWait.row);
       if (context.kind === "provider-session") {
         yield* appendThreadCreationRecap({
           callerThreadId: context.callerThreadId,

@@ -96,18 +96,34 @@ Do not edit until findings are reported.
 
 ## Wait instead of polling
 
-Use `synara_wait_for_threads` to wait for authorized child tasks rather than repeatedly listing state or sending status messages.
+Set `awaitResult: true` when creating a thread or sending it a queued task. Synara registers the wait together with the delegation and automatically continues the calling thread with the results. For a batch, set the option on the whole `synara_create_threads` call or override it per entry. Awaited sends to existing threads require a stable `requestId`; retries reuse the exact saved message. The calling agent should finish its current response when independent work is done. The user does not need to send “continue”.
 
-The gateway publishes bounded wait limits. A timeout means the wait ended; it does not mean the child failed or stopped. Read the current state before deciding what to do next.
+Use `synara_await_threads` for tasks that were already dispatched. It also returns immediately and registers a durable continuation. Integrated delegations in the same caller turn join its existing wait, preserving already collected results; no second wait call is needed.
+
+Pass 1–20 unique `threadIds`. Optional `runIds` select exact runs; otherwise Synara pins each current run or pending message. Identical calls in the same caller turn reuse the wait. A different plan or a dependency cycle is rejected. Wait registration requires an active standalone caller with thread read and write capabilities.
+
+Stop, archive, deletion, rollback, handoff, or a new message in the caller cancels the pending continuation. Approval and input prompts still need their normal responses. Waits survive server restarts and recover when Synara opens again. A failed or interrupted target returns that outcome, with a read-thread reference; it does not create a replacement task. Results from persistent-goal workflows must not be mistaken for proof that the whole goal is complete.
+
+For a short read-only check, use `synara_wait_for_threads`. Its timeout only ends that tool call; it does not stop the child or arrange a future continuation.
 
 A useful coordination loop is:
 
 1. Create the exact tasks.
 2. Preserve their IDs.
-3. Wait for terminal or actionable states.
-4. Read each result and actual task state.
+3. Include `awaitResult: true`, or register `synara_await_threads` for existing tasks, then finish the coordinating response.
+4. On automatic continuation, read each result and actual task state.
 5. Steer only when a concrete correction is required.
 6. Integrate the outputs under one owner.
+
+### Follow progress and cancel a wait
+
+The conversation's waiting card shows each executor, its state, and how many results have finished. Open an executor directly from the card. The sidebar also shows waiting threads and questions needing your answer. `Cancel wait` cancels the pending continuation and its coordination questions while leaving executor tasks running.
+
+### Ask the coordinator before getting stuck
+
+An executor calls `synara_ask_coordinator` with a stable `requestId` and its question. Synara routes it to the coordinator waiting for that exact task. After the executor finishes its response, the coordinator receives the question and can answer through `synara_answer_question`.
+
+When the decision needs your input, the coordinator passes `needsUser: true` with a reason. You answer in the main conversation, the executor resumes, and the coordinator remains waiting for its final result. Questions left unanswered by a clean coordinator turn also appear there. Task questions do not replace native permission approvals, and stale answers cannot revive cancelled work.
 
 ## Steer, interrupt, and maintain tasks
 

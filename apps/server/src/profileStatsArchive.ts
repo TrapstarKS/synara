@@ -840,6 +840,12 @@ const makeProfileStatsArchive = Effect.gen(function* () {
         WHERE caller_thread_id = ${threadId}
           AND status IN ('reserved', 'completed', 'failed')
       `;
+      yield* sql`DELETE FROM agent_gateway_waits
+        WHERE wait_id IN (SELECT answer_wait_id FROM agent_gateway_coordinator_questions
+          WHERE coordinator_thread_id = ${threadId} OR executor_thread_id = ${threadId})`;
+      yield* sql`DELETE FROM agent_gateway_coordinator_questions
+        WHERE coordinator_thread_id = ${threadId} OR executor_thread_id = ${threadId}`;
+      yield* sql`DELETE FROM agent_gateway_waits WHERE caller_thread_id = ${threadId}`;
       const liveGatewayOperations = yield* sql<{
         readonly operationId: string;
         readonly planJson: string;

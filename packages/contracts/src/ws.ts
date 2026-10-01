@@ -1,4 +1,10 @@
 import { Schema, Struct } from "effect";
+import {
+  COORDINATION_WS_METHODS,
+  ThreadCoordinationListInput,
+  ThreadCoordinationCancelWaitInput,
+  ThreadCoordinationAnswerQuestionInput,
+} from "./threadCoordination";
 import { ImportProjectInput, ListProjectImportsInput } from "./projectImport";
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
@@ -382,6 +388,9 @@ const tagRequestBody = <const Tag extends string, const Fields extends Schema.St
   );
 
 const WebSocketRequestBody = Schema.Union([
+  tagRequestBody(COORDINATION_WS_METHODS.list, ThreadCoordinationListInput),
+  tagRequestBody(COORDINATION_WS_METHODS.cancelWait, ThreadCoordinationCancelWaitInput),
+  tagRequestBody(COORDINATION_WS_METHODS.answerQuestion, ThreadCoordinationAnswerQuestionInput),
   // Orchestration methods
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.dispatchCommand,

@@ -172,6 +172,11 @@ import {
   type ProviderIntentEvent,
 } from "../providerIntentClassification.ts";
 import { deriveTurnStartModelSelection, deriveTurnStartSession } from "../turnStartSession.ts";
+import {
+  makeThreadAwaitGuard,
+  THREAD_AWAIT_DEFERRED,
+  type ThreadAwaitGuardResult,
+} from "../threadAwaitGuard.ts";
 import { TurnCheckpointCoordinator } from "../Services/TurnCheckpointCoordinator.ts";
 import {
   resolveProviderSessionThread as resolveProviderSessionThreadFromProjection,
@@ -776,6 +781,7 @@ const make = Effect.gen(function* () {
   const studioOutputReactor = yield* StudioOutputReactor;
   const git = yield* GitCore;
   const gatewayOperations = yield* AgentGatewayOperationRepository;
+  const threadAwaitGuard = yield* makeThreadAwaitGuard;
   const acceptedCompletionContexts = new Set<number>();
   const textGeneration = yield* TextGeneration;
   const serverSettings = yield* ServerSettingsService;
@@ -892,6 +898,8 @@ const make = Effect.gen(function* () {
   const blockedGoalContinuations = new Map<string, BlockedGoalContinuation>();
   const queuedGoalContinuationRetries = new Set<string>();
   const goalContinuationRetryQueue = yield* Queue.unbounded<ThreadId>();
+  const queuedAwaitRetries = new Set<ThreadId>();
+  const awaitRetryQueue = yield* Queue.unbounded<ThreadId>();
   // Provider sessions with a drained queued turn whose promotion is in flight.
   // The reservation survives provider startup and binds to the exact turn that
   // must settle before another queue can drain, preventing late terminal events
@@ -1399,6 +1407,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
     readonly expectedSession?: Pick<OrchestrationSession, "status" | "updatedAt">;
+    readonly expectedPendingMessageId?: MessageId | null;
     readonly createdAt: string;
   }) =>
     orchestrationEngine.dispatch({
@@ -1411,6 +1420,9 @@ const make = Effect.gen(function* () {
             expectedSessionStatus: input.expectedSession.status,
             expectedSessionUpdatedAt: input.expectedSession.updatedAt,
           }
+        : {}),
+      ...(input.expectedPendingMessageId !== undefined
+        ? { expectedPendingMessageId: input.expectedPendingMessageId }
         : {}),
       createdAt: input.createdAt,
     });
@@ -1523,6 +1535,63 @@ const make = Effect.gen(function* () {
   });
   const hasLiveProviderTurn = (threadId: ThreadId) =>
     resolveLiveProviderTurnId(threadId).pipe(Effect.map((turnId) => turnId !== undefined));
+
+  const scheduleAwaitRetry = Effect.fnUntraced(function* (threadId: ThreadId) {
+    if (queuedAwaitRetries.has(threadId)) return;
+    queuedAwaitRetries.add(threadId);
+    yield* Queue.offer(awaitRetryQueue, threadId);
+  });
+
+  const settleBlockedAwait = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
+    authorization: Exclude<ThreadAwaitGuardResult, { status: "ready" }>,
+  ) {
+    const precondition = event.payload.awaitPrecondition;
+    if (!precondition) return;
+    if (authorization.status === "defer") {
+      const review = (yield* resolveThread(event.payload.threadId))?.claudeCacheReview;
+      if (review?.messageId === event.payload.messageId) return;
+      yield* enqueueQueuedTurnStart(event);
+      yield* scheduleAwaitRetry(event.payload.threadId);
+      return;
+    }
+    yield* threadAwaitGuard.cancel({ threadId: event.payload.threadId, precondition });
+    yield* queuedTurnPromotions.cancelMessage({
+      threadId: event.payload.threadId,
+      messageId: event.payload.messageId,
+      updatedAt: new Date().toISOString(),
+    });
+    yield* appendProviderFailureActivity({
+      threadId: event.payload.threadId,
+      kind: "provider.turn.start.failed",
+      summary: "Automatic continuation cancelled",
+      detail: authorization.reason,
+      turnId: null,
+      createdAt: new Date().toISOString(),
+    });
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (
+      thread?.session?.status === "starting" &&
+      thread.session.updatedAt === event.payload.createdAt
+    ) {
+      yield* setThreadSession({
+        threadId: thread.id,
+        session: {
+          ...thread.session,
+          status: "ready",
+          activeTurnId: null,
+          updatedAt: new Date().toISOString(),
+        },
+        expectedSession: { status: thread.session.status, updatedAt: thread.session.updatedAt },
+        expectedPendingMessageId: event.payload.messageId,
+        createdAt: new Date().toISOString(),
+      }).pipe(
+        Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+          error.detail === "Command produced no events." ? Effect.void : Effect.fail(error),
+        ),
+      );
+    }
+  });
 
   const editResendTurnStartKey = (threadId: ThreadId, messageId: string) =>
     `${threadId}:${messageId}`;
@@ -2423,6 +2492,39 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    const assertAutonomousTurnAuthorized = Effect.gen(function* () {
+      if (input.cacheReviewSource?.payload.awaitPrecondition) {
+        const authorization = yield* threadAwaitGuard.check({
+          threadId: input.threadId,
+          precondition: input.cacheReviewSource.payload.awaitPrecondition,
+          messageId: input.messageId,
+          eventSequence: input.completionEventSequence ?? input.sourceEventSequence,
+          stage: "delivery",
+        });
+        const live = yield* hasLiveProviderTurn(input.threadId);
+        if (authorization.status !== "ready" || live) {
+          return yield* new ProviderAdapterValidationError({
+            provider: thread.modelSelection.provider,
+            operation: "thread.await.resume",
+            issue:
+              authorization.status === "cancelled"
+                ? authorization.reason
+                : `${THREAD_AWAIT_DEFERRED} ${authorization.status === "defer" ? authorization.reason : "The provider is busy."}`,
+          });
+        }
+      }
+      if (
+        input.turnKind === "goal-continuation" &&
+        (yield* threadAwaitGuard.hasPending(input.threadId))
+      ) {
+        return yield* new ProviderAdapterValidationError({
+          provider: thread.modelSelection.provider,
+          operation: "thread.goal.await",
+          issue: "The thread is awaiting delegated work.",
+        });
+      }
+    });
+    yield* assertAutonomousTurnAuthorized;
     const debugPromptOverheadChars = debugModePromptOverheadChars(input.interactionMode);
     const goalPromptOverheadChars = providerGoalPromptOverheadChars(activeThreadGoal(thread));
     const providerPromptOverheadChars = debugPromptOverheadChars + goalPromptOverheadChars;
@@ -2975,6 +3077,7 @@ const make = Effect.gen(function* () {
     };
     const sendQueuedProviderTurn = (messageText: string | undefined) =>
       Effect.gen(function* () {
+        yield* assertAutonomousTurnAuthorized;
         if (
           input.acceptedCacheReview &&
           !(yield* isClaudeReviewAuthorized(
@@ -3643,6 +3746,19 @@ const make = Effect.gen(function* () {
       if (!thread || isExpiredSidechat(thread)) {
         return;
       }
+      if (event.payload.awaitPrecondition) {
+        const authorization = yield* threadAwaitGuard.check({
+          threadId: event.payload.threadId,
+          precondition: event.payload.awaitPrecondition,
+          messageId: event.payload.messageId,
+          eventSequence: deliveryEventSequence ?? event.sequence,
+          stage: "delivery",
+        });
+        if (authorization.status !== "ready") {
+          yield* settleBlockedAwait(event, authorization);
+          return;
+        }
+      }
       if (
         thread.claudeCacheReview &&
         thread.claudeCacheReview.reviewId !== acceptedCacheReview?.reviewId
@@ -3718,6 +3834,7 @@ const make = Effect.gen(function* () {
       }
       if (!isNativeSteer && hasLiveTurn) {
         yield* enqueueQueuedTurnStart(event);
+        if (event.payload.awaitPrecondition) yield* scheduleAwaitRetry(event.payload.threadId);
         // The promotion raced another live turn and was re-queued. Release
         // only when that exact blocking turn settles, not on any late
         // terminal event for the shared provider session.
@@ -3834,6 +3951,20 @@ const make = Effect.gen(function* () {
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
             : Effect.gen(function* () {
+                const autonomousFailure = Option.getOrUndefined(Cause.findErrorOption(cause));
+                if (
+                  event.payload.awaitPrecondition &&
+                  autonomousFailure instanceof ProviderAdapterValidationError &&
+                  autonomousFailure.operation === "thread.await.resume"
+                ) {
+                  yield* settleBlockedAwait(event, {
+                    status: autonomousFailure.issue.startsWith(THREAD_AWAIT_DEFERRED)
+                      ? "defer"
+                      : "cancelled",
+                    reason: autonomousFailure.issue,
+                  });
+                  return;
+                }
                 const detail = Cause.pretty(cause);
                 yield* appendProviderFailureActivity({
                   threadId: event.payload.threadId,
@@ -3905,6 +4036,43 @@ const make = Effect.gen(function* () {
         ),
         Effect.ensuring(Effect.sync(() => editResendTurnStartKeys.delete(editResendKey))),
       );
+      if (startedTurn && event.payload.awaitPrecondition) {
+        const authorization = yield* threadAwaitGuard
+          .check({
+            threadId: event.payload.threadId,
+            precondition: event.payload.awaitPrecondition,
+            messageId: event.payload.messageId,
+            acceptedTurnId: startedTurn.turnId,
+            stage: "accepted",
+          })
+          .pipe(
+            Effect.onError(() =>
+              interruptProviderTurn({
+                threadId: event.payload.threadId,
+                turnId: startedTurn.turnId,
+                createdAt: new Date().toISOString(),
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logError("Could not interrupt an unverifiable awaited continuation", {
+                    threadId: event.payload.threadId,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              ),
+            ),
+          );
+        if (authorization.status === "cancelled") {
+          yield* interruptProviderTurn({
+            threadId: event.payload.threadId,
+            turnId: startedTurn.turnId,
+            createdAt: new Date().toISOString(),
+          });
+          yield* threadAwaitGuard.cancel({
+            threadId: event.payload.threadId,
+            precondition: event.payload.awaitPrecondition,
+          });
+        }
+      }
       // A requested steer can still become a separate queued turn (for
       // providers without native steering, or if the live turn already
       // settled). Persist that effective boundary while leaving native steer
@@ -4215,6 +4383,13 @@ const make = Effect.gen(function* () {
           return;
         }
         if (decision === "cancel") {
+          const source = yield* readOrchestrationEventAtSequence(review.sourceEventSequence);
+          if (source?.type === "thread.turn-start-requested" && source.payload.awaitPrecondition) {
+            yield* threadAwaitGuard.cancel({
+              threadId,
+              precondition: source.payload.awaitPrecondition,
+            });
+          }
           yield* setClaudeCacheReview(threadId, null, review.reviewId);
           yield* drainQueuedTurnsForSession(threadId);
           return;
@@ -4316,7 +4491,50 @@ const make = Effect.gen(function* () {
               issue: "The saved message is no longer available for compaction.",
             });
           }
+          if (source.payload.awaitPrecondition) {
+            const authorization = yield* threadAwaitGuard.check({
+              threadId,
+              precondition: source.payload.awaitPrecondition,
+              messageId: source.payload.messageId,
+              stage: "accepted",
+            });
+            if (authorization.status === "cancelled") {
+              yield* threadAwaitGuard.cancel({
+                threadId,
+                precondition: source.payload.awaitPrecondition,
+              });
+              yield* setClaudeCacheReview(
+                threadId,
+                { ...compactingReview, status: "failed", error: authorization.reason },
+                review.reviewId,
+              );
+              return;
+            }
+          }
           yield* providerService.startClaudeCompaction({ threadId, turnId }).pipe(
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                if (!source.payload.awaitPrecondition) return;
+                const authorization = yield* threadAwaitGuard.check({
+                  threadId,
+                  precondition: source.payload.awaitPrecondition,
+                  messageId: source.payload.messageId,
+                  acceptedTurnId: turnId,
+                  stage: "accepted",
+                });
+                if (authorization.status === "cancelled") {
+                  yield* interruptProviderTurn({
+                    threadId,
+                    turnId,
+                    createdAt: new Date().toISOString(),
+                  });
+                  yield* threadAwaitGuard.cancel({
+                    threadId,
+                    precondition: source.payload.awaitPrecondition,
+                  });
+                }
+              }),
+            ),
             Effect.tap(() =>
               Effect.sync(() => {
                 if (isRecoveringClaudeCompactions) startupClaudeCompactionTurns.add(turnId);
@@ -4439,6 +4657,35 @@ const make = Effect.gen(function* () {
           );
         }
         const nextQueuedTurn = sourceEvent.payload;
+        if (nextQueuedTurn.awaitPrecondition) {
+          const authorization = yield* threadAwaitGuard.check({
+            threadId,
+            precondition: nextQueuedTurn.awaitPrecondition,
+            messageId: nextQueuedTurn.messageId,
+            stage: "delivery",
+          });
+          if (authorization.status !== "ready") {
+            yield* queuedTurnPromotions.releaseClaim({
+              queuedEventSequence: promotion.queuedEventSequence,
+              claimOwner: queuedTurnPromotionOwner,
+              updatedAt: new Date().toISOString(),
+            });
+            if (authorization.status === "defer") {
+              yield* scheduleAwaitRetry(threadId);
+            } else {
+              yield* threadAwaitGuard.cancel({
+                threadId,
+                precondition: nextQueuedTurn.awaitPrecondition,
+              });
+              yield* queuedTurnPromotions.cancelMessage({
+                threadId,
+                messageId: nextQueuedTurn.messageId,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+            return;
+          }
+        }
         pendingQueuedDispatchBySessionThread.set(sessionThreadId, {
           queuedThreadId: threadId,
           messageId: nextQueuedTurn.messageId,
@@ -4450,6 +4697,9 @@ const make = Effect.gen(function* () {
           ),
           threadId,
           messageId: nextQueuedTurn.messageId,
+          ...(nextQueuedTurn.awaitPrecondition
+            ? { awaitPrecondition: nextQueuedTurn.awaitPrecondition }
+            : {}),
           ...(nextQueuedTurn.modelSelection !== undefined
             ? { modelSelection: nextQueuedTurn.modelSelection }
             : {}),
@@ -4581,6 +4831,7 @@ const make = Effect.gen(function* () {
       threadId,
     });
     if (
+      (yield* threadAwaitGuard.hasPending(threadId)) ||
       pendingInteractionCounts.pendingApprovalCount > 0 ||
       pendingInteractionCounts.pendingUserInputCount > 0 ||
       thread.session?.status === "starting" ||
@@ -4707,6 +4958,7 @@ const make = Effect.gen(function* () {
           threadId: thread.id,
         });
         if (
+          (yield* threadAwaitGuard.hasPending(thread.id)) ||
           pendingInteractionCounts.pendingApprovalCount > 0 ||
           pendingInteractionCounts.pendingUserInputCount > 0 ||
           (yield* hasLiveProviderTurn(thread.id))
@@ -4757,6 +5009,31 @@ const make = Effect.gen(function* () {
             Cause.hasInterruptsOnly(cause)
               ? Effect.failCause(cause)
               : Effect.gen(function* () {
+                  const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
+                  if (
+                    failure instanceof ProviderAdapterValidationError &&
+                    failure.operation === "thread.goal.await"
+                  ) {
+                    const current = (yield* resolveThread(thread.id))?.session;
+                    if (current?.status === "starting" && current.activeTurnId === null) {
+                      const updatedAt = new Date().toISOString();
+                      yield* setThreadSession({
+                        threadId: thread.id,
+                        session: { ...current, status: "ready", updatedAt },
+                        expectedSession: current,
+                        expectedPendingMessageId: null,
+                        createdAt: updatedAt,
+                      }).pipe(
+                        Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+                          error.detail === "Command produced no events."
+                            ? Effect.void
+                            : Effect.fail(error),
+                        ),
+                      );
+                    }
+                    yield* deferGoalContinuation(event);
+                    return;
+                  }
                   const detail = Cause.pretty(cause);
                   yield* appendProviderFailureActivity({
                     threadId: thread.id,
@@ -4859,6 +5136,37 @@ const make = Effect.gen(function* () {
       recoverQueuedTurnPromotionsForThread(ThreadId.makeUnsafe(rawThreadId)),
     );
   });
+
+  const runAwaitRetries = Stream.fromQueue(awaitRetryQueue).pipe(
+    Stream.runForEach((threadId) =>
+      Effect.sleep(Duration.millis(500)).pipe(
+        Effect.andThen(Effect.sync(() => queuedAwaitRetries.delete(threadId))),
+        Effect.andThen(recoverQueuedTurnPromotionsForThread(threadId)),
+        Effect.andThen(
+          Effect.gen(function* () {
+            if (
+              (yield* threadAwaitGuard.hasPending(threadId)) &&
+              (yield* queuedTurnPromotions.listPendingThreadIds).includes(threadId)
+            ) {
+              yield* scheduleAwaitRetry(threadId);
+            }
+          }),
+        ),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : scheduleAwaitRetry(threadId).pipe(
+                Effect.andThen(
+                  Effect.logWarning("Could not retry an awaited continuation", {
+                    threadId,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              ),
+        ),
+      ),
+    ),
+  );
 
   const interruptProviderTurn = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -6364,7 +6672,7 @@ const make = Effect.gen(function* () {
       // start whose provider acceptance could not be proven. Abandon that one
       // delivery without replaying it, then let the new message proceed. Keep
       // quarantines for ambiguous mutations such as rollback and task control.
-      if (event.type === "thread.turn-start-requested") {
+      if (event.type === "thread.turn-start-requested" && !event.payload.awaitPrecondition) {
         const blocker = yield* deliveryRepository.firstBlockingDeliveryForThread({
           consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
           threadId: event.payload.threadId,
@@ -6780,6 +7088,7 @@ const make = Effect.gen(function* () {
 
     const retireStaleUnclaimedTurnStart = Effect.fnUntraced(function* (event: ProviderIntentEvent) {
       if (event.type !== "thread.turn-start-requested") return false;
+      if (event.payload.awaitPrecondition) return false;
       const occurredAt = Date.parse(event.occurredAt);
       if (
         !Number.isFinite(occurredAt) ||
@@ -7387,6 +7696,7 @@ const make = Effect.gen(function* () {
           return processQueueDrainEventSafely(event);
         }).pipe(Effect.forkScoped),
         runBlockedGoalContinuationRetries.pipe(Effect.forkScoped),
+        runAwaitRetries.pipe(Effect.forkScoped),
         runProviderContextLifecycleActivityRetries.pipe(Effect.forkScoped),
       ]).pipe(Effect.asVoid),
     ),

@@ -5,7 +5,7 @@ import { computerToolInstructions } from "./computerGuidance.ts";
 import { AUTOMATION_AUTHORING_GUIDANCE } from "./automationAuthoringGuidance.ts";
 
 /** Canonical, versioned host policy delivered to every supported provider. */
-export const SYNARA_HARNESS_POLICY_VERSION = "2026-09-20.1";
+export const SYNARA_HARNESS_POLICY_VERSION = "2026-10-01.1";
 export const SYNARA_HARNESS_POLICY_MARKER = `[Synara harness policy ${SYNARA_HARNESS_POLICY_VERSION}]`;
 
 export interface SynaraHarnessCapabilities {
@@ -31,12 +31,12 @@ export function renderSynaraHarnessPolicy(capabilities: SynaraHarnessCapabilitie
         "For any-language iOS app or simulator request, call device_* directly and autonomously; never use xcrun simctl, AppleScript, Appium, idb, open Simulator.app, or substitute mobile/OS-automation tools/skills. The user watches the streamed pane; see each tool description.",
         "For thread discovery or diagnosis, use synara_list_threads, synara_read_thread, synara_read_thread_activity, synara_read_thread_events, synara_read_thread_runtime_events, and synara_diagnose_thread before SQLite/logs; use host storage only when required evidence is unavailable.",
         "After successfully creating a pull request for the current thread's own deliverable, call synara_set_thread_pull_request with its URL. Never associate a pull request that the thread only reviews, references, or discusses.",
-        "Provider-native subagent or Task tools are implementation details: they do not create Synara threads and must not substitute for an explicit request to create Synara threads.",
-        "For a plural thread request, submit one exact synara_create_threads plan. The array length is the exact requested count.",
+        "Provider-native Task/subagent tools do not create Synara threads; use the gateway for explicit Synara thread requests.",
+        "For plural requests, submit one exact synara_create_threads plan of the requested size.",
         "If synara_create_threads fails before returning an operationId, correct the rejected plan and reuse its requestId; no durable task was created.",
         "Use synara_capabilities to select canonical provider, model, and option values. Never guess a model slug or silently substitute a provider or model.",
         "Use synara_capabilities.targetConstruction: Codex options.reasoningEffort and Claude Agent options.effort are not interchangeable.",
-        "When results are requested, call synara_wait_for_threads for the created thread ids, wait for every requested result, then synthesize all outcomes.",
+        "Delegate with awaitResult:true; synara_await_threads waits for existing tasks. Use synara_ask_coordinator for blockers. Finish your current response to continue this thread automatically; synara_wait_for_threads only polls.",
         "After an operationId, retries keep the same requestId and exact plan. Report terminal failures; no replacement threads without a new user request.",
         "Synara automations support heartbeat, standalone, and dedicated modes plus interval, once, daily, weekdays, weekly, and cron schedules. Existing everyMinutes heartbeat calls remain supported. Use fastInterval: true only when the user explicitly accepts a sub-minute bounded loop.",
         "Mode controls execution: heartbeat appends to an idle target thread; standalone opens a fresh thread per independent run; dedicated reuses one automation-owned thread so runs build on each other without writing into another thread.",

@@ -23,6 +23,7 @@ import {
   CodexProfileId,
   EventId,
   SYNARA_GATEWAY_MAX_THREADS_PER_OPERATION,
+  SynaraSendMessageInput,
   MessageId,
   THREAD_GOAL_MAX_CHARS,
   ThreadId,
@@ -40,7 +41,7 @@ import {
 } from "@synara/contracts";
 import { PROVIDER_USAGE_PROVIDERS } from "@synara/shared/providerUsage";
 import { runtimeModeEscalatesPrivilege } from "@synara/shared/runtimeMode";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { GitManager } from "../../git/Services/GitManager.ts";
@@ -83,9 +84,19 @@ import {
   readRecordArg,
   readStringArg,
 } from "../toolInput.ts";
-import { WRITE_TOOL_ANNOTATIONS, type ToolContext, type ToolEntry } from "../toolRuntime.ts";
+import {
+  GatewayToolError,
+  gatewayToolErrorResult,
+  WRITE_TOOL_ANNOTATIONS,
+  type ToolContext,
+  type ToolEntry,
+} from "../toolRuntime.ts";
 import { makeAgentGatewayMcpTransport } from "../mcpTransport.ts";
 import { deliverGatewayCompletions } from "../completionDelivery.ts";
+import { makeAwaitRegistration, makeAwaitThreads } from "../awaitThreads.ts";
+import { makeAwaitedDispatch } from "../awaitedDispatch.ts";
+import { makeCoordinatorQuestions } from "../coordinatorQuestions.ts";
+import { makeThreadCoordination } from "../threadCoordination.ts";
 import { recoverInterruptedAgentGatewayOperations } from "../startupRecovery.ts";
 import { makeCreateThreadsHandler } from "../creationCoordinator.ts";
 import { makeAgentGatewayAutomationTools } from "../automationTools.ts";
@@ -236,6 +247,27 @@ export const makeAgentGateway = Effect.gen(function* () {
     git,
   });
 
+  const awaitedDispatch = yield* makeAwaitedDispatch({ snapshotQuery, orchestrationEngine });
+  const awaitRegistration = yield* makeAwaitRegistration({ snapshotQuery, orchestrationEngine });
+  const coordinatorQuestions = yield* makeCoordinatorQuestions({
+    snapshotQuery,
+    projectionTurns,
+    completionRepository: operationRepository.completions,
+    orchestrationEngine,
+  });
+  const awaitThreads = yield* makeAwaitThreads({
+    snapshotQuery,
+    projectionTurns,
+    completionRepository: operationRepository.completions,
+    orchestrationEngine,
+    coordination: coordinatorQuestions,
+  });
+  const coordination = yield* makeThreadCoordination({
+    snapshotQuery,
+    orchestrationEngine,
+    questions: coordinatorQuestions,
+  });
+
   yield* Effect.forkScoped(
     Effect.forever(
       deliverGatewayCompletions({
@@ -245,6 +277,29 @@ export const makeAgentGateway = Effect.gen(function* () {
         orchestrationEngine,
       }).pipe(
         Effect.catch((error) => Effect.logWarning("gateway completion scan failed", { error })),
+        Effect.andThen(
+          awaitedDispatch
+            .repairPending()
+            .pipe(
+              Effect.catch((error) => Effect.logWarning("awaited dispatch scan failed", { error })),
+            ),
+        ),
+        Effect.andThen(
+          coordinatorQuestions
+            .deliverPending()
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("coordinator question scan failed", { error }),
+              ),
+            ),
+        ),
+        Effect.andThen(
+          awaitThreads
+            .deliverPending()
+            .pipe(
+              Effect.catch((error) => Effect.logWarning("gateway wait scan failed", { error })),
+            ),
+        ),
         Effect.andThen(Effect.sleep(1000)),
       ),
     ),
@@ -357,6 +412,8 @@ export const makeAgentGateway = Effect.gen(function* () {
     serverConfig,
     loadProviderAvailabilities,
     requireThreadShell,
+    awaitedDispatch,
+    announceWait: awaitRegistration.announceRegistration,
   });
 
   const createThreads: ToolEntry = {
@@ -374,6 +431,11 @@ export const makeAgentGateway = Effect.gen(function* () {
             maxLength: 256,
             description: "Stable id for this exact user-requested creation plan.",
           },
+          awaitResult: {
+            type: "boolean",
+            description:
+              "Durably wait for this batch's exact initial messages and continue the creator once with all results. Returns immediately; finish your response when independent work is done. Each entry may override this setting.",
+          },
           threads: {
             type: "array",
             minItems: 1,
@@ -381,6 +443,10 @@ export const makeAgentGateway = Effect.gen(function* () {
             items: {
               type: "object",
               properties: {
+                awaitResult: {
+                  type: "boolean",
+                  description: "Override the batch awaitResult setting for this entry.",
+                },
                 notifyCreatorOnComplete: {
                   type: "boolean",
                   description:
@@ -425,6 +491,7 @@ export const makeAgentGateway = Effect.gen(function* () {
         callerThreadId: context.callerThreadId,
         callerTurnId: context.callerTurnId,
         assertAuthority: context.assertCallerTurnActive,
+        prepareWait: () => awaitRegistration.prepareRegistration(context),
       }),
   };
 
@@ -439,6 +506,11 @@ export const makeAgentGateway = Effect.gen(function* () {
         type: "object",
         properties: {
           requestId: { type: "string", maxLength: 256 },
+          awaitResult: {
+            type: "boolean",
+            description:
+              "Durably wait for this exact initial message and continue this creator once with the result. Returns immediately; finish this response when independent work is done.",
+          },
           notifyCreatorOnComplete: {
             type: "boolean",
             description:
@@ -517,6 +589,7 @@ export const makeAgentGateway = Effect.gen(function* () {
           "branchName",
           "runtimeMode",
           "notifyCreatorOnComplete",
+          "awaitResult",
         ]) {
           const value = args[key];
           if (value !== undefined) spec[key] = value;
@@ -531,6 +604,7 @@ export const makeAgentGateway = Effect.gen(function* () {
             callerThreadId: context.callerThreadId,
             callerTurnId: context.callerTurnId,
             assertAuthority: context.assertCallerTurnActive,
+            prepareWait: () => awaitRegistration.prepareRegistration(context),
           },
         ).pipe(
           Effect.map((result) => {
@@ -539,12 +613,14 @@ export const makeAgentGateway = Effect.gen(function* () {
             const batch = JSON.parse(content?.type === "text" ? content.text : "{}") as {
               operationId?: string;
               requestId?: string;
+              instruction?: string;
               threads?: Array<Record<string, unknown>>;
             };
             return mcpToolResultJson({
               operationId: batch.operationId,
               requestId: batch.requestId,
               ...(batch.threads?.[0] ?? {}),
+              ...(batch.instruction ? { instruction: batch.instruction } : {}),
             });
           }),
         );
@@ -564,6 +640,18 @@ export const makeAgentGateway = Effect.gen(function* () {
           threadId: { type: "string", description: "Target thread." },
           message: { type: "string", description: "Message text." },
           mode: { type: "string", enum: ["queue", "steer"], description: "Dispatch mode." },
+          awaitResult: {
+            type: "boolean",
+            description:
+              "With queue mode and a stable requestId, durably await this exact message and continue this caller once with all delegated results. Returns immediately; finish your response when independent work is done. Awaited steering is unsupported.",
+          },
+          requestId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 256,
+            description:
+              "Required when awaitResult is true. Reuse this exact id and message for retries; it is only used by awaited sends.",
+          },
         },
         required: ["threadId", "message"],
         additionalProperties: false,
@@ -578,9 +666,30 @@ export const makeAgentGateway = Effect.gen(function* () {
         if (modeArg !== "queue" && modeArg !== "steer") {
           throw new ToolInputError(`Argument "mode" must be "queue" or "steer".`);
         }
+        const awaitResult = readBooleanArg(args, "awaitResult") === true;
+        const awaited = awaitResult
+          ? yield* Schema.decodeUnknownEffect(SynaraSendMessageInput)({
+              ...args,
+              threadId,
+              message,
+              mode: modeArg,
+            })
+          : null;
+        const waitScope = awaited ? yield* awaitRegistration.prepareRegistration(context) : null;
         const caller = yield* requireThreadShell(context.callerThreadId);
         const target = yield* requireThreadShell(threadId);
         yield* assertCallerMayDriveThread(caller, target);
+        if (awaited && waitScope) {
+          return mcpToolResultJson(
+            yield* awaitedDispatch.send({
+              requestId: awaited.requestId!,
+              scope: waitScope,
+              target,
+              message,
+              assertAuthority: context.assertCallerTurnActive,
+            }),
+          );
+        }
         // Pass the requested mode through unchanged: the reactor checks live
         // provider state (authoritative, unlike this projection snapshot) and
         // already downgrades steers whose turn is not actually live.
@@ -605,7 +714,15 @@ export const makeAgentGateway = Effect.gen(function* () {
           })
           .pipe(Effect.mapError((error) => new ToolInputError(errorText(error))));
         return mcpToolResultJson({ threadId: target.id, dispatched: dispatchMode });
-      }).pipe(Effect.catch((error) => Effect.succeed(mcpToolResultError(errorText(error))))),
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.succeed(
+            error instanceof GatewayToolError
+              ? gatewayToolErrorResult(error)
+              : mcpToolResultError(errorText(error)),
+          ),
+        ),
+      ),
   };
 
   const interruptThread: ToolEntry = {
@@ -1277,6 +1394,8 @@ export const makeAgentGateway = Effect.gen(function* () {
     ...usageTools,
     createThreads,
     createThread,
+    awaitThreads.tool,
+    ...coordinatorQuestions.tools,
     sendMessage,
     interruptThread,
     setThreadTitle,
@@ -1318,6 +1437,7 @@ export const makeAgentGateway = Effect.gen(function* () {
   );
 
   return {
+    coordination,
     handleMcpPost: makeAgentGatewayMcpTransport({
       credentials,
       snapshotQuery,

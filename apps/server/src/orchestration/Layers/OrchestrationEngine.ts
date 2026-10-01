@@ -5,6 +5,7 @@ import type {
   ProjectId,
   SpaceId,
   ThreadId,
+  TurnId,
 } from "@synara/contracts";
 import { OrchestrationCommand, ORCHESTRATION_WS_METHODS } from "@synara/contracts";
 import {
@@ -68,6 +69,8 @@ import {
   isQuiescingCommandAdmissible,
 } from "../orchestrationAdmission.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
+import { makeThreadAwaitGuard, THREAD_AWAIT_DEFERRED } from "../threadAwaitGuard.ts";
+import { makeAwaitedDispatchAdmission } from "../../agentGateway/awaitedDispatchAdmission.ts";
 import { PROJECT_METADATA_SNAPSHOT_PROJECTORS } from "../projectMetadataProjection.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import {
@@ -159,6 +162,8 @@ function isShellMetadataEvent(event: OrchestrationEvent): event is ShellMetadata
 
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const threadAwaitGuard = yield* makeThreadAwaitGuard;
+  const awaitedDispatchAdmission = yield* makeAwaitedDispatchAdmission;
   const eventStore = yield* OrchestrationEventStore;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const managedAttachments = yield* ManagedAttachmentRepository;
@@ -546,6 +551,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           ? loadThreadDetailForDecider(command, commandReadModel, command.threadId)
           : Effect.succeed(commandReadModel);
       case "thread.turn.start":
+        if (command.awaitPrecondition) {
+          return loadThreadDetailForDecider(command, commandReadModel, command.threadId);
+        }
         if (command.asyncUserInputResponse) {
           return messageRepository
             .getByThreadAndMessageId({
@@ -870,6 +878,39 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       }
 
       if (command.type === "thread.claude-cache.set" && command.hold) {
+        const sources = yield* sql<{
+          waitId: string | null;
+          sourceTurnId: TurnId;
+          registeredSequence: number;
+          messageId: string;
+        }>`SELECT json_extract(payload_json, '$.awaitPrecondition.waitId') AS "waitId",
+            json_extract(payload_json, '$.awaitPrecondition.sourceTurnId') AS "sourceTurnId",
+            json_extract(payload_json, '$.awaitPrecondition.registeredSequence') AS "registeredSequence",
+            json_extract(payload_json, '$.messageId') AS "messageId"
+          FROM orchestration_events WHERE sequence = ${command.hold.sourceEventSequence}
+            AND stream_id = ${command.threadId} AND event_type = 'thread.turn-start-requested'`.pipe(
+          Effect.mapError(toPersistenceSqlError("OrchestrationEngine.awaitCacheHold")),
+        );
+        const source = sources[0];
+        if (source?.waitId) {
+          const authorization = yield* threadAwaitGuard.check({
+            threadId: command.threadId,
+            precondition: {
+              waitId: source.waitId,
+              sourceTurnId: source.sourceTurnId,
+              registeredSequence: source.registeredSequence,
+            },
+            messageId: source.messageId,
+            eventSequence: command.hold.sourceEventSequence,
+            stage: "delivery",
+          });
+          if (authorization.status !== "ready") {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "Command produced no events.",
+            });
+          }
+        }
         // Admission runs in the command worker, so a stop cannot slip between
         // this durable fence and the atomic review/session events below.
         const cancellation = yield* Stream.runHead(
@@ -899,6 +940,44 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         }
       }
 
+      if (
+        (command.type === "thread.turn.start" || command.type === "thread.turn.dispatch-queued") &&
+        command.awaitPrecondition
+      ) {
+        const authorization = yield* threadAwaitGuard.check({
+          threadId: command.threadId,
+          precondition: command.awaitPrecondition,
+          messageId:
+            command.type === "thread.turn.start" ? command.message.messageId : command.messageId,
+          ...(command.type === "thread.turn.start" ? { commandId: command.commandId } : {}),
+          stage: command.type === "thread.turn.start" ? "admission" : "delivery",
+        });
+        if (authorization.status !== "ready") {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail:
+              authorization.status === "defer"
+                ? `${THREAD_AWAIT_DEFERRED} ${authorization.reason}`
+                : authorization.reason,
+          });
+        }
+      }
+
+      if (command.type === "thread.session.set" && command.expectedPendingMessageId !== undefined) {
+        const pending = yield* sql<{ messageId: string }>`SELECT pending_message_id AS "messageId"
+          FROM projection_turns WHERE thread_id = ${command.threadId}
+            AND state = 'pending' AND turn_id IS NULL
+          ORDER BY requested_at DESC LIMIT 1`.pipe(
+          Effect.mapError(toPersistenceSqlError("OrchestrationEngine.pendingSessionOwner")),
+        );
+        if ((pending[0]?.messageId ?? null) !== command.expectedPendingMessageId) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Command produced no events.",
+          });
+        }
+      }
+
       const deciderReadModel = yield* buildDeciderReadModel(command);
       const eventBase = yield* decideOrchestrationCommand({
         command,
@@ -914,6 +993,33 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const committedEvents: OrchestrationEvent[] = [];
         const deferredSettledSequences = new Set<number>();
         let nextCommandReadModel = commandReadModel;
+
+        if (command.type === "thread.turn.start" && command.awaitedDispatchId) {
+          yield* awaitedDispatchAdmission.check(command);
+        }
+        if (
+          (command.type === "thread.turn.start" ||
+            command.type === "thread.turn.dispatch-queued") &&
+          command.awaitPrecondition
+        ) {
+          const authorization = yield* threadAwaitGuard.check({
+            threadId: command.threadId,
+            precondition: command.awaitPrecondition,
+            messageId:
+              command.type === "thread.turn.start" ? command.message.messageId : command.messageId,
+            ...(command.type === "thread.turn.start" ? { commandId: command.commandId } : {}),
+            stage: command.type === "thread.turn.start" ? "admission" : "delivery",
+          });
+          if (authorization.status !== "ready") {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail:
+                authorization.status === "defer"
+                  ? `${THREAD_AWAIT_DEFERRED} ${authorization.reason}`
+                  : authorization.reason,
+            });
+          }
+        }
 
         if (command.type === "thread.turn.start") {
           const attachmentIds = command.message.attachments
@@ -1080,6 +1186,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ),
       Effect.catch((error: OrchestrationDispatchError) =>
         Effect.gen(function* () {
+          if (
+            (envelope.command.type === "thread.turn.start" ||
+              envelope.command.type === "thread.turn.dispatch-queued") &&
+            envelope.command.awaitPrecondition &&
+            Schema.is(OrchestrationCommandInvariantError)(error) &&
+            error.detail.startsWith(THREAD_AWAIT_DEFERRED)
+          ) {
+            yield* Deferred.fail(envelope.result, error);
+            return;
+          }
           yield* reconcileCommandReadModelAfterDispatchFailure.pipe(
             Effect.catch(() =>
               Effect.logWarning(

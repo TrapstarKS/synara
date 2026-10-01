@@ -33,6 +33,7 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import { collectProviderUsageSnapshots } from "../../providerUsage/index.ts";
@@ -359,6 +360,7 @@ const VALID_TOKENS: Record<string, string> = {
   "token-parent": "thread-parent",
   "token-parent-claude": "thread-parent",
   "token-parent-readonly": "thread-parent",
+  "token-parent-writeonly": "thread-parent",
   "token-parent-computer": "thread-parent",
   "token-ghost": "thread-ghost",
 };
@@ -371,6 +373,7 @@ function makeHarnessLayer(
     readonly threadDetails?: ReadonlyMap<string, OrchestrationThread>;
     readonly failDispatch?: (command: OrchestrationCommand) => boolean;
     readonly dispatchDelayMs?: number;
+    readonly persistWaitFixtures?: boolean;
     readonly interruptedOperations?: ReadonlyArray<AgentGatewayOperationRecord>;
     readonly providerStatuses?: ReadonlyArray<ServerProviderStatus>;
     readonly existingBranches?: ReadonlyArray<string>;
@@ -469,15 +472,17 @@ function makeHarnessLayer(
             capabilities:
               token === "token-parent-readonly"
                 ? new Set(["thread:read"] as const)
-                : token === "token-parent-computer"
-                  ? new Set(["thread:read", "computer:control"] as const)
-                  : new Set([
-                      "thread:read",
-                      "thread:write",
-                      "automation:write",
-                      "diagnostics:read",
-                      "usage:read",
-                    ] as const),
+                : token === "token-parent-writeonly"
+                  ? new Set(["thread:write"] as const)
+                  : token === "token-parent-computer"
+                    ? new Set(["thread:read", "computer:control"] as const)
+                    : new Set([
+                        "thread:read",
+                        "thread:write",
+                        "automation:write",
+                        "diagnostics:read",
+                        "usage:read",
+                      ] as const),
           }
         : null;
     },
@@ -705,6 +710,7 @@ function makeHarnessLayer(
   } as unknown as (typeof ProviderRuntimeEventRepository)["Service"]);
 
   const engineLayer = Layer.succeed(OrchestrationEngineService, {
+    getEventHighWaterSequence: Effect.succeed(0),
     dispatch: (command: OrchestrationCommand) =>
       Effect.sleep(options.dispatchDelayMs ?? 0).pipe(
         Effect.flatMap(() =>
@@ -1234,6 +1240,21 @@ function makeHarnessLayer(
       : undefined;
   };
   const projectionTurnsLayer = Layer.succeed(ProjectionTurnRepository, {
+    listByThreadId: ({ threadId }: { threadId: string }) =>
+      Effect.sync(() => {
+        const ids = new Set([
+          ...[...projectionTurnsByKey.values()]
+            .filter((turn) => turn.threadId === threadId)
+            .map((turn) => turn.turnId),
+          ...(threadsById.get(threadId)?.latestTurn
+            ? [threadsById.get(threadId)!.latestTurn!.turnId]
+            : []),
+        ]);
+        return [...ids].flatMap((turnId) => {
+          const turn = readProjectionTurn(threadId, turnId);
+          return turn ? [turn] : [];
+        });
+      }),
     getByTurnId: ({ threadId, turnId }: { threadId: string; turnId: string }) =>
       Effect.succeed(Option.fromNullishOr(readProjectionTurn(threadId, turnId))),
     getManyByTurnId: (input: ReadonlyArray<{ threadId: string; turnId: string }>) =>
@@ -1260,6 +1281,28 @@ function makeHarnessLayer(
       }),
   } as unknown as (typeof ProjectionTurnRepository)["Service"]);
 
+  const persistenceLayer = options.persistWaitFixtures
+    ? Layer.effectDiscard(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          for (const thread of threads) {
+            yield* sql`INSERT INTO projection_threads
+            (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+              parent_thread_id, archived_at, created_at, updated_at)
+            VALUES (${thread.id}, ${thread.projectId}, ${thread.title}, ${JSON.stringify(thread.modelSelection)},
+              ${thread.runtimeMode}, ${thread.interactionMode}, ${thread.parentThreadId}, ${thread.archivedAt},
+              ${thread.createdAt}, ${thread.updatedAt})`;
+            if (thread.latestTurn) {
+              const turn = thread.latestTurn;
+              yield* sql`INSERT INTO projection_turns
+              (thread_id, turn_id, state, requested_at, started_at, completed_at, checkpoint_files_json)
+              VALUES (${thread.id}, ${turn.turnId}, ${turn.state}, ${turn.requestedAt}, ${turn.startedAt},
+                ${turn.completedAt}, '[]')`;
+            }
+          }
+        }),
+      ).pipe(Layer.provideMerge(SqlitePersistenceMemory))
+    : SqlitePersistenceMemory;
   const gatewayLayer = AgentGatewayLive.pipe(
     Layer.provide(credentialsLayer),
     Layer.provide(snapshotLayer),
@@ -1268,7 +1311,7 @@ function makeHarnessLayer(
     Layer.provide(
       MindServiceLive.pipe(
         Layer.provideMerge(MindRepositoryLive),
-        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provideMerge(persistenceLayer),
       ),
     ),
     Layer.provide(gitLayer),
@@ -1810,6 +1853,15 @@ describe("AgentGateway", () => {
         (toolResultJson(setGoal.result).error as { code: string }).code,
         "capability_denied",
       );
+      const awaitThreads = yield* harness.callTool({
+        token: "token-parent-readonly",
+        name: "synara_await_threads",
+        args: { threadIds: ["thread-child"] },
+      });
+      assert.equal(
+        (toolResultJson(awaitThreads.result).error as { code: string }).code,
+        "capability_denied",
+      );
       assert.equal(harness.dispatched.length, 0);
     }).pipe(Effect.provide(gatewayLayer));
   });
@@ -2130,6 +2182,7 @@ describe("AgentGateway", () => {
         "synara_read_thread_runtime_events",
         "synara_diagnose_thread",
         "synara_wait_for_threads",
+        "synara_await_threads",
         "synara_get_usage",
         "synara_list_provider_usage",
         "synara_create_threads",
@@ -2811,6 +2864,210 @@ describe("AgentGateway", () => {
         }).pipe(Effect.provide(gatewayLayer));
       },
     );
+  }
+
+  for (const batch of [false, true]) {
+    it.effect(
+      `registers awaitResult for ${batch ? "batch overrides" : "single creation"} through MCP`,
+      () => {
+        const { gatewayLayer, makeHarness } = makeHarnessLayer(baseThreads);
+        return Effect.gen(function* () {
+          const harness = yield* makeHarness;
+          const spec = { prompt: "do exact work", target: { provider: "codex", model: "gpt-5.5" } };
+          const args = batch
+            ? {
+                requestId: "await-created",
+                awaitResult: true,
+                threads: [spec, { ...spec, awaitResult: false }],
+              }
+            : { requestId: "await-created", awaitResult: true, ...spec };
+          const name = batch ? "synara_create_threads" : "synara_create_thread";
+          const response = yield* harness.callTool({ token: "token-parent", name, args });
+          assert.isFalse(isToolError(response.result), toolErrorText(response.result));
+          const result = toolResultJson(response.result);
+          assert.isString(result.waitId);
+          assert.include(String(result.instruction), "Finish");
+          const entries = batch ? (result.threads as Array<Record<string, unknown>>) : [result];
+          const start = harness.dispatched.find((command) => command.type === "thread.turn.start");
+          assert.equal(entries[0]?.messageId, start?.message.messageId);
+          assert.equal(entries[0]?.waitId, result.waitId);
+          if (batch) assert.isUndefined(entries[1]?.waitId);
+          const replay = yield* harness.callTool({ token: "token-parent", name, args });
+          assert.deepEqual(toolResultJson(replay.result), result);
+          assert.lengthOf(
+            harness.dispatched.filter((command) => command.type === "thread.create"),
+            batch ? 2 : 1,
+          );
+        }).pipe(Effect.provide(gatewayLayer));
+      },
+    );
+  }
+
+  it.effect(
+    "aggregates awaitResult sends and returns the exact message on stable retries through MCP",
+    () => {
+      const { gatewayLayer, makeHarness } = makeHarnessLayer(
+        [makeThreadShell("thread-parent"), makeThreadShell("target")],
+        [],
+        { persistWaitFixtures: true },
+      );
+      return Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        const request = {
+          token: "token-parent",
+          name: "synara_send_message",
+          args: {
+            threadId: "target",
+            message: "first work",
+            awaitResult: true,
+            requestId: "first",
+          },
+        };
+        const first = yield* harness.callTool(request);
+        assert.isFalse(isToolError(first.result), toolErrorText(first.result));
+        const result = toolResultJson(first.result);
+        const replay = yield* harness.callTool(request);
+        assert.deepEqual(toolResultJson(replay.result), result);
+        const second = yield* harness.callTool({
+          ...request,
+          args: { ...request.args, message: "second work", requestId: "second" },
+        });
+        assert.isFalse(isToolError(second.result), toolErrorText(second.result));
+        assert.equal(toolResultJson(second.result).waitId, result.waitId);
+        assert.notEqual(toolResultJson(second.result).messageId, result.messageId);
+        const starts = harness.dispatched.filter((command) => command.type === "thread.turn.start");
+        assert.lengthOf(starts, 2);
+        assert.equal(starts[0]?.message.messageId, result.messageId);
+        const conflict = yield* harness.callTool({
+          ...request,
+          args: { ...request.args, message: "changed" },
+        });
+        assert.isTrue(isToolError(conflict.result));
+        assert.equal(
+          (toolResultJson(conflict.result).error as { code: string }).code,
+          "idempotency_conflict",
+        );
+      }).pipe(Effect.provide(gatewayLayer));
+    },
+  );
+
+  it.effect(
+    "enforces read and write capabilities for awaitResult while ordinary sends remain available",
+    () => {
+      const { gatewayLayer, makeHarness } = makeHarnessLayer([
+        makeThreadShell("thread-parent"),
+        makeThreadShell("target"),
+      ]);
+      return Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        for (const token of ["token-parent-readonly", "token-parent-writeonly"]) {
+          for (const request of [
+            {
+              name: "synara_create_thread",
+              args: {
+                requestId: "denied-create",
+                prompt: "do work",
+                provider: "codex",
+                awaitResult: true,
+              },
+            },
+            {
+              name: "synara_send_message",
+              args: {
+                threadId: "target",
+                message: "do work",
+                requestId: "denied-send",
+                awaitResult: true,
+              },
+            },
+          ]) {
+            const response = yield* harness.callTool({ token, ...request });
+            assert.isTrue(isToolError(response.result));
+            assert.equal(
+              (toolResultJson(response.result).error as { code: string }).code,
+              "capability_denied",
+            );
+          }
+        }
+        assert.lengthOf(harness.dispatched, 0);
+        const ordinary = yield* harness.callTool({
+          token: "token-parent-writeonly",
+          name: "synara_send_message",
+          args: { threadId: "target", message: "ordinary work", awaitResult: false, mode: "steer" },
+        });
+        assert.isFalse(isToolError(ordinary.result), toolErrorText(ordinary.result));
+        assert.deepEqual(toolResultJson(ordinary.result), {
+          threadId: "target",
+          dispatched: "steer",
+        });
+      }).pipe(Effect.provide(gatewayLayer));
+    },
+  );
+
+  it.effect(
+    "rejects awaitResult sends without stable IDs, with steer, or targeting the caller before dispatch",
+    () => {
+      const { gatewayLayer, makeHarness } = makeHarnessLayer([
+        ...baseThreads,
+        makeThreadShell("target"),
+      ]);
+      return Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        for (const args of [
+          { threadId: "target", message: "work", awaitResult: true },
+          {
+            threadId: "target",
+            message: "work",
+            awaitResult: true,
+            requestId: "steer",
+            mode: "steer",
+          },
+          { threadId: "thread-parent", message: "work", awaitResult: true, requestId: "self" },
+          {
+            threadId: "thread-child",
+            message: "work",
+            awaitResult: true,
+            requestId: "native-child",
+          },
+        ]) {
+          const response = yield* harness.callTool({
+            token: "token-parent",
+            name: "synara_send_message",
+            args,
+          });
+          assert.isTrue(isToolError(response.result));
+        }
+        assert.lengthOf(harness.dispatched, 0);
+      }).pipe(Effect.provide(gatewayLayer));
+    },
+  );
+
+  for (const scenario of ["inactive", "worktree", "runtime"] as const) {
+    it.effect(`preserves ${scenario} restrictions on awaitResult sends through MCP`, () => {
+      const parent = makeThreadShell(
+        "thread-parent",
+        scenario === "inactive"
+          ? { latestTurn: null }
+          : scenario === "worktree"
+            ? { envMode: "worktree", worktreePath: "/tmp/await-caller" }
+            : {},
+      );
+      const target = makeThreadShell(
+        "target",
+        scenario === "runtime" ? { runtimeMode: "full-access" } : {},
+      );
+      const { gatewayLayer, makeHarness } = makeHarnessLayer([parent, target]);
+      return Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        const response = yield* harness.callTool({
+          token: "token-parent",
+          name: "synara_send_message",
+          args: { threadId: "target", message: "work", awaitResult: true, requestId: "blocked" },
+        });
+        assert.isTrue(isToolError(response.result));
+        assert.lengthOf(harness.dispatched, 0);
+      }).pipe(Effect.provide(gatewayLayer));
+    });
   }
 
   it.effect("starts explicit OpenCode plan-agent targets in plan mode", () => {

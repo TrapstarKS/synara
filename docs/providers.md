@@ -446,3 +446,100 @@ they have no authenticated creating task.
 Delivery survives restart and duplicate events. An archived or deleted creator
 is not reopened; the result remains in the child and delivery is recorded as
 unavailable. Delivery is checked approximately once per second.
+
+## Waiting with automatic continuation
+
+An active, authenticated standalone agent thread can call `synara_await_threads`
+with `threadIds` (1–20 unique IDs) and optional matching `runIds`. Unlike the
+passive creation option above, this explicitly registers a durable continuation
+for the calling thread. The tool returns immediately. The caller should finish
+its current response when independent work is done; Synara starts one follow-up
+with all requested outcomes once that response and the target runs have settled.
+The user does not need to send “continue”.
+
+The wait pins each selected run, or the exact pending message when a new task is
+still starting. Later unrelated runs cannot replace its result. Summaries are
+bounded and attributed by thread/run, with `synara_read_thread` references for
+full output. Results are untrusted reference data; they grant no additional
+authority. Failure and interruption are returned as outcomes, rather than
+silently creating replacement work. A pinned turn is not evidence that a
+persistent goal has finished.
+
+Wait registration requires `thread:read`, `thread:write`, and an active caller turn. There is no
+recipient override. An explicit wait plan is immutable within its caller turn;
+identical retries reuse it, and a changed explicit plan or cyclic dependency is rejected. A stop, archive,
+deletion, rollback, handoff, or new message in the caller cancels its pending
+continuation. Approvals, user input, cache review, and unresolved provider
+delivery remain under their existing controls. Continuations use the current
+thread settings and are identified as agent-originated messages.
+
+The same SQLite database stores the wait, its results, and the frozen dispatch
+identity. Restart and lost acknowledgements reuse that identity through normal
+command receipts and provider reconciliation. `dispatched` means Synara committed
+the continuation, not that the provider accepted or completed it. Scanning runs
+while Synara's server is running; reopening Synara recovers pending waits.
+`synara_wait_for_threads` remains a read-only, bounded status wait and does not
+register an automatic continuation.
+
+## Delegation with an integrated wait
+
+Pass `awaitResult: true` to `synara_create_thread`, to the whole
+`synara_create_threads` batch, or to individual batch entries. An entry's explicit
+value overrides the batch default. The operation reserves the exact initial
+message IDs and the caller's wait before any executor starts; its completion
+commits the operation and releases the wait together. An incomplete creation
+uses the existing compensation and recovery path.
+
+For an existing thread, `synara_send_message` also accepts `awaitResult: true`
+with a stable `requestId` and `mode: "queue"`. An awaited send saves its original
+message, command identity, and timestamp before dispatch. Retrying the same
+request reuses that command and its receipt, including after a lost response.
+Awaited steering is rejected because it does not establish a separate run for
+the new request. Ordinary sends and creation calls keep their existing behavior
+when `awaitResult` is omitted or false.
+
+Awaited delegations made in one caller turn join its existing wait, up to 20
+exact targets. They preserve already collected results and the identity of an
+explicit wait. Responses include `waitId` and the awaited `messageId` values.
+The caller can finish its response without another `synara_await_threads` call.
+External integrations cannot opt in because this continuation belongs to an
+authenticated calling thread.
+
+## Coordination in the conversation
+
+The conversation shows a waiting card with executor titles, progress, and links
+to their threads. The sidebar marks waiting coordinators and questions needing
+attention. Status distinguishes queued work, active work, approval/input waits,
+coordinator questions, and terminal outcomes. A completed projection is not
+shown as a collected result before durable output has settled.
+
+`Cancel wait` removes the pending automatic continuation and cancels its open
+coordination questions. It leaves delegated tasks running. A stale cancellation
+cannot stop a continuation that already acquired its own provider run. The
+panel refreshes while visible and disables mutating controls when its status
+cannot be refreshed.
+
+## Questions from executors
+
+An executor can call `synara_ask_coordinator({ requestId, question })` while
+running an exactly awaited task. Synara resolves the coordinator from the saved
+wait; there is no recipient parameter. The executor finishes its current
+response, and the coordinator receives a guarded continuation containing the
+questions rather than a misleading final task result.
+
+The receiving coordinator calls `synara_answer_question({ questionId, answer })`
+when existing task context is sufficient. For a decision belonging to the user,
+it sends `{ questionId, needsUser: true, reason }`. The question then appears in
+the main conversation with a reply form. Submitting that form records an ordinary
+task answer, resumes the exact executor when eligible, and preserves the
+coordinator's wait for its final outcome. A clean coordinator response that
+leaves questions unanswered also exposes them to the user without repeatedly
+waking the model.
+
+Questions are bounded to 4,000 characters, answers to 8,000, and escalation
+reasons to 2,000. One executor turn can ask one idempotent question; a delegation
+supports at most 20 questions across its rounds. Multiple executors can ask in
+the same delegation, and sibling results remain pinned across replies. Stops,
+archives, replacement work, and deleted threads invalidate stale question or
+answer continuations. Native permission approvals retain their existing tools
+and cannot be granted through a coordinator answer.

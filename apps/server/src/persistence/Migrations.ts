@@ -133,6 +133,9 @@ import Migration0114 from "./Migrations/114_ProjectionThreadsClaudeCacheReview.t
 import ProjectImportOriginsMigration from "./Migrations/115_ProjectImportOrigins.ts";
 import Migration0116 from "./Migrations/116_ProjectionThreadsHumanMessage.ts";
 import Migration0117 from "./Migrations/117_GatewayCompletions.ts";
+import Migration0118 from "./Migrations/118_GatewayWaits.ts";
+import Migration0119 from "./Migrations/119_AwaitedDispatches.ts";
+import Migration0120 from "./Migrations/120_CoordinatorQuestions.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -266,6 +269,9 @@ export const migrationEntries = [
   [115, "ProjectImportOrigins", ProjectImportOriginsMigration],
   [116, "ProjectionThreadsHumanMessage", Migration0116],
   [117, "GatewayCompletions", Migration0117],
+  [118, "GatewayWaits", Migration0118],
+  [119, "AwaitedDispatches", Migration0119],
+  [120, "CoordinatorQuestions", Migration0120],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

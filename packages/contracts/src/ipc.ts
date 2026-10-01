@@ -1,5 +1,12 @@
 import { Schema } from "effect";
 import type {
+  ThreadCoordinationListInput,
+  ThreadCoordinationListResult,
+  ThreadCoordinationCancelWaitInput,
+  ThreadCoordinationAnswerQuestionInput,
+  ThreadCoordinationActionResult,
+} from "./threadCoordination";
+import type {
   ImportProjectInput,
   ImportProjectResult,
   ListProjectImportsInput,
@@ -1212,6 +1219,15 @@ export interface NativeApi {
     onDomainEvent: (callback: (event: OrchestrationEvent) => void) => () => void;
     onShellEvent: (callback: (event: OrchestrationShellStreamItem) => void) => () => void;
     onThreadEvent: (callback: (event: OrchestrationThreadStreamItem) => void) => () => void;
+  };
+  coordination?: {
+    list: (input?: ThreadCoordinationListInput) => Promise<ThreadCoordinationListResult>;
+    cancelWait: (
+      input: ThreadCoordinationCancelWaitInput,
+    ) => Promise<ThreadCoordinationActionResult>;
+    answerQuestion: (
+      input: ThreadCoordinationAnswerQuestionInput,
+    ) => Promise<ThreadCoordinationActionResult>;
   };
   automation: {
     list: (input?: AutomationListInput) => Promise<AutomationListResult>;

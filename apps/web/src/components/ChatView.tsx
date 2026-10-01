@@ -265,6 +265,7 @@ import { ChatSurfaceHeader } from "./chat/ChatSurfaceHeader";
 import { useAsyncUserInputResponse } from "./chat/useAsyncUserInputResponse";
 import { ComposerAsyncUserInputPanel } from "./chat/ComposerAsyncUserInputPanel";
 import { ChatTranscriptPane } from "./chat/ChatTranscriptPane";
+import { ThreadCoordinationPanel } from "./chat/ThreadCoordinationPanel";
 import { ComposerActiveTaskListCard } from "./chat/ComposerActiveTaskListCard";
 import { ComposerBranchMismatchBanner } from "./chat/ComposerBranchMismatchBanner";
 import { ComposerColumnFrame } from "./chat/ComposerColumnFrame";
@@ -6138,6 +6139,16 @@ export default function ChatView({
             {shouldRenderChatPaneContent && !isCenteredEmptyLanding ? (
               <div className="flex min-h-0 flex-1 flex-col">
                 <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+                  <ThreadCoordinationPanel
+                    key={activeThread.id}
+                    threadId={activeThread.id}
+                    onOpenThread={onNavigateToThread}
+                    enabled={
+                      !isThreadTemporary &&
+                      !openAgentActivityDetail &&
+                      !terminalWorkspaceTerminalTabActive
+                    }
+                  />
                   <ChatTranscriptPane
                     activeThreadId={activeThread.id}
                     activeTurnId={activeTurnIdForTranscript}
