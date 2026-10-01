@@ -10406,6 +10406,79 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn.mock.calls[0]?.[0].input).toContain("continue after re-enable");
   });
 
+  it.each([true, false])(
+    "keeps idle native subagent model metadata projection-only (explicit parent metadata: %s)",
+    async (explicitParentMetadata) => {
+      const parentSelection = {
+        provider: "claudeAgent",
+        model: "claude-opus-5-5",
+        options: { effort: "low" },
+      } as const;
+      const harness = await createHarness({ threadModelSelection: parentSelection });
+      const now = new Date().toISOString();
+      const childId = ThreadId.makeUnsafe("subagent:thread-1:idle-worker");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe("cmd-idle-worker-create"),
+          threadId: childId,
+          projectId: asProjectId("project-1"),
+          title: "Idle worker",
+          modelSelection: parentSelection,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          ...(explicitParentMetadata
+            ? {
+                creationSource: "provider_native" as const,
+                parentThreadId: ThreadId.makeUnsafe("thread-1"),
+              }
+            : {}),
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("cmd-idle-worker-session"),
+          threadId: childId,
+          session: {
+            threadId: childId,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+      const childSelection = {
+        ...parentSelection,
+        options: { effort: "high" },
+      } as const;
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-idle-worker-effort"),
+          threadId: childId,
+          modelSelection: childSelection,
+        }),
+      );
+      await harness.drain();
+
+      expect((await readHarnessThread(harness, childId))?.modelSelection).toEqual(childSelection);
+      expect((await readHarnessThread(harness))?.modelSelection).toEqual(parentSelection);
+      expect(harness.startSession).not.toHaveBeenCalled();
+      expect(harness.stopSession).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(harness.steerSubagent).not.toHaveBeenCalled();
+    },
+  );
+
   it("routes subagent-thread turn starts to the parent session as steers", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

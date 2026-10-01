@@ -22,6 +22,18 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.22",
+    date: "Oct 1",
+    features: [
+      {
+        id: "subagent-effort-labels",
+        title: "Consistent subagent effort labels",
+        description:
+          "Claude subagents keep their own reasoning effort in the sidebar and activity card. Model updates and reconnects preserve the worker's setting instead of copying the main conversation's effort.",
+      },
+    ],
+  },
+  {
     version: "0.9.20",
     date: "Sep 30",
     features: [

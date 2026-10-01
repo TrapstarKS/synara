@@ -260,6 +260,11 @@ describe("persisted native subagent work-log fallback", () => {
       id: ThreadId.makeUnsafe("subagent:parent:provider-child"),
       parentThreadId,
       sourceTurnId: turnId,
+      modelSelection: {
+        provider: "claudeAgent",
+        model: "claude-opus-5-5",
+        options: { effort: "high" },
+      },
       subagentNickname: "Mendel",
       subagentRole: "explorer",
       createdAt: "2026-09-07T18:00:02.000Z",
@@ -273,6 +278,8 @@ describe("persisted native subagent work-log fallback", () => {
         resolvedThreadId: child.id,
         nickname: "Mendel",
         role: "explorer",
+        model: "claude-opus-5-5",
+        effort: "high",
       }),
     ]);
   });
@@ -309,6 +316,33 @@ describe("persisted native subagent work-log fallback", () => {
       effort: "max",
     });
   });
+
+  it.each(["high", undefined] as const)(
+    "uses the saved Claude effort %s without inventing one when it is absent",
+    (effort) => {
+      const child = makeSubagentTestThread({
+        id: ThreadId.makeUnsafe("subagent:parent:provider-child"),
+        parentThreadId,
+        sourceTurnId: turnId,
+        modelSelection: {
+          provider: "claudeAgent",
+          model: "claude-opus-5-5",
+          ...(effort ? { options: { effort } } : {}),
+        },
+      });
+      const source: WorkLogEntry = {
+        ...entry,
+        subagents: [{ threadId: "provider-child", effort: "low", rawStatus: "running" }],
+      };
+
+      const [enriched] = enrichSubagentWorkEntries([source], [parent, child], parentThreadId);
+      expect(enriched?.subagents?.[0]).toMatchObject({
+        resolvedThreadId: child.id,
+        model: "claude-opus-5-5",
+        effort: effort ?? "low",
+      });
+    },
+  );
 
   it("does not mix children from a different source turn", () => {
     const child = makeSubagentTestThread({

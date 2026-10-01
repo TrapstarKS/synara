@@ -4,6 +4,7 @@ import {
 } from "../../computer/computerTurnTiming.ts";
 import {
   type AssistantDeliveryMode,
+  CLAUDE_CODE_EFFORT_OPTIONS,
   CommandId,
   EventId,
   isToolLifecycleItemType,
@@ -44,6 +45,7 @@ import {
   collectSubagentProviderThreadIds,
   extractSubagentIdentityHints,
   resolveSubagentIdentityFromDirectory,
+  type ParsedSubagentIdentityHint,
 } from "@synara/shared/subagents";
 
 import {
@@ -582,21 +584,17 @@ export function collectPersistedGeneratedImagePaths(
   return paths;
 }
 
-interface SubagentIdentity {
-  readonly providerThreadId: string;
-  readonly agentId?: string;
-  readonly nickname?: string;
-  readonly role?: string;
-  readonly model?: string;
-  readonly reasoningEffort?: string;
-  readonly modelIsRequestedHint?: boolean;
+function subagentModelEffort(selection: ModelSelection | undefined): string | undefined {
+  if (selection?.provider === "codex") return selection.options?.reasoningEffort;
+  if (selection?.provider === "claudeAgent") return selection.options?.effort;
+  return undefined;
 }
 
 function sameSubagentModelSelection(left: ModelSelection, right: ModelSelection): boolean {
-  const leftEffort = left.provider === "codex" ? left.options?.reasoningEffort : undefined;
-  const rightEffort = right.provider === "codex" ? right.options?.reasoningEffort : undefined;
   return (
-    left.provider === right.provider && left.model === right.model && leftEffort === rightEffort
+    left.provider === right.provider &&
+    left.model === right.model &&
+    subagentModelEffort(left) === subagentModelEffort(right)
   );
 }
 
@@ -608,30 +606,30 @@ function extractCollabPayload(event: ProviderRuntimeEvent): Record<string, unkno
 function extractSubagentIdentity(
   event: ProviderRuntimeEvent,
   providerThreadId: string,
-): SubagentIdentity | undefined {
+): ParsedSubagentIdentityHint | undefined {
   const payload = runtimePayloadRecord(event);
   const authoritativeModel = normalizeNonEmptyString(asString(payload?.model));
-  const authoritativeReasoningEffort =
+  const authoritativeEffort =
     normalizeNonEmptyString(asString(payload?.reasoningEffort)) ??
     normalizeNonEmptyString(asString(payload?.effort));
   const collabPayload = extractCollabPayload(event);
   const item = asObject(collabPayload?.item) ?? collabPayload;
   const collabIdentity = item
-    ? (resolveSubagentIdentityFromDirectory(
+    ? resolveSubagentIdentityFromDirectory(
         buildSubagentIdentityDirectory(extractSubagentIdentityHints(item)),
         {
           providerThreadId,
         },
-      ) as SubagentIdentity | undefined)
+      )
     : undefined;
-  if (!collabIdentity && !authoritativeModel && !authoritativeReasoningEffort) {
+  if (!collabIdentity && !authoritativeModel && !authoritativeEffort) {
     return undefined;
   }
   return {
     providerThreadId,
     ...collabIdentity,
     ...(authoritativeModel ? { model: authoritativeModel, modelIsRequestedHint: false } : {}),
-    ...(authoritativeReasoningEffort ? { reasoningEffort: authoritativeReasoningEffort } : {}),
+    ...(authoritativeEffort ? { effort: authoritativeEffort } : {}),
   };
 }
 
@@ -1980,10 +1978,7 @@ const make = Effect.gen(function* () {
 
       const ensureSubagentThread = (
         providerThreadId: string,
-        identity?: Pick<
-          SubagentIdentity,
-          "agentId" | "nickname" | "role" | "model" | "reasoningEffort" | "modelIsRequestedHint"
-        >,
+        identity?: ParsedSubagentIdentityHint,
       ) =>
         Effect.gen(function* () {
           const childThreadId = ThreadId.makeUnsafe(
@@ -2004,39 +1999,64 @@ const make = Effect.gen(function* () {
                 yield* projectionSnapshotQuery.getThreadShellById(childThreadId),
                 threadDetailFromShell,
               );
-          // Reuse the parent's full selection when the models match so capability
-          // flags (e.g. supportsAutoMode) survive; a diverging subagent model gets
-          // a bare selection because the parent's flags don't describe it.
+          // Model hints cannot replace an observed child model, but their explicit
+          // worker effort still describes the child. Later model-only snapshots
+          // must keep that effort instead of restoring the parent's selection.
           const resolvedModelSelection = ((): ModelSelection | undefined => {
-            if (!identity?.model || identity.modelIsRequestedHint === true) {
-              return undefined;
-            }
-            const parentReasoningEffort =
-              parentThread.modelSelection.provider === "codex"
-                ? parentThread.modelSelection.options?.reasoningEffort
-                : undefined;
-            if (
-              identity.model === parentThread.modelSelection.model &&
-              identity.reasoningEffort === parentReasoningEffort
-            ) {
-              return parentThread.modelSelection;
-            }
-            if (parentThread.modelSelection.provider === "codex") {
+            if (!identity) return undefined;
+            const parentSelection = parentThread.modelSelection;
+            const previousSelection = Option.getOrUndefined(existingThread)?.modelSelection;
+            const observedModel = identity.modelIsRequestedHint ? undefined : identity.model;
+            const model = observedModel ?? previousSelection?.model ?? parentSelection.model;
+            // Only matching models can reuse model-specific options/capabilities.
+            const matchingSelection =
+              previousSelection?.provider === parentSelection.provider &&
+              previousSelection.model === model
+                ? previousSelection
+                : parentSelection.model === model
+                  ? parentSelection
+                  : undefined;
+            if (parentSelection.provider === "codex") {
+              const reasoningEffort =
+                identity.effort ??
+                (previousSelection?.provider === "codex"
+                  ? previousSelection.options?.reasoningEffort
+                  : undefined);
+              if (!observedModel && !reasoningEffort) return undefined;
+              const matching =
+                matchingSelection?.provider === "codex" ? matchingSelection : undefined;
               return inheritCodexProfile({
                 target: {
+                  ...matching,
                   provider: "codex",
-                  model: identity.model,
-                  ...(identity.reasoningEffort
-                    ? { options: { reasoningEffort: identity.reasoningEffort } }
+                  model,
+                  ...(reasoningEffort
+                    ? { options: { ...matching?.options, reasoningEffort } }
                     : {}),
                 },
-                parentModelSelection: parentThread.modelSelection,
+                parentModelSelection: parentSelection,
               });
             }
-            return {
-              provider: parentThread.modelSelection.provider,
-              model: identity.model,
-            } as ModelSelection;
+            if (parentSelection.provider === "claudeAgent") {
+              const effort =
+                CLAUDE_CODE_EFFORT_OPTIONS.find((value) => value === identity.effort) ??
+                (previousSelection?.provider === "claudeAgent"
+                  ? previousSelection.options?.effort
+                  : undefined);
+              if (!observedModel && !effort) return undefined;
+              const matching =
+                matchingSelection?.provider === "claudeAgent" ? matchingSelection : undefined;
+              return {
+                ...matching,
+                provider: "claudeAgent",
+                model,
+                ...(effort ? { options: { ...matching?.options, effort } } : {}),
+              };
+            }
+            if (!observedModel) return undefined;
+            return (
+              matchingSelection ?? ({ provider: parentSelection.provider, model } as ModelSelection)
+            );
           })();
 
           if (Option.isNone(existingThread)) {
@@ -2114,36 +2134,61 @@ const make = Effect.gen(function* () {
               identity?.nickname !== undefined ||
               identity?.role !== undefined ||
               (identity?.model !== undefined && identity.modelIsRequestedHint !== true) ||
-              identity?.reasoningEffort !== undefined
+              identity?.effort !== undefined
             ) {
-              yield* orchestrationEngine.dispatch({
-                type: "thread.meta.update",
-                commandId: providerCommandId(event, "subagent-thread-meta-update", childThreadId),
-                threadId: childThreadId,
-                ...(identity?.nickname !== undefined || identity?.role !== undefined
-                  ? {
-                      title: subagentThreadTitle({
-                        nickname:
-                          identity?.nickname ?? existingThreadShell.subagentNickname ?? undefined,
-                        role: identity?.role ?? existingThreadShell.subagentRole ?? undefined,
-                        providerThreadId,
-                      }),
-                    }
-                  : {}),
-                parentThreadId: parentThread.id,
-                ...(resolvedModelSelection !== undefined &&
-                !sameSubagentModelSelection(
-                  existingThreadShell.modelSelection,
-                  resolvedModelSelection,
-                )
-                  ? { modelSelection: resolvedModelSelection }
-                  : {}),
-                ...(identity?.agentId !== undefined ? { subagentAgentId: identity.agentId } : {}),
-                ...(identity?.nickname !== undefined
-                  ? { subagentNickname: identity.nickname }
-                  : {}),
-                ...(identity?.role !== undefined ? { subagentRole: identity.role } : {}),
-              });
+              // The journal binds event ids to immutable payloads, but the child
+              // may have advanced since this identity was projected. Rebuilding
+              // a state-dependent command would collide with its receipt or turn
+              // an old create into a new metadata write that restores old effort.
+              const metadataCommandId = providerCommandId(
+                event,
+                "subagent-thread-meta-update",
+                childThreadId,
+              );
+              const metadataReceipt = Option.getOrUndefined(
+                yield* commandReceipts.getByCommandId({ commandId: metadataCommandId }),
+              );
+              const receipt =
+                metadataReceipt ??
+                Option.getOrUndefined(
+                  yield* commandReceipts.getByCommandId({
+                    commandId: providerCommandId(event, "subagent-thread-create", childThreadId),
+                  }),
+                );
+              const identityAlreadyProjected =
+                receipt?.status === "accepted" &&
+                receipt.aggregateKind === "thread" &&
+                receipt.aggregateId === childThreadId;
+              if (!identityAlreadyProjected) {
+                yield* orchestrationEngine.dispatch({
+                  type: "thread.meta.update",
+                  commandId: metadataCommandId,
+                  threadId: childThreadId,
+                  ...(identity?.nickname !== undefined || identity?.role !== undefined
+                    ? {
+                        title: subagentThreadTitle({
+                          nickname:
+                            identity?.nickname ?? existingThreadShell.subagentNickname ?? undefined,
+                          role: identity?.role ?? existingThreadShell.subagentRole ?? undefined,
+                          providerThreadId,
+                        }),
+                      }
+                    : {}),
+                  parentThreadId: parentThread.id,
+                  ...(resolvedModelSelection !== undefined &&
+                  !sameSubagentModelSelection(
+                    existingThreadShell.modelSelection,
+                    resolvedModelSelection,
+                  )
+                    ? { modelSelection: resolvedModelSelection }
+                    : {}),
+                  ...(identity?.agentId !== undefined ? { subagentAgentId: identity.agentId } : {}),
+                  ...(identity?.nickname !== undefined
+                    ? { subagentNickname: identity.nickname }
+                    : {}),
+                  ...(identity?.role !== undefined ? { subagentRole: identity.role } : {}),
+                });
+              }
             }
           }
 
@@ -2182,6 +2227,10 @@ const make = Effect.gen(function* () {
           };
         });
 
+      const providerThreadId = normalizeNonEmptyString(event.providerRefs?.providerThreadId);
+      const providerParentThreadId = normalizeNonEmptyString(
+        event.providerRefs?.providerParentThreadId,
+      );
       const collabPayload = extractCollabPayload(event);
       const collabItem = asObject(collabPayload?.item) ?? collabPayload;
       const isCollabToolEvent =
@@ -2198,17 +2247,19 @@ const make = Effect.gen(function* () {
         for (const receiverThreadId of receiverThreadIds) {
           yield* ensureSubagentThread(
             receiverThreadId,
-            resolveSubagentIdentityFromDirectory(identityDirectory, {
-              providerThreadId: receiverThreadId,
-            }) as SubagentIdentity | undefined,
+            // A child may be both a receiver and the routed provider thread.
+            // Apply its complete identity before the first receipt is written.
+            providerThreadId === receiverThreadId &&
+              providerParentThreadId !== undefined &&
+              providerThreadId !== providerParentThreadId
+              ? extractSubagentIdentity(event, receiverThreadId)
+              : resolveSubagentIdentityFromDirectory(identityDirectory, {
+                  providerThreadId: receiverThreadId,
+                }),
           );
         }
       }
 
-      const providerThreadId = normalizeNonEmptyString(event.providerRefs?.providerThreadId);
-      const providerParentThreadId = normalizeNonEmptyString(
-        event.providerRefs?.providerParentThreadId,
-      );
       const targetThreadResolution =
         providerThreadId !== undefined &&
         providerParentThreadId !== undefined &&

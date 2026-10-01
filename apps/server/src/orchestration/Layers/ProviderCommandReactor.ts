@@ -6216,6 +6216,20 @@ const make = Effect.gen(function* () {
             return;
           }
 
+          // Native child selections describe a task running in the parent's
+          // provider session. Updating their projected effort/model must never
+          // bootstrap or reconfigure a separate session, even after completion.
+          if (thread?.creationSource === "provider_native") {
+            return;
+          }
+          const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
+          if (
+            providerThread &&
+            resolveSubagentProviderThreadId(event.payload.threadId, providerThread.id)
+          ) {
+            return;
+          }
+
           if (!thread?.session || thread.session.status === "stopped") {
             threadSessionModelSelections.set(event.payload.threadId, event.payload.modelSelection);
             return;

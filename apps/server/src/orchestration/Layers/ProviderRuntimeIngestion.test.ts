@@ -473,7 +473,7 @@ describe("ProviderRuntimeIngestion", () => {
         session: {
           threadId: ThreadId.makeUnsafe("thread-1"),
           status: "ready",
-          providerName: "codex",
+          providerName: options?.parentModelSelection?.provider ?? "codex",
           runtimeMode: "approval-required",
           activeTurnId: null,
           updatedAt: createdAt,
@@ -483,7 +483,7 @@ describe("ProviderRuntimeIngestion", () => {
       }),
     );
     provider.setSession({
-      provider: "codex",
+      provider: options?.parentModelSelection?.provider ?? "codex",
       status: "ready",
       runtimeMode: "approval-required",
       threadId: ThreadId.makeUnsafe("thread-1"),
@@ -6758,6 +6758,341 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.runtimeMode).toBe("approval-required");
   });
 
+  it.each([
+    { requestedModel: "opus", observedModel: "claude-opus-5-5" },
+    { requestedModel: "sonnet", observedModel: "claude-sonnet-5" },
+    { requestedModel: undefined, observedModel: "claude-opus-5-5" },
+  ])(
+    "persists native Claude worker effort with model hint $requestedModel and partial updates",
+    async ({ requestedModel, observedModel }) => {
+      const parentSelection = {
+        provider: "claudeAgent",
+        model: "claude-opus-5-5",
+        options: { effort: "low", autoCompactWindow: "1m", fastMode: true },
+      } as const;
+      const harness = await createHarness({ parentModelSelection: parentSelection });
+      const childId = asThreadId("subagent:thread-1:claude-worker");
+      const base = {
+        provider: "claudeAgent" as const,
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+      };
+      harness.emit({
+        ...base,
+        type: "item.started",
+        eventId: asEventId("native-effort-spawn"),
+        itemId: asItemId("claude-worker"),
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            receiverThreadId: "claude-worker",
+            agentType: "worker-high",
+            ...(requestedModel ? { model: requestedModel } : {}),
+            effort: "high",
+          },
+        },
+      });
+      await harness.drain();
+      const spawned = await waitForThread(
+        harness.engine,
+        (thread) =>
+          thread.modelSelection.provider === "claudeAgent" &&
+          thread.modelSelection.options?.effort === "high",
+        2000,
+        childId,
+      );
+      // A tool's requested model does not replace an observed model, but the
+      // worker definition's explicit effort must override the inherited Low.
+      expect(spawned.modelSelection).toEqual({
+        ...parentSelection,
+        options: { ...parentSelection.options, effort: "high" },
+      });
+
+      const childRefs = {
+        providerThreadId: "claude-worker",
+        providerParentThreadId: "thread-1",
+      };
+      harness.emit({
+        ...base,
+        type: "thread.metadata.updated",
+        eventId: asEventId("native-effort-observed-model"),
+        providerRefs: childRefs,
+        payload: { model: observedModel, name: "Observed worker" },
+      });
+      await harness.drain();
+      const observed = await waitForThread(
+        harness.engine,
+        (thread) => thread.title === "Observed worker",
+        2000,
+        childId,
+      );
+      const expectedSelection =
+        observedModel === parentSelection.model
+          ? { ...parentSelection, options: { ...parentSelection.options, effort: "high" } }
+          : { provider: "claudeAgent", model: observedModel, options: { effort: "high" } };
+      expect(observed.modelSelection).toEqual(expectedSelection);
+
+      harness.emit({
+        ...base,
+        type: "item.updated",
+        eventId: asEventId("native-effort-incomplete-hint"),
+        itemId: asItemId("claude-worker"),
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: { receiverThreadId: "claude-worker", model: "opus" },
+        },
+      });
+      await harness.drain();
+      await waitForThread(harness.engine, (thread) =>
+        thread.activities.some((activity) => activity.id === "native-effort-incomplete-hint"),
+      );
+      expect((await harness.readProjectedThread(childId))?.modelSelection).toEqual(
+        expectedSelection,
+      );
+
+      harness.emit({
+        ...base,
+        type: "thread.metadata.updated",
+        eventId: asEventId("native-effort-only-update"),
+        providerRefs: childRefs,
+        payload: { reasoningEffort: "max" },
+      });
+      await harness.drain();
+      await waitForThread(
+        harness.engine,
+        (thread) =>
+          thread.modelSelection.provider === "claudeAgent" &&
+          thread.modelSelection.options?.effort === "max",
+        2000,
+        childId,
+      );
+      harness.emit({
+        ...base,
+        type: "thread.metadata.updated",
+        eventId: asEventId("native-effort-model-only-after-change"),
+        providerRefs: childRefs,
+        payload: { model: observedModel, name: "Updated worker" },
+      });
+      await harness.drain();
+      await waitForThread(
+        harness.engine,
+        (thread) => thread.title === "Updated worker",
+        2000,
+        childId,
+      );
+      expect((await harness.readProjectedThread(childId))?.modelSelection).toEqual({
+        ...expectedSelection,
+        options: { ...expectedSelection.options, effort: "max" },
+      });
+      expect((await harness.readProjectedThread())?.modelSelection).toEqual(parentSelection);
+    },
+  );
+
+  it("ignores invalid native Claude effort without dropping valid metadata", async () => {
+    const parentSelection = {
+      provider: "claudeAgent",
+      model: "claude-opus-5-5",
+      options: { effort: "low" },
+    } as const;
+    const harness = await createHarness({ parentModelSelection: parentSelection });
+    const childId = asThreadId("subagent:thread-1:invalid-effort");
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("invalid-native-effort"),
+      provider: "claudeAgent",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      providerRefs: {
+        providerThreadId: "invalid-effort",
+        providerParentThreadId: "thread-1",
+      },
+      payload: {
+        model: parentSelection.model,
+        reasoningEffort: "invented-effort",
+        name: "Valid name",
+      },
+    });
+    await harness.drain();
+    const child = await waitForThread(
+      harness.engine,
+      (thread) => thread.title === "Valid name",
+      2000,
+      childId,
+    );
+    expect(child.modelSelection).toEqual(parentSelection);
+    expect((await harness.readProjectedThread(childId))?.modelSelection).toEqual(parentSelection);
+  });
+
+  it("preserves native Codex receiver effort and profile across partial updates", async () => {
+    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const harness = await createHarness({
+      parentModelSelection: {
+        provider: "codex",
+        model: "gpt-5-codex",
+        options: { reasoningEffort: "low" },
+        profileId,
+      },
+    });
+    const childId = asThreadId("subagent:thread-1:codex-worker");
+    const base = {
+      provider: "codex" as const,
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+    };
+    harness.emit({
+      ...base,
+      type: "item.started",
+      eventId: asEventId("native-codex-effort-spawn"),
+      itemId: asItemId("codex-worker"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        data: {
+          receiverAgents: [
+            { threadId: "codex-worker", model: "gpt-5.6-luna", reasoningEffort: "ultra" },
+          ],
+        },
+      },
+    });
+    await harness.drain();
+    const child = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.modelSelection.provider === "codex" &&
+        thread.modelSelection.options?.reasoningEffort === "ultra",
+      2000,
+      childId,
+    );
+    expect(child.modelSelection).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      options: { reasoningEffort: "ultra" },
+      profileId,
+    });
+    harness.emit({
+      ...base,
+      type: "thread.metadata.updated",
+      eventId: asEventId("native-codex-effort-model-only"),
+      providerRefs: {
+        providerThreadId: "codex-worker",
+        providerParentThreadId: "thread-1",
+      },
+      payload: { model: "gpt-5.6-luna", name: "Observed Codex worker" },
+    });
+    await harness.drain();
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.title === "Observed Codex worker",
+      2000,
+      childId,
+    );
+    expect((await harness.readProjectedThread(childId))?.modelSelection).toEqual(
+      child.modelSelection,
+    );
+  });
+
+  it.each(["create", "metadata"] as const)(
+    "rebuilds native effort events after an accepted %s without reverting selection or losing activity",
+    async (acceptedCommand) => {
+      const harness = await createHarness({
+        startIngestion: false,
+        parentModelSelection: {
+          provider: "claudeAgent",
+          model: "claude-opus-5-5",
+          options: { effort: "low" },
+        },
+      });
+      const childId = asThreadId("subagent:thread-1:replay-worker");
+      const event: ProviderRuntimeEvent = {
+        type: "item.updated",
+        eventId: asEventId("native-effort-replay"),
+        provider: "claudeAgent",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("native-effort-replay-turn"),
+        itemId: asItemId("native-effort-replay-item"),
+        createdAt: new Date().toISOString(),
+        providerRefs: {
+          providerThreadId: "replay-worker",
+          providerParentThreadId: "thread-1",
+        },
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: { receiverThreadId: "replay-worker", model: "opus", effort: "high" },
+        },
+      };
+      const initialSelection = {
+        provider: "claudeAgent",
+        model: "claude-opus-5-5",
+        options: { effort: "high" },
+      } as const;
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe(
+            acceptedCommand === "create"
+              ? `provider:${event.eventId}:subagent-thread-create:${childId}`
+              : "cmd-replay-worker-create",
+          ),
+          threadId: childId,
+          projectId: asProjectId("project-1"),
+          title: "Replay worker",
+          modelSelection:
+            acceptedCommand === "create"
+              ? initialSelection
+              : { ...initialSelection, options: { effort: "low" } },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          parentThreadId: asThreadId("thread-1"),
+          creationSource: "provider_native",
+          branch: null,
+          worktreePath: null,
+          createdAt: event.createdAt,
+        }),
+      );
+      if (acceptedCommand === "metadata") {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.meta.update",
+            commandId: CommandId.makeUnsafe(
+              `provider:${event.eventId}:subagent-thread-meta-update:${childId}`,
+            ),
+            threadId: childId,
+            parentThreadId: asThreadId("thread-1"),
+            modelSelection: initialSelection,
+          }),
+        );
+      }
+      const laterSelection = {
+        provider: "claudeAgent",
+        model: "claude-sonnet-5",
+        options: { effort: acceptedCommand === "create" ? "max" : "high" },
+      } as const;
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-replay-worker-later-selection"),
+          threadId: childId,
+          modelSelection: laterSelection,
+        }),
+      );
+      const persisted = await Effect.runPromise(harness.runtimeEventRepository.append(event));
+      expect(
+        await Effect.runPromise(
+          harness.runtimeEventRepository.advanceConsumerCursor({
+            consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
+            eventSequence: persisted.sequence,
+            updatedAt: event.createdAt,
+          }),
+        ),
+      ).toBe(true);
+
+      await harness.startIngestion();
+      await harness.drain();
+      const child = await harness.readProjectedThread(childId);
+      expect(child?.modelSelection).toEqual(laterSelection);
+      expect(child?.activities.filter((activity) => activity.id === event.eventId)).toHaveLength(1);
+    },
+  );
+
   it("persists native child display names and renames without renaming the parent", async () => {
     const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
     const harness = await createHarness({
@@ -6923,6 +7258,8 @@ describe("ProviderRuntimeIngestion", () => {
                 threadId: "child-provider-same-event",
                 agentNickname: "Noether",
                 agentRole: "explorer",
+                model: "gpt-5.6-luna",
+                reasoningEffort: "high",
               },
             ],
           },
@@ -6944,6 +7281,11 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     expect(childThread.title).toBe("Noether [explorer]");
+    expect(childThread.modelSelection).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      options: { reasoningEffort: "high" },
+    });
   });
 
   it("materializes subagent child threads even when the collab payload only exposes receiverAgents", async () => {

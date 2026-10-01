@@ -322,6 +322,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [118, "GatewayWaits"],
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
+        [121, "BackfillClaudeNativeSubagentEffort"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -394,6 +395,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 118, name: "GatewayWaits" },
           { migration_id: 119, name: "AwaitedDispatches" },
           { migration_id: 120, name: "CoordinatorQuestions" },
+          { migration_id: 121, name: "BackfillClaudeNativeSubagentEffort" },
         ],
       );
       const preserved = yield* sql<{ readonly count: number }>`
@@ -507,6 +509,7 @@ agentGatewayRetentionLegacyLayer(
           [118, "GatewayWaits"],
           [119, "AwaitedDispatches"],
           [120, "CoordinatorQuestions"],
+          [121, "BackfillClaudeNativeSubagentEffort"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -622,6 +625,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [118, "GatewayWaits"],
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
+        [121, "BackfillClaudeNativeSubagentEffort"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -678,6 +682,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [118, "GatewayWaits"],
           [119, "AwaitedDispatches"],
           [120, "CoordinatorQuestions"],
+          [121, "BackfillClaudeNativeSubagentEffort"],
         ],
       );
 
@@ -788,6 +793,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [118, "GatewayWaits"],
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
+        [121, "BackfillClaudeNativeSubagentEffort"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -840,6 +846,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [118, "GatewayWaits"],
           [119, "AwaitedDispatches"],
           [120, "CoordinatorQuestions"],
+          [121, "BackfillClaudeNativeSubagentEffort"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -1030,6 +1037,7 @@ mindMigrationLayer("Mind migration", (it) => {
         [118, "GatewayWaits"],
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
+        [121, "BackfillClaudeNativeSubagentEffort"],
       ]);
 
       yield* sql`INSERT INTO mind_memories (id, project_id, text, type, text_hash, peak_weight, created_at, last_accessed_at) VALUES ('m1', 'p1', 'delete me', 'semantic', 'hash', 0.6, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`;
@@ -1081,6 +1089,7 @@ mindRuntimeIntegrityLayer("Mind runtime integrity migration", (it) => {
           [118, "GatewayWaits"],
           [119, "AwaitedDispatches"],
           [120, "CoordinatorQuestions"],
+          [121, "BackfillClaudeNativeSubagentEffort"],
         ]);
         const rows = yield* sql<{
           readonly id: string;
@@ -1170,6 +1179,7 @@ mindTextRevisionsLayer("Mind text revisions migration", (it) => {
         [118, "GatewayWaits"],
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
+        [121, "BackfillClaudeNativeSubagentEffort"],
       ]);
 
       const columns = yield* sql<{ readonly name: string }>`
@@ -1222,6 +1232,7 @@ mindProfileLayer("Mind profiles migration", (it) => {
         [118, "GatewayWaits"],
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
+        [121, "BackfillClaudeNativeSubagentEffort"],
       ]);
 
       // Profiles are decoupled from the projection: deleting the project row
@@ -1289,6 +1300,7 @@ mindDecouplingLayer("Mind projection decoupling migration", (it) => {
         [118, "GatewayWaits"],
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
+        [121, "BackfillClaudeNativeSubagentEffort"],
       ]);
 
       const profileFks = yield* sql<{ readonly referenced: string }>`

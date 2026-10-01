@@ -77,6 +77,11 @@ Providers expose different selection models:
 Synara normalizes these choices into the composer where possible without pretending that every
 provider has identical capabilities.
 
+Native Claude subagents keep their own reported reasoning effort. The sidebar and subagent
+card use that saved value, including after reconnecting; a later model-only update does not
+replace it with the main conversation's effort. This metadata does not change the native
+worker's execution settings.
+
 Claude Code may discover a model under an alias while reporting its concrete model ID separately.
 For a release newer than Synara's catalog, the picker shows the concrete ID. Agent Gateway accepts
 that ID when it resolves to one discovered non-default model; ambiguous IDs require an exact

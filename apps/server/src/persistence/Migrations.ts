@@ -136,6 +136,7 @@ import Migration0117 from "./Migrations/117_GatewayCompletions.ts";
 import Migration0118 from "./Migrations/118_GatewayWaits.ts";
 import Migration0119 from "./Migrations/119_AwaitedDispatches.ts";
 import Migration0120 from "./Migrations/120_CoordinatorQuestions.ts";
+import Migration0121 from "./Migrations/121_BackfillClaudeNativeSubagentEffort.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -272,6 +273,7 @@ export const migrationEntries = [
   [118, "GatewayWaits", Migration0118],
   [119, "AwaitedDispatches", Migration0119],
   [120, "CoordinatorQuestions", Migration0120],
+  [121, "BackfillClaudeNativeSubagentEffort", Migration0121],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

@@ -14,6 +14,7 @@ import {
   type WorkLogSubagent,
 } from "../../session-logic";
 import type { Thread } from "../../types";
+import { resolveThreadModelSummary } from "../../lib/threadModelSummary";
 import { enrichSubagentWorkEntries } from "../ChatView.logic";
 import { localSubagentThreadId } from "../ChatView.selectors";
 import {
@@ -533,7 +534,11 @@ describe("deriveComposerSubagentStripItems", () => {
       codexThreadId: null,
       projectId: "project-1" as Thread["projectId"],
       title: "Subagent task",
-      modelSelection: { provider: "claudeAgent", model: "sonnet" },
+      modelSelection: {
+        provider: "claudeAgent",
+        model: "claude-opus-5-5",
+        options: { effort: "high" },
+      },
       runtimeMode: "full-access",
       interactionMode: "default",
       session: {
@@ -568,7 +573,9 @@ describe("deriveComposerSubagentStripItems", () => {
       providerThreadId: "toolu_x",
       statusKind: "running",
       isActive: true,
+      modelLabel: "Opus 5.5 · High",
     });
+    expect(resolveThreadModelSummary(subagentThread.modelSelection)?.statusLabel).toBe("High");
   });
 });
 

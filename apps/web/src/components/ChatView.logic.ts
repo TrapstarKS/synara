@@ -2139,6 +2139,12 @@ function latestSubagentUpdate(thread: Thread): string | undefined {
   return undefined;
 }
 
+function persistedSubagentEffort(selection: ModelSelection): string | undefined {
+  if (selection.provider === "claudeAgent") return selection.options?.effort;
+  if (selection.provider === "codex") return selection.options?.reasoningEffort;
+  return undefined;
+}
+
 function persistedSubagentToWorkLogSubagent(
   thread: Thread,
   parentThreadId: ThreadIdType,
@@ -2146,6 +2152,7 @@ function persistedSubagentToWorkLogSubagent(
   const providerThreadId = persistedSubagentProviderThreadId(thread, parentThreadId);
   const status = deriveSubagentStatus(thread);
   const latestUpdate = latestSubagentUpdate(thread);
+  const effort = persistedSubagentEffort(thread.modelSelection);
   return {
     threadId: providerThreadId,
     providerThreadId,
@@ -2154,9 +2161,7 @@ function persistedSubagentToWorkLogSubagent(
     ...(thread.subagentNickname ? { nickname: thread.subagentNickname } : {}),
     ...(thread.subagentRole ? { role: thread.subagentRole } : {}),
     model: thread.modelSelection.model,
-    ...(thread.modelSelection.provider === "codex" && thread.modelSelection.options?.reasoningEffort
-      ? { effort: thread.modelSelection.options.reasoningEffort }
-      : {}),
+    ...(effort ? { effort } : {}),
     rawStatus: thread.latestTurn?.state ?? thread.session?.status,
     ...(latestUpdate ? { latestUpdate } : {}),
     ...(status.label ? { statusLabel: status.label } : {}),
@@ -2312,12 +2317,8 @@ export function enrichSubagentWorkEntries(
       if (matchedThread) {
         nextSubagent.resolvedThreadId = matchedThread.id;
         nextSubagent.model = matchedThread.modelSelection.model;
-        if (
-          matchedThread.modelSelection.provider === "codex" &&
-          matchedThread.modelSelection.options?.reasoningEffort
-        ) {
-          nextSubagent.effort = matchedThread.modelSelection.options.reasoningEffort;
-        }
+        const effort = persistedSubagentEffort(matchedThread.modelSelection);
+        if (effort) nextSubagent.effort = effort;
       }
       if (matchedPresentation) {
         nextSubagent.title = matchedPresentation.fullLabel;

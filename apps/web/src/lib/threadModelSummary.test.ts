@@ -31,15 +31,16 @@ describe("resolveThreadModelSummary", () => {
     expect(withoutOptions?.statusLabel).not.toBe(withEffort?.statusLabel);
   });
 
-  it("summarizes a claude selection", () => {
+  it.each(["low", "high"] as const)("summarizes a Claude selection with %s effort", (effort) => {
     const summary = resolveThreadModelSummary({
       provider: "claudeAgent",
-      model: "claude-sonnet-5",
-      options: { effort: "high" },
+      model: "claude-opus-5-5",
+      options: { effort },
     });
 
     expect(summary?.provider).toBe("claudeAgent");
     expect(summary?.modelLabel.length).toBeGreaterThan(0);
+    expect(summary?.statusLabel?.toLowerCase()).toBe(effort);
     expect(summary?.fastMode).toBe(false);
   });
 
