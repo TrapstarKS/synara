@@ -683,6 +683,100 @@ proof only: live Notes behavior, fewer tool calls, hotkey/paste delivery, other
 apps, Intel/Windows/Linux runtime behavior, and signed release distribution are
 not qualified by these checks.
 
+### Revision 40: native file dialogs and focused keyboard delivery
+
+The keyboard preflight and actuator now preserve a proven focused element inside
+an AppKit sheet. Previously `PreparedKey` checked the addressed element and then
+dropped its identity when entering the generic event gate, which rejected sheets
+sharing their parent window's CGWindowID. Window-only shortcuts can retain the
+application's current focused element in the exact requested window. The keyboard
+gate checks WindowServer ownership, the input lease, captured and current modal
+ancestry, and current keyboard focus immediately before posting. A modal without
+proven focused content still refuses. Generic events and pointer input retain
+their existing modal checks; keys already held always release on their original
+route, including cancellation or unwind.
+
+Scoped observation recognizes `AXSheet` surfaces with their own CGWindowID and
+excludes them from sibling window scopes. Native input admission uses the same
+application-level AXWindows, AXChildren, AXFocusedWindow and AXMainWindow routes,
+deduplicated by AX identity and filtered to window/sheet roles with resolved ids.
+Unknown minimization, hidden state, ownership and focus remain unknown.
+
+The server exposes retained unnamed fields and native file rows without inventing
+labels, includes supported native actions in observations and changes, and accepts
+their canonical AX spellings. Decorative nodes do not crowd out the bounded
+control digest. The on-demand `file_dialogs` guidance distinguishes native
+Open/Save panels from browser DOM content, uses `cmd+shift+g` for Go to Folder,
+and separates path entry, panel confirmation and selected-file verification.
+
+`NativeFileDialogFixture.swift` and `native-file-dialog-regression.mjs` exercise
+owned Open sheets, standalone Open panels, Save sheets, Cancel and refusal of
+parent controls behind a sheet. They require explicit binaries and independently
+verify selected URLs and unchanged parent/sibling controls. The Save case checks
+the selected URL, not file writing. The October 2, 2026 live attempt stopped before
+launching the target or driver because the passive focus probe reported
+`axTrusted:false`; it does not qualify live picker success or establish the
+permission status of the installed application. See
+`docs/computer-use-cua/native-file-dialogs-2026-10-02.md` for validation scope.
+
+### Revision 41: direct selection, atomic field text and faithful values
+
+The native tree recognizes collection items with a readable, writable
+`AXSelected` attribute even when they have no AX action names or writable
+`AXValue`. It publishes `selectable:true` separately from actions. The server
+offers `select` only for supported collection roles on revision 41 or newer,
+and preserves the actual selection state in the control digest and its diff.
+
+`click action:select` performs a single exact `AXSelected` write with readback
+under the existing cancellation and modal gate. It never selects an ancestor,
+opens the item, synthesizes a pointer event or brings the application forward.
+The server chooses this route for an eligible single-click ref; a double-click
+ref can invoke advertised `AXOpen`, and a right-click ref can invoke advertised
+`AXShowMenu`. Unavailable operations do not turn retained refs into coordinates.
+
+Exact semantic `type_text` accepts `atomic:true` to insert the full string at
+the caret or replace the current selection through one `AXSelectedText` write.
+It requires a background semantic element and rejects desktop/physical routes.
+The server enables it only on revision 41 or newer; previous drivers retain
+their existing paced semantic path. Native errors after an attempted exact
+write remain uncertain and never trigger another transport. Character-paced
+requests still stop on cancellation and preserve Unicode character boundaries.
+
+Structured field values now come from raw AXValue state. Empty values and
+leading/trailing whitespace are preserved; placeholder presentation never
+becomes proof of field contents. See
+`docs/computer-use-cua/background-controls-2026-10-02.md` for evidence and live
+validation limits. These changes do not make all macOS interfaces operable in
+the background or certify equivalence with another computer-use product.
+
+### Revision 42: references survive observations of the same control
+
+The macOS tree publishes reconciled element tokens. A token survives only when
+Core Foundation equality proves the same control, with the same process lifetime,
+window root, role and identifier. Collection content also participates so a reused
+row cannot silently become a different item. Hash buckets narrow candidate lookup;
+collisions and ambiguous matches never establish identity. The window root is
+retained independently of whether it has an actionable index.
+
+Only the current snapshot payload and current element aliases are retained. A
+removed or replaced control loses its token, and reappearance does not revive it.
+Ordinary portable cache publication remains strict. Numeric snapshot/index targets
+still address one publication; redundant arguments accompanying a reconciled token
+must agree with the current snapshot and element index. Publishing AX observations
+of one window are serialized; capture-only previews do not enter this path.
+
+Server refs use native identity rather than changing labels and refresh their
+bound metadata on each observation. Diffs reveal identical-looking replacements,
+and a bounded listing accompanies a truncated delta when it would omit new native
+refs. Re-observing known controls no longer consumes additional ref capacity.
+Batch condition failures retain the results of already completed steps.
+
+The owned file-dialog runner adds `reference-continuity`, which checks repeated
+observations, original-handle text/button actions and rejection after an identical
+field replacement. Its live run still requires the independent observer's macOS
+Accessibility grant. See `docs/computer-use-cua/reference-continuity-2026-10-02.md`
+for before/after regressions and validation limits.
+
 ## Synara SDK build target
 
 The native patch builds `cua-driver-sdk` as an `rlib` only. The driver still uses

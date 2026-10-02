@@ -17,6 +17,11 @@ import {
   MAX_COMPUTER_CLIPBOARD_BYTES,
 } from "../computer/ComputerBackend.ts";
 import { ComputerTargetError } from "../computer/uiTreeTargeting.ts";
+import {
+  nativeComputerElementActions,
+  observedComputerTargetNode,
+  registerNativeComputerElement,
+} from "../computer/computerElementIdentity.ts";
 import { ComputerManager } from "../computer/ComputerManager.ts";
 import { CuaActionError } from "../computer/CuaComputerBackend.ts";
 import { desktopDeliveryMode } from "../computer/DesktopOperationQueue.ts";
@@ -5106,6 +5111,300 @@ describe("element refs", () => {
   const elementsOf = (result: McpToolCallResult): ListedElement[] =>
     (resultJson(result) as { elements?: ListedElement[] }).elements ?? [];
 
+  type NativeControl = {
+    identity: string;
+    label: string;
+    value?: string;
+    actions?: readonly string[];
+  };
+  const setupNativeRefs = async (initial: readonly NativeControl[]) => {
+    const backend = new FakeComputerBackend();
+    const read = backend.getState.bind(backend);
+    let controls = initial;
+    let nodes: ComputerUiNode[] = [];
+    backend.getState = async (options) => {
+      const state = await read(options);
+      nodes = controls.map((control, index) => {
+        const node: ComputerUiNode = {
+          role: "AXTextField",
+          label: control.label,
+          value: control.value ?? "same value",
+          description: null,
+          frame: { x: 1_100, y: 150 + index * 4, width: 100, height: 20 },
+          activationPoint: null,
+          onScreen: true,
+          windowId: "fake-calculator",
+          children: [],
+        };
+        registerNativeComputerElement(node, control.identity, control.actions);
+        return node;
+      });
+      return { ...state, root: { ...state.root!, children: nodes } };
+    };
+    return {
+      ...(await setup(backend)),
+      setControls(next: readonly NativeControl[]) {
+        controls = next;
+      },
+      currentNodes: () => nodes,
+    };
+  };
+
+  it("keeps a renamed native ref bound to the newest node and actions", async () => {
+    const { manager, call, setControls, currentNodes } = await setupNativeRefs([
+      { identity: "retained-token", label: "Original", actions: ["AXPress"] },
+    ]);
+    try {
+      const [first] = elementsOf(
+        await call("computer_get_state", { window_id: "fake-calculator" }),
+      );
+      const oldNode = currentNodes()[0];
+      setControls([{ identity: "retained-token", label: "Renamed", actions: ["AXConfirm"] }]);
+      const diff = await call("computer_get_state", { window_id: "fake-calculator", diff: true });
+      expect(resultJson(diff)).toMatchObject({
+        elementChanges: {
+          added: [],
+          removed: [],
+          changed: [{ ref: first!.ref, label: "Renamed", actions: ["AXConfirm"] }],
+        },
+      });
+      const latestNode = currentNodes()[0]!;
+      expect(latestNode).not.toBe(oldNode);
+      const perform = vi.spyOn(manager, "performAction");
+      const result = await call("computer_perform_action", {
+        ref: first!.ref,
+        label: "Renamed",
+        action: "AXConfirm",
+        include_screenshot: false,
+      });
+      expect(result.isError).not.toBe(true);
+      const target = perform.mock.calls[0]![1];
+      expect(observedComputerTargetNode(target)).toBe(latestNode);
+      expect(nativeComputerElementActions(observedComputerTargetNode(target)!)).toEqual([
+        "AXConfirm",
+      ]);
+      expect(JSON.stringify(resultJson(diff))).not.toContain("retained-token");
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("keeps native duplicate refs and fresh bindings after an empty reorder diff", async () => {
+    const controls = [
+      { identity: "first-token", label: "Duplicate", value: "first value" },
+      { identity: "second-token", label: "Duplicate", value: "second value" },
+    ];
+    const { manager, call, setControls, currentNodes } = await setupNativeRefs(controls);
+    try {
+      const first = elementsOf(await call("computer_get_state", { window_id: "fake-calculator" }));
+      setControls([...controls].reverse());
+      expect(
+        resultJson(
+          await call("computer_get_state", {
+            window_id: "fake-calculator",
+            diff: true,
+          }),
+        ),
+      ).toMatchObject({ elementChanges: { added: [], removed: [], changed: [] } });
+      const reorderedNode = currentNodes()[1]!;
+      const set = vi.spyOn(manager, "setValue");
+      const result = await call("computer_set_value", {
+        ref: first[0]!.ref,
+        value: "new value",
+        include_screenshot: false,
+      });
+      expect(result.isError).not.toBe(true);
+      expect(observedComputerTargetNode(set.mock.calls[0]![1])).toBe(reorderedNode);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("delivers a new native ref for a replacement with identical visible fields", async () => {
+    const { manager, call, setControls, currentNodes } = await setupNativeRefs([
+      { identity: "original-token", label: "Field" },
+    ]);
+    try {
+      const [first] = elementsOf(
+        await call("computer_get_state", { window_id: "fake-calculator" }),
+      );
+      setControls([{ identity: "replacement-token", label: "Field" }]);
+      const response = await call("computer_get_state", {
+        window_id: "fake-calculator",
+        diff: true,
+      });
+      const diff = resultJson(response) as { elementChanges: { added: ListedElement[] } };
+      expect(diff).toMatchObject({
+        elementChanges: {
+          added: [{ label: "Field", value: "same value" }],
+          removed: [{ label: "Field", value: "same value" }],
+          changed: [],
+        },
+      });
+      const replacementRef = diff.elementChanges.added[0]!.ref;
+      expect(replacementRef).not.toBe(first!.ref);
+      const replacementNode = currentNodes()[0]!;
+      const set = vi.spyOn(manager, "setValue");
+      expect(
+        (
+          await call("computer_set_value", {
+            ref: replacementRef,
+            value: "updated",
+            include_screenshot: false,
+          })
+        ).isError,
+      ).not.toBe(true);
+      expect(observedComputerTargetNode(set.mock.calls[0]![1])).toBe(replacementNode);
+      expect(
+        resultJson(
+          await call("computer_get_state", {
+            window_id: "fake-calculator",
+            diff: true,
+          }),
+        ),
+      ).toMatchObject({ elementChanges: { added: [], removed: [], changed: [] } });
+      expect(JSON.stringify(diff)).not.toContain("replacement-token");
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("counts only new identities at 512 refs and delivers all refs after an eviction", async () => {
+    const controls = Array.from({ length: 512 }, (_, index) => ({
+      identity: `token-${index}`,
+      label: `Field ${index}`,
+    }));
+    const { manager, call, setControls } = await setupNativeRefs([]);
+    const originalRefs: number[] = [];
+    try {
+      for (let offset = 0; offset < 480; offset += 60) {
+        setControls(controls.slice(offset, offset + 60));
+        const listing = elementsOf(
+          await call("computer_get_state", { window_id: "fake-calculator" }),
+        );
+        originalRefs.push(...listing.map((item) => item.ref));
+      }
+      // 480 retained + 32 new = 512; the repeated 28 consume no capacity.
+      setControls([...controls.slice(0, 28), ...controls.slice(480)]);
+      const mixed = elementsOf(await call("computer_get_state", { window_id: "fake-calculator" }));
+      expect(mixed.slice(0, 28).map((item) => item.ref)).toEqual(originalRefs.slice(0, 28));
+      expect(mixed.slice(28).map((item) => item.ref)).toEqual(
+        Array.from({ length: 32 }, (_, i) => 480 + i),
+      );
+      const steady = await call("computer_get_state", { window_id: "fake-calculator", diff: true });
+      expect(resultJson(steady)).toMatchObject({
+        elementChanges: { added: [], removed: [], changed: [] },
+      });
+      expect(resultJson(steady)).not.toHaveProperty("elements");
+
+      // Repeated appearances of one known native identity still share its ref.
+      setControls(Array.from({ length: 60 }, () => controls[0]!));
+      expect(
+        elementsOf(await call("computer_get_state", { window_id: "fake-calculator" })).every(
+          (item) => item.ref === originalRefs[0],
+        ),
+      ).toBe(true);
+      setControls(controls.slice(0, 60));
+      const before = elementsOf(await call("computer_get_state", { window_id: "fake-calculator" }));
+      expect(before.map((item) => item.ref)).toEqual(originalRefs.slice(0, 60));
+
+      // A distinct filtered scope evicts the table without replacing the
+      // unfiltered baseline. Returning the original 60 now changes only refs.
+      setControls([{ identity: "overflow-token", label: "Overflow" }]);
+      const overflow = elementsOf(
+        await call("computer_get_state", {
+          window_id: "fake-calculator",
+          label_contains: "Overflow",
+        }),
+      );
+      expect(overflow[0]!.ref).toBe(512);
+      expect(
+        (await call("computer_set_value", { ref: originalRefs[0], value: "stale" })).isError,
+      ).toBe(true);
+      setControls(controls.slice(0, 60));
+      const result = resultJson(
+        await call("computer_press_key", {
+          window_id: "fake-calculator",
+          key: "tab",
+          include_screenshot: false,
+        }),
+      ) as { elementChanges: { changed: ListedElement[] }; elements: ListedElement[] };
+      expect(result.elementChanges.changed).toHaveLength(40);
+      expect(result).toMatchObject({
+        elementChangesOmitted: 20,
+        elementWindowId: "fake-calculator",
+      });
+      expect(result.elements).toHaveLength(60);
+      expect(result.elements.map((item) => item.ref)).toEqual(
+        Array.from({ length: 60 }, (_, i) => 513 + i),
+      );
+      expect(result.elements.map((item) => item.label)).toEqual(before.map((item) => item.label));
+      expect(
+        resultJson(
+          await call("computer_get_state", {
+            window_id: "fake-calculator",
+            diff: true,
+          }),
+        ),
+      ).toMatchObject({ elementChanges: { added: [], removed: [], changed: [] } });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("includes a bounded current listing when replacement refs overflow the action diff", async () => {
+    const controls = Array.from({ length: 60 }, (_, i) => ({
+      identity: `old-${i}`,
+      label: `Field ${i}`,
+    }));
+    const { manager, call, setControls, currentNodes } = await setupNativeRefs(controls);
+    try {
+      await call("computer_get_state", { window_id: "fake-calculator" });
+      setControls(controls.map((control, i) => ({ ...control, identity: `replacement-${i}` })));
+      const response = await call("computer_press_key", {
+        window_id: "fake-calculator",
+        key: "tab",
+        include_screenshot: false,
+      });
+      expect(response.isError).not.toBe(true);
+      const result = resultJson(response) as {
+        elementChanges: { added: ListedElement[]; removed: unknown[]; changed: unknown[] };
+        elements: ListedElement[];
+      };
+      expect(result.elementChanges.added).toHaveLength(40);
+      expect(result).toMatchObject({
+        elementChangesOmitted: 80,
+        elementChanges: { removed: [], changed: [] },
+        elementWindowId: "fake-calculator",
+      });
+      expect(result.elements).toHaveLength(60);
+      expect(new Set(result.elements.map((item) => item.ref)).size).toBe(60);
+      const last = result.elements.at(-1)!;
+      const latestNode = currentNodes().at(-1)!;
+      const set = vi.spyOn(manager, "setValue");
+      expect(
+        (
+          await call("computer_set_value", {
+            ref: last.ref,
+            value: "new value",
+            include_screenshot: false,
+          })
+        ).isError,
+      ).not.toBe(true);
+      expect(observedComputerTargetNode(set.mock.calls[0]![1])).toBe(latestNode);
+      expect(
+        resultJson(
+          await call("computer_get_state", {
+            window_id: "fake-calculator",
+            diff: true,
+          }),
+        ),
+      ).toMatchObject({ elementChanges: { added: [], removed: [], changed: [] } });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
   it("keeps a ref bound to the same element across listings", async () => {
     const { backend, call, manager } = await setup();
     try {
@@ -5374,6 +5673,260 @@ describe("computer_run observation steps", () => {
 });
 
 describe("computer_run flow control", () => {
+  const setupNativeConditions = async () => {
+    const backend = new FakeComputerBackend();
+    const read = backend.getState.bind(backend);
+    let identities: readonly string[] = ["original-field", "duplicate-field"];
+    let registered = true;
+    let truncated = false;
+    backend.getState = async (options) => {
+      const state = await read(options);
+      const fields = identities.map((identity, index): ComputerUiNode => {
+        const node: ComputerUiNode = {
+          role: "AXTextField",
+          label: null,
+          value: "",
+          description: null,
+          frame: { x: 1_000, y: 400 + index * 24, width: 100, height: 20 },
+          activationPoint: null,
+          onScreen: true,
+          windowId: "fake-calculator",
+          children: [],
+        };
+        if (registered) registerNativeComputerElement(node, identity);
+        return node;
+      });
+      return {
+        ...state,
+        root: { ...state.root!, truncated, children: [...state.root!.children, ...fields] },
+      };
+    };
+    const fixture = await setup(backend);
+    const observed = resultJson(
+      await fixture.call("computer_get_state", { window_id: "fake-calculator" }),
+    ) as { elements: { ref: number; label: string }[] };
+    const ref = observed.elements.find((element) => element.label === "")!.ref;
+    return {
+      ...fixture,
+      ref,
+      setControls(
+        next: readonly string[],
+        options: { registered?: boolean; truncated?: boolean } = {},
+      ) {
+        identities = next;
+        registered = options.registered ?? true;
+        truncated = options.truncated ?? false;
+      },
+    };
+  };
+
+  it("waits on an unnamed native ref after identical fields reorder", async () => {
+    const { call, manager, backend, ref, setControls } = await setupNativeConditions();
+    try {
+      setControls(["duplicate-field", "original-field"]);
+      const run = await call("computer_run", {
+        steps: [{ type: "wait", ref, duration_ms: 0 }],
+      });
+      expect(run.isError).not.toBe(true);
+      expect(resultJson(run)).toMatchObject({
+        stopped: false,
+        completed: 1,
+        steps: [{ ok: true, result: { status: "ready" } }],
+      });
+      expect(backend.callsFor("click")).toHaveLength(0);
+      expect(backend.callsFor("pressKey")).toHaveLength(0);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("checks retained identity beyond the digest cap for both if and unless", async () => {
+    const { call, manager, backend, ref, setControls } = await setupNativeConditions();
+    try {
+      setControls([
+        ...Array.from({ length: 65 }, (_, index) => `unrelated-${index}`),
+        "duplicate-field",
+        "original-field",
+      ]);
+      const run = await call("computer_run", {
+        steps: [
+          {
+            type: "click",
+            label: "Calculate",
+            window_id: "fake-calculator",
+            if_element: { ref },
+          },
+          {
+            type: "click",
+            label: "Calculate",
+            window_id: "fake-calculator",
+            unless_element: { ref },
+          },
+        ],
+      });
+      expect(run.isError).not.toBe(true);
+      expect(resultJson(run)).toMatchObject({
+        stopped: false,
+        completed: 1,
+        skipped: 1,
+        steps: [{ ok: true }, { skippedReason: "unless_element_present" }],
+      });
+      expect(backend.callsFor("click")).toHaveLength(1);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it.each(["removed", "replaced", "unregistered", "partial"] as const)(
+    "never treats an unnamed native ref as present or absent when %s",
+    async (change) => {
+      for (const mode of ["wait", "wait-absent", "if_element", "unless_element"] as const) {
+        const { call, manager, backend, ref, setControls } = await setupNativeConditions();
+        try {
+          setControls(
+            change === "replaced"
+              ? ["replacement-field", "duplicate-field"]
+              : change === "unregistered"
+                ? ["original-field", "duplicate-field"]
+                : ["duplicate-field"],
+            { registered: change !== "unregistered", truncated: change === "partial" },
+          );
+          const waits = mode === "wait" || mode === "wait-absent";
+          const run = await call("computer_run", {
+            steps: waits
+              ? [
+                  { type: "wait", ref, duration_ms: 0, absent: mode === "wait-absent" },
+                  { type: "click", label: "Calculate", window_id: "fake-calculator" },
+                ]
+              : [
+                  {
+                    type: "click",
+                    label: "Calculate",
+                    window_id: "fake-calculator",
+                    [mode]: { ref },
+                  },
+                ],
+          });
+          expect(run.isError).not.toBe(true);
+          expect(resultJson(run)).toMatchObject({
+            stopped: true,
+            completed: 0,
+            steps: [{ ok: false, error: { code: "computer_target_refused" } }],
+          });
+          expect(JSON.stringify(resultJson(run))).toContain("Presence and absence are unverified");
+          expect(backend.callsFor("click")).toHaveLength(0);
+          expect(backend.callsFor("pressKey")).toHaveLength(0);
+        } finally {
+          await manager.dispose();
+        }
+      }
+    },
+  );
+
+  it("does not mistake an unchanged native field for an absent one", async () => {
+    const { call, manager, ref } = await setupNativeConditions();
+    try {
+      const run = await call("computer_run", {
+        steps: [{ type: "wait", ref, duration_ms: 0, absent: true }],
+      });
+      expect(run.isError).not.toBe(true);
+      expect(resultJson(run)).toMatchObject({
+        steps: [{ ok: true, result: { status: "timeout" } }],
+      });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it.each([
+    ["if_element", false],
+    ["unless_element", false],
+    ["if_element", true],
+    ["unless_element", true],
+  ] as const)(
+    "preserves completed input when %s becomes indeterminate (continue_on_error=%s)",
+    async (condition, continueOnError) => {
+      const { call, manager, backend, ref, setControls } = await setupNativeConditions();
+      const write = backend.writeClipboard.bind(backend);
+      vi.spyOn(backend, "writeClipboard").mockImplementation(async (text) => {
+        await write(text);
+        if (text === "first effect") setControls(["replacement-field", "duplicate-field"]);
+      });
+      try {
+        const run = await call("computer_run", {
+          steps: [
+            { type: "write_clipboard", text: "first effect" },
+            {
+              type: "write_clipboard",
+              text: "must not run",
+              [condition]: { ref },
+              continue_on_error: continueOnError,
+            },
+            { type: "write_clipboard", text: "last effect" },
+          ],
+        });
+        expect(run.isError).not.toBe(true);
+        const payload = resultJson(run) as { steps: unknown[] };
+        expect(payload).toMatchObject({
+          completed: continueOnError ? 2 : 1,
+          stopped: !continueOnError,
+        });
+        expect(payload.steps[0]).toMatchObject({ step: 0, ok: true });
+        expect(payload.steps[1]).toMatchObject({
+          step: 1,
+          ok: false,
+          error: { code: "computer_target_refused" },
+        });
+        expect(payload.steps).toHaveLength(continueOnError ? 3 : 2);
+        expect(backend.callsFor("writeClipboard").map((entry) => entry.args[0])).toEqual(
+          continueOnError ? ["first effect", "last effect"] : ["first effect"],
+        );
+        expect(await backend.readClipboard()).toBe(
+          continueOnError ? "last effect" : "first effect",
+        );
+      } finally {
+        await manager.dispose();
+      }
+    },
+  );
+
+  it("propagates cancellation during a condition even with continue_on_error", async () => {
+    const { manager, backend, ref, byName } = await setupNativeConditions();
+    const controller = new AbortController();
+    try {
+      const state = await manager.getState({ windowId: "fake-calculator", includeTree: true });
+      vi.spyOn(manager, "getState").mockImplementation(async () => {
+        controller.abort();
+        return state;
+      });
+      await expect(
+        Effect.runPromise(
+          byName.get("computer_run")!.handler(
+            {
+              steps: [
+                { type: "write_clipboard", text: "first effect" },
+                {
+                  type: "write_clipboard",
+                  text: "must not run",
+                  unless_element: { ref },
+                  continue_on_error: true,
+                },
+                { type: "write_clipboard", text: "must not continue" },
+              ],
+            },
+            makeContext(),
+          ),
+          { signal: controller.signal },
+        ),
+      ).rejects.toThrow();
+      expect(backend.callsFor("writeClipboard").map((entry) => entry.args[0])).toEqual([
+        "first effect",
+      ]);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
   it("skips a step whose if_element is absent and runs it when present", async () => {
     const { backend, call, manager } = await setup();
     try {

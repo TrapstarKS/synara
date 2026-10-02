@@ -25233,3 +25233,2683 @@ index 3b16eb4..c06facc 100644
      #[test]
      fn non_standard_subrole_sibling_is_not_a_keyboard_destination() {
          let rows = [(42, 10, Some(true)), (42, 11, Some(true))];
+
+diff --git a/libs/cua-driver/rust/crates/cua-driver/src/serve.rs b/libs/cua-driver/rust/crates/cua-driver/src/serve.rs
+index f9aee2c..1bd19ee 100644
+--- a/libs/cua-driver/rust/crates/cua-driver/src/serve.rs
++++ b/libs/cua-driver/rust/crates/cua-driver/src/serve.rs
+@@ -710,7 +710,7 @@ fn daemon_metadata_response() -> DaemonResponse {
+         .expect("daemon metadata is serializable");
+     #[cfg(target_os = "macos")]
+     {
+-        metadata["synara_native_revision"] = serde_json::json!(39);
++        metadata["synara_native_revision"] = serde_json::json!(40);
+     }
+     DaemonResponse::ok(metadata)
+ }
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
+index c06facc..01717d7 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/exact_target.rs
+@@ -2,7 +2,7 @@
+ //!
+ //! Gathers the facts [`cua_driver_core::background_input`] needs about one
+ //! requested `(pid, CGWindowID)` immediately before a background mutation:
+-//! WindowServer ownership, fresh `AXWindows` membership (mapped through
++//! WindowServer ownership, fresh application AX window membership (mapped through
+ //! `_AXUIElementGetWindow`), minimized/hidden state, competing same-pid AX
+ //! top-level keyboard destinations, and addressed-element ancestry. All reads are
+ //! bounded and fail closed — an unreadable fact never unlocks a route.
+@@ -13,8 +13,8 @@ use cua_driver_core::background_input::{
+ };
+ 
+ use super::bindings::{
+-    ax_get_window_id, copy_ax_windows, copy_bool_attr, copy_element_attr, copy_string_attr,
+-    focused_element_of_pid, AXUIElementCreateApplication, AXUIElementRef,
++    ax_get_window_id, copy_ax_windows, copy_bool_attr, copy_children, copy_element_attr,
++    copy_string_attr, focused_element_of_pid, AXUIElementCreateApplication, AXUIElementRef,
+ };
+ use crate::windows::{all_windows, resolve_window_owner, WindowOwner};
+ 
+@@ -177,7 +177,7 @@ pub fn keyboard_focus_matches_target(
+     }
+ }
+ 
+-/// One fresh `AXWindows` row. Unreadable attributes remain unknown; absence
++/// One fresh application AX window. Unreadable attributes remain unknown; absence
+ /// alone never proves that a sibling cannot receive keyboard input.
+ struct AxWindowRecord {
+     window_id: u32,
+@@ -187,19 +187,41 @@ struct AxWindowRecord {
+     focused: Option<bool>,
+ }
+ 
+-/// Map the application's fresh `AXWindows` through `_AXUIElementGetWindow`.
++fn is_window_surface_role(role: Option<&str>) -> bool {
++    matches!(role, Some("AXWindow" | "AXSheet"))
++}
++
++/// Use the same application-level window routes as a scoped tree observation.
++/// A native sheet may be retained by AXFocusedWindow or AXChildren while absent
++/// from AXWindows. Every candidate still needs a window role and an exact id.
+ /// Windows whose id the SPI cannot resolve are omitted: an unmappable window
+ /// can never satisfy an exact-target requirement.
+ unsafe fn ax_window_records(app: AXUIElementRef) -> Vec<AxWindowRecord> {
+     let focused_window = copy_element_attr(app, "AXFocusedWindow");
+-    let focused_window_id = focused_window.and_then(|window| {
+-        let id = ax_get_window_id(window);
+-        CFRelease(window as CFTypeRef);
+-        id
+-    });
+-    copy_ax_windows(app)
++    let focused_window_id = focused_window.and_then(|window| ax_get_window_id(window));
++    let mut windows = copy_ax_windows(app);
++    for window in copy_children(app)
++        .into_iter()
++        .chain(focused_window)
++        .chain(copy_element_attr(app, "AXMainWindow"))
++    {
++        if windows
++            .iter()
++            .any(|&known| CFEqual(known as CFTypeRef, window as CFTypeRef) != 0)
++        {
++            CFRelease(window as CFTypeRef);
++        } else {
++            windows.push(window);
++        }
++    }
++    windows
+         .into_iter()
+         .filter_map(|window| {
++            super::bindings::AXUIElementSetMessagingTimeout(window, 0.15);
++            if !is_window_surface_role(copy_string_attr(window, "AXRole").as_deref()) {
++                CFRelease(window as CFTypeRef);
++                return None;
++            }
+             let record = ax_get_window_id(window).map(|window_id| AxWindowRecord {
+                 window_id,
+                 minimized: copy_bool_attr(window, "AXMinimized"),
+@@ -223,7 +245,7 @@ unsafe fn ax_window_records(app: AXUIElementRef) -> Vec<AxWindowRecord> {
+ /// WindowServer may expose several layer-0 compositor surfaces for one native
+ /// Electron, Tauri, or WebKit window. A raw same-pid CGWindow row is therefore
+ /// not enough to prove another process-scoped keyboard destination. Requiring a
+-/// fresh `AXWindows` mapping preserves the fail-closed two-window guard while
++/// fresh AX window mapping preserves the fail-closed two-window guard while
+ /// ignoring render surfaces that cannot independently become the AX key window.
+ /// A mapped sibling is excluded only for a known non-keyboard subrole, or
+ /// explicit off-screen evidence with AX main/focus both proven false. Size is
+@@ -342,9 +364,25 @@ pub fn gather_background_facts(
+ #[cfg(test)]
+ mod tests {
+     use super::{
+-        count_competing_keyboard_destinations, keyboard_focus_facts_match, AxWindowRecord,
++        count_competing_keyboard_destinations, is_window_surface_role, keyboard_focus_facts_match,
++        AxWindowRecord,
+     };
+ 
++    #[test]
++    fn focus_restore_policy_ax_window_routes_reject_nonwindow_children() {
++        assert!(is_window_surface_role(Some("AXWindow")));
++        assert!(is_window_surface_role(Some("AXSheet")));
++        for role in [
++            None,
++            Some("AXGroup"),
++            Some("AXMenuBar"),
++            Some("AXTextField"),
++            Some(""),
++        ] {
++            assert!(!is_window_surface_role(role));
++        }
++    }
++
+     #[test]
+     fn inactive_app_focus_requires_exact_window_and_addressed_field() {
+         // An inactive Chromium app can omit the app-level focused element.
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
+index ac68801..2268992 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
+@@ -267,9 +267,10 @@ pub fn walk_tree_bounded(
+                     let role = copy_string_attr(child, "AXRole").unwrap_or_default();
+                     let subrole = copy_string_attr(child, "AXSubrole");
+                     let identifier = copy_string_attr(child, "AXIdentifier");
+-                    // Match AX window element → CGWindowID via private SPI.
+-                    // Only windows carry one, so skip the round-trip elsewhere.
+-                    let ax_window_id = if role == "AXWindow" {
++                    // AppKit can expose a file panel as AXSheet while giving
++                    // it its own CGWindowID. Keep that exact identity rather
++                    // than treating every sheet as an unscoped app child.
++                    let ax_window_id = if matches!(role.as_str(), "AXWindow" | "AXSheet") {
+                         ax_get_window_id(child)
+                     } else {
+                         None
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/window_scope.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/window_scope.rs
+index f23b53b..6749f48 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/window_scope.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/window_scope.rs
+@@ -54,7 +54,7 @@ pub struct TopLevelCandidate {
+     /// themselves as `open-panel` / `save-panel`.
+     pub identifier: Option<String>,
+     /// `_AXUIElementGetWindow` result, when the SPI resolved one. Only read
+-    /// for `AXWindow` roles.
++    /// for `AXWindow` and `AXSheet` roles.
+     pub ax_window_id: Option<u32>,
+ }
+ 
+@@ -89,6 +89,10 @@ impl TopLevelCandidate {
+                 .as_deref()
+                 .is_some_and(|id| matches!(id, "open-panel" | "save-panel"))
+     }
++
++    fn is_window_surface(&self) -> bool {
++        self.role == "AXWindow" || (self.role == "AXSheet" && self.ax_window_id.is_some())
++    }
+ }
+ 
+ /// The scope conclusion plus which candidates to walk at depth 0.
+@@ -133,7 +137,7 @@ where
+     let matched: Vec<usize> = candidates
+         .iter()
+         .enumerate()
+-        .filter(|(_, c)| c.role == "AXWindow" && c.ax_window_id == Some(requested))
++        .filter(|(_, c)| c.is_window_surface() && c.ax_window_id == Some(requested))
+         .map(|(i, _)| i)
+         .collect();
+ 
+@@ -143,7 +147,7 @@ where
+         // live same-pid id whose AX surface never materialised is not a refusal
+         // at all.
+         let scope = scope_from_owner(&resolve_owner()).unwrap_or(WindowScope::AxUnresolved {
+-            ax_window_count: candidates.iter().filter(|c| c.role == "AXWindow").count(),
++            ax_window_count: candidates.iter().filter(|c| c.is_window_surface()).count(),
+         });
+         return ScopeDecision {
+             scope,
+@@ -165,7 +169,7 @@ where
+         .iter()
+         .enumerate()
+         .filter(|(i, c)| {
+-            (c.role != "AXWindow" || matched.contains(i))
++            (!c.is_window_surface() || matched.contains(i))
+                 && !(dialog_scope && c.role == "AXMenuBar")
+         })
+         .map(|(i, _)| i)
+@@ -191,6 +195,48 @@ mod tests {
+         panic!("owner lookup must be skipped when a candidate claims the id");
+     }
+ 
++    #[test]
++    fn focus_restore_policy_sheet_with_own_id_is_an_exact_dialog_scope() {
++        let candidates = [
++            TopLevelCandidate::new("AXMenuBar", None),
++            TopLevelCandidate::new("AXWindow", Some(11)),
++            TopLevelCandidate::new("AXSheet", Some(22)),
++        ];
++        let sheet = decide_window_scope(&candidates, 22, never_called);
++        assert_eq!(sheet.scope, WindowScope::Matched);
++        assert_eq!(sheet.walk, vec![2]);
++        let parent = decide_window_scope(&candidates, 11, never_called);
++        assert_eq!(parent.walk, vec![0, 1]);
++    }
++
++    #[test]
++    fn focus_restore_policy_sheet_identity_never_matches_a_different_window() {
++        let candidates = [
++            TopLevelCandidate::new("AXSheet", Some(22)),
++            TopLevelCandidate::new("AXMenuBar", None),
++        ];
++        let result = decide_window_scope(&candidates, 33, || WindowOwner::SamePid);
++        assert_eq!(
++            result.scope,
++            WindowScope::AxUnresolved { ax_window_count: 1 }
++        );
++        assert!(result.walk.is_empty());
++    }
++
++    #[test]
++    fn focus_restore_policy_only_window_surface_roles_claim_an_id() {
++        let candidates = [
++            TopLevelCandidate::new("AXGroup", Some(22)),
++            TopLevelCandidate::new("AXSheet", None),
++        ];
++        let result = decide_window_scope(&candidates, 22, panel_service_owner);
++        assert!(matches!(
++            result.scope,
++            WindowScope::OwnerPidMismatch { owner_pid: 900, .. }
++        ));
++        assert!(result.walk.is_empty());
++    }
++
+     /// The MACOS.md contract: a resolved normal window keeps the menu bar in
+     /// its window-scoped tree, so the documented two-snapshot menu flow
+     /// (`AXMenuBarItem` → menu item) still works.
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/input/cancellation.rs b/libs/cua-driver/rust/crates/platform-macos/src/input/cancellation.rs
+index c072eb7..949e1c9 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/input/cancellation.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/input/cancellation.rs
+@@ -193,6 +193,99 @@ impl InputGate {
+         Self::validate_modal_target(&state, element)
+     }
+ 
++    fn validate_keyboard_target(
++        state: &State,
++        pid: i32,
++        window_id: u32,
++        expected_element: Option<usize>,
++    ) -> anyhow::Result<Option<crate::ax::cache::RetainedElement>> {
++        use crate::ax::{cache::RetainedElement, exact_target};
++        use core_foundation::base::{CFRelease, CFTypeRef};
++
++        let refuse =
++            |code, reason| super::target_guard::TargetRefusal::new(code, reason, pid, window_id);
++        let target = state.target.as_ref().or_else(|| {
++            state
++                .concurrent_targets
++                .values()
++                .find(|target| target.pid == pid && target.window_id == window_id)
++        });
++        if pid <= 0
++            || window_id == 0
++            || expected_element == Some(0)
++            || target.is_some_and(|target| target.pid != pid || target.window_id != window_id)
++            || (target.is_none() && !state.concurrent_targets.is_empty())
++        {
++            return Err(refuse(
++                "native_input_target_changed",
++                "Keyboard destination does not match the exact input target.",
++            )
++            .into());
++        }
++        if !matches!(
++            crate::windows::resolve_window_owner(pid, window_id),
++            crate::windows::WindowOwner::SamePid
++        ) {
++            return Err(refuse(
++                "native_input_target_changed",
++                "Keyboard window ownership could not be proven.",
++            )
++            .into());
++        }
++
++        // A window-only shortcut may use the current focused control, never
++        // the parent window as a substitute for a sheet descendant. Keep this
++        // AX object alive through admission and the actual key-down dispatch.
++        let element = unsafe {
++            expected_element
++                .map(|ptr| RetainedElement::retain(ptr))
++                .or_else(|| {
++                    let focused = exact_target::focused_element_in_window(pid, window_id)?;
++                    let retained = RetainedElement::retain(focused as usize);
++                    CFRelease(focused as CFTypeRef);
++                    Some(retained)
++                })
++        };
++        let element_ptr = element.as_ref().map(RetainedElement::as_ptr);
++        let modal = super::modal_guard::ModalTarget::capture(pid, window_id)?;
++        if element_ptr.is_none()
++            && (modal.is_some() || target.is_some_and(|target| target.has_modal()))
++        {
++            return Err(refuse(
++                "modal_target_mismatch",
++                "Keyboard focus inside the exact modal dialog could not be proven.",
++            )
++            .into());
++        }
++        Self::validate_modal_target(state, element_ptr)?;
++        if let Some(modal) = modal {
++            modal.verify(pid, window_id, element_ptr)?;
++        }
++        // Do this last: a focus change while resolving modal ancestry must
++        // refuse the down, including changes to another field in this window.
++        if !exact_target::keyboard_focus_matches_target(pid, window_id, element_ptr) {
++            return Err(refuse(
++                "same_pid_keyboard_ambiguity",
++                "Application keyboard focus changed before key dispatch.",
++            )
++            .into());
++        }
++        Ok(element)
++    }
++
++    /// Read-only keyboard preflight. Pointer and generic event callers must
++    /// keep using check_modal_target, which cannot infer a focused descendant.
++    pub(crate) fn check_keyboard_target(
++        &self,
++        pid: i32,
++        window_id: u32,
++        element: Option<usize>,
++    ) -> anyhow::Result<()> {
++        let mut state = self.lock();
++        Self::validate_target(&mut state)?;
++        Self::validate_keyboard_target(&state, pid, window_id, element).map(|_| ())
++    }
++
+     /// Semantic dispatch may address an exact descendant of a normal modal.
+     /// Raw events have no such ancestry proof and retain the stricter gate.
+     pub fn check_ax_target(&self, element: usize) -> anyhow::Result<()> {
+@@ -288,6 +381,36 @@ impl InputGate {
+         element: Option<usize>,
+         down: impl FnOnce(),
+         release: R,
++    ) -> anyhow::Result<HeldInput<'_, R>> {
++        self.press_with_validation(
++            |state| Self::validate_modal_target(state, element),
++            down,
++            release,
++        )
++    }
++
++    /// Keyboard-only admission with fresh focus, modal and ownership proof.
++    /// The matching release keeps its original route even after focus changes.
++    pub(super) fn press_keyboard<R: FnOnce()>(
++        &self,
++        pid: i32,
++        window_id: u32,
++        element: Option<usize>,
++        down: impl FnOnce(),
++        release: R,
++    ) -> anyhow::Result<HeldInput<'_, R>> {
++        self.press_with_validation(
++            |state| Self::validate_keyboard_target(state, pid, window_id, element),
++            down,
++            release,
++        )
++    }
++
++    fn press_with_validation<R: FnOnce(), T>(
++        &self,
++        validate: impl FnOnce(&State) -> anyhow::Result<T>,
++        down: impl FnOnce(),
++        release: R,
+     ) -> anyhow::Result<HeldInput<'_, R>> {
+         // Declared before the mutex guard so unwinding unlocks before release.
+         let mut held = HeldInput {
+@@ -296,7 +419,7 @@ impl InputGate {
+         };
+         let mut state = self.lock();
+         Self::validate_target(&mut state)?;
+-        Self::validate_modal_target(&state, element)?;
++        let _target_guard = validate(&state)?;
+         held.release = Some(release);
+         state.held += 1;
+         down();
+@@ -440,6 +563,123 @@ mod tests {
+     use super::*;
+     use std::sync::{mpsc, Arc};
+ 
++    #[test]
++    fn focus_restore_policy_keyboard_validation_refuses_before_down_or_release() {
++        let gate = InputGate::default();
++        let events = std::cell::RefCell::new(Vec::new());
++        let result = gate.press_with_validation(
++            |_| -> anyhow::Result<()> {
++                assert!(
++                    gate.state.try_lock().is_err(),
++                    "proof must run under admission"
++                );
++                anyhow::bail!("modal_target_mismatch: focus left the addressed sheet")
++            },
++            || events.borrow_mut().push("down"),
++            || events.borrow_mut().push("up"),
++        );
++        assert!(result.is_err());
++        drop(result);
++        assert!(events.borrow().is_empty());
++        assert_eq!(gate.cancel_and_wait(Duration::ZERO), 0);
++    }
++
++    struct FocusProof<'a>(&'a std::cell::Cell<bool>);
++
++    impl Drop for FocusProof<'_> {
++        fn drop(&mut self) {
++            self.0.set(false);
++        }
++    }
++
++    #[test]
++    fn focus_restore_policy_keyboard_keeps_proof_through_down_and_releases_after_interrupt() {
++        let gate = InputGate::default();
++        let retained = std::cell::Cell::new(false);
++        let events = std::cell::RefCell::new(Vec::new());
++        let held = gate
++            .press_with_validation(
++                |_| {
++                    retained.set(true);
++                    Ok(FocusProof(&retained))
++                },
++                || {
++                    assert!(retained.get(), "focused AX object must outlive the down");
++                    events.borrow_mut().push("down");
++                },
++                || events.borrow_mut().push("up"),
++            )
++            .unwrap();
++        assert!(!retained.get());
++        let interrupted = gate.interrupt_and_wait(Duration::ZERO);
++        assert_eq!(interrupted.pending, 1);
++        assert!(!interrupted.resumed);
++        assert!(gate
++            .press_with_validation(
++                |_| -> anyhow::Result<()> { panic!("cancelled action acquired focus") },
++                || panic!("cancelled down was posted"),
++                || panic!("unowned release was posted"),
++            )
++            .is_err());
++        drop(held);
++        assert_eq!(*events.borrow(), ["down", "up"]);
++        assert!(gate.interrupt_and_wait(Duration::ZERO).resumed);
++    }
++
++    #[test]
++    fn focus_restore_policy_keyboard_down_unwind_drops_proof_and_drains_release() {
++        let gate = InputGate::default();
++        let retained = std::cell::Cell::new(false);
++        let events = std::cell::RefCell::new(Vec::new());
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            let _ = gate.press_with_validation(
++                |_| {
++                    retained.set(true);
++                    Ok(FocusProof(&retained))
++                },
++                || {
++                    assert!(retained.get());
++                    events.borrow_mut().push("down");
++                    panic!("native down unwound");
++                },
++                || {
++                    assert!(!retained.get());
++                    events.borrow_mut().push("up");
++                },
++            );
++        }));
++        assert!(result.is_err());
++        assert_eq!(*events.borrow(), ["down", "up"]);
++        assert_eq!(gate.cancel_and_wait(Duration::ZERO), 0);
++    }
++
++    #[test]
++    fn focus_restore_policy_keyboard_rejects_invalid_identity_before_native_reads() {
++        let gate = InputGate::default();
++        for (pid, window_id, element) in [(-1, 7, None), (42, 0, None), (42, 7, Some(0))] {
++            let refused = gate
++                .check_keyboard_target(pid, window_id, element)
++                .unwrap_err();
++            assert_eq!(
++                refused
++                    .downcast_ref::<super::super::target_guard::TargetRefusal>()
++                    .unwrap()
++                    .code,
++                "native_input_target_changed"
++            );
++            assert!(gate
++                .press_keyboard(
++                    pid,
++                    window_id,
++                    element,
++                    || panic!("invalid target received down"),
++                    || panic!("invalid target owned a release"),
++                )
++                .is_err());
++        }
++        assert_eq!(gate.cancel_and_wait(Duration::ZERO), 0);
++    }
++
+     #[test]
+     fn interruption_drains_held_input_prevents_later_events_and_preserves_next_action() {
+         let gate = Arc::new(InputGate::default());
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/input/keyboard.rs b/libs/cua-driver/rust/crates/platform-macos/src/input/keyboard.rs
+index 84c8db6..cb0f907 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/input/keyboard.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/input/keyboard.rs
+@@ -102,14 +102,15 @@ impl PreparedKey {
+             route,
+             required_focus_window,
+         } = self;
++        let post_down = || route.post(&down);
++        let release = move || route.post(&up);
+         if let (Some((window_id, element)), KeyboardRoute::Pid { pid, .. }) =
+             (required_focus_window, route)
+         {
+-            if !crate::ax::exact_target::keyboard_focus_matches_target(pid, window_id, element) {
+-                anyhow::bail!("same_pid_keyboard_ambiguity: application keyboard focus changed before key dispatch");
+-            }
++            return super::cancellation::gate()
++                .press_keyboard(pid, window_id, element, post_down, release);
+         }
+-        super::cancellation::gate().press(|| route.post(&down), move || route.post(&up))
++        super::cancellation::gate().press(post_down, release)
+     }
+ 
+     fn pulse(self) -> anyhow::Result<()> {
+@@ -233,17 +234,12 @@ fn press_ax_return_in_window(
+         CFRelease(raw as CFTypeRef);
+         retained
+     };
+-    if !crate::ax::exact_target::keyboard_focus_matches_target(pid, window_id, element) {
+-        anyhow::bail!(
+-            "same_pid_keyboard_ambiguity: application keyboard focus changed before key dispatch"
+-        );
+-    }
+     // The documented application-scoped AX route reaches inactive Chromium
+     // without activation. Select it before dispatch; an uncertain AX result
+     // must never be replayed through a CGEvent queue.
+     pulse_ax_return_with(
+         super::cancellation::gate(),
+-        element,
++        Some((pid, window_id, element)),
+         |down| unsafe {
+             AXUIElementPostKeyboardEvent(
+                 application.as_ptr() as crate::ax::bindings::AXUIElementRef,
+@@ -258,7 +254,7 @@ fn press_ax_return_in_window(
+ 
+ fn pulse_ax_return_with(
+     gate: &super::cancellation::InputGate,
+-    element: Option<usize>,
++    target: Option<(i32, u32, Option<usize>)>,
+     post: impl Fn(bool) -> i32,
+     pause: impl FnOnce() -> anyhow::Result<()>,
+ ) -> anyhow::Result<()> {
+@@ -269,14 +265,15 @@ fn pulse_ax_return_with(
+         gate,
+         error: std::cell::Cell::new(0),
+     };
+-    let held = gate.press_ax(
+-        element,
+-        || down_error.set(post(true)),
+-        || {
+-            release.error.set(-25204);
+-            release.error.set(post(false));
+-        },
+-    )?;
++    let down = || down_error.set(post(true));
++    let up = || {
++        release.error.set(-25204);
++        release.error.set(post(false));
++    };
++    let held = match target {
++        Some((pid, window_id, element)) => gate.press_keyboard(pid, window_id, element, down, up),
++        None => gate.press(down, up),
++    }?;
+     let paused = if down_error.get() == 0 {
+         pause()
+     } else {
+@@ -805,6 +802,20 @@ mod tests {
+     use super::*;
+     use core_graphics::event::CGEventType;
+ 
++    #[test]
++    fn focus_restore_policy_ax_return_refuses_unproven_target_before_post() {
++        let gate = super::super::cancellation::InputGate::default();
++        let result = pulse_ax_return_with(
++            &gate,
++            Some((-1, 7, None)),
++            |_| panic!("AX Return was posted without an exact target"),
++            || panic!("refused input entered the held interval"),
++        );
++        assert!(result.is_err());
++        assert!(!gate.has_unconfirmed_releases());
++        assert_eq!(gate.cancel_and_wait(std::time::Duration::ZERO), 0);
++    }
++
+     #[test]
+     fn ax_return_route_preserves_modified_key_semantics() {
+         assert!(uses_ax_return(36, &[]));
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/mod.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/mod.rs
+index ea6815a..a857026 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/mod.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/mod.rs
+@@ -272,14 +272,17 @@ async fn decide_background_window_action(
+         element_ptr.map(|ptr| unsafe { crate::ax::cache::RetainedElement::retain(ptr) });
+     let facts = match tokio::task::spawn_blocking(move || {
+         let element_ptr = element_guard.as_ref().map(|guard| guard.as_ptr());
+-        let semantic_target = matches!(
+-            action,
+-            cua_driver_core::background_input::BackgroundAction::AxSemantic
+-                | cua_driver_core::background_input::BackgroundAction::FocusedWindowKey
+-        )
+-        .then_some(element_ptr)
+-        .flatten();
+-        if let Err(error) = crate::input::cancellation::gate().check_modal_target(semantic_target) {
++        let gate = crate::input::cancellation::gate();
++        let modal_check = match action {
++            cua_driver_core::background_input::BackgroundAction::FocusedWindowKey => {
++                gate.check_keyboard_target(pid, window_id, element_ptr)
++            }
++            cua_driver_core::background_input::BackgroundAction::AxSemantic => {
++                gate.check_modal_target(element_ptr)
++            }
++            _ => gate.check_modal_target(None),
++        };
++        if let Err(error) = modal_check {
+             let refusal = error
+                 .downcast_ref::<crate::input::target_guard::TargetRefusal>()
+                 .map(|refusal| refusal.tool_result())
+
+diff --git a/libs/cua-driver/rust/crates/cua-driver/src/serve.rs b/libs/cua-driver/rust/crates/cua-driver/src/serve.rs
+index 1bd19ee..e3ae6db 100644
+--- a/libs/cua-driver/rust/crates/cua-driver/src/serve.rs
++++ b/libs/cua-driver/rust/crates/cua-driver/src/serve.rs
+@@ -710,7 +710,7 @@ fn daemon_metadata_response() -> DaemonResponse {
+         .expect("daemon metadata is serializable");
+     #[cfg(target_os = "macos")]
+     {
+-        metadata["synara_native_revision"] = serde_json::json!(40);
++        metadata["synara_native_revision"] = serde_json::json!(41);
+     }
+     DaemonResponse::ok(metadata)
+ }
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
+index 2268992..d0a3771 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
+@@ -89,6 +89,8 @@ pub struct AXNode {
+     pub enabled: Option<bool>,
+     /// AXSelected. `None` when the app doesn't report the attribute.
+     pub selected: Option<bool>,
++    /// An exact AXSelected write is supported by this collection item.
++    pub selectable: bool,
+     /// True when this node is an AX web-document root or descends from one.
+     /// This trust marker is independent of actionable ancestry because
+     /// AXWebArea is commonly non-actionable and therefore has no element index.
+@@ -381,6 +383,7 @@ struct FetchedElement {
+     /// `role_supports_value_addressing` family when `actions` is empty —
+     /// resolved on the worker so its round trip overlaps too.
+     value_settable: bool,
++    selection_settable: bool,
+ }
+ 
+ // FetchedElement is plain fetched data — decoded Strings/values plus retained
+@@ -426,10 +429,14 @@ unsafe fn fetch_element(element: AXUIElementRef) -> FetchedElement {
+     let value_settable = actions.is_empty()
+         && role_supports_value_addressing(role)
+         && is_attribute_settable(element, "AXValue");
++    let selection_settable = crate::input::ax_actions::is_selectable_container_role(role)
++        && attrs.selected.is_some()
++        && is_attribute_settable(element, "AXSelected");
+     FetchedElement {
+         attrs,
+         actions,
+         value_settable,
++        selection_settable,
+     }
+ }
+ 
+@@ -667,6 +674,7 @@ unsafe fn walk_element(
+         attrs,
+         actions,
+         value_settable,
++        selection_settable,
+     } = prefetched.unwrap_or_else(|| fetch_element(element));
+ 
+     // One IPC call fetched every attribute this walk needs. Per-attribute
+@@ -750,12 +758,16 @@ unsafe fn walk_element(
+     // those controls disabled. Never assign such a row a live element index:
+     // the same native state also causes dispatch to refuse it, and exposing an
+     // index for it invites agents to retain an unusable menu target.
+-    let enabled = if !actions.is_empty() || value_settable {
++    let enabled = if !actions.is_empty() || value_settable || selection_settable {
+         attr_enabled
+     } else {
+         None
+     };
+-    let is_actionable = is_addressable(!actions.is_empty(), value_settable, enabled);
++    let is_actionable = is_addressable(
++        !actions.is_empty(),
++        value_settable || selection_settable,
++        enabled,
++    );
+ 
+     if !is_actionable && !has_content && role != "AXWindow" && role != "AXSheet" {
+         walk_children(
+@@ -782,12 +794,9 @@ unsafe fn walk_element(
+     // Structured `elements` only contains actionable nodes. Keep all new AX
+     // round-trips behind that same gate so display-only rows pay no cost.
+     let control_state = read_control_state_if_actionable(is_actionable, || ControlState {
+-        value_state: copied_value
+-            .map(|copied| copied.state_value)
+-            .filter(|v| !v.trim().is_empty())
+-            .or_else(|| value.clone())
+-            .map(|v| v.trim().to_owned())
+-            .filter(|v| !v.is_empty()),
++        // AXValue is data: preserve empty strings, whitespace and Unicode.
++        // Placeholder text belongs to presentation, never value read-back.
++        value_state: copied_value.map(|copied| copied.state_value),
+         value_description: attr_value_description
+             .map(|v| v.trim().to_owned())
+             .filter(|v| !v.is_empty()),
+@@ -833,6 +842,7 @@ unsafe fn walk_element(
+             max_value: control_state.max_value,
+             enabled: control_state.enabled,
+             selected: control_state.selected,
++            selectable: selection_settable,
+             in_web_content,
+         }
+     } else {
+@@ -867,6 +877,7 @@ unsafe fn walk_element(
+             max_value: control_state.max_value,
+             enabled: control_state.enabled,
+             selected: control_state.selected,
++            selectable: false,
+             in_web_content,
+         }
+     };
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs b/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs
+index adf80a9..fd2287b 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs
+@@ -408,6 +408,7 @@ mod tests {
+             max_value: None,
+             enabled: None,
+             selected: None,
++            selectable: false,
+             in_web_content: false,
+         }
+     }
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs b/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
+index 0ba2abd..58135a6 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
+@@ -1731,6 +1731,7 @@ mod tests {
+             max_value: None,
+             enabled: None,
+             selected: None,
++            selectable: false,
+             in_web_content: false,
+         }
+     }
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/input/ax_actions.rs b/libs/cua-driver/rust/crates/platform-macos/src/input/ax_actions.rs
+index c68d505..44468c8 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/input/ax_actions.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/input/ax_actions.rs
+@@ -5,7 +5,7 @@ use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef};
+ 
+ const MAX_SELECTION_ANCESTORS: usize = 8;
+ 
+-fn is_selectable_container_role(role: &str) -> bool {
++pub(crate) fn is_selectable_container_role(role: &str) -> bool {
+     matches!(role, "AXRow" | "AXCell" | "AXListItem" | "AXImage")
+ }
+ 
+@@ -239,6 +239,31 @@ pub fn select_nearest_container(element_ptr: usize) -> anyhow::Result<SelectionO
+     )
+ }
+ 
++/// Select only the addressed collection item. Capability changes never permit
++/// an ancestor, AXPress, pointer event or keyboard fallback.
++pub fn select_exact_container(element_ptr: usize) -> anyhow::Result<SelectionOutcome> {
++    let element = element_ptr as AXUIElementRef;
++    let role = unsafe { copy_string_attr(element, "AXRole") }.unwrap_or_default();
++    let selected = unsafe { copy_bool_attr(element, "AXSelected") };
++    let settable = is_selectable_container_role(&role)
++        && selected.is_some()
++        && unsafe { is_attribute_settable(element, "AXSelected") };
++    ensure_ax_action_enabled(element_ptr, "AXSelected")
++        .map_err(AxActionFailure::before_dispatch)?;
++    crate::input::cancellation::gate()
++        .post_ax(element_ptr, || {
++            select_container_with(
++                role,
++                selected,
++                settable,
++                || Ok(()),
++                || unsafe { set_bool_attr_true(element, "AXSelected") },
++                || unsafe { copy_bool_attr(element, "AXSelected") },
++            )
++        })
++        .map_err(AxActionFailure::before_dispatch)?
++}
++
+ /// Read the selection state of the nearest collection-like element without
+ /// mutating it. This is used to verify a coordinate fallback when AppKit
+ /// exposes `AXSelected` but refuses to set it directly (notably Finder icon
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/click.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/click.rs
+index 313595c..f487664 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/click.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/click.rs
+@@ -77,6 +77,30 @@ fn selection_readback_confirms(
+     }
+ }
+ 
++fn exact_selection_request(args: &Value) -> bool {
++    (args.get("element_token").is_some() || args.get("element_index").is_some())
++        && args.get("x").is_none()
++        && args.get("y").is_none()
++        && args
++            .get("count")
++            .is_none_or(|value| value.as_u64() == Some(1))
++        && args
++            .get("button")
++            .is_none_or(|value| value.as_str() == Some("left"))
++        && args
++            .get("modifier")
++            .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
++        && args
++            .get("force_synthetic")
++            .is_none_or(|value| value.as_bool() == Some(false))
++        && args
++            .get("delivery_mode")
++            .is_none_or(|value| value.as_str() == Some("background"))
++        && args
++            .get("scope")
++            .is_none_or(|value| value.as_str() == Some("window"))
++}
++
+ const SELECTION_READBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+ const SELECTION_READBACK_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+ const SELECTION_READBACK_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
+@@ -132,7 +156,9 @@ fn def() -> &'static ToolDef {
+              AX path: \"right\" maps to AXShowMenu (same surface as the dedicated `right_click` \
+              tool); \"middle\" has no AX equivalent and falls back to a pixel middle-click at the \
+              element's center.\n\
+-             action: press (default), show_menu, pick, confirm, cancel, open.\n\
++             action: press (default), show_menu, pick, confirm, cancel, open, select. \
++             select sets AXSelected on the exact collection item in the background, \
++             without activation, ancestor selection, pointer input or opening the item.\n\
+              from_zoom: set true after a zoom call to auto-translate zoom-image pixel \
+              coordinates to full-window space."
+             .into(),
+@@ -156,7 +182,7 @@ fn def() -> &'static ToolDef {
+                 "snapshot_id": cua_driver_core::tool_schema::snapshot_id_schema(),
+                 "x":             { "type": "number",  "description": "X in screenshot pixels. A window target uses the get_window_state PNG; a desktop target uses the native get_desktop_state PNG. The driver reverses Retina backing scale and any window-image downscale." },
+                 "y":             { "type": "number",  "description": "Y in screenshot pixels from the image selected by target." },
+-                "action":        { "type": "string",  "description": "AX action: press, show_menu, pick, confirm, cancel, open." },
++                "action":        { "type": "string",  "description": "AX action: press, show_menu, pick, confirm, cancel, open; select performs exact background AXSelected write." },
+                 "button":        {
+                     "type": "string",
+                     "enum": ["left", "right", "middle"],
+@@ -203,6 +229,19 @@ impl Tool for ClickTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        if args
++            .get("action")
++            .and_then(Value::as_str)
++            .is_some_and(|action| action.eq_ignore_ascii_case("select"))
++            && !exact_selection_request(&args)
++        {
++            return ToolResult::error(
++                "select requires one exact element in background mode without a pointer gesture.",
++            )
++            .with_structured(
++                serde_json::json!({ "effect": "refused", "code": "invalid_arguments" }),
++            );
++        }
+         use cua_driver_core::tool_args::ArgsExt;
+ 
+         // ── Window-less screen-absolute branch (scope="desktop") ──────
+@@ -364,7 +403,7 @@ impl Tool for ClickTool {
+         let y = args
+             .opt_f64("y")
+             .or_else(|| args.opt_i64("y").map(|i| i as f64));
+-        let action = args.str_or("action", "press");
++        let action = args.str_or("action", "press").to_lowercase();
+         // Surface 5: optional `button` arg, default "left" preserves legacy behaviour.
+         // Pixel path: routes to left/right/middle CGEvent primitives.
+         // AX path: "right" delegates to AXShowMenu (same surface as right_click);
+@@ -1257,6 +1296,20 @@ fn perform_ax_click(
+     modifiers: &[String],
+     foreground: bool,
+ ) -> anyhow::Result<(String, bool, bool, bool, bool)> {
++    if action_str == "select" {
++        return match crate::input::ax_actions::select_exact_container(element_ptr)? {
++            SelectionOutcome::AttemptedConfirmed { role } => Ok((
++                format!("Selected exact [{idx}] {role}; confirmed AXSelected=true."),
++                false, false, true, false,
++            )),
++            SelectionOutcome::NotAttempted => Err(AxActionFailure::refused(
++                "The exact element is not a writable selection target; no input was sent.",
++            ).into()),
++            SelectionOutcome::AttemptedUncertain { error, selected, .. } => Err(AxActionFailure::uncertain(
++                format!("Exact AXSelected write returned {error}, read-back={selected:?}; no fallback or replay was submitted."),
++            ).into()),
++        };
++    }
+     let ax_action = map_action(action_str);
+     let element = element_ptr as AXUIElementRef;
+ 
+@@ -1577,6 +1630,28 @@ fn map_action(action: &str) -> &'static str {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn exact_selection_never_accepts_a_pointer_gesture_or_foreground_request() {
++        let base = serde_json::json!({"action":"select","element_token":"token"});
++        assert!(exact_selection_request(&base));
++        for (key, value) in [
++            ("count", serde_json::json!(2)),
++            ("button", serde_json::json!("right")),
++            ("modifier", serde_json::json!(["cmd"])),
++            ("x", serde_json::json!(10)),
++            ("force_synthetic", serde_json::json!(true)),
++            ("delivery_mode", serde_json::json!("foreground")),
++            ("scope", serde_json::json!("desktop")),
++        ] {
++            let mut args = base.clone();
++            args[key] = value;
++            assert!(!exact_selection_request(&args), "{key}");
++        }
++        assert!(!exact_selection_request(
++            &serde_json::json!({"action":"select"})
++        ));
++    }
++
+     /// Surface 5: schema must advertise the new `button` field with the three
+     /// canonical values and default to "left". Hermes / Codex / Claude Code
+     /// consumers branch on this enum being present.
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
+index 52519f5..051da81 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
+@@ -893,14 +893,9 @@ pub(crate) fn build_elements_array_with_token(
+             // `value_state` widens the string-only AXValue read to all CF
+             // types (CFNumber sliders → "8", CFBoolean checkboxes/radios →
+             // "1"/"0") — controls whose state was previously invisible here.
+-            // Falls back to `value` so the field never regresses for
+-            // string-valued elements.
+-            if let Some(value) = node
+-                .value_state
+-                .clone()
+-                .or_else(|| node.value.clone())
+-                .filter(|v| !v.is_empty())
+-            {
++            // Presentation `value` can be placeholder text; only the raw
++            // value_state represents actual field contents, including "".
++            if let Some(value) = node.value_state.clone() {
+                 entry["value"] = serde_json::Value::String(value);
+             }
+             if let Some(desc) = node.value_description.clone() {
+@@ -933,6 +928,9 @@ pub(crate) fn build_elements_array_with_token(
+             if let Some(selected) = selected {
+                 entry["selected"] = serde_json::Value::Bool(selected);
+             }
++            if node.selectable {
++                entry["selectable"] = serde_json::Value::Bool(true);
++            }
+             if !node.actions.is_empty() {
+                 entry["actions"] = serde_json::json!(node.actions);
+             }
+@@ -1171,6 +1169,7 @@ mod tests {
+             max_value: None,
+             enabled: None,
+             selected: None,
++            selectable: false,
+             in_web_content: false,
+         }
+     }
+@@ -1353,6 +1352,7 @@ mod tests {
+             vec![],
+         )];
+         nodes[0].value = Some("i love u".into());
++        nodes[0].value_state = Some("i love u".into());
+         let entry = &build_elements_array_with_token(&nodes, None)[0];
+         assert_eq!(entry["label"], "Compose message", "label stays the title");
+         assert_eq!(
+@@ -1456,22 +1456,34 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn elements_value_state_falls_back_to_string_value() {
+-        // String-valued elements keep their `value` even with no value_state.
++    fn elements_do_not_report_a_placeholder_as_field_content() {
+         let mut nodes = vec![node(Some(0), "AXComboBox", None, 0, None, None, vec![])];
+         nodes[0].value = Some("Search".into());
+         let entry = &build_elements_array_with_token(&nodes, None)[0];
+-        assert_eq!(entry["value"], "Search");
++        assert!(entry.get("value").is_none());
+     }
+ 
+     #[test]
+-    fn elements_omit_empty_value() {
+-        // An empty AXValue must not emit a `value` field (matches the other
+-        // optional fields' omit-when-absent contract).
+-        let mut nodes = vec![node(Some(0), "AXButton", Some("OK"), 0, None, None, vec![])];
+-        nodes[0].value = Some(String::new());
+-        let entry = &build_elements_array_with_token(&nodes, None)[0];
+-        assert!(entry.get("value").is_none(), "empty value must be omitted");
++    fn elements_preserve_empty_and_whitespace_values_independently_of_placeholder() {
++        for value in ["", "  ", "  ação🙂\n"] {
++            let mut nodes = vec![node(Some(0), "AXTextField", None, 0, None, None, vec![])];
++            nodes[0].value = Some("Search".into());
++            nodes[0].value_state = Some(value.into());
++            let entry = &build_elements_array_with_token(&nodes, None)[0];
++            assert_eq!(entry["value"], value);
++        }
++    }
++
++    #[test]
++    fn selectable_items_publish_capability_and_selection_without_fake_ax_actions() {
++        let mut nodes = vec![node(Some(0), "AXRow", Some("File"), 0, None, None, vec![])];
++        nodes[0].selectable = true;
++        nodes[0].selected = Some(false);
++        let entry = &build_elements_array_with_token(&nodes, Some(1))[0];
++        assert_eq!(entry["selectable"], true);
++        assert_eq!(entry["selected"], false);
++        assert!(entry.get("element_token").is_some());
++        assert!(entry.get("actions").is_none());
+     }
+ 
+     #[test]
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs
+index b55c744..d17dbe4 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs
+@@ -91,6 +91,7 @@ fn def() -> &'static ToolDef {
+             "properties": {
+                 "force_synthetic": { "type": "boolean", "default": false, "description": "Select native key events before dispatch instead of AXSelectedText. Exact-window keyboard admission remains required; this does not authorize foreground input or retry." },
+                 "semantic_only": { "type": "boolean", "default": false, "description": "Require exact, character-paced AX semantic insertion into element_token/element_index. Independent exact windows may progress concurrently. A retained exact element may continue after its window moves to another macOS Space only while WindowServer ownership and nonempty Space membership remain unchanged and AX ancestry still proves the exact window. Refuses instead of switching Spaces, posting process-scoped key events, activating the app, or changing its key window." },
++                "atomic": { "type": "boolean", "default": false, "description": "With semantic_only and an exact element, insert the whole string at its caret or replace its current selection in one AXSelectedText write. Never falls back to physical keys. delay_ms does not pace this single write." },
+                 "session": { "type": "string", "description": "For multi-call work, prefer a short public session label and repeat it on every call that accepts it. Omit it to use the authenticated transport's implicit lifecycle session." },
+                 "pid":  { "type": "integer", "description": "Target process ID." },
+                 "text": { "type": "string",  "description": "Text to insert at the target's cursor." },
+@@ -159,6 +160,14 @@ impl Tool for TypeTextTool {
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
+         use cua_driver_core::tool_args::ArgsExt;
++        if args.bool_or("atomic", false) && !atomic_semantic_request(&args) {
++            return ToolResult::error(
++                "atomic requires one exact semantic background element, without physical input.",
++            )
++            .with_structured(
++                serde_json::json!({ "effect": "refused", "code": "invalid_arguments" }),
++            );
++        }
+         if args.opt_str("scope").as_deref() == Some("desktop")
+             && args.get("pid").is_none()
+             && args.get("window_id").is_none()
+@@ -233,6 +242,7 @@ impl Tool for TypeTextTool {
+             .get("semantic_only")
+             .and_then(Value::as_bool)
+             .unwrap_or(false);
++        let atomic = args.bool_or("atomic", false);
+         if let Some(error) = screen_sharing_delivery_error(
+             crate::input::keyboard::is_screen_sharing_pid(pid),
+             delivery_mode.is_foreground(),
+@@ -392,6 +402,7 @@ impl Tool for TypeTextTool {
+                         &text_clone,
+                         element_ptr,
+                         delay_ms,
++                        atomic,
+                         key_events_only,
+                         delivery_mode,
+                         window_id,
+@@ -1212,6 +1223,7 @@ fn type_text_blocking(
+     text: &str,
+     element_ptr_and_idx: Option<(usize, Option<usize>)>,
+     delay_ms: u64,
++    atomic: bool,
+     key_events_only: bool,
+     delivery_mode: super::DeliveryMode,
+     window_id: Option<u32>,
+@@ -1379,56 +1391,18 @@ fn type_text_blocking(
+     if let Some((element, owns, idx_opt)) = ax_target {
+         let role = unsafe { copy_string_attr(element, "AXRole") }.unwrap_or_default();
+         let title = unsafe { copy_string_attr(element, "AXTitle") }.unwrap_or_default();
+-        let semantic_progressive =
+-            matches!(&keyboard_policy, BackgroundKeyboardPolicy::SemanticOnly(_));
+-        let mut accepted_chars = 0usize;
+-        let mut interruption = None;
+-        let err = if semantic_progressive {
+-            let chars = text.chars().collect::<Vec<_>>();
+-            let mut result = kAXErrorSuccess;
+-            for (index, character) in chars.iter().enumerate() {
+-                let chunk = character.to_string();
+-                match crate::input::cancellation::gate().post_ax(element as usize, || unsafe {
+-                    set_string_attr(element, "AXSelectedText", &chunk)
+-                }) {
+-                    Ok(code) if code == kAXErrorSuccess => {
+-                        accepted_chars += 1;
+-                    }
+-                    Ok(code) => {
+-                        result = code;
+-                        break;
+-                    }
+-                    Err(error) => {
+-                        interruption = Some(error.to_string());
+-                        break;
+-                    }
+-                }
+-                if delay_ms > 0 && index + 1 < chars.len() {
+-                    if let Err(error) = crate::input::cancellation::gate()
+-                        .pause(std::time::Duration::from_millis(delay_ms))
+-                    {
+-                        interruption = Some(error.to_string());
+-                        break;
+-                    }
+-                }
+-            }
+-            result
+-        } else {
+-            match crate::input::cancellation::gate().post_ax(element as usize, || unsafe {
+-                set_string_attr(element, "AXSelectedText", text)
+-            }) {
+-                Ok(code) => {
+-                    if code == kAXErrorSuccess {
+-                        accepted_chars = text.chars().count();
+-                    }
+-                    code
+-                }
+-                Err(error) => {
+-                    interruption = Some(error.to_string());
+-                    kAXErrorSuccess
+-                }
+-            }
+-        };
++        let exact_semantic = matches!(&keyboard_policy, BackgroundKeyboardPolicy::SemanticOnly(_));
++        let (err, accepted_chars, interruption) = write_semantic_text_with(
++            text,
++            exact_semantic && !atomic,
++            delay_ms,
++            |chunk| {
++                crate::input::cancellation::gate().post_ax(element as usize, || unsafe {
++                    set_string_attr(element, "AXSelectedText", chunk)
++                })
++            },
++            |duration| crate::input::cancellation::gate().pause(duration),
++        );
+         // Classify the atomic write before considering synthesis. Complete AX
+         // delivery returns immediately. Partial delivery is surfaced as such
+         // instead of appending the full payload again. When synthesis would
+@@ -1486,7 +1460,7 @@ fn type_text_blocking(
+                 delivered_chars: Some(delivered_chars),
+             }));
+         }
+-        if semantic_progressive && err == kAXErrorSuccess {
++        if exact_semantic {
+             let idx_str = idx_opt.map(|i| format!(" [{i}]")).unwrap_or_default();
+             return Ok(TypeTextDelivery::Typed(TypeTextOutcome {
+                 detail: format!(
+@@ -1494,10 +1468,13 @@ fn type_text_blocking(
+                 ),
+                 path: PATH_AX,
+                 verified: false,
+-                delivered_chars: if unchanged_web_readback {
+-                    None
+-                } else {
++                delivered_chars: if err == kAXErrorSuccess
++                    && ax_progress == Some(TypedProgress::Unchanged)
++                    && !unchanged_web_readback
++                {
+                     Some(0)
++                } else {
++                    None
+                 },
+             }));
+         }
+@@ -1555,10 +1532,139 @@ fn type_text_blocking(
+     }))
+ }
+ 
++fn atomic_semantic_request(args: &Value) -> bool {
++    args.get("semantic_only").and_then(Value::as_bool) == Some(true)
++        && (args.get("element_token").is_some() || args.get("element_index").is_some())
++        && args
++            .get("scope")
++            .is_none_or(|value| value.as_str() == Some("window"))
++        && args
++            .get("delivery_mode")
++            .is_none_or(|value| value.as_str() == Some("background"))
++        && args
++            .get("force_synthetic")
++            .is_none_or(|value| value.as_bool() == Some(false))
++        && args.get("x").is_none()
++        && args.get("y").is_none()
++}
++
++/// One acknowledged write per requested chunk. Once a write errors, stop;
++/// never replay text or reinterpret the result as permission to post keys.
++fn write_semantic_text_with(
++    text: &str,
++    progressive: bool,
++    delay_ms: u64,
++    mut write: impl FnMut(&str) -> anyhow::Result<i32>,
++    mut pause: impl FnMut(std::time::Duration) -> anyhow::Result<()>,
++) -> (i32, usize, Option<String>) {
++    let mut accepted = 0;
++    let mut start = 0;
++    while start < text.len() {
++        let end = if progressive {
++            start
++                + text[start..]
++                    .chars()
++                    .next()
++                    .expect("nonempty suffix")
++                    .len_utf8()
++        } else {
++            text.len()
++        };
++        let chunk = &text[start..end];
++        match write(chunk) {
++            Ok(code) if code == kAXErrorSuccess => accepted += chunk.chars().count(),
++            Ok(code) => return (code, accepted, None),
++            Err(error) => return (kAXErrorSuccess, accepted, Some(error.to_string())),
++        }
++        start = end;
++        if start < text.len() && delay_ms > 0 {
++            if let Err(error) = pause(std::time::Duration::from_millis(delay_ms)) {
++                return (kAXErrorSuccess, accepted, Some(error.to_string()));
++            }
++        }
++    }
++    (kAXErrorSuccess, accepted, None)
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn atomic_exact_text_preserves_the_full_unicode_payload_in_one_write() {
++        let text = "  seleção Ω🙂\n".repeat(100);
++        let mut writes = Vec::new();
++        let result = write_semantic_text_with(
++            &text,
++            false,
++            30,
++            |chunk| {
++                writes.push(chunk.to_owned());
++                Ok(kAXErrorSuccess)
++            },
++            |_| panic!("one atomic write must not introduce character waits"),
++        );
++        assert_eq!(writes, vec![text.clone()]);
++        assert_eq!(result, (kAXErrorSuccess, text.chars().count(), None));
++    }
++
++    #[test]
++    fn semantic_text_stops_on_native_error_without_replaying_or_completing_a_suffix() {
++        for progressive in [true, false] {
++            let mut writes = 0;
++            let result = write_semantic_text_with(
++                "ação🙂",
++                progressive,
++                30,
++                |_| {
++                    writes += 1;
++                    Ok(-25204)
++                },
++                |_| panic!("failed write must not wait or continue"),
++            );
++            assert_eq!(writes, 1);
++            assert_eq!(result, (-25204, 0, None));
++        }
++    }
++
++    #[test]
++    fn progressive_semantic_text_retains_unicode_boundaries_and_cancellation() {
++        let mut writes = Vec::new();
++        let result = write_semantic_text_with(
++            "é🙂z",
++            true,
++            30,
++            |chunk| {
++                writes.push(chunk.to_owned());
++                Ok(kAXErrorSuccess)
++            },
++            |_| anyhow::bail!("cancelled"),
++        );
++        assert_eq!(writes, vec!["é"]);
++        assert_eq!(result.1, 1);
++        assert_eq!(result.2.as_deref(), Some("cancelled"));
++    }
++
++    #[test]
++    fn atomic_input_rejects_physical_and_desktop_routes_before_dispatch() {
++        let base = serde_json::json!({"atomic":true,"semantic_only":true,"element_token":"token"});
++        assert!(atomic_semantic_request(&base));
++        for (key, value) in [
++            ("scope", serde_json::json!("desktop")),
++            ("delivery_mode", serde_json::json!("foreground")),
++            ("force_synthetic", serde_json::json!(true)),
++            ("semantic_only", serde_json::json!(false)),
++            ("x", serde_json::json!(10)),
++        ] {
++            let mut args = base.clone();
++            args[key] = value;
++            assert!(!atomic_semantic_request(&args), "{key}");
++        }
++        assert!(!atomic_semantic_request(
++            &serde_json::json!({"atomic":true,"semantic_only":true})
++        ));
++    }
++
+     /// Sanity-check that the terminal short-circuit can be expressed as a
+     /// pure function of `is_terminal_target`: when true, the code goes
+     /// to key-event synthesis without consulting AX. This test stands
+@@ -1582,6 +1688,7 @@ mod tests {
+             "x",
+             None,
+             0,
++            false,
+             /*is_terminal_target=*/ true,
+             super::super::DeliveryMode::Background,
+             None,
+@@ -1608,6 +1715,7 @@ mod tests {
+             "x",
+             None,
+             0,
++            false,
+             /*is_terminal_target=*/ true,
+             super::super::DeliveryMode::Background,
+             Some(7),
+@@ -1627,6 +1735,7 @@ mod tests {
+             &text,
+             None,
+             0,
++            false,
+             /*is_terminal_target=*/ true,
+             super::super::DeliveryMode::Background,
+             None,
+
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/element_cache.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/element_cache.rs
+index 6446104..c05993e 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/element_cache.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/element_cache.rs
+@@ -1,5 +1,6 @@
+ use crate::element_token::{
+-    parse_element_args, refusal, ResolvedElement, LRU_CAP_PER_PID, STALE_TOKEN_ERROR,
++    parse_element_args, parse_snapshot_handle, refusal, token_for, ResolvedElement,
++    LRU_CAP_PER_PID, STALE_TOKEN_ERROR,
+ };
+ use crate::protocol::ToolResult;
+ use std::any::Any;
+@@ -10,17 +11,42 @@ pub trait SnapshotPayload: Send + Sync + 'static {
+     type Element;
+     fn len(&self) -> usize;
+     fn retain(&self, index: usize) -> Option<Self::Element>;
++
++    /// Opt-in native identity proof: each current index may name one index in
++    /// the previous payload. Labels, geometry and listing order are not proof.
++    /// The default preserves strict snapshot-scoped behavior on other platforms.
++    fn reconcile(&self, _previous: &Self) -> Vec<Option<usize>> {
++        Vec::new()
++    }
++
++    /// A platform may invalidate a retained payload when its process lifetime
++    /// ends. This check must be bounded and must not mutate the target.
++    fn is_current(&self) -> bool {
++        true
++    }
++}
++
++struct ReconciledTokens {
++    origins: Vec<(u32, usize)>,
++    indices: HashMap<(u32, usize), usize>,
++}
++
++pub struct PublishedSnapshot {
++    pub snapshot_id: u32,
++    pub element_tokens: Vec<String>,
+ }
+ 
+ struct Snapshot<S> {
+     id: u32,
+     window_id: u64,
+     payload: S,
++    reconciled: Option<ReconciledTokens>,
+ }
+ 
+ pub struct ElementCacheCore<S: SnapshotPayload> {
+     runtime_scope: String,
+     inner: Mutex<HashMap<i32, Vec<Snapshot<S>>>>,
++    publication_locks: Mutex<HashMap<(i32, u64), Weak<tokio::sync::Mutex<()>>>>,
+ }
+ 
+ impl<S: SnapshotPayload> ElementCacheCore<S> {
+@@ -28,9 +54,34 @@ impl<S: SnapshotPayload> ElementCacheCore<S> {
+         Self {
+             runtime_scope: current_runtime_scope(),
+             inner: Mutex::new(HashMap::new()),
++            publication_locks: Mutex::new(HashMap::new()),
+         }
+     }
+ 
++    /// Serialize only publishing observations of the same window, from before
++    /// the walk through response preparation. Actuators and capture-only reads
++    /// do not acquire this lock. Weak entries retain no idle window resources.
++    pub async fn acquire_publication(
++        &self,
++        pid: i32,
++        window_id: u64,
++    ) -> tokio::sync::OwnedMutexGuard<()> {
++        let lock = {
++            let mut locks = self.publication_locks.lock().unwrap();
++            locks.retain(|_, lock| lock.strong_count() != 0);
++            let entry = locks.entry((pid, window_id)).or_default();
++            match entry.upgrade() {
++                Some(lock) => lock,
++                None => {
++                    let lock = Arc::new(tokio::sync::Mutex::new(()));
++                    *entry = Arc::downgrade(&lock);
++                    lock
++                }
++            }
++        };
++        lock.lock_owned().await
++    }
++
+     pub fn publish(&self, pid: i32, window_id: u64, payload: S) -> u32 {
+         let (id, replaced, evicted) = {
+             let mut inner = self.inner.lock().unwrap();
+@@ -45,6 +96,7 @@ impl<S: SnapshotPayload> ElementCacheCore<S> {
+                 id,
+                 window_id,
+                 payload,
++                reconciled: None,
+             });
+             (id, replaced, evicted)
+         };
+@@ -52,6 +104,72 @@ impl<S: SnapshotPayload> ElementCacheCore<S> {
+         id
+     }
+ 
++    /// Publish one current native payload. Surviving tokens name only objects
++    /// proven equal by the platform; no old payload or alias history is kept.
++    /// Callers serialize their observations with acquire_publication.
++    pub fn publish_reconciled(&self, pid: i32, window_id: u64, payload: S) -> PublishedSnapshot {
++        let (published, replaced, evicted) = {
++            let mut inner = self.inner.lock().unwrap();
++            let lane = inner.entry(pid).or_default();
++            let previous = lane.iter().position(|entry| entry.window_id == window_id);
++            let id = crate::element_token::mint_snapshot_id();
++            let mut origins = (0..payload.len())
++                .map(|index| (id, index))
++                .collect::<Vec<_>>();
++            if let Some(previous) = previous.map(|position| &lane[position]) {
++                if let Some(tokens) = &previous.reconciled {
++                    let matches = payload.reconcile(&previous.payload);
++                    if matches.len() == origins.len() {
++                        // An ambiguous or malformed mapping must not assign one
++                        // old token to two current controls, even in a buggy adapter.
++                        let mut uses = vec![0usize; tokens.origins.len()];
++                        for index in matches.iter().flatten() {
++                            if let Some(count) = uses.get_mut(*index) {
++                                *count += 1;
++                            }
++                        }
++                        for (origin, previous_index) in origins.iter_mut().zip(matches) {
++                            if let Some(index) =
++                                previous_index.filter(|index| uses.get(*index) == Some(&1))
++                            {
++                                *origin = tokens.origins[index];
++                            }
++                        }
++                    }
++                }
++            }
++            let element_tokens = origins
++                .iter()
++                .map(|&(sid, index)| token_for(sid, index))
++                .collect();
++            let indices = origins
++                .iter()
++                .copied()
++                .enumerate()
++                .map(|(index, token)| (token, index))
++                .collect();
++            let replaced = previous.map(|position| lane.remove(position));
++            let evicted = (lane.len() == LRU_CAP_PER_PID).then(|| lane.remove(0));
++            lane.push(Snapshot {
++                id,
++                window_id,
++                payload,
++                reconciled: Some(ReconciledTokens { origins, indices }),
++            });
++            (
++                PublishedSnapshot {
++                    snapshot_id: id,
++                    element_tokens,
++                },
++                replaced,
++                evicted,
++            )
++        };
++        // Native release may run platform cleanup; never do it under storage admission.
++        drop((replaced, evicted));
++        published
++    }
++
+     pub fn resolve_element_args(
+         &self,
+         pid: i32,
+@@ -78,10 +196,20 @@ impl<S: SnapshotPayload> ElementCacheCore<S> {
+             ));
+         }
+         let inner = self.inner.lock().unwrap();
+-        let entry = inner
+-            .get(&pid)
+-            .and_then(|lane| lane.iter().find(|entry| entry.id == reference.snapshot_id));
+-        let Some(entry) = entry else {
++        let resolved = inner.get(&pid).and_then(|lane| {
++            lane.iter().find_map(|entry| {
++                if reference.via_token {
++                    if let Some(tokens) = &entry.reconciled {
++                        return tokens
++                            .indices
++                            .get(&(reference.snapshot_id, reference.element_index))
++                            .map(|&index| (entry, index));
++                    }
++                }
++                (entry.id == reference.snapshot_id).then_some((entry, reference.element_index))
++            })
++        });
++        let Some((entry, resolved_index)) = resolved else {
+             drop(inner);
+             let caches = runtime_caches()
+                 .lock()
+@@ -102,25 +230,39 @@ impl<S: SnapshotPayload> ElementCacheCore<S> {
+                 refusal("stale_element_token", STALE_TOKEN_ERROR.into())
+             });
+         };
+-        let element = entry
+-            .payload
+-            .retain(reference.element_index)
+-            .ok_or_else(|| {
+-                refusal(
+-                    "invalid_element_token",
+-                    format!(
+-                        "element_token element_index {} out of range (snapshot had {} elements)",
+-                        reference.element_index,
+-                        entry.payload.len()
+-                    ),
+-                )
+-            })?;
++        if !entry.payload.is_current() {
++            return Err(refusal("stale_element_token", STALE_TOKEN_ERROR.into()));
++        }
++        if reference.via_token && entry.reconciled.is_some() {
++            // A reconciled token's spelling records its origin, not its current
++            // row. Optional claims must agree with the current publication.
++            if window_id.is_some_and(|window| window != entry.window_id)
++                || element_index.is_some_and(|index| index != resolved_index)
++                || snapshot_id.is_some_and(|handle| parse_snapshot_handle(handle) != Some(entry.id))
++            {
++                return Err(refusal(
++                    "conflicting_element_target",
++                    format!("{tool_name}: element_token conflicts with the current element_index, snapshot_id, or window_id"),
++                ));
++            }
++        } else {
++            reference.validate_window(entry.window_id, tool_name)?;
++        }
++        let element = entry.payload.retain(resolved_index).ok_or_else(|| {
++            refusal(
++                "invalid_element_token",
++                format!(
++                    "element_token element_index {} out of range (snapshot had {} elements)",
++                    resolved_index,
++                    entry.payload.len()
++                ),
++            )
++        })?;
+         let window_id = entry.window_id;
+         drop(inner);
+-        reference.validate_window(window_id, tool_name)?;
+         Ok(ResolvedElement::Element {
+             window_id: Some(window_id),
+-            element_index: reference.element_index,
++            element_index: resolved_index,
+             via_token: reference.via_token,
+             element,
+         })
+@@ -171,11 +313,17 @@ trait RuntimeCache: Any + Send + Sync {
+ 
+ impl<S: SnapshotPayload> RuntimeCache for ElementCacheCore<S> {
+     fn contains(&self, pid: i32, snapshot_id: u32) -> bool {
+-        self.inner
+-            .lock()
+-            .unwrap()
+-            .get(&pid)
+-            .is_some_and(|lane| lane.iter().any(|entry| entry.id == snapshot_id))
++        self.inner.lock().unwrap().get(&pid).is_some_and(|lane| {
++            lane.iter().any(|entry| {
++                entry.id == snapshot_id
++                    || entry.reconciled.as_ref().is_some_and(|tokens| {
++                        tokens
++                            .origins
++                            .iter()
++                            .any(|(origin, _)| *origin == snapshot_id)
++                    })
++            })
++        })
+     }
+ 
+     fn clear(&self) -> usize {
+@@ -225,6 +373,255 @@ mod tests {
+     use crate::snapshot_test_support::Payload;
+     use std::sync::atomic::{AtomicUsize, Ordering};
+ 
++    struct NativePayload {
++        lifetime: u64,
++        elements: Vec<u64>,
++    }
++
++    impl SnapshotPayload for NativePayload {
++        type Element = u64;
++        fn len(&self) -> usize {
++            self.elements.len()
++        }
++        fn retain(&self, index: usize) -> Option<u64> {
++            self.elements.get(index).copied()
++        }
++        fn reconcile(&self, previous: &Self) -> Vec<Option<usize>> {
++            if self.lifetime != previous.lifetime {
++                return Vec::new();
++            }
++            self.elements
++                .iter()
++                .map(|element| previous.elements.iter().position(|old| old == element))
++                .collect()
++        }
++    }
++
++    fn native(elements: &[u64]) -> NativePayload {
++        NativePayload {
++            lifetime: 1,
++            elements: elements.to_vec(),
++        }
++    }
++
++    fn native_resolve(
++        cache: &ElementCacheCore<NativePayload>,
++        token: &str,
++    ) -> Result<(usize, u64), ToolResult> {
++        match cache.resolve_element_args(42, None, Some(token), None, Some(7), "click")? {
++            ResolvedElement::Element {
++                element_index,
++                element,
++                ..
++            } => Ok((element_index, element)),
++            ResolvedElement::None => panic!("expected exact native element"),
++        }
++    }
++
++    #[test]
++    fn focus_restore_policy_reconciled_reorder_preserves_objects_and_validates_current_claims() {
++        let cache = ElementCacheCore::new();
++        let first = cache.publish_reconciled(42, 7, native(&[10, 20, 30]));
++        let second = cache.publish_reconciled(42, 7, native(&[30, 10, 20]));
++        assert_ne!(first.snapshot_id, second.snapshot_id);
++        assert_eq!(
++            second.element_tokens,
++            [
++                first.element_tokens[2].clone(),
++                first.element_tokens[0].clone(),
++                first.element_tokens[1].clone()
++            ]
++        );
++        assert_eq!(
++            native_resolve(&cache, &first.element_tokens[0]).unwrap(),
++            (1, 10)
++        );
++        let handle = format!("s{:08x}", second.snapshot_id);
++        assert!(cache
++            .resolve_element_args(
++                42,
++                Some(1),
++                Some(&first.element_tokens[0]),
++                Some(&handle),
++                Some(7),
++                "click"
++            )
++            .is_ok());
++        assert!(cache
++            .resolve_element_args(
++                42,
++                Some(0),
++                Some(&first.element_tokens[0]),
++                Some(&handle),
++                Some(7),
++                "click"
++            )
++            .is_err());
++        let old_handle = format!("s{:08x}", first.snapshot_id);
++        assert!(cache
++            .resolve_element_args(
++                42,
++                Some(1),
++                Some(&first.element_tokens[0]),
++                Some(&old_handle),
++                Some(7),
++                "click"
++            )
++            .is_err());
++        assert!(cache
++            .resolve_element_args(
++                42,
++                None,
++                Some(&first.element_tokens[0]),
++                None,
++                Some(8),
++                "click"
++            )
++            .is_err());
++        assert!(cache
++            .resolve_element_args(
++                43,
++                None,
++                Some(&first.element_tokens[0]),
++                None,
++                Some(7),
++                "click"
++            )
++            .is_err());
++        assert!(cache
++            .resolve_element_args(42, Some(0), None, Some(&old_handle), Some(7), "click")
++            .is_err());
++        let legacy = cache
++            .resolve_element_args(42, Some(1), None, Some(&handle), Some(7), "click")
++            .unwrap();
++        assert!(matches!(
++            legacy,
++            ResolvedElement::Element {
++                element: 10,
++                element_index: 1,
++                ..
++            }
++        ));
++        // The current snapshot/index pair is not an additional published token.
++        assert!(native_resolve(&cache, &token_for(second.snapshot_id, 1)).is_err());
++    }
++
++    #[test]
++    fn focus_restore_policy_reconciled_removed_or_ambiguous_handles_never_retarget() {
++        let cache = ElementCacheCore::new();
++        let first = cache.publish_reconciled(42, 7, native(&[10, 20]));
++        let held = native_resolve(&cache, &first.element_tokens[0]).unwrap();
++        let replacement = cache.publish_reconciled(42, 7, native(&[40, 20]));
++        assert!(native_resolve(&cache, &first.element_tokens[0]).is_err());
++        assert_eq!(held, (0, 10));
++        assert_eq!(replacement.element_tokens[1], first.element_tokens[1]);
++        let returned = cache.publish_reconciled(42, 7, native(&[10, 20, 20]));
++        assert_ne!(returned.element_tokens[0], first.element_tokens[0]);
++        assert!(native_resolve(&cache, &first.element_tokens[1]).is_err());
++        assert_ne!(returned.element_tokens[1], returned.element_tokens[2]);
++        let lifetime = cache.publish_reconciled(
++            42,
++            7,
++            NativePayload {
++                lifetime: 2,
++                elements: vec![10, 20],
++            },
++        );
++        assert!(returned
++            .element_tokens
++            .iter()
++            .all(|token| native_resolve(&cache, token).is_err()));
++        assert_eq!(
++            native_resolve(&cache, &lifetime.element_tokens[0]).unwrap(),
++            (0, 10)
++        );
++    }
++
++    #[test]
++    fn focus_restore_policy_reconciled_eviction_remove_and_strict_publication_retire_aliases() {
++        let cache = ElementCacheCore::new();
++        let first = cache.publish_reconciled(42, 7, native(&[10]));
++        let next = cache.publish_reconciled(42, 7, native(&[10]));
++        assert_eq!(first.element_tokens, next.element_tokens);
++        for window in 8..8 + LRU_CAP_PER_PID as u64 {
++            cache.publish_reconciled(42, window, native(&[10]));
++        }
++        assert!(native_resolve(&cache, &first.element_tokens[0]).is_err());
++        let current = cache.publish_reconciled(42, 7, native(&[10]));
++        cache.remove(42, 7);
++        assert!(native_resolve(&cache, &current.element_tokens[0]).is_err());
++        let current = cache.publish_reconciled(42, 7, native(&[10]));
++        let strict = cache.publish(42, 7, native(&[10]));
++        assert!(native_resolve(&cache, &current.element_tokens[0]).is_err());
++        assert_eq!(
++            native_resolve(&cache, &token_for(strict, 0)).unwrap(),
++            (0, 10)
++        );
++        cache.publish(42, 7, native(&[10]));
++        assert!(native_resolve(&cache, &token_for(strict, 0)).is_err());
++    }
++
++    #[test]
++    fn focus_restore_policy_reconciled_tokens_remain_generation_scoped() {
++        let make = |scope: &str| {
++            crate::tool::with_runtime_scope(scope.into(), || {
++                let cache = Arc::new(ElementCacheCore::new());
++                register_runtime_cache(&cache);
++                let first = cache.publish_reconciled(42, 7, native(&[10]));
++                cache.publish_reconciled(42, 7, native(&[10]));
++                (cache, first.element_tokens[0].clone())
++            })
++        };
++        let (first, token) = make("reconciled-generation-first");
++        let (second, _) = make("reconciled-generation-second");
++        crate::tool::with_runtime_scope("reconciled-generation-second".into(), || {
++            let error = native_resolve(&second, &token).unwrap_err();
++            assert_eq!(
++                error.structured_content.unwrap()["refusal"]["code"],
++                "generation_mismatch"
++            );
++        });
++        retire_runtime_scope("reconciled-generation-first");
++        crate::tool::with_runtime_scope("reconciled-generation-first".into(), || {
++            assert!(native_resolve(&first, &token).is_err());
++        });
++        retire_runtime_scope("reconciled-generation-second");
++    }
++
++    #[tokio::test]
++    async fn focus_restore_policy_publication_serializes_only_same_window_observations() {
++        let cache = Arc::new(ElementCacheCore::new());
++        let first = cache.publish_reconciled(42, 7, native(&[10]));
++        let guard = cache.acquire_publication(42, 7).await;
++        let mut pending = Box::pin(cache.acquire_publication(42, 7));
++        assert!(
++            tokio::time::timeout(std::time::Duration::from_millis(10), &mut pending)
++                .await
++                .is_err()
++        );
++        // Target resolution and independent windows remain usable during a walk.
++        assert_eq!(
++            native_resolve(&cache, &first.element_tokens[0]).unwrap(),
++            (0, 10)
++        );
++        let other = tokio::time::timeout(
++            std::time::Duration::from_secs(1),
++            cache.acquire_publication(42, 8),
++        )
++        .await
++        .unwrap();
++        drop(other);
++        drop(guard);
++        drop(
++            tokio::time::timeout(std::time::Duration::from_secs(1), pending)
++                .await
++                .unwrap(),
++        );
++        let next = cache.acquire_publication(42, 9).await;
++        assert_eq!(cache.publication_locks.lock().unwrap().len(), 1);
++        drop(next);
++    }
++
+     #[test]
+     fn publish_then_resolve_returns_projection() {
+         let cache = ElementCacheCore::new();
+@@ -285,6 +682,24 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn focus_restore_policy_reconciled_publication_releases_native_payload_outside_lock() {
++        let cache = Arc::new(ElementCacheCore::new());
++        let drops = Arc::new(AtomicUsize::new(0));
++        let payload = || DropCounter {
++            owner: Arc::downgrade(&cache),
++            drops: drops.clone(),
++        };
++        cache.publish_reconciled(42, 7, payload());
++        cache.publish_reconciled(42, 7, payload());
++        assert_eq!(drops.load(Ordering::SeqCst), 1);
++        cache.remove(42, 7);
++        assert_eq!(drops.load(Ordering::SeqCst), 2);
++        cache.publish_reconciled(42, 7, payload());
++        cache.clear();
++        assert_eq!(drops.load(Ordering::SeqCst), 3);
++    }
++
+     #[test]
+     fn replacement_remove_and_clear_run_drop_outside_lock() {
+         let cache = Arc::new(ElementCacheCore::new());
+diff --git a/libs/cua-driver/rust/crates/cua-driver-core/src/tool.rs b/libs/cua-driver/rust/crates/cua-driver-core/src/tool.rs
+index 754912c..26d582b 100644
+--- a/libs/cua-driver/rust/crates/cua-driver-core/src/tool.rs
++++ b/libs/cua-driver/rust/crates/cua-driver-core/src/tool.rs
+@@ -5195,9 +5195,12 @@ mod capability_tests {
+         "app.launch",
+         "app.list",
+         "app.kill",
++        "app.visibility.set",
+         "window.list",
++        "space.list",
+         "window.activate",
+         "window.frame.set",
++        "window.visibility.set",
+         "window.debug_info",
+         // permissions
+         "system.permissions.tcc",
+diff --git a/libs/cua-driver/rust/crates/cua-driver/src/serve.rs b/libs/cua-driver/rust/crates/cua-driver/src/serve.rs
+index e3ae6db..a9d8ba3 100644
+--- a/libs/cua-driver/rust/crates/cua-driver/src/serve.rs
++++ b/libs/cua-driver/rust/crates/cua-driver/src/serve.rs
+@@ -710,7 +710,7 @@ fn daemon_metadata_response() -> DaemonResponse {
+         .expect("daemon metadata is serializable");
+     #[cfg(target_os = "macos")]
+     {
+-        metadata["synara_native_revision"] = serde_json::json!(41);
++        metadata["synara_native_revision"] = serde_json::json!(42);
+     }
+     DaemonResponse::ok(metadata)
+ }
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/cache.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/cache.rs
+index e660c04..58654c3 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/cache.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/cache.rs
+@@ -1,7 +1,64 @@
+-use super::bindings::AXUIElementRef;
++use super::bindings::{
++    ax_get_window_id, copy_element_attr, copy_string_attr, AXUIElementRef,
++    AXUIElementSetMessagingTimeout,
++};
++use super::enablement::{process_start_stamp, ProcessStartStamp};
+ use super::tree::AXNode;
+-use core_foundation::base::{CFRelease, CFRetain, CFTypeRef};
++use core_foundation::base::{CFEqual, CFHash, CFRelease, CFRetain, CFTypeRef};
+ use cua_driver_core::element_cache::{ElementCacheCore, SnapshotPayload};
++use std::collections::HashMap;
++
++pub(crate) const MAX_RECONCILED_ELEMENTS: usize = 4_096;
++const MAX_IDENTITY_BYTES: usize = 4_096;
++const MAX_IDENTITY_COMPARISONS: usize = 65_536;
++
++#[derive(PartialEq, Eq)]
++struct ElementIdentity {
++    role: String,
++    identifier: Option<String>,
++    // Collection controls can be recycled for another item while keeping the
++    // same AX object. Editable text values deliberately do not participate.
++    item: Option<[Option<String>; 4]>,
++}
++
++fn element_identity(node: &AXNode) -> Option<ElementIdentity> {
++    let collection = matches!(
++        node.role.as_str(),
++        "AXRow" | "AXCell" | "AXListItem" | "AXImage" | "AXMenuItem"
++    );
++    let item = [
++        &node.title,
++        &node.description,
++        &node.value,
++        &node.value_state,
++    ];
++    let bytes = node.role.len()
++        + node.identifier.as_ref().map_or(0, String::len)
++        + if collection {
++            item.iter()
++                .filter_map(|value| value.as_ref())
++                .map(String::len)
++                .sum()
++        } else {
++            0
++        };
++    if node.role.is_empty() || bytes > MAX_IDENTITY_BYTES {
++        return None;
++    }
++    if collection
++        && node.identifier.as_ref().is_none_or(|id| id.is_empty())
++        && item
++            .iter()
++            .all(|value| value.as_ref().is_none_or(|value| value.is_empty()))
++    {
++        return None;
++    }
++    Some(ElementIdentity {
++        role: node.role.clone(),
++        identifier: node.identifier.clone(),
++        item: collection.then(|| item.map(|value| (*value).clone())),
++    })
++}
+ 
+ pub struct RetainedElement(usize);
+ 
+@@ -34,6 +91,11 @@ impl Drop for RetainedElement {
+ 
+ pub struct CachedSnapshot {
+     pub elements: Vec<usize>,
++    identities: Vec<Option<ElementIdentity>>,
++    // The window need not be actionable. Own a separate AX retain, obtained
++    // from an indexed control's AXWindow, rather than a released display node.
++    root: Option<RetainedElement>,
++    process_start: Option<(i32, ProcessStartStamp)>,
+ }
+ 
+ impl CachedSnapshot {
+@@ -44,8 +106,150 @@ impl CachedSnapshot {
+                 .filter(|node| node.element_index.is_some())
+                 .map(|node| node.element_ptr)
+                 .collect(),
++            identities: Vec::new(),
++            root: None,
++            process_start: None,
++        }
++    }
++
++    pub(crate) fn from_nodes_for_process(
++        nodes: &[AXNode],
++        pid: i32,
++        window_id: u32,
++        started: Option<ProcessStartStamp>,
++    ) -> Self {
++        let mut snapshot = Self::from_nodes(nodes);
++        snapshot.process_start = started.map(|stamp| (pid, stamp));
++        if started.is_some() {
++            snapshot.identities = nodes
++                .iter()
++                .filter(|node| node.element_index.is_some())
++                .map(element_identity)
++                .collect();
++            // App menus may precede all window controls in the flattened tree.
++            // They cannot prove this window's root and must not exhaust probes.
++            let controls = nodes
++                .iter()
++                .filter(|node| {
++                    node.element_index.is_some()
++                        && !matches!(
++                            node.role.as_str(),
++                            "AXMenuBar" | "AXMenuBarItem" | "AXMenu" | "AXMenuItem"
++                        )
++                })
++                .map(|node| node.element_ptr);
++            snapshot.root = retain_window_root(controls, window_id);
+         }
++        snapshot
++    }
++
++    fn matching_indices(&self, previous: &Self) -> Vec<Option<usize>> {
++        self.matching_indices_with_hash(
++            previous,
++            |ptr| unsafe { CFHash(ptr as CFTypeRef) } as usize,
++            MAX_IDENTITY_COMPARISONS,
++        )
+     }
++
++    fn matching_indices_with_hash(
++        &self,
++        previous: &Self,
++        hash: impl Fn(usize) -> usize,
++        mut remaining: usize,
++    ) -> Vec<Option<usize>> {
++        let same_root =
++            self.root
++                .as_ref()
++                .zip(previous.root.as_ref())
++                .is_some_and(|(root, old)| {
++                    root.as_ptr() != 0
++                        && old.as_ptr() != 0
++                        && unsafe { CFEqual(root.as_ptr() as CFTypeRef, old.as_ptr() as CFTypeRef) }
++                            != 0
++                });
++        if !same_root
++            || self.elements.len() > MAX_RECONCILED_ELEMENTS
++            || previous.elements.len() > MAX_RECONCILED_ELEMENTS
++            || self.identities.len() != self.elements.len()
++            || previous.identities.len() != previous.elements.len()
++        {
++            return Vec::new();
++        }
++        let mut buckets = HashMap::<usize, Vec<usize>>::new();
++        for (index, &ptr) in previous.elements.iter().enumerate() {
++            if ptr != 0 && previous.identities[index].is_some() {
++                buckets.entry(hash(ptr)).or_default().push(index);
++            }
++        }
++        let mut matches = Vec::with_capacity(self.elements.len());
++        for (index, &ptr) in self.elements.iter().enumerate() {
++            let mut matched = None;
++            if ptr != 0 && self.identities[index].is_some() {
++                for &candidate in buckets.get(&hash(ptr)).into_iter().flatten() {
++                    if remaining == 0 {
++                        return Vec::new();
++                    }
++                    remaining -= 1;
++                    if self.identities[index] == previous.identities[candidate]
++                        && unsafe {
++                            CFEqual(ptr as CFTypeRef, previous.elements[candidate] as CFTypeRef)
++                        } != 0
++                    {
++                        if matched.is_some() {
++                            matched = None;
++                            break;
++                        }
++                        matched = Some(candidate);
++                    }
++                }
++            }
++            matches.push(matched);
++        }
++        let mut uses = vec![0usize; previous.elements.len()];
++        for &index in matches.iter().flatten() {
++            uses[index] += 1;
++        }
++        for matched in &mut matches {
++            if matched.is_some_and(|index| uses[index] != 1) {
++                *matched = None;
++            }
++        }
++        matches
++    }
++}
++
++fn retain_window_root(
++    elements: impl Iterator<Item = usize>,
++    window_id: u32,
++) -> Option<RetainedElement> {
++    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
++    for ptr in elements.take(8) {
++        if std::time::Instant::now() >= deadline {
++            break;
++        }
++        if ptr == 0 {
++            continue;
++        }
++        unsafe {
++            // Preserve the indexed control's existing timeout for later
++            // actuators; only the separately owned window proxy is adjusted.
++            let Some(root) = copy_element_attr(ptr as AXUIElementRef, "AXWindow") else {
++                continue;
++            };
++            // copy_element_attr transferred one owned retain to this guard.
++            let retained = RetainedElement(root as usize);
++            AXUIElementSetMessagingTimeout(root, 0.025);
++            if ax_get_window_id(root) == Some(window_id)
++                && matches!(
++                    copy_string_attr(root, "AXRole").as_deref(),
++                    Some("AXWindow" | "AXSheet")
++                )
++            {
++                return Some(retained);
++            }
++        }
++    }
++    None
+ }
+ 
+ impl SnapshotPayload for CachedSnapshot {
+@@ -58,6 +262,21 @@ impl SnapshotPayload for CachedSnapshot {
+             .get(index)
+             .map(|ptr| unsafe { RetainedElement::retain(*ptr) })
+     }
++
++    fn reconcile(&self, previous: &Self) -> Vec<Option<usize>> {
++        if self.process_start.is_none()
++            || self.process_start != previous.process_start
++            || !self.is_current()
++        {
++            return Vec::new();
++        }
++        self.matching_indices(previous)
++    }
++
++    fn is_current(&self) -> bool {
++        self.process_start
++            .is_none_or(|(pid, stamp)| process_start_stamp(pid) == Some(stamp))
++    }
+ }
+ 
+ impl Drop for CachedSnapshot {
+@@ -79,6 +298,222 @@ mod tests {
+     use core_foundation::string::CFString;
+     use cua_driver_core::element_token::{token_for, ResolvedElement};
+ 
++    fn identified(root: &CFString, objects: &[(&CFString, &str, Option<&str>)]) -> CachedSnapshot {
++        let mut payload = CachedSnapshot {
++            elements: Vec::new(),
++            identities: Vec::new(),
++            root: Some(unsafe { RetainedElement::retain(root.as_concrete_TypeRef() as usize) }),
++            process_start: Some((
++                std::process::id() as i32,
++                process_start_stamp(std::process::id() as i32).unwrap(),
++            )),
++        };
++        for &(object, role, title) in objects {
++            let ptr = object.as_concrete_TypeRef() as usize;
++            unsafe {
++                CFRetain(ptr as CFTypeRef);
++            }
++            payload.elements.push(ptr);
++            payload.identities.push(Some(ElementIdentity {
++                role: role.into(),
++                identifier: None,
++                item: matches!(role, "AXRow" | "AXCell")
++                    .then(|| [title.map(str::to_owned), None, None, None]),
++            }));
++        }
++        payload
++    }
++
++    #[test]
++    fn focus_restore_policy_native_equality_survives_reorder_without_retaining_history() {
++        let root = CFString::new("root");
++        let first = CFString::new("first-control");
++        let first_proxy = CFString::new("first-control");
++        let second = CFString::new("second-control");
++        let base = unsafe { CFGetRetainCount(first.as_concrete_TypeRef() as CFTypeRef) };
++        let cache = ElementCache::new();
++        let original = cache.publish_reconciled(
++            1,
++            2,
++            identified(
++                &root,
++                &[(&first, "AXTextField", None), (&second, "AXButton", None)],
++            ),
++        );
++        assert_eq!(
++            original.element_tokens.len(),
++            2,
++            "the nonactionable root has no index"
++        );
++        let admitted = cache
++            .resolve_element_args(
++                1,
++                None,
++                Some(&original.element_tokens[0]),
++                None,
++                Some(2),
++                "type_text",
++            )
++            .unwrap();
++        let root_proxy = CFString::new("root");
++        let current = cache.publish_reconciled(
++            1,
++            2,
++            identified(
++                &root_proxy,
++                &[
++                    (&second, "AXButton", None),
++                    (&first_proxy, "AXTextField", None),
++                ],
++            ),
++        );
++        assert_eq!(current.element_tokens[1], original.element_tokens[0]);
++        let resolved = cache
++            .resolve_element_args(
++                1,
++                None,
++                Some(&original.element_tokens[0]),
++                None,
++                Some(2),
++                "type_text",
++            )
++            .unwrap();
++        assert!(matches!(
++            resolved,
++            ResolvedElement::Element {
++                element_index: 1,
++                ..
++            }
++        ));
++        drop(resolved);
++        drop(cache);
++        assert_eq!(
++            unsafe { CFGetRetainCount(first.as_concrete_TypeRef() as CFTypeRef) },
++            base + 1
++        );
++        drop(admitted);
++        assert_eq!(
++            unsafe { CFGetRetainCount(first.as_concrete_TypeRef() as CFTypeRef) },
++            base
++        );
++    }
++
++    #[test]
++    fn focus_restore_policy_native_replacement_collection_reuse_and_root_change_retire_tokens() {
++        let root = CFString::new("root");
++        let other_root = CFString::new("different-root");
++        let row = CFString::new("row");
++        let replacement = CFString::new("replacement-row");
++        let before = identified(&root, &[(&row, "AXRow", Some("A.txt"))]);
++        let same = identified(&root, &[(&row, "AXRow", Some("A.txt"))]);
++        assert_eq!(same.reconcile(&before), [Some(0)]);
++        let reused = identified(&root, &[(&row, "AXRow", Some("B.txt"))]);
++        assert_eq!(reused.reconcile(&before), [None]);
++        let replaced = identified(&root, &[(&replacement, "AXRow", Some("A.txt"))]);
++        assert_eq!(replaced.reconcile(&before), [None]);
++        let changed_root = identified(&other_root, &[(&row, "AXRow", Some("A.txt"))]);
++        assert!(changed_root.reconcile(&before).is_empty());
++        let mut changed_identifier = same;
++        changed_identifier.identities[0]
++            .as_mut()
++            .unwrap()
++            .identifier = Some("other".into());
++        assert_eq!(changed_identifier.reconcile(&before), [None]);
++        changed_identifier.identities[0].as_mut().unwrap().role = "AXCell".into();
++        assert_eq!(changed_identifier.reconcile(&before), [None]);
++        changed_identifier.root = None;
++        assert!(changed_identifier.reconcile(&before).is_empty());
++    }
++
++    #[test]
++    fn focus_restore_policy_hash_collisions_duplicates_and_comparison_limits_fail_closed() {
++        let root = CFString::new("root");
++        let first = CFString::new("first");
++        let second = CFString::new("second");
++        let previous = identified(
++            &root,
++            &[(&first, "AXButton", None), (&second, "AXButton", None)],
++        );
++        let reordered = identified(
++            &root,
++            &[(&second, "AXButton", None), (&first, "AXButton", None)],
++        );
++        assert_eq!(
++            reordered.matching_indices_with_hash(&previous, |_| 0, 32),
++            [Some(1), Some(0)]
++        );
++        assert!(reordered
++            .matching_indices_with_hash(&previous, |_| 0, 1)
++            .is_empty());
++        let duplicate = identified(
++            &root,
++            &[(&first, "AXButton", None), (&first, "AXButton", None)],
++        );
++        assert_eq!(duplicate.reconcile(&previous), [None, None]);
++        assert_eq!(previous.reconcile(&duplicate), [None, None]);
++    }
++
++    #[test]
++    fn focus_restore_policy_unknown_or_replaced_process_lifetime_never_reconciles() {
++        let root = CFString::new("root");
++        let before = identified(&root, &[(&root, "AXWindow", None)]);
++        let mut after = identified(&root, &[(&root, "AXWindow", None)]);
++        after.process_start = None;
++        assert!(after.reconcile(&before).is_empty());
++        assert!(before.reconcile(&after).is_empty());
++        after.process_start = Some((std::process::id() as i32, (0, 0)));
++        assert!(!after.is_current());
++        assert!(after.reconcile(&before).is_empty());
++        let cache = ElementCache::new();
++        let published = cache.publish_reconciled(1, 2, after);
++        assert!(cache
++            .resolve_element_args(
++                1,
++                None,
++                Some(&published.element_tokens[0]),
++                None,
++                Some(2),
++                "click"
++            )
++            .is_err());
++    }
++
++    #[test]
++    fn focus_restore_policy_editable_value_is_not_identity_but_collection_value_is() {
++        let mut node = AXNode {
++            element_index: Some(0),
++            role: "AXTextField".into(),
++            title: None,
++            description: None,
++            identifier: Some("path".into()),
++            value: Some("/before".into()),
++            value_state: Some("/before".into()),
++            help: None,
++            actions: Vec::new(),
++            element_ptr: 0,
++            depth: 1,
++            parent_element_index: None,
++            frame: None,
++            value_description: None,
++            min_value: None,
++            max_value: None,
++            enabled: Some(true),
++            selected: None,
++            selectable: false,
++            in_web_content: false,
++        };
++        let before = element_identity(&node);
++        node.value = Some("/after".into());
++        node.value_state = Some("/after".into());
++        assert!(element_identity(&node) == before);
++        node.role = "AXRow".into();
++        let before = element_identity(&node);
++        node.value_state = Some("replacement".into());
++        assert!(element_identity(&node) != before);
++        node.identifier = Some("x".repeat(MAX_IDENTITY_BYTES + 1));
++        assert!(element_identity(&node).is_none());
++    }
++
+     fn resolve(cache: &ElementCache, snapshot: u32, index: usize) -> Option<RetainedElement> {
+         match cache
+             .resolve_element_args(
+@@ -100,6 +535,9 @@ mod tests {
+         unsafe { CFRetain(ptr as CFTypeRef) };
+         CachedSnapshot {
+             elements: vec![ptr],
++            identities: Vec::new(),
++            root: None,
++            process_start: None,
+         }
+     }
+ 
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/enablement.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/enablement.rs
+index 762acbb..91eb226 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/enablement.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/enablement.rs
+@@ -22,11 +22,11 @@ use super::bindings::{enable_chromium_accessibility, AXUIElementRef};
+ /// lifetime.
+ const CHROMIUM_SETTLE_SECONDS: f64 = 0.5;
+ 
+-type ProcessStartStamp = (u64, u64);
++pub(crate) type ProcessStartStamp = (u64, u64);
+ 
+ /// Kernel start time of a process: `(pbi_start_tvsec, pbi_start_tvusec)`.
+ /// `None` when the process is gone or proc info is unreadable.
+-fn process_start_stamp(pid: i32) -> Option<ProcessStartStamp> {
++pub(crate) fn process_start_stamp(pid: i32) -> Option<ProcessStartStamp> {
+     // SAFETY: proc_pidinfo writes at most `size` bytes into `info` and returns
+     // the number of bytes filled (<= size) or <= 0 on failure.
+     unsafe {
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
+index 051da81..74e2c26 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
+@@ -1,5 +1,6 @@
+ use async_trait::async_trait;
+ use cua_driver_core::{
++    element_cache::{PublishedSnapshot, SnapshotPayload},
+     protocol::{Content, ToolResult},
+     tool::{Tool, ToolDef},
+ };
+@@ -38,8 +39,11 @@ fn def() -> &'static ToolDef {
+             (back-compat). Every actionable element is tagged with [element_index N] \
+             in the markdown and as `element_index` in the structured array — pass \
+             those indices to click, type_text, press_key, etc.\n\n\
+-            INVARIANT: call get_window_state once per turn per (pid, window_id) before any \
+-            element-indexed action. The index map is replaced by the next snapshot.\n\n\
++            Numeric element_index requires the matching current snapshot_id; the index \
++            map is replaced by the next snapshot. On macOS, element_token may survive \
++            another snapshot only when the same live native object is proven. A removed, \
++            replaced, or unproven control gets no alias to another control. Prefer token-only \
++            targeting; redundant index/snapshot fields must name the current publication.\n\n\
+             PREFERRED CONSUMERS read `structuredContent.elements` (one entry per \
+             indexed row with `element_index`, `role`, `label`, `value` (the \
+             element's text/AXValue when present — use it to verify what a field \
+@@ -96,7 +100,8 @@ fn def() -> &'static ToolDef {
+             context-window blow-up on Electron / Obsidian / large web apps that \
+             produce 10k+ element trees. When applied, BOTH the markdown \
+             and the structured elements are truncated identically. Omit both for \
+-            current default behaviour (≤2 000 elements, depth ≤25).".into(),
++            current default behaviour (≤2 000 elements, depth ≤25); max_elements is \
++            always capped at 4 096.".into(),
+         input_schema: serde_json::json!({
+             "type": "object",
+             "required": ["pid", "window_id"],
+@@ -121,7 +126,7 @@ fn def() -> &'static ToolDef {
+                 "max_elements": {
+                     "type": "integer",
+                     "minimum": 1,
+-                    "description": "Cap on the total number of AX nodes walked. Truncates depth-first; markdown and structured elements truncate together. Omit for the default (2 000). Lower this for Electron / Obsidian / large web apps that produce 10k+ element trees and blow context windows."
++                    "description": "Cap on the total number of AX nodes walked, at most 4 096. Truncates depth-first; markdown and structured elements truncate together. Omit for the default (2 000). Lower this for Electron / Obsidian / large web apps that produce 10k+ element trees and blow context windows."
+                 },
+                 "max_depth": {
+                     "type": "integer",
+@@ -298,7 +303,7 @@ impl Tool for GetWindowStateTool {
+         let max_elements = args
+             .get("max_elements")
+             .and_then(|v| v.as_u64())
+-            .map(|v| v.max(1) as usize)
++            .map(|v| v.clamp(1, crate::ax::cache::MAX_RECONCILED_ELEMENTS as u64) as usize)
+             .unwrap_or(crate::ax::tree::DEFAULT_MAX_ELEMENTS);
+         let max_depth = args
+             .get("max_depth")
+@@ -306,6 +311,18 @@ impl Tool for GetWindowStateTool {
+             .map(|v| v.max(1) as usize)
+             .unwrap_or(crate::ax::tree::DEFAULT_MAX_DEPTH);
+ 
++        // Serialize publishing walks, not actions or previews. An older walk
++        // must never finish late and retire tokens from a newer observation.
++        let _publication = if want_tree && !observation_only {
++            Some(
++                self.state
++                    .element_cache
++                    .acquire_publication(pid, u64::from(window_id))
++                    .await,
++            )
++        } else {
++            None
++        };
+         let (tree_result, prepared_snapshot) = if want_tree {
+             let q = query.clone();
+             // Keep the product deadline below the public client's 25-second
+@@ -313,6 +330,11 @@ impl Tool for GetWindowStateTool {
+             // walker also applies a native per-element messaging timeout because
+             // dropping a spawn_blocking JoinHandle cannot cancel a blocked AX call.
+             let walk_future = tokio::task::spawn_blocking(move || {
++                let started = if observation_only {
++                    None
++                } else {
++                    crate::ax::enablement::process_start_stamp(pid)
++                };
+                 let tree = crate::ax::tree::walk_tree_bounded(
+                     pid,
+                     Some(window_id),
+@@ -320,7 +342,12 @@ impl Tool for GetWindowStateTool {
+                     max_elements,
+                     max_depth,
+                 );
+-                let payload = crate::ax::cache::CachedSnapshot::from_nodes(&tree.nodes);
++                let payload = crate::ax::cache::CachedSnapshot::from_nodes_for_process(
++                    &tree.nodes,
++                    pid,
++                    window_id,
++                    started,
++                );
+                 (tree, payload)
+             });
+             match tokio::time::timeout(std::time::Duration::from_secs(20), walk_future).await {
+@@ -538,13 +565,21 @@ impl Tool for GetWindowStateTool {
+             .map(|r| r.tree_markdown.clone())
+             .unwrap_or_default();
+ 
+-        let snapshot_id = prepared_snapshot
++        if prepared_snapshot
++            .as_ref()
++            .is_some_and(|payload| !payload.is_current())
++        {
++            return ToolResult::error("The target process lifetime changed during observation; observe the current window again.")
++                .with_structured(serde_json::json!({"code":"stale_target", "pid":pid, "window_id":window_id}));
++        }
++        let publication = prepared_snapshot
+             .filter(|_| scope_matched && !observation_only)
+             .map(|payload| {
+                 self.state
+                     .element_cache
+-                    .publish(pid, u64::from(window_id), payload)
++                    .publish_reconciled(pid, u64::from(window_id), payload)
+             });
++        let snapshot_id = publication.as_ref().map(|published| published.snapshot_id);
+ 
+         // Build the structured `elements` array — one entry per actionable
+         // node, matching the order (and indices) of the markdown rendering.
+@@ -552,11 +587,14 @@ impl Tool for GetWindowStateTool {
+         // alongside for back-compat with existing text-parsing callers
+         // (Hermes' regex parser, Codex, Claude Code) and is signalled as
+         // preferred-for-back-compat-only via the `_note` field below.
+-        let elements_json: Vec<serde_json::Value> = match (snapshot_id, tree_result.as_ref()) {
+-            (Some(sid), Some(r)) => build_elements_array_with_token(&r.nodes, Some(sid)),
+-            (None, Some(r)) if scope_matched => build_elements_array_with_token(&r.nodes, None),
+-            _ => Vec::new(),
+-        };
++        let elements_json: Vec<serde_json::Value> =
++            match (publication.as_ref(), tree_result.as_ref()) {
++                (Some(published), Some(r)) => {
++                    build_elements_array_with_publication(&r.nodes, published)
++                }
++                (None, Some(r)) if scope_matched => build_elements_array_with_token(&r.nodes, None),
++                _ => Vec::new(),
++            };
+         let elements_json = cua_driver_core::element_query::project_elements_for_query(
+             elements_json,
+             query.as_deref(),
+@@ -587,8 +625,8 @@ impl Tool for GetWindowStateTool {
+             structured["filtered_element_count"] = serde_json::json!(filtered_element_count);
+         }
+         // Surface 6: an opaque snapshot identifier consumers can log
+-        // alongside the per-element tokens for debug correlation. Same value
+-        // embedded in every `element_token` emitted in `elements[]` above.
++        // alongside the per-element tokens for debug correlation. Reconciled
++        // tokens may have older origins; numeric indices name this snapshot only.
+         // Additive — old consumers ignore it. Absent when no snapshot was
+         // registered (unresolved window scope).
+         if let Some(sid) = snapshot_id {
+@@ -870,11 +908,9 @@ pub(crate) fn build_elements_array_with_token(
+                 "role": node.role,
+                 "depth": node.depth,
+             });
+-            // Surface 6: opaque token paired to the integer index.
+-            // Tools accept either; the token has explicit validity
+-            // (invalidated when the next snapshot supersedes this
+-            // one in the per-pid LRU). See cua-driver-core's
+-            // `element_token` module.
++            // Strict snapshot tokens remain available to legacy producers.
++            // The native publisher below substitutes only reconciled tokens
++            // actually registered for the current payload.
+             if let Some(sid) = snapshot_id {
+                 entry["element_token"] =
+                     serde_json::json!(cua_driver_core::element_token::token_for(sid, idx));
+@@ -948,6 +984,24 @@ pub(crate) fn build_elements_array_with_token(
+         .collect()
+ }
+ 
++fn build_elements_array_with_publication(
++    nodes: &[crate::ax::tree::AXNode],
++    publication: &PublishedSnapshot,
++) -> Vec<serde_json::Value> {
++    let mut elements = build_elements_array_with_token(nodes, None);
++    for element in &mut elements {
++        if let Some(token) = element
++            .get("element_index")
++            .and_then(serde_json::Value::as_u64)
++            .and_then(|index| usize::try_from(index).ok())
++            .and_then(|index| publication.element_tokens.get(index))
++        {
++            element["element_token"] = serde_json::json!(token);
++        }
++    }
++    elements
++}
++
+ /// Keep the structured response aligned with a query-filtered markdown tree.
+ ///
+ /// The AX walker deliberately keeps the complete node/cache snapshot so the
+@@ -1174,6 +1228,27 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn focus_restore_policy_response_uses_registered_tokens_after_native_reorder() {
++        let nodes = vec![
++            node(Some(0), "AXButton", Some("Second"), 0, None, None, vec![]),
++            node(Some(1), "AXTextField", None, 0, None, None, vec![]),
++        ];
++        let publication = PublishedSnapshot {
++            snapshot_id: 9,
++            element_tokens: vec!["s00000001:5".into(), "s00000001:2".into()],
++        };
++        let elements = build_elements_array_with_publication(&nodes, &publication);
++        assert_eq!(elements[0]["element_index"], 0);
++        assert_eq!(elements[0]["element_token"], "s00000001:5");
++        assert_eq!(elements[1]["element_index"], 1);
++        assert_eq!(elements[1]["element_token"], "s00000001:2");
++        let observation = build_elements_array_with_token(&nodes, None);
++        assert!(observation
++            .iter()
++            .all(|element| element.get("element_token").is_none()));
++    }
++
+     #[test]
+     fn elements_match_indexed_node_count() {
+         // Mix of indexed + non-indexed nodes; only indexed should surface.

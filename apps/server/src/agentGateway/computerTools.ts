@@ -4,10 +4,13 @@ import { beginComputerTurnCall } from "../computer/computerTurnTiming.ts";
 import {
   bindComputerTargetRef,
   computerElementRefIdentity,
+  observedComputerTargetNode,
+  retainComputerElementRef,
 } from "../computer/computerElementIdentity.ts";
+import { flattenUiTree } from "@synara/shared/uiTreeTargeting";
 import { makeComputerSpaceTools } from "./computerSpaceTools.ts";
 import { cursorToolActivity } from "../computer/cursorActivity.ts";
-import { waitForControl } from "../computer/waitForControl.ts";
+import { waitForControl, type ComputerControlReadiness } from "../computer/waitForControl.ts";
 import {
   assertDesktopOperationActive,
   desktopOperationSignal,
@@ -35,7 +38,9 @@ import {
   type ComputerPermission,
   type ComputerRect,
   type ComputerScreenshot,
+  type ComputerState,
   type ComputerTarget,
+  type ComputerUiNode,
   type ComputerWindow,
 } from "@synara/contracts";
 
@@ -537,6 +542,7 @@ function validateInspectionArguments(
  */
 const APP_GUIDANCE: Record<string, string> = {
   slack: COMPUTER_HELP_SECTIONS.slack,
+  "open and save panel service": COMPUTER_HELP_SECTIONS.file_dialogs,
 };
 
 function keyboardTargetProperty(): Record<string, unknown> {
@@ -544,7 +550,7 @@ function keyboardTargetProperty(): Record<string, unknown> {
     window_id: {
       type: "string",
       description:
-        "Exact target window from computer_list_windows; does not activate it. Screenshot is scoped to it.",
+        "Exact window from computer_list_windows; does not activate it. Screenshot stays in it.",
     },
   };
 }
@@ -1398,8 +1404,8 @@ export function makeAgentGatewayComputerTools(
 
   /**
    * Element refs are stable handles, not listing positions. A thread's table
-   * binds a number to an actionable identity — window, role, full label and
-   * which same-labelled control it is — the first time a listing shows it;
+   * binds a number to a native window/role/token identity, or a generic
+   * window/role/label/ordinal identity, the first time a listing shows it;
    * later listings remap their elements onto the same numbers. Ref 7 keeps
    * meaning "that Save button" across observations and window-scoped reads,
    * so a diff does not silently move the handles a model is holding.
@@ -1430,27 +1436,33 @@ export function makeAgentGatewayComputerTools(
       table = { next: 0, byKey: new Map(), entries: new Map() };
       elementRefTables.set(threadId, table);
     }
-    // Clear before stamping the listing, so every ref returned in this digest
-    // remains resolvable. next stays monotonic across bounded table eviction.
-    if (table.entries.size + elements.items.length > MAX_ELEMENT_REFS) {
+    const keys = elements.refIndex.map((id) => {
+      const nativeIdentity = computerElementRefIdentity(id);
+      return JSON.stringify([
+        id.windowId,
+        id.role,
+        nativeIdentity === undefined ? ["label", id.label, id.ordinal] : ["native", nativeIdentity],
+      ]);
+    });
+    // Re-observing known identities consumes no capacity. Clear before
+    // stamping only when distinct new identities would exceed the cap, so
+    // every returned ref resolves and evicted numbers are never recycled.
+    const newKeys = new Set(keys.filter((key) => !table.byKey.has(key)));
+    if (table.entries.size + newKeys.size > MAX_ELEMENT_REFS) {
       table.byKey.clear();
       table.entries.clear();
     }
     const items = elements.items.map((item, index) => {
       const id = elements.refIndex[index]!;
-      const nativeIdentity = computerElementRefIdentity(id);
-      const key = JSON.stringify([
-        id.windowId,
-        id.role,
-        id.label,
-        nativeIdentity === undefined ? ["ordinal", id.ordinal] : ["native", nativeIdentity],
-      ]);
+      const key = keys[index]!;
       let ref = table.byKey.get(key);
       if (ref === undefined) {
         ref = table.next++;
         table.byKey.set(key, ref);
-        table.entries.set(ref, id);
       }
+      // The token still names the same control, but its label, position and
+      // advertised actions come from this observation rather than the first.
+      table.entries.set(ref, id);
       return { ...item, ref };
     });
     return { ...elements, items };
@@ -1521,6 +1533,20 @@ export function makeAgentGatewayComputerTools(
       ...changes.changed,
       ...changes.removed,
     ]);
+    const previousRefs = new Set(before?.items.map((item) => item.ref));
+    const deliveredRefs = new Set([...added, ...changed].map((item) => item.ref));
+    // A capped delta must not advance the baseline past native refs the model
+    // has never received. In that case also return the already bounded current
+    // listing; a following empty diff then leaves every current handle known.
+    const needsListing =
+      omitted > 0 &&
+      stable.items.some(
+        (item) =>
+          computerElementRefIdentity(item) !== undefined &&
+          !previousRefs.has(item.ref) &&
+          !deliveredRefs.has(item.ref),
+      );
+    const listing = needsListing ? hoistElementWindowId(stable.items) : undefined;
     return {
       elementChanges: {
         added: elementWindowId === undefined ? added : stripElementWindowId(added),
@@ -1529,6 +1555,18 @@ export function makeAgentGatewayComputerTools(
       },
       ...(omitted > 0 ? { elementChangesOmitted: omitted } : {}),
       ...(elementWindowId === undefined ? {} : { elementWindowId }),
+      ...(listing === undefined
+        ? {}
+        : {
+            elements: listing.items,
+            ...(listing.elementWindowId === undefined
+              ? {}
+              : { elementWindowId: listing.elementWindowId }),
+            ...(stable.sourceIncomplete ? { elementsSourceIncomplete: true } : {}),
+            ...(stable.complete
+              ? {}
+              : { elementsTruncated: true, elementsOmitted: stable.omitted }),
+          }),
       // Either side reporting less than the full tree makes the
       // diff itself partial — removals beyond a cap are invisible.
       ...((before !== undefined && !before.complete) || !stable.complete
@@ -1731,6 +1769,88 @@ export function makeAgentGatewayComputerTools(
 
   const readTarget = (args: Record<string, unknown>, context: ToolContext): ComputerTarget =>
     resolveTarget(readScreenshotTarget(args), context.callerThreadId);
+
+  // Consult the backend-owned registry without inventing an actuator identity.
+  // The temporary ref only exposes the identity already retained for this node.
+  const nativeNodeIdentity = (node: ComputerUiNode): string | undefined =>
+    computerElementRefIdentity(retainComputerElementRef({}, node));
+
+  const nativeConditionIdentity = (target: ComputerTarget): string | undefined => {
+    const node = observedComputerTargetNode(target);
+    if (node === undefined) return undefined;
+    const identity = nativeNodeIdentity(node);
+    if (!identity || !target.windowId || node.windowId !== target.windowId) {
+      throw new ToolInputError(
+        "The native condition ref has no exact window identity. Observe again.",
+      );
+    }
+    return identity;
+  };
+
+  const nativeConditionPresence = (
+    state: ComputerState,
+    target: ComputerTarget,
+    identity: string,
+  ): "present" | "closed" => {
+    if (state.availability !== undefined && state.availability.kind !== "available") {
+      throw new ComputerTargetError({
+        code: "computer_target_refused",
+        message: "Native condition observation is unavailable; no absence was established.",
+      });
+    }
+    if (!state.windows.some((window) => window.id === target.windowId)) return "closed";
+    if (
+      state.root !== undefined &&
+      state.accessibility?.status !== "unavailable" &&
+      !state.accessibility?.unavailableWindowIds.includes(target.windowId!) &&
+      flattenUiTree(state.root, (node) => node.children).some(
+        (node) =>
+          node.windowId === target.windowId &&
+          node.onScreen &&
+          nativeNodeIdentity(node) === identity,
+      )
+    ) {
+      return "present";
+    }
+    // A missing retained token can mean truncation or snapshot token rotation.
+    // Neither proves that its control disappeared, even beside an identical
+    // replacement. In particular, this must never authorize an unless step.
+    throw new ComputerTargetError({
+      code: "computer_target_refused",
+      message:
+        "The fresh observation did not reidentify the retained native condition ref. " +
+        "Presence and absence are unverified. Observe again and select a fresh ref; no label or ordinal fallback was used.",
+    });
+  };
+
+  const waitForNativeControl = async (
+    target: ComputerTarget,
+    identity: string,
+    timeoutMs: number,
+    absent: boolean,
+  ): Promise<ComputerControlReadiness> => {
+    const started = performance.now();
+    const result = (status: ComputerControlReadiness["status"]): ComputerControlReadiness => ({
+      status,
+      waitedMs: Math.round(performance.now() - started),
+    });
+    while (true) {
+      assertDesktopOperationActive();
+      const state = await manager.getState({
+        includeTree: true,
+        ...(target.windowId !== undefined ? { windowId: target.windowId } : {}),
+      });
+      assertDesktopOperationActive();
+      const presence = nativeConditionPresence(state, target, identity);
+      if (presence === "closed") return result(absent ? "ready" : "closed");
+      if (!absent) return result("ready");
+      const remaining = timeoutMs - (performance.now() - started);
+      if (remaining <= 0) return result("timeout");
+      await waitForComputer(Math.min(100, remaining), undefined, {
+        signal: desktopOperationSignal(),
+      });
+    }
+  };
 
   const readNestedTarget = (
     args: Record<string, unknown>,
@@ -2659,6 +2779,10 @@ export function makeAgentGatewayComputerTools(
             ? resolveTarget(raw, threadId)
             : undefined;
         if (target !== undefined) {
+          const nativeIdentity = nativeConditionIdentity(target);
+          if (nativeIdentity !== undefined) {
+            return () => waitForNativeControl(target, nativeIdentity, durationMs, absent);
+          }
           if (target.label === undefined || !target.label.trim()) {
             throw new ToolInputError(
               'A "wait" step with an element target requires a nonempty label or a ref.',
@@ -2862,8 +2986,8 @@ export function makeAgentGatewayComputerTools(
    * same fields an action step does — label, role, ref, window_id. A ref is
    * bound to its listed identity at parse time, so the check asks about the
    * element the model meant, not whatever its ref happens to point at later.
-   * Only a label-carrying target is a usable condition: a bare window or
-   * role matches everything, which is no condition at all.
+   * Native refs keep their retained identity even without a label. Other
+   * targets need a nonempty label; a bare window or role is no condition.
    */
   const readStepElementCondition = (
     step: Record<string, unknown>,
@@ -2873,7 +2997,7 @@ export function makeAgentGatewayComputerTools(
     const value = readRecordArg(step, name);
     if (value === undefined) return undefined;
     const target = resolveTarget(readScreenshotTarget(value), threadId);
-    if (target.label === undefined) {
+    if (nativeConditionIdentity(target) === undefined && !target.label?.trim()) {
       throw new ToolInputError(`"${name}" needs a label, or a ref whose element has one.`);
     }
     return target;
@@ -2889,10 +3013,15 @@ export function makeAgentGatewayComputerTools(
    * unreadable tree — no guesses.
    */
   const elementConditionPresent = async (target: ComputerTarget): Promise<boolean> => {
+    const nativeIdentity = nativeConditionIdentity(target);
     const state = await manager.getState({
       includeTree: true,
       ...(target.windowId !== undefined ? { windowId: target.windowId } : {}),
     });
+    assertDesktopOperationActive();
+    if (nativeIdentity !== undefined) {
+      return nativeConditionPresence(state, target, nativeIdentity) === "present";
+    }
     if (
       !state.root ||
       state.accessibility?.status === "unavailable" ||
@@ -3025,34 +3154,34 @@ export function makeAgentGatewayComputerTools(
       await Effect.runPromise(context.assertCallerTurnActive(), {
         signal: desktopOperationSignal(),
       });
-      // Element conditions evaluate against live state at the moment the step
-      // would run — the answer a get_state gave ten steps ago is not it.
-      const skippedReason = await (async (): Promise<string | undefined> => {
-        if (
-          preparedStep.ifElement !== undefined &&
-          !(await elementConditionPresent(preparedStep.ifElement))
-        ) {
-          return "if_element_absent";
-        }
-        if (
-          preparedStep.unlessElement !== undefined &&
-          (await elementConditionPresent(preparedStep.unlessElement))
-        ) {
-          return "unless_element_present";
-        }
-        return undefined;
-      })();
-      if (skippedReason !== undefined) {
-        steps.push({
-          step: index,
-          type: preparedStep.type,
-          ok: true,
-          skipped: true,
-          skippedReason,
-        });
-        continue;
-      }
       try {
+        // Conditions belong to the step's failure policy too: an unreadable
+        // condition must not discard the results of input already delivered.
+        const skippedReason = await (async (): Promise<string | undefined> => {
+          if (
+            preparedStep.ifElement !== undefined &&
+            !(await elementConditionPresent(preparedStep.ifElement))
+          ) {
+            return "if_element_absent";
+          }
+          if (
+            preparedStep.unlessElement !== undefined &&
+            (await elementConditionPresent(preparedStep.unlessElement))
+          ) {
+            return "unless_element_present";
+          }
+          return undefined;
+        })();
+        if (skippedReason !== undefined) {
+          steps.push({
+            step: index,
+            type: preparedStep.type,
+            ok: true,
+            skipped: true,
+            skippedReason,
+          });
+          continue;
+        }
         const value = await manager.cursorActivity.during(
           threadId,
           cursorToolActivity(`computer_${preparedStep.type}`),

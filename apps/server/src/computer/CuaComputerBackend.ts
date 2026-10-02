@@ -229,12 +229,20 @@ const CUA_ELEMENT_ACTIONS: Readonly<
   pick: { driverAction: "pick", axAction: "AXPick" },
   confirm: { driverAction: "confirm", axAction: "AXConfirm" },
   cancel: { driverAction: "cancel", axAction: "AXCancel" },
+  // A capability-backed attribute write, not an invented AX action name.
+  select: { driverAction: "select", axAction: "select" },
 };
 
 function cuaElementAction(
   name: string,
 ): { readonly driverAction: string; readonly axAction: string } | undefined {
-  return CUA_ELEMENT_ACTIONS[name.toLowerCase()];
+  const normalized = name.toLowerCase();
+  return (
+    CUA_ELEMENT_ACTIONS[normalized] ??
+    Object.values(CUA_ELEMENT_ACTIONS).find(
+      (action) => action.axAction.toLowerCase() === normalized,
+    )
+  );
 }
 
 function cuaKey(value: string): string {
@@ -624,6 +632,12 @@ export class CuaComputerBackend implements ComputerBackend {
         message +=
           " Inspect computer_get_state for this exact window_id, then use computer_type_text with an observed ref (or label and role), or computer_set_value to replace the field. " +
           "These semantic writes do not send keydown/keyup events. Do not retry physical keys or activate the app without the user's visible-use request.";
+      }
+      if (refused && code === "modal_target_mismatch") {
+        message +=
+          " Inspect computer_list_windows without an app filter and computer_get_state for the exact dialog, then address a fresh ref inside it. " +
+          'Native Open/Save panels can belong to Open and Save Panel Service; see computer_help({topic:"file_dialogs"}) for path entry. ' +
+          "Do not repeat the action behind the dialog or activate the app without the user's visible-use request.";
       }
       if (refused && ["stale_element_token", "stale_geometry", "stale_target"].includes(code)) {
         message +=
@@ -1306,15 +1320,27 @@ export class CuaComputerBackend implements ComputerBackend {
         };
         if (typeof element.element_token === "string") {
           this.elementTokens.set(node, element.element_token);
-          registerNativeComputerElement(node, element.element_token);
+          const actions = Array.isArray(element.actions)
+            ? element.actions.filter(
+                (action): action is string =>
+                  typeof action === "string" && action.toLowerCase() !== "select",
+              )
+            : [];
+          if (
+            (this.driverNativeRevision ?? 0) >= 41 &&
+            element.selectable === true &&
+            ["AXRow", "AXCell", "AXListItem", "AXImage"].includes(node.role)
+          ) {
+            actions.push("select");
+          }
+          registerNativeComputerElement(
+            node,
+            element.element_token,
+            actions.filter((action) => cuaElementAction(action) !== undefined),
+            typeof element.selected === "boolean" ? element.selected : undefined,
+          );
           if (element.in_web_content === true) this.webContentElements.add(node);
-          if (Array.isArray(element.actions))
-            this.elementActions.set(
-              node,
-              new Set(
-                element.actions.filter((action): action is string => typeof action === "string"),
-              ),
-            );
+          this.elementActions.set(node, new Set(actions));
         }
         children.push(node);
       }
@@ -1952,10 +1978,11 @@ export class CuaComputerBackend implements ComputerBackend {
     // AXSelectedText write into the field the target window has focused, reads
     // it back, and only then falls back to native key events. Forcing key
     // events skipped that instant route and typed every sentence character by
-    // character. The driver's 30ms default gap is also overridden: exact
-    // semantic insertion is one acknowledged, cancellable write per character,
-    // so its pause is pure delay, while the key-event fallback keeps a short
-    // gap so apps do not drop characters. Other platforms run the strict
+    // character. Revision 41 also supports atomic insertion into an exact
+    // retained field under its semantic lease, without any physical fallback.
+    // Older drivers retain their character-paced semantic route with no delay;
+    // the key-event route keeps a short gap so apps do not drop characters.
+    // Other platforms run the strict
     // upstream schema and keep their key-event route.
     const macos = (this.hostPlatform ?? process.platform) === "darwin";
     return this.input(
@@ -1963,7 +1990,12 @@ export class CuaComputerBackend implements ComputerBackend {
       {
         text: value,
         ...(token
-          ? { element_token: token, semantic_only: true, ...(macos ? { delay_ms: 0 } : {}) }
+          ? {
+              element_token: token,
+              semantic_only: true,
+              ...(macos ? { delay_ms: 0 } : {}),
+              ...(macos && (this.driverNativeRevision ?? 0) >= 41 ? { atomic: true } : {}),
+            }
           : macos && desktopDeliveryMode() !== "foreground"
             ? { delay_ms: 10 }
             : // Approved foreground delivery is visible typing by request.

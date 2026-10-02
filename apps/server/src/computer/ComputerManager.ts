@@ -2288,22 +2288,35 @@ export class ComputerManager {
       );
       await timedComputerLeg("resolve", () => this.prepareResolvedTarget(resolved, threadId));
       const semantic = resolved.semantic;
-      if (
-        (gesture?.button ?? "left") === "left" &&
-        (gesture?.count ?? 1) === 1 &&
-        !modifiers?.length &&
-        semantic !== undefined &&
-        // The token fast path runs whenever the backend advertises AXPress for
-        // the target. (Formerly also gated on menu-bar/menu-bar-extra; that
-        // menu-bar-only gate is dropped — a live token is the gate.)
-        this.backend.supportsAction?.(semantic, "AXPress")
-      ) {
+      // Resolve the gesture to an advertised operation before dispatch. An
+      // exact file ref can select/open without first becoming a pixel target.
+      const button = gesture?.button ?? "left";
+      const count = gesture?.count ?? 1;
+      const native = this.backend.agentDialect === "macos";
+      let semanticAction: string | undefined;
+      if (semantic && !modifiers?.length) {
+        const desiredAction =
+          native && button === "left" && count === 2
+            ? "AXOpen"
+            : native && button === "right" && count === 1
+              ? "AXShowMenu"
+              : button === "left" && count === 1
+                ? native &&
+                  desktopDeliveryMode() !== "foreground" &&
+                  this.backend.supportsAction?.(semantic, "select")
+                  ? "select"
+                  : "AXPress"
+                : undefined;
+        if (desiredAction && this.backend.supportsAction?.(semantic, desiredAction)) {
+          semanticAction = !native && desiredAction === "AXPress" ? "press" : desiredAction;
+        }
+      }
+      if (!modifiers?.length && semantic !== undefined && semanticAction !== undefined) {
         assertDesktopOperationActive();
         // Select one actuator before dispatch. An uncertain AX press must never
         // fall through to a coordinate click (toggles could run twice).
-        const nativeAction = this.backend.agentDialect === "macos" ? "AXPress" : "press";
         const result = await timedComputerLeg("dispatch", () =>
-          this.backend.performAction(semantic, nativeAction),
+          this.backend.performAction(semantic, semanticAction),
         );
         return this.actionResult(
           threadId,

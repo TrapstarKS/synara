@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { ComputerUiNode, ComputerWindowId } from "@synara/contracts";
+import {
+  bindComputerTargetRef,
+  computerElementRefIdentity,
+  observedComputerTargetNode,
+  registerNativeComputerElement,
+} from "./computerElementIdentity.ts";
 
 import {
   ComputerTargetError,
@@ -279,6 +285,22 @@ describe("naming the candidates", () => {
  * exactly the clunkiness this exists to remove.
  */
 describe("actionableElements", () => {
+  it("shows native selection changes even when an item's label and value stay the same", () => {
+    const row = node({ role: "AXRow", label: "File", windowId: windowId("panel") });
+    registerNativeComputerElement(row, "file-token", ["select"], false);
+    const before = actionableElements(row).items;
+    expect(before[0]).toMatchObject({ actions: ["select"], selected: false });
+    registerNativeComputerElement(row, "file-token", ["select"], true);
+    const after = actionableElements(row).items;
+    expect(diffActionableElements(before, after).changed).toMatchObject([
+      { label: "File", selected: true },
+    ]);
+    registerNativeComputerElement(row, "file-token", ["select"]);
+    expect(diffActionableElements(after, actionableElements(row).items).changed).toMatchObject([
+      { label: "File", selected: null },
+    ]);
+  });
+
   it("finds non-breaking-space labels through the same query used for targeting", () => {
     const field = node({
       role: "AXTextField",
@@ -387,6 +409,92 @@ describe("actionableElements", () => {
     ]);
   });
 
+  it("keeps native file rows and unnamed fields bound to their exact retained controls", () => {
+    const first = node({ role: "AXTextField", windowId: windowId("panel"), value: "" });
+    const second = node({ role: "AXTextField", windowId: windowId("panel"), value: "" });
+    const row = node({ role: "AXRow", label: "arquivo ação.txt", windowId: windowId("panel") });
+    registerNativeComputerElement(first, "native:first");
+    registerNativeComputerElement(second, "native:second");
+    registerNativeComputerElement(row, "native:file", ["AXPress", "AXShowMenu"]);
+    const digest = actionableElements(node({ role: "desktop", children: [first, second, row] }));
+    expect(digest.items).toHaveLength(3);
+    expect(digest.items[1]).toMatchObject({ label: "", value: "", frame: second.frame });
+    expect(digest.items[2]).toMatchObject({
+      role: "AXRow",
+      label: "arquivo ação.txt",
+      actions: ["AXPress", "AXShowMenu"],
+    });
+    expect(computerElementRefIdentity(digest.refIndex[0]!)).toBe("native:first");
+    expect(computerElementRefIdentity(digest.refIndex[1]!)).toBe("native:second");
+    const target = bindComputerTargetRef(
+      { label: "", role: "AXTextField", windowId: "panel" },
+      digest.refIndex[1]!,
+    );
+    expect(observedComputerTargetNode(target)).toBe(second);
+    expect(observedComputerTargetNode(JSON.parse(JSON.stringify(target)))).toBeUndefined();
+    expect(
+      actionableElements(node({ role: "desktop", children: [JSON.parse(JSON.stringify(row))] }))
+        .items,
+    ).toEqual([]);
+  });
+
+  it("still scopes, filters and counts native controls that have no label", () => {
+    const fields = Array.from({ length: 65 }, (_, index) => {
+      const field = node({ role: "AXTextField", windowId: windowId("panel") });
+      registerNativeComputerElement(field, `native:${index}`);
+      return field;
+    });
+    const hidden = node({ role: "AXRow", windowId: windowId("panel"), onScreen: false });
+    registerNativeComputerElement(hidden, "native:hidden", ["AXPress"]);
+    const tree = node({ role: "desktop", children: [...fields, hidden] });
+    expect(actionableElements(tree)).toMatchObject({ complete: false, omitted: 5 });
+    expect(actionableElements(tree, { windowId: "another-panel" }).items).toEqual([]);
+    expect(actionableElements(tree, { labelContains: "Go to Folder" }).items).toEqual([]);
+  });
+
+  it("does not let retained decorative nodes hide an unnamed native path control", () => {
+    const decoration = Array.from({ length: 65 }, (_, index) => {
+      const text = node({
+        role: "AXStaticText",
+        label: `Text ${index}`,
+        windowId: windowId("panel"),
+      });
+      registerNativeComputerElement(text, `decoration:${index}`);
+      return text;
+    });
+    const field = node({ role: "AXTextField", windowId: windowId("panel") });
+    registerNativeComputerElement(field, "path-field");
+    const digest = actionableElements(node({ role: "desktop", children: [...decoration, field] }));
+    expect(digest.items).toHaveLength(1);
+    expect(digest.complete).toBe(true);
+    expect(computerElementRefIdentity(digest.refIndex[0]!)).toBe("path-field");
+  });
+
+  it("reports newly available actions and moved unnamed fields even when values are unchanged", () => {
+    const field: ComputerActionableElement = {
+      ref: 1,
+      role: "AXTextField",
+      label: "",
+      value: "",
+      windowId: "panel",
+      frame: { x: 0, y: 0, width: 80, height: 20 },
+    };
+    const moved = { ...field, frame: { ...field.frame!, x: 10 }, actions: ["AXConfirm"] };
+    expect(diffActionableElements([field], [moved]).changed).toEqual([
+      {
+        ref: 1,
+        role: "AXTextField",
+        label: "",
+        windowId: "panel",
+        was: "",
+        value: "",
+        frame: moved.frame,
+        actions: ["AXConfirm"],
+      },
+    ]);
+    expect(diffActionableElements([moved], [field]).changed[0]?.actions).toEqual([]);
+  });
+
   it("keeps duplicate labels — real ambiguity — but separates windows", () => {
     const desktop = node({
       role: "desktop",
@@ -489,6 +597,108 @@ describe("diffActionableElements", () => {
     windowId: windowId("editor"),
     ...extra,
   });
+
+  const nativeElement = (
+    identity: string,
+    ref: number,
+    overrides: Partial<ComputerUiNode> = {},
+  ): ComputerActionableElement => {
+    const control = node({
+      role: "AXTextField",
+      label: "Field",
+      value: "same value",
+      windowId: windowId("editor"),
+      ...overrides,
+    });
+    registerNativeComputerElement(control, identity);
+    // The gateway stamps refs with a spread before retaining its digest.
+    return { ...actionableElements(control).items[0]!, ref };
+  };
+
+  it("keeps native identity through spreads without exposing it in JSON", () => {
+    const item = nativeElement("private-token", 17);
+    expect(computerElementRefIdentity({ ...item })).toBe("private-token");
+    const wire = JSON.parse(JSON.stringify(item));
+    expect(computerElementRefIdentity(wire)).toBeUndefined();
+    expect(JSON.stringify(item)).not.toContain("private-token");
+    // A JSON copy cannot claim to be the native control it resembles.
+    expect(diffActionableElements([item], [wire])).toMatchObject({
+      added: [wire],
+      removed: [item],
+      changed: [],
+    });
+  });
+
+  it("reports a native rename with the same identity and ref", () => {
+    const before = nativeElement("field-token", 17);
+    const after = nativeElement("field-token", 17, { label: "Renamed field" });
+    expect(diffActionableElements([before], [after])).toEqual({
+      added: [],
+      removed: [],
+      changed: [
+        {
+          ref: 17,
+          role: "AXTextField",
+          label: "Renamed field",
+          windowId: "editor",
+          was: "same value",
+          value: "same value",
+        },
+      ],
+    });
+  });
+
+  it("pairs reordered native duplicates by token instead of label or position", () => {
+    const first = nativeElement("first-token", 17, { value: "first value" });
+    const second = nativeElement("second-token", 18, { value: "second value" });
+    expect(
+      diffActionableElements(
+        [first, second],
+        [
+          nativeElement("second-token", 18, { value: "second value" }),
+          nativeElement("first-token", 17, { value: "first value" }),
+        ],
+      ),
+    ).toEqual({ added: [], removed: [], changed: [] });
+  });
+
+  it("reports an identical native replacement as removed and added", () => {
+    const before = nativeElement("old-token", 17);
+    const after = nativeElement("replacement-token", 18);
+    expect(diffActionableElements([before], [after])).toEqual({
+      added: [after],
+      removed: [before],
+      changed: [],
+    });
+  });
+
+  it("reports a new native ref even when every visible field stays unchanged", () => {
+    const before = nativeElement("field-token", 17);
+    const after = nativeElement("field-token", 513);
+    expect(diffActionableElements([before], [after])).toMatchObject({
+      added: [],
+      removed: [],
+      changed: [{ ref: 513, label: "Field", value: "same value", was: "same value" }],
+    });
+    expect(diffActionableElements([after], [{ ...after }])).toEqual({
+      added: [],
+      removed: [],
+      changed: [],
+    });
+  });
+
+  it.each([{ role: "AXComboBox" }, { windowId: windowId("browser") }])(
+    "scopes native identity to role and window: %j",
+    (scope) => {
+      const before = nativeElement("shared-token", 17);
+      const after = nativeElement("shared-token", 18, scope);
+      expect(diffActionableElements([before], [after])).toEqual({
+        added: [after],
+        removed: [before],
+        changed: [],
+      });
+    },
+  );
 
   it("reports every element as added against an empty baseline", () => {
     const after = [element("Save"), element("Cancel")];

@@ -129,6 +129,20 @@ describe("computer guidance", () => {
     expect(hidden).not.toContain("invisible");
   });
 
+  it("routes native file dialogs through their observed owner and separates navigation from selection", () => {
+    const dialogs = COMPUTER_HELP_SECTIONS.file_dialogs;
+    expect(dialogs).toContain("without an app filter");
+    expect(dialogs).toContain("Open and Save Panel Service");
+    expect(dialogs).toContain("cmd+shift+g");
+    expect(dialogs).toContain("computer_set_value");
+    expect(dialogs).toContain("never send Enter twice blindly");
+    expect(dialogs).toContain("does not authorize activation");
+    expect(dialogs).toContain("does not prove selection or upload");
+    expect(dialogs.length).toBeLessThanOrEqual(1_000);
+    expect(COMPUTER_HELP_SECTIONS.finder).toContain('"file_dialogs"');
+    expect(computerToolInstructions()).not.toContain(dialogs);
+  });
+
   it("keeps every chapter indexed, non-empty and inside its budget", () => {
     expect(COMPUTER_HELP_TOPICS).toEqual(Object.keys(COMPUTER_HELP_SECTIONS));
     expect(COMPUTER_HELP_TOPICS).toContain("tools");

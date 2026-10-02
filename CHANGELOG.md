@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.9.23] — 2026-10-02
+
+### Changed
+
+- macOS Computer Use can insert text into compatible native fields in one Accessibility write and use native selection, open and menu actions for supported file controls.
+- Native observations preserve empty values, whitespace and selection state, and expose unnamed fields and selectable file rows.
+
+### Fixed
+
+- Native keyboard delivery retains the addressed control through modal validation, including Open/Save sheets sharing their parent window's identity.
+- References to unchanged native controls survive subsequent observations when process, window and control identity remain proven. Replaced controls receive new references even when they look identical.
+- Renaming a control updates its reference metadata and available actions without unnecessarily allocating a new reference. Limited observation diffs deliver newly created references before advancing their baseline.
+- A failed condition in a multi-step Computer run preserves the results of completed actions and follows the step's continuation policy.
+
+### Validation
+
+- Includes Cua native revision 42. Local automated checks passed 2,025 tests, with four native tests ignored. Live file-dialog and focus-preservation qualification remains pending Accessibility authorization for the independent test observer.
+
 ## [0.9.17] — 2026-09-28
 
 ### Changed

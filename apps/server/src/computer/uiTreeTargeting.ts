@@ -25,7 +25,12 @@ import {
   type UiTreeTargetSpec,
 } from "@synara/shared/uiTreeTargeting";
 import { clampTextToLength } from "./utf8Truncation.ts";
-import { retainComputerElementRef } from "./computerElementIdentity.ts";
+import {
+  computerElementRefIdentity,
+  nativeComputerElementActions,
+  nativeComputerElementSelected,
+  retainComputerElementRef,
+} from "./computerElementIdentity.ts";
 
 export interface ComputerTargetCandidate {
   readonly label: string;
@@ -376,6 +381,11 @@ const ACTIONABLE_ROLES = new Set([
   "radio menu item",
 ]);
 
+// AppKit collection entries can expose selection without an AXPress action.
+// A retained token makes them addressable; a token alone must not promote
+// decorative AXStaticText or containers into the bounded control digest.
+const NATIVE_COLLECTION_ROLES = new Set(["AXRow", "AXCell"]);
+
 /** Longest element list one digest may carry before it reports incompleteness. */
 const ELEMENT_DIGEST_MAX_LENGTH = 60;
 /** Longest label or value one element may carry. */
@@ -394,6 +404,11 @@ export interface ComputerActionableElement {
   readonly label: string;
   /** Current contents of an editable control, truncated. Absent otherwise. */
   readonly value?: string;
+  /** Actions advertised by this native element, not inferred from its role. */
+  readonly actions?: readonly string[];
+  readonly selected?: boolean;
+  /** Visual grounding for a native control with no matchable label. */
+  readonly frame?: ComputerRect;
   readonly windowId: string | null;
 }
 
@@ -449,12 +464,14 @@ export interface ComputerActionableElementFilter {
 }
 
 /**
- * The labeled, on-screen, actionable elements of a UI tree — what a model
+ * The on-screen, actionable elements of a UI tree — what a model
  * grounds on instead of estimating pixel coordinates from a screenshot.
  *
- * Only labeled elements are listed, because targeting is by label: an
- * unlabeled control cannot be addressed semantically, and listing it would
- * push the caller back toward coordinates. Off-screen elements are excluded
+ * A retained native token addresses a control even without a label or a role
+ * in the fallback vocabulary (for example an AppKit file row). Such controls
+ * keep their actual empty label and use refs; never invent a matchable name.
+ * Nodes without a retained token still require a known role and label.
+ * Off-screen elements are excluded
  * too — semantic resolution refuses off-screen targets, so naming them would
  * invite a refused action; scrolling brings them on screen and they appear in
  * the next digest. Duplicate labels are kept: two same-labeled controls is
@@ -479,11 +496,15 @@ export function actionableElements(
   const walk = (node: ComputerUiNode): void => {
     if (node.truncated) sourceIncomplete = true;
     const label = matchableLabel(node);
+    const nativeActions = nativeComputerElementActions(node);
+    const selected = nativeComputerElementSelected(node);
     const collectible =
-      ACTIONABLE_ROLES.has(node.role) &&
+      (ACTIONABLE_ROLES.has(node.role) ||
+        (nativeActions !== undefined &&
+          (NATIVE_COLLECTION_ROLES.has(node.role) || nativeActions.length > 0))) &&
       node.onScreen &&
       node.windowId !== null &&
-      label !== "" &&
+      (nativeActions !== undefined || label !== "") &&
       (filter.windowId === undefined || node.windowId === filter.windowId) &&
       (wanted === undefined || normalizeLabelSpaces(label).toLocaleLowerCase().includes(wanted));
     if (collectible) {
@@ -497,17 +518,26 @@ export function actionableElements(
             node,
           ),
         );
-        items.push({
-          ref: items.length,
-          role: node.role,
-          label: clampTextToLength(label, ELEMENT_TEXT_MAX_LENGTH),
-          // An entry's empty value is real information — "this field is blank" —
-          // so presence, not truthiness, decides.
-          ...(node.value !== null && node.value !== undefined
-            ? { value: clampTextToLength(node.value, 40) }
-            : {}),
-          windowId: node.windowId,
-        });
+        items.push(
+          retainComputerElementRef(
+            {
+              ref: items.length,
+              role: node.role,
+              label: clampTextToLength(label, ELEMENT_TEXT_MAX_LENGTH),
+              // An empty value means the field is blank; it is still information.
+              ...(node.value !== null && node.value !== undefined
+                ? { value: clampTextToLength(node.value, 40) }
+                : {}),
+              ...(nativeActions?.length
+                ? { actions: nativeActions.filter((action) => action.length <= 128).slice(0, 16) }
+                : {}),
+              ...(selected !== undefined ? { selected } : {}),
+              ...(label === "" ? { frame: node.frame } : {}),
+              windowId: node.windowId,
+            },
+            node,
+          ),
+        );
       } else {
         // The list is full and something actionable did not fit: that has to be
         // said out loud, or the caller reads a truncated digest as the truth.
@@ -532,17 +562,17 @@ export function actionableElements(
 
 /**
  * What changed between two element digests, keyed on the element's identity —
- * window, role, and label — rather than its position, so a list that reorders
- * does not read as everything leaving and arriving.
+ * native window/role/token, or generic window/role/label. A renamed native
+ * control keeps its identity; an identical replacement leaves and arrives.
  *
- * Identity is a multiset, not a key: duplicate labels are kept on purpose (a
- * repeated "Save" is real ambiguity), so each identity maps to a list of values
- * paired by index. A pair whose value moved reports `changed`; identities or
- * values with no counterpart report `added` or `removed`.
+ * Generic duplicate labels remain a multiset paired by index. Native controls
+ * are distinguished by their private identity, so reordering duplicate labels
+ * does not swap their values. Changed native refs must be delivered even when
+ * the control's visible properties stayed the same.
  *
- * What it cannot see: an element that moved but kept its label, role and value
- * diffs clean, because the digest carries no frame. When layout is the
- * question the caller needs a screenshot, not a diff.
+ * Native unnamed controls carry a frame for visual grounding, so their geometry
+ * changes are included. Labeled elements still omit layout; use a screenshot to
+ * inspect their position even when their value and advertised actions match.
  */
 export interface ComputerActionableElementsDiff {
   readonly added: readonly ComputerActionableElement[];
@@ -555,6 +585,9 @@ export interface ComputerActionableElementsDiff {
     /** Previous value; absent when the element had none. */
     readonly was?: string;
     readonly value?: string;
+    readonly actions?: readonly string[];
+    readonly selected?: boolean | null;
+    readonly frame?: ComputerRect;
   }[];
 }
 
@@ -562,8 +595,14 @@ export function diffActionableElements(
   before: readonly ComputerActionableElement[],
   after: readonly ComputerActionableElement[],
 ): ComputerActionableElementsDiff {
-  const identity = (item: ComputerActionableElement): string =>
-    JSON.stringify([item.windowId ?? null, item.role, item.label]);
+  const identity = (item: ComputerActionableElement): string => {
+    const nativeIdentity = computerElementRefIdentity(item);
+    return JSON.stringify([
+      item.windowId ?? null,
+      item.role,
+      nativeIdentity === undefined ? ["label", item.label] : ["native", nativeIdentity],
+    ]);
+  };
   const group = (
     items: readonly ComputerActionableElement[],
   ): Map<string, ComputerActionableElement[]> => {
@@ -589,7 +628,16 @@ export function diffActionableElements(
     }
     const overlap = Math.min(previous.length, current.length);
     for (let index = 0; index < overlap; index += 1) {
-      if (previous[index]!.value !== current[index]!.value) {
+      if (
+        previous[index]!.label !== current[index]!.label ||
+        (computerElementRefIdentity(current[index]!) !== undefined &&
+          previous[index]!.ref !== current[index]!.ref) ||
+        previous[index]!.value !== current[index]!.value ||
+        previous[index]!.selected !== current[index]!.selected ||
+        JSON.stringify(previous[index]!.actions ?? []) !==
+          JSON.stringify(current[index]!.actions ?? []) ||
+        JSON.stringify(previous[index]!.frame) !== JSON.stringify(current[index]!.frame)
+      ) {
         const item = current[index]!;
         changed.push({
           ref: item.ref,
@@ -598,6 +646,13 @@ export function diffActionableElements(
           windowId: item.windowId,
           ...(previous[index]!.value !== undefined ? { was: previous[index]!.value } : {}),
           ...(item.value !== undefined ? { value: item.value } : {}),
+          ...(item.selected !== undefined || previous[index]!.selected !== undefined
+            ? { selected: item.selected ?? null }
+            : {}),
+          ...(item.actions !== undefined || previous[index]!.actions !== undefined
+            ? { actions: item.actions ?? [] }
+            : {}),
+          ...(item.frame !== undefined ? { frame: item.frame } : {}),
         });
       }
     }

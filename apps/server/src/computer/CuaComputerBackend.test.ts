@@ -360,12 +360,302 @@ function gatewayFixture(f: ReturnType<typeof fixture>) {
       ref: number;
       label: string;
       value?: string;
+      actions?: readonly string[];
     }>;
   };
   return { manager, call, list };
 }
 
 describe("Cua native boundary", () => {
+  it("keeps a native ref after its label changes and dispatches the freshly advertised action", async () => {
+    const f = fixture({ nativeRevision: 42 });
+    const original = {
+      role: "AXButton",
+      label: "Next",
+      value: "unchanged",
+      element_token: "stable-native-control",
+      actions: ["AXShowMenu"],
+      frame: { x: -290, y: 30, width: 100, height: 20 },
+    };
+    f.setElements([original]);
+    const { manager, call, list } = gatewayFixture(f);
+    try {
+      const first = (await list())[0]!;
+      f.setElements([{ ...original, label: "Continue", actions: ["AXPress"] }]);
+      const second = (await list())[0]!;
+      expect(second.ref).toBe(first.ref);
+      expect(second).toMatchObject({ label: "Continue", actions: ["AXPress"] });
+      const action = await call("computer_click", { ref: first.ref, include_screenshot: false });
+      expect(action.isError).not.toBe(true);
+      expect(f.calls.filter((entry) => entry.name === "click")).toHaveLength(1);
+      expect(f.calls.findLast((entry) => entry.name === "click")?.args).toMatchObject({
+        element_token: "stable-native-control",
+        action: "press",
+        pid: 10,
+        window_id: 20,
+      });
+      expect(f.calls.findLast((entry) => entry.name === "click")?.args).not.toHaveProperty("x");
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("returns a usable new ref in a diff when an identical native control is replaced", async () => {
+    const f = fixture({ nativeRevision: 42 });
+    const original = {
+      role: "AXButton",
+      label: "Save",
+      value: "unchanged",
+      element_token: "original-native-control",
+      actions: ["AXPress"],
+      frame: { x: -290, y: 30, width: 100, height: 20 },
+    };
+    f.setElements([original]);
+    const { manager, call, list } = gatewayFixture(f);
+    try {
+      const first = (await list())[0]!;
+      f.setElements([{ ...original, element_token: "replacement-native-control" }]);
+      const delta = await call("computer_get_state", {
+        window_id: "cua:10:20",
+        diff: true,
+        include_screenshot: false,
+      });
+      expect(delta.isError).not.toBe(true);
+      const content = delta.content.find((entry) => entry.type === "text");
+      const data = JSON.parse(content?.type === "text" ? content.text : "{}");
+      const fresh = data.elementChanges.added.find(
+        (entry: { label: string }) => entry.label === "Save",
+      );
+      expect(fresh?.ref).toEqual(expect.any(Number));
+      expect(fresh.ref).not.toBe(first.ref);
+      const action = await call("computer_click", { ref: fresh.ref, include_screenshot: false });
+      expect(action.isError).not.toBe(true);
+      expect(f.calls.findLast((entry) => entry.name === "click")?.args).toMatchObject({
+        element_token: "replacement-native-control",
+        action: "press",
+      });
+      expect(JSON.stringify(data)).not.toContain("replacement-native-control");
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("preserves explicit foreground clicks instead of choosing the background-only selection route", async () => {
+    const f = fixture({ nativeRevision: 41 });
+    f.setElements([
+      {
+        role: "AXRow",
+        label: "File",
+        element_token: "foreground-file-token",
+        selectable: true,
+        selected: false,
+        actions: ["AXPress"],
+        frame: { x: -290, y: 30, width: 100, height: 20 },
+      },
+    ]);
+    const manager = new ComputerManager({ backend: f.backend, actionSettleMs: 0 });
+    try {
+      await withDesktopDeliveryMode("foreground", () =>
+        manager.click("foreground-test", {
+          label: "File",
+          role: "AXRow",
+          windowId: "cua:10:20",
+        }),
+      );
+      expect(f.calls.findLast((entry) => entry.name === "click")?.args).toMatchObject({
+        action: "press",
+        delivery_mode: "foreground",
+        element_token: "foreground-file-token",
+      });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it.each([
+    { count: 2, button: "left", advertised: "AXOpen", action: "open" },
+    { count: 1, button: "right", advertised: "AXShowMenu", action: "show_menu" },
+  ])(
+    "dispatches $button count=$count through the exact advertised action once",
+    async ({ count, button, advertised, action }) => {
+      const f = fixture({ nativeRevision: 41 });
+      f.setElements([
+        {
+          role: "AXRow",
+          label: "File",
+          element_token: "file-action-token",
+          actions: [advertised],
+          frame: { x: -290, y: 30, width: 100, height: 20 },
+        },
+      ]);
+      f.onTool("click", () => ({
+        structuredContent: { effect: "unverifiable", route: "accessibility" },
+      }));
+      const { manager, call, list } = gatewayFixture(f);
+      try {
+        const ref = (await list())[0]!.ref;
+        const result = await call("computer_click", {
+          ref,
+          count,
+          button,
+          include_screenshot: false,
+        });
+        expect(result.isError).not.toBe(true);
+        const calls = f.calls.filter((entry) => entry.name === "click");
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.args).toMatchObject({ action, element_token: "file-action-token" });
+        expect(calls[0]?.args).not.toHaveProperty("x");
+        expect(calls[0]?.args).not.toHaveProperty("force_synthetic");
+        expect(f.calls.some((entry) => entry.name === "bring_to_front")).toBe(false);
+      } finally {
+        await manager.dispose();
+      }
+    },
+  );
+
+  it("refuses an unadvertised double-click on a retained ref without a stale coordinate fallback", async () => {
+    const f = fixture({ nativeRevision: 41 });
+    f.setElements([
+      {
+        role: "AXRow",
+        label: "File",
+        element_token: "file-token",
+        actions: ["AXPress"],
+        frame: { x: -290, y: 30, width: 100, height: 20 },
+      },
+    ]);
+    const { manager, call, list } = gatewayFixture(f);
+    try {
+      const ref = (await list())[0]!.ref;
+      const result = await call("computer_click", { ref, count: 2, include_screenshot: false });
+      expect(result.isError).toBe(true);
+      expect(f.calls.filter((entry) => entry.name === "click")).toHaveLength(0);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("selects a native collection item by ref without synthesizing a click or opening it", async () => {
+    const f = fixture({ nativeRevision: 41 });
+    const row = {
+      role: "AXRow",
+      label: "seleção café.txt",
+      element_token: "selection-token",
+      frame: { x: -290, y: 30, width: 100, height: 20 },
+      selected: false,
+      selectable: true,
+      actions: ["AXPress"],
+    };
+    f.setElements([row]);
+    f.onTool("click", (args) => {
+      expect(args).toMatchObject({
+        action: "select",
+        element_token: "selection-token",
+        pid: 10,
+        window_id: 20,
+      });
+      expect(args).not.toHaveProperty("x");
+      expect(args).not.toHaveProperty("force_synthetic");
+      row.selected = true;
+      return {
+        structuredContent: {
+          effect: "confirmed",
+          route: "accessibility",
+          evidence: [{ kind: "value_readback" }],
+        },
+      };
+    });
+    const { manager, call, list } = gatewayFixture(f);
+    try {
+      const before = await list();
+      expect(before[0]).toMatchObject({ actions: ["AXPress", "select"], selected: false });
+      const result = await call("computer_click", {
+        ref: before[0]!.ref,
+        include_screenshot: false,
+      });
+      expect(result.isError).not.toBe(true);
+      expect(f.calls.filter((entry) => entry.name === "click")).toHaveLength(1);
+      expect((await list())[0]).toMatchObject({ selected: true });
+      expect(
+        f.calls.some((entry) =>
+          ["hotkey", "press_key", "bring_to_front"].includes(entry.name ?? ""),
+        ),
+      ).toBe(false);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it.each([
+    { revision: 40, role: "AXRow", selectable: true },
+    { revision: 41, role: "AXRow", selectable: false },
+    { revision: 41, role: "AXRow", selectable: "true" },
+    { revision: 41, role: "AXButton", selectable: true },
+  ])(
+    "requires verified selection capability for $role on revision $revision",
+    async ({ revision, role, selectable }) => {
+      const f = fixture({ nativeRevision: revision });
+      f.setElements([
+        {
+          role,
+          label: "Item",
+          selectable,
+          actions: ["select"],
+          element_token: "item-token",
+          frame: { x: -290, y: 30, width: 100, height: 20 },
+        },
+      ]);
+      const state = await f.backend.getState({ windowId: "cua:10:20", includeTree: true });
+      const node = state.root!.children[0]!;
+      const target = { target: { label: "Item" }, node, point: node.activationPoint! };
+      expect(f.backend.supportsAction(target, "select")).toBe(false);
+      await expect(f.backend.performAction(target, "select")).rejects.toMatchObject({
+        effect: "not-dispatched",
+        code: "unsupported_operation",
+      });
+      expect(f.calls.filter((entry) => entry.name === "click")).toHaveLength(0);
+    },
+  );
+
+  it.each([40, 41])(
+    "uses one exact text request and gates atomic support by native revision %s",
+    async (revision) => {
+      const f = fixture({ nativeRevision: revision });
+      f.setElements([
+        {
+          role: "AXTextField",
+          label: "Editor",
+          value: "old text",
+          element_token: "editor-token",
+          frame: { x: -290, y: 30, width: 100, height: 20 },
+        },
+      ]);
+      const { manager, call, list } = gatewayFixture(f);
+      try {
+        const ref = (await list())[0]!.ref;
+        const text = "  ação Ω🙂\n".repeat(100);
+        const result = await call("computer_type_text", { ref, text, include_screenshot: false });
+        expect(result.isError).not.toBe(true);
+        const writes = f.calls.filter((entry) => entry.name === "type_text");
+        expect(writes).toHaveLength(1);
+        expect(writes[0]?.args).toMatchObject({
+          text,
+          element_token: "editor-token",
+          semantic_only: true,
+        });
+        if (revision >= 41) expect(writes[0]?.args).toHaveProperty("atomic", true);
+        else expect(writes[0]?.args).not.toHaveProperty("atomic");
+        expect(
+          f.calls.some((entry) =>
+            ["press_key", "hotkey", "bring_to_front"].includes(entry.name ?? ""),
+          ),
+        ).toBe(false);
+      } finally {
+        await manager.dispose();
+      }
+    },
+  );
+
   it("requests AX keyboard focus only for explicit observations, not input revalidation", async () => {
     const f = fixture({ nativeRevision: 37 });
     await withModelDesktopObservation(() =>
@@ -484,6 +774,74 @@ describe("Cua native boundary", () => {
       }
     },
   );
+
+  it("fills an unnamed native path field and opens a file row using provider refs", async () => {
+    const f = fixture({ nativeRevision: 39 });
+    const unrelated = {
+      role: "AXTextField",
+      value: "preserve this",
+      frame: { x: -290, y: 30, width: 70, height: 20 },
+      element_token: "unrelated-token",
+    };
+    const field = {
+      ...unrelated,
+      value: "",
+      frame: { ...unrelated.frame, y: 55 },
+      element_token: "path-token",
+    };
+    const row = {
+      role: "AXRow",
+      label: "arquivo ação.txt",
+      frame: { ...unrelated.frame, y: 80 },
+      element_token: "file-token",
+      actions: ["AXOpen"],
+    };
+    f.setElements([unrelated, field, row]);
+    f.onTool("set_value", () => ({
+      structuredContent: { effect: "confirmed", evidence: [{ kind: "value_readback" }] },
+    }));
+    const { manager, call, list } = gatewayFixture(f);
+    try {
+      const observed = await list();
+      expect(observed).toHaveLength(3);
+      expect(observed[2]?.actions).toEqual(["AXOpen"]);
+      expect(JSON.stringify(observed)).not.toContain("path-token");
+      f.setElements([row, field, unrelated]);
+      await list();
+      const path = "/tmp/Pasta com espaços/arquivo ação.txt";
+      const written = await call("computer_set_value", {
+        ref: observed[1]!.ref,
+        value: path,
+        include_screenshot: false,
+      });
+      expect(written.isError).not.toBe(true);
+      expect(field.value).toBe(path);
+      expect(unrelated.value).toBe("preserve this");
+      expect(f.calls.findLast((entry) => entry.name === "set_value")?.args).toMatchObject({
+        pid: 10,
+        window_id: 20,
+        element_token: "path-token",
+        value: path,
+      });
+      const opened = await call("computer_run", {
+        steps: [{ type: "perform_action", ref: observed[2]!.ref, action: "AXOpen" }],
+        include_screenshot: false,
+      });
+      expect(opened.isError).not.toBe(true);
+      const batchText = opened.content.find((entry) => entry.type === "text");
+      expect(JSON.parse(batchText?.type === "text" ? batchText.text : "{}")).toMatchObject({
+        stopped: false,
+        steps: [{ ok: true }],
+      });
+      expect(f.calls.findLast((entry) => entry.name === "click")?.args).toMatchObject({
+        element_token: "file-token",
+        action: "open",
+      });
+      expect(f.calls.findLast((entry) => entry.name === "click")?.args).not.toHaveProperty("x");
+    } finally {
+      await manager.dispose();
+    }
+  });
 
   it("refuses a retained web append when an identical replacement occupies the same geometry", async () => {
     const f = fixture({ nativeRevision: 37 });
@@ -3159,6 +3517,45 @@ describe("Cua native boundary", () => {
   it("ignores non-actionable zero-area windows", async () => {
     const f = fixture();
     expect(await f.backend.listWindows()).toHaveLength(1);
+  });
+  it("returns a modal recovery route without replaying the key or changing windows", async () => {
+    const f = fixture();
+    f.setWindows([
+      {
+        pid: 900,
+        window_id: 901,
+        title: "Open",
+        app_name: "Open and Save Panel Service",
+        bounds: { x: 10, y: 10, width: 200, height: 100 },
+        is_on_screen: true,
+        on_current_space: true,
+      },
+    ]);
+    f.onTool("press_key", () => ({
+      structuredContent: { effect: "refused", code: "modal_target_mismatch" },
+    }));
+    const failure = await f.backend.pressKey("cmd+shift+g", "cua:10:20").catch((error) => error);
+    expect(failure).toMatchObject({ effect: "not-dispatched", code: "modal_target_mismatch" });
+    expect(failure.message).toContain("without an app filter");
+    expect(failure.message).toContain('computer_help({topic:"file_dialogs"})');
+    expect(f.calls.filter((call) => call.name === "press_key")).toHaveLength(1);
+    expect(f.calls.find((call) => call.name === "press_key")?.args).toMatchObject({
+      pid: 10,
+      window_id: 20,
+    });
+    expect(f.calls.some((call) => call.name === "bring_to_front")).toBe(false);
+    expect(f.calls.some((call) => call.args?.pid === 900)).toBe(false);
+  });
+  it("does not offer corrected modal input after an uncertain dispatch", async () => {
+    const f = fixture();
+    f.onTool("press_key", () => ({
+      isError: true,
+      structuredContent: { effect: "unverifiable", code: "modal_target_mismatch" },
+    }));
+    const failure = await f.backend.pressKey("enter", "cua:10:20").catch((error) => error);
+    expect(failure).toMatchObject({ effect: "dispatched-unknown", code: "modal_target_mismatch" });
+    expect(failure.message).not.toContain('computer_help({topic:"file_dialogs"})');
+    expect(f.calls.filter((call) => call.name === "press_key")).toHaveLength(1);
   });
   it("reports minimized and hidden workspace windows honestly", async () => {
     const f = fixture();
