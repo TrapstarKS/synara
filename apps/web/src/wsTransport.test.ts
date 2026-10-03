@@ -3,7 +3,7 @@
 // Layer: Web transport tests
 // Depends on: the global WebSocket constructor shim and desktop bridge URL contract.
 
-import { Cause, Effect, Exit, Stream } from "effect";
+import { Cause, Effect, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ORCHESTRATION_WS_METHODS,
@@ -113,13 +113,17 @@ class MockWebSocket {
   }
 
   // Answers Effect RPC frames so unit tests can complete a feature-socket
-  // session: Ping gets a Pong and every request gets a successful void Exit.
-  serveVoidRpc() {
+  // session. Selected methods can remain pending to model streams or lost replies.
+  serveVoidRpc(pendingMethods: ReadonlySet<string> = new Set()) {
     this.onSend = (data) => {
       const frame = JSON.parse(data) as Record<string, unknown>;
       if (frame._tag === "Ping") {
         this.receive(JSON.stringify({ _tag: "Pong" }));
-      } else if (frame._tag === "Request" && typeof frame.id === "string") {
+      } else if (
+        frame._tag === "Request" &&
+        typeof frame.id === "string" &&
+        !pendingMethods.has(String(frame.tag))
+      ) {
         this.receive(
           JSON.stringify({
             _tag: "Exit",
@@ -130,6 +134,12 @@ class MockWebSocket {
       }
     };
     this.open();
+  }
+
+  requests(tag: string): Record<string, unknown>[] {
+    return this.sent
+      .map((data) => JSON.parse(String(data)) as Record<string, unknown>)
+      .filter((frame) => frame._tag === "Request" && frame.tag === tag);
   }
 
   private emit(type: WsEventType, event?: { data?: unknown }) {
@@ -209,15 +219,7 @@ function makeBareTransport(): {
     disposed: false,
     sessionVersion: 1,
     getClientRuntime: () => ({
-      runCallback: (
-        effect: Effect.Effect<unknown, Error>,
-        options: { readonly onExit: (exit: Exit.Exit<unknown, Error>) => void },
-      ) =>
-        Effect.runCallback(effect, {
-          onExit: (exit) => {
-            void Promise.resolve().then(() => options.onExit(exit));
-          },
-        }),
+      runCallback: Effect.runCallback,
     }),
     reconnect: vi.fn(async () => ({})),
   });
@@ -286,6 +288,36 @@ afterEach(() => {
 });
 
 describe("WsTransport", () => {
+  it.each([
+    ["completion", Stream.empty],
+    ["failure", Stream.fail(new Error("socket unavailable"))],
+    ["interruption", Stream.fromEffect(Effect.interrupt)],
+  ] as const)("settles synchronous stream %s without leaving a stale owner", (_outcome, stream) => {
+    const { internals } = makeBareTransport();
+    const key = "orchestration.thread:synchronous-exit";
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    expect(() => internals.startStream({}, key, stream, () => undefined)).not.toThrow();
+
+    expect(internals.streamCleanups.has(key)).toBe(false);
+    expect(internals.streamSettled.has(key)).toBe(false);
+  });
+
+  it("honors cancellation requested by a synchronous stream listener", async () => {
+    const { internals } = makeBareTransport();
+    const key = "orchestration.thread:synchronous-cancel";
+    let stopping: Promise<void> | undefined;
+
+    internals.startStream({}, key, Stream.concat(Stream.succeed(1), Stream.never), () => {
+      stopping = internals.stopStream(key);
+    });
+
+    expect(stopping).toBeDefined();
+    await stopping;
+    expect(internals.streamCleanups.has(key)).toBe(false);
+    expect(internals.streamSettled.has(key)).toBe(false);
+  });
+
   it("shares one stream per watched file and stops it after the last listener leaves", async () => {
     const { transport, internals } = makeBareTransport();
     const input = { cwd: "/repo", relativePath: "src/app.ts" };
@@ -1013,6 +1045,47 @@ describe("WsTransport", () => {
     }
   });
 
+  it.each(["unsubscribe", "session replacement"] as const)(
+    "does not reconnect from 12 failed streams after %s",
+    async (change) => {
+      vi.useFakeTimers();
+      bindWindowTimersToCurrentGlobals();
+      try {
+        const { transport, internals } = makeBareTransport();
+        const threadIds = Array.from({ length: 12 }, (_, index) => `stale-reconnect-${index}`);
+        const restart = vi.fn();
+        for (const threadId of threadIds) {
+          internals.threadSubscriptions.set(threadId, { threadId });
+          internals.startStream(
+            {},
+            `orchestration.thread:${threadId}`,
+            Stream.fail(new Error("socket unavailable")),
+            () => undefined,
+            restart,
+          );
+        }
+
+        if (change === "unsubscribe") {
+          await Promise.all(
+            threadIds.map((threadId) =>
+              transport.request(ORCHESTRATION_WS_METHODS.unsubscribeThread, { threadId }),
+            ),
+          );
+        } else {
+          internals.sessionVersion += 1;
+        }
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(internals.reconnect).not.toHaveBeenCalled();
+        expect(restart).not.toHaveBeenCalled();
+        expect(internals.streamCompletionRetryTimers.size).toBe(0);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("retries duplicate-rejected streams in place despite the non-retryable marker", () => {
     const duplicate = Cause.fail({
       code: "STREAM_DUPLICATE_SUBSCRIPTION",
@@ -1677,36 +1750,164 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
+  it("waits for a feature RPC response before opening or sending a queued mutation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(200, NEGOTIATION_RESULT))),
+    );
+    const transport = new WsTransport("ws://localhost:3020");
+    const states = vi.fn();
+    transport.onStateChange(states);
+    const mutation = transport.request(WS_METHODS.terminalWrite, {
+      threadId: "thread-waiting-for-open",
+      terminalId: "default",
+      data: "once",
+    });
+    // Attach a rejection handler immediately so failed assertions still allow cleanup.
+    void mutation.catch(() => undefined);
+    try {
+      await waitForSockets(1);
+      const socket = sockets[0]!;
+      expect(transport.getState()).toBe("connecting");
+      expect(socket.sent).toHaveLength(0);
+
+      socket.serveVoidRpc(new Set([ORCHESTRATION_WS_METHODS.unsubscribeShell]));
+      await vi.waitFor(() => {
+        expect(socket.requests(ORCHESTRATION_WS_METHODS.unsubscribeShell)).toHaveLength(1);
+      });
+      expect(transport.getState()).toBe("connecting");
+      expect(states).not.toHaveBeenCalledWith("open");
+      expect(socket.requests(WS_METHODS.terminalWrite)).toHaveLength(0);
+
+      socket.receive(
+        JSON.stringify({
+          _tag: "Exit",
+          requestId: socket.requests(ORCHESTRATION_WS_METHODS.unsubscribeShell)[0]!.id,
+          exit: { _tag: "Success", value: null },
+        }),
+      );
+      await mutation;
+      expect(transport.getState()).toBe("open");
+      expect(states.mock.calls.filter(([state]) => state === "open")).toHaveLength(1);
+      expect(socket.requests(WS_METHODS.terminalWrite)).toHaveLength(1);
+    } finally {
+      await transport.dispose();
+      await mutation.catch(() => undefined);
+    }
+  });
+
+  it("recovers 12 thread streams together without replaying a mutation whose reply was lost", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(200, NEGOTIATION_RESULT))),
+    );
+    const transport = new WsTransport("ws://localhost:3020");
+    const internals = transport as unknown as WsTransportInternals;
+    const openReconnectSession = vi.spyOn(internals, "openReconnectSession");
+    const threadIds = Array.from({ length: 12 }, (_, index) => `thread-socket-recovery-${index}`);
+    const pendingMethods = new Set([
+      ORCHESTRATION_WS_METHODS.subscribeThread,
+      WS_METHODS.terminalWrite,
+    ]);
+    try {
+      await waitForSockets(1);
+      const firstSocket = sockets[0]!;
+      firstSocket.serveVoidRpc(pendingMethods);
+      await Promise.all(
+        threadIds.map((threadId) =>
+          transport.request(ORCHESTRATION_WS_METHODS.subscribeThread, { threadId }),
+        ),
+      );
+      await vi.waitFor(() => {
+        expect(firstSocket.requests(ORCHESTRATION_WS_METHODS.subscribeThread)).toHaveLength(12);
+      });
+      const mutation = transport
+        .request(WS_METHODS.terminalWrite, {
+          threadId: threadIds[0],
+          terminalId: "default",
+          data: "once",
+        })
+        .catch((error: unknown) => error);
+      await vi.waitFor(() =>
+        expect(firstSocket.requests(WS_METHODS.terminalWrite)).toHaveLength(1),
+      );
+      const firstSessionVersion = internals.sessionVersion;
+
+      firstSocket.close(1008, "connection lost after accepting the mutation");
+      await expect(mutation).resolves.toMatchObject({ _tag: "RpcClientError" });
+      await vi.waitFor(
+        () => {
+          expect(internals.sessionVersion).toBeGreaterThan(firstSessionVersion);
+          expect(sockets.at(-1)?.readyState).toBe(MockWebSocket.CONNECTING);
+        },
+        { timeout: 3_000 },
+      );
+      const recoveredSocket = sockets.at(-1)!;
+      recoveredSocket.serveVoidRpc(pendingMethods);
+      await internals.getClient();
+      await vi.waitFor(() => {
+        expect(recoveredSocket.requests(ORCHESTRATION_WS_METHODS.subscribeThread)).toHaveLength(12);
+      });
+
+      expect(openReconnectSession).toHaveBeenCalledOnce();
+      expect(transport.getState()).toBe("open");
+      expect(internals.threadSubscriptions.size).toBe(12);
+      expect(internals.streamCleanups.size).toBe(12);
+      expect(sockets.filter((socket) => socket.readyState !== MockWebSocket.CLOSED)).toEqual([
+        recoveredSocket,
+      ]);
+      expect(sockets.flatMap((socket) => socket.requests(WS_METHODS.terminalWrite))).toHaveLength(
+        1,
+      );
+      const restoredThreadIds = recoveredSocket
+        .requests(ORCHESTRATION_WS_METHODS.subscribeThread)
+        .map((frame) => (frame.payload as { threadId: string }).threadId);
+      expect(new Set(restoredThreadIds)).toEqual(new Set(threadIds));
+    } finally {
+      await transport.dispose();
+    }
+    expect(internals.streamCleanups.size).toBe(0);
+    expect(internals.streamSettled.size).toBe(0);
+    expect(sockets.every((socket) => socket.readyState === MockWebSocket.CLOSED)).toBe(true);
+  });
+
   it("reuses cached negotiation on reconnect while the server instance is unchanged", async () => {
     const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(200, NEGOTIATION_RESULT)));
     vi.stubGlobal("fetch", fetchMock);
 
     const transport = new WsTransport("ws://localhost:3020");
     const internals = transport as unknown as {
-      createSession(): { clientPromise: Promise<unknown> };
+      getClient(): Promise<unknown>;
+      reconnect(): Promise<unknown>;
       probeFeatureConnection: (...args: unknown[]) => Promise<void>;
       compatibility: WsBootstrapNegotiateResult | null;
     };
-    await waitForSockets(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(internals.compatibility).toEqual(NEGOTIATION_RESULT);
+    try {
+      await waitForSockets(1);
+      sockets[0]!.serveVoidRpc();
+      await internals.getClient();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(internals.compatibility).toEqual(NEGOTIATION_RESULT);
 
-    const probe = vi.fn(async () => undefined);
-    internals.probeFeatureConnection = probe;
-    await internals.createSession().clientPromise;
+      const probe = vi.spyOn(internals, "probeFeatureConnection");
+      const reconnecting = internals.reconnect();
+      await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 2_000 });
+      sockets[1]!.serveVoidRpc();
+      await reconnecting;
 
-    // Reconnect on the same server generation opens exactly one new socket and
-    // performs no renegotiation round trip — only the liveness probe.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(probe).toHaveBeenCalledTimes(1);
-    expect(sockets).toHaveLength(2);
-    const reconnectUrl = new URL(sockets[1]!.url);
-    expect(reconnectUrl.pathname).toBe("/ws");
-    expect(reconnectUrl.searchParams.get(WS_COMPATIBILITY_QUERY.serverInstanceId)).toBe(
-      NEGOTIATION_RESULT.serverInstanceId,
-    );
-
-    await transport.dispose();
+      // Reconnect on the same server generation opens exactly one new socket and
+      // performs no renegotiation round trip — only the liveness probe.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(probe).toHaveBeenCalledTimes(1);
+      const reconnectUrl = new URL(sockets[1]!.url);
+      expect(reconnectUrl.pathname).toBe("/ws");
+      expect(reconnectUrl.searchParams.get(WS_COMPATIBILITY_QUERY.serverInstanceId)).toBe(
+        NEGOTIATION_RESULT.serverInstanceId,
+      );
+      expect(sockets[0]!.readyState).toBe(MockWebSocket.CLOSED);
+    } finally {
+      await transport.dispose();
+    }
   });
 
   it("renegotiates and resets replayed push state when the server instance changed", async () => {
@@ -1715,32 +1916,41 @@ describe("WsTransport", () => {
 
     const transport = new WsTransport("ws://localhost:3020");
     const internals = transport as unknown as {
-      createSession(): { clientPromise: Promise<unknown> };
+      getClient(): Promise<unknown>;
+      reconnect(): Promise<unknown>;
       compatibility: WsBootstrapNegotiateResult | null;
       latestPushByChannel: Map<string, unknown>;
       sequence: number;
     };
-    await waitForSockets(1);
-    internals.latestPushByChannel.set("server.welcome", { stale: true });
-    internals.sequence = 7;
+    try {
+      await waitForSockets(1);
+      sockets[0]!.serveVoidRpc();
+      await internals.getClient();
+      internals.latestPushByChannel.set("server.welcome", { stale: true });
+      internals.sequence = 7;
 
-    // A failed session clears the cache (probe or socket failure), so the next
-    // reconnect renegotiates and lands on the restarted server generation.
-    internals.compatibility = null;
-    const restarted = { ...NEGOTIATION_RESULT, serverInstanceId: "server-instance-2" };
-    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(200, restarted)));
-    await internals.createSession().clientPromise;
+      // A failed session clears the cache (probe or socket failure), so the next
+      // reconnect renegotiates and lands on the restarted server generation.
+      internals.compatibility = null;
+      const restarted = { ...NEGOTIATION_RESULT, serverInstanceId: "server-instance-2" };
+      fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(200, restarted)));
+      const reconnecting = internals.reconnect();
+      await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 2_000 });
+      sockets[1]!.serveVoidRpc();
+      await reconnecting;
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(internals.compatibility).toEqual(restarted);
-    expect(internals.latestPushByChannel.size).toBe(0);
-    expect(internals.sequence).toBe(0);
-    const reconnectUrl = new URL(sockets[1]!.url);
-    expect(reconnectUrl.searchParams.get(WS_COMPATIBILITY_QUERY.serverInstanceId)).toBe(
-      "server-instance-2",
-    );
-
-    await transport.dispose();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(internals.compatibility).toEqual(restarted);
+      expect(internals.latestPushByChannel.size).toBe(0);
+      expect(internals.sequence).toBe(0);
+      const reconnectUrl = new URL(sockets[1]!.url);
+      expect(reconnectUrl.searchParams.get(WS_COMPATIBILITY_QUERY.serverInstanceId)).toBe(
+        "server-instance-2",
+      );
+      expect(sockets[0]!.readyState).toBe(MockWebSocket.CLOSED);
+    } finally {
+      await transport.dispose();
+    }
   });
 
   it("mirrors the negotiate endpoint onto the WS host with an HTTP scheme", () => {

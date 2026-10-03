@@ -1153,10 +1153,10 @@ export class WsTransport {
   }
 
   /**
-   * A cached-negotiation session skips the negotiation round trip, so nothing
-   * has yet proven the server is alive on the cached generation. Probe with a
-   * no-op RPC: a restarted server refuses the stale `/ws` upgrade (426) and
-   * the probe fails, clearing the cache so the next attempt renegotiates.
+   * Constructing the RPC client does not wait for its socket to open. Prove
+   * every feature connection with a no-op RPC before releasing queued calls.
+   * A restarted server refuses a cached generation's `/ws` upgrade (426), so
+   * a failed probe also clears the cache for the next negotiation attempt.
    */
   private async probeFeatureConnection(
     client: RpcClientInstance,
@@ -1196,9 +1196,7 @@ export class WsTransport {
       this.clientScope = featureScope;
       const client = await featureRuntime.runPromise(Scope.provide(featureScope)(makeRpcClient));
       this.runtimeByClient.set(client, featureRuntime);
-      if (cachedCompatibility) {
-        await this.probeFeatureConnection(client, featureRuntime);
-      }
+      await this.probeFeatureConnection(client, featureRuntime);
       if (!this.disposed && this.sessionVersion === sessionVersion) {
         this.adoptNegotiation(compatibility);
         this.setState("open");
@@ -1786,11 +1784,23 @@ export class WsTransport {
     const streamSessionVersion = this.sessionVersion;
     const streamStartedAt = performance.now();
     const runnableStream = stream as Stream.Stream<T, WsTransportRpcError, never>;
+    const runtime = this.getClientRuntime(client);
     let resolveSettled: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => {
       resolveSettled = resolve;
     });
-    const cancel = this.getClientRuntime(client).runCallback(
+    let cancelFiber: (() => void) | undefined;
+    let cancellationRequested = false;
+    const cancel = () => {
+      cancellationRequested = true;
+      cancelFiber?.();
+    };
+    // Effect can deliver events and onExit before runCallback returns. Publish
+    // ownership first so synchronous exits and listener cancellation clean up
+    // the same stream without re-registering an already settled fiber.
+    this.streamCleanups.set(key, cancel);
+    this.streamSettled.set(key, settled);
+    cancelFiber = runtime.runCallback(
       Stream.runForEach(runnableStream, (event) =>
         Effect.sync(() => {
           if (this.streamCapacityRetries.has(key)) {
@@ -1905,9 +1915,17 @@ export class WsTransport {
             }
           }
           if (restart && Exit.isFailure(exit) && shouldReconnectAfterStreamFailure(exit.cause)) {
-            window.setTimeout(
+            if (this.sessionVersion !== streamSessionVersion) return;
+            this.clearStreamCompletionRetryTimer(key);
+            const timeoutId = window.setTimeout(
               () => {
-                if (!this.disposed && !this.streamCleanups.has(key)) {
+                if (this.streamCompletionRetryTimers.get(key) !== timeoutId) return;
+                this.streamCompletionRetryTimers.delete(key);
+                if (
+                  !this.disposed &&
+                  this.sessionVersion === streamSessionVersion &&
+                  !this.streamCleanups.has(key)
+                ) {
                   void this.reconnect()
                     .then(() => restart())
                     .catch((error) => {
@@ -1919,6 +1937,7 @@ export class WsTransport {
               },
               Cause.hasInterruptsOnly(exit.cause) ? 0 : 500,
             );
+            this.streamCompletionRetryTimers.set(key, timeoutId);
             return;
           }
           if (Exit.isFailure(exit) && !this.disposed && !Cause.hasInterruptsOnly(exit.cause)) {
@@ -1953,8 +1972,7 @@ export class WsTransport {
         },
       },
     );
-    this.streamCleanups.set(key, cancel);
-    this.streamSettled.set(key, settled);
+    if (cancellationRequested) cancelFiber();
   }
 
   private stopStream(

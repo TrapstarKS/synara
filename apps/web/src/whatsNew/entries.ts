@@ -22,6 +22,18 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.24",
+    date: "Oct 3",
+    features: [
+      {
+        id: "connection-recovery",
+        title: "Reliable connection recovery",
+        description:
+          "Conversations recover more reliably after connection interruptions. Immediate stream failures and cancellation during startup no longer leave subscriptions stuck, and new connections are checked before requests are sent.",
+      },
+    ],
+  },
+  {
     version: "0.9.22",
     date: "Oct 1",
     features: [
