@@ -207,6 +207,12 @@ type CodexSessionApprovalOverride = {
   };
 };
 
+interface PendingTurnResponse {
+  readonly settledTurnIds: Set<TurnId>;
+  latestStartedTurnId?: TurnId;
+  superseded?: boolean;
+}
+
 interface CodexSessionContext {
   readonly enableComputerControl?: boolean;
   readonly gatewaySessionLease?: AgentGatewaySessionLease;
@@ -1124,6 +1130,10 @@ function setRecentCacheEntry<K, V>(
 
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
+  private readonly pendingTurnResponses = new WeakMap<
+    CodexSessionContext,
+    Set<PendingTurnResponse>
+  >();
   private readonly childMetadataReads = new WeakMap<
     CodexSessionContext,
     Map<string, "reading" | "known">
@@ -1654,20 +1664,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
 
     context.activeInteractionMode = input.interactionMode ?? "default";
-    const response = await this.sendRequest(context, "turn/start", turnStartParams);
-    const turnIdRaw = this.readString(this.readObject(this.readObject(response), "turn"), "id");
-    if (!turnIdRaw) {
-      throw new Error("turn/start response did not include a turn id.");
-    }
-    const turnId = TurnId.makeUnsafe(turnIdRaw);
-
-    this.updateSession(context, {
-      status: "running",
-      activeTurnId: turnId,
-      ...(context.session.resumeCursor !== undefined
-        ? { resumeCursor: context.session.resumeCursor }
-        : {}),
-    });
+    const turnId = await this.requestInteractiveTurn(context, "turn/start", turnStartParams);
 
     return {
       threadId: context.session.threadId,
@@ -1698,24 +1695,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       throw new Error("Session is missing provider resume thread id.");
     }
 
-    const response = await this.sendRequest(context, "turn/steer", {
+    const turnId = await this.requestInteractiveTurn(context, "turn/steer", {
       threadId: providerThreadId,
       input: turnInput,
       expectedTurnId: activeTurnId,
-    });
-
-    const turnIdRaw = this.readString(this.readObject(response), "turnId");
-    if (!turnIdRaw) {
-      throw new Error("turn/steer response did not include a turn id.");
-    }
-    const turnId = TurnId.makeUnsafe(turnIdRaw);
-
-    this.updateSession(context, {
-      status: "running",
-      activeTurnId: turnId,
-      ...(context.session.resumeCursor !== undefined
-        ? { resumeCursor: context.session.resumeCursor }
-        : {}),
     });
 
     return {
@@ -1725,6 +1708,57 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ? { resumeCursor: context.session.resumeCursor }
         : {}),
     };
+  }
+
+  private async requestInteractiveTurn(
+    context: CodexSessionContext,
+    method: "turn/start" | "turn/steer",
+    params: unknown,
+  ): Promise<TurnId> {
+    const pending = this.pendingTurnResponses.get(context) ?? new Set<PendingTurnResponse>();
+    const request: PendingTurnResponse = { settledTurnIds: new Set() };
+    pending.add(request);
+    this.pendingTurnResponses.set(context, pending);
+    try {
+      const response = this.readObject(await this.sendRequest(context, method, params));
+      const turnIdRaw =
+        method === "turn/steer"
+          ? this.readString(response, "turnId")
+          : this.readString(this.readObject(response, "turn"), "id");
+      if (!turnIdRaw) throw new Error(`${method} response did not include a turn id.`);
+      const turnId = TurnId.makeUnsafe(turnIdRaw);
+      // A newer accepted request supersedes older replies, even if its own
+      // terminal notification was already consumed from the same stdout batch.
+      for (const earlier of pending) {
+        if (earlier === request) break;
+        earlier.superseded = true;
+      }
+      if (
+        !context.stopping &&
+        !request.superseded &&
+        !request.settledTurnIds.has(turnId) &&
+        (request.latestStartedTurnId === undefined || request.latestStartedTurnId === turnId)
+      ) {
+        this.updateSession(context, {
+          status: "running",
+          activeTurnId: turnId,
+          ...(context.session.resumeCursor !== undefined
+            ? { resumeCursor: context.session.resumeCursor }
+            : {}),
+        });
+      }
+      return turnId;
+    } finally {
+      // Retain terminal evidence only while a response could resurrect it.
+      pending.delete(request);
+      if (pending.size === 0) this.pendingTurnResponses.delete(context);
+    }
+  }
+
+  private rememberTerminalTurn(context: CodexSessionContext, turnId: TurnId): void {
+    for (const request of this.pendingTurnResponses.get(context) ?? []) {
+      request.settledTurnIds.add(turnId);
+    }
   }
 
   async startReview(input: ProviderStartReviewInput): Promise<ProviderTurnStartResult> {
@@ -1853,6 +1887,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     providerThreadIdOverride?: string,
   ): Promise<void> {
     const context = this.requireSession(threadId);
+    if (providerThreadIdOverride !== undefined && turnId === undefined) {
+      throw new Error("A child interrupt requires an exact child turn id.");
+    }
     const effectiveTurnId = turnId ?? context.session.activeTurnId;
 
     // Stop must also unpark codex from any question/approval it is blocked on;
@@ -3732,7 +3769,15 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       parentToWake = threadId;
       completionKey = item.id;
     }
-    if (!parentToWake || !completionKey || state.completed.has(completionKey)) return;
+    // Native subagents own their continuation through Codex's collaboration
+    // runtime. App-server turn/start is supported only for this session's root.
+    if (
+      !parentToWake ||
+      parentToWake !== readResumeThreadId({ resumeCursor: context.session.resumeCursor }) ||
+      !completionKey ||
+      state.completed.has(completionKey)
+    )
+      return;
     state.completed.add(completionKey);
     if (state.completed.size > 1024) state.completed.delete(state.completed.values().next().value!);
     if (state.states.get(parentToWake) !== "ready" || state.wakeups.has(parentToWake)) return;
@@ -3740,14 +3785,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const background = state;
     // Coalesce siblings and let Codex enqueue its native result notification.
     const timer = setTimeout(() => {
-      background.wakeups.delete(parentId);
+      if (background.wakeups.get(parentId) !== timer) return;
       if (
         context.stopping ||
         this.sessions.get(context.session.threadId) !== context ||
         context.gatewayCredentialRetired ||
         background.states.get(parentId) !== "ready"
-      )
+      ) {
+        background.wakeups.delete(parentId);
         return;
+      }
       background.states.set(parentId, "starting");
       // Empty input consumes the native notification without fabricating a
       // user message. Codex emits the ordinary turn lifecycle for projection.
@@ -3755,14 +3802,25 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadId: parentId,
         input: [],
         turnTrigger: "subagent_completion",
-      }).catch((error) => {
-        background.states.set(parentId, "stopped");
-        this.emitErrorEvent(
-          context,
-          "subagent/wakeupFailed",
-          `Could not resume after subagent completion: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
+      })
+        .catch((error) => {
+          if (
+            background.wakeups.get(parentId) !== timer ||
+            context.stopping ||
+            this.sessions.get(context.session.threadId) !== context ||
+            background.states.get(parentId) !== "starting"
+          )
+            return;
+          background.states.set(parentId, "stopped");
+          this.emitErrorEvent(
+            context,
+            "subagent/wakeupFailed",
+            `Could not resume after subagent completion: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        })
+        .finally(() => {
+          if (background.wakeups.get(parentId) === timer) background.wakeups.delete(parentId);
+        });
     }, 500);
     timer.unref();
     background.wakeups.set(parentId, timer);
@@ -3897,7 +3955,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const terminalGatewayTurnId = isTerminalParentTurn
       ? (rawRoute.turnId ?? context.session.activeTurnId)
       : undefined;
+    const isStaleParentTerminal =
+      isTerminalParentTurn &&
+      rawRoute.turnId !== undefined &&
+      context.session.activeTurnId !== undefined &&
+      rawRoute.turnId !== context.session.activeTurnId;
+    if (!isChildConversation && notification.method === "turn/started" && rawRoute.turnId) {
+      for (const request of this.pendingTurnResponses.get(context) ?? []) {
+        request.latestStartedTurnId = rawRoute.turnId;
+      }
+    }
+    if (terminalGatewayTurnId) this.rememberTerminalTurn(context, terminalGatewayTurnId);
     const gatewayTurnAuthorityRetired =
+      !isStaleParentTerminal &&
       terminalGatewayTurnId !== undefined &&
       context.gatewaySessionLease !== undefined &&
       context.gatewaySessionLease.nativeMcpCalls === undefined;
@@ -3941,12 +4011,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         void this.cancelGatewayTurn(context, nativeTurnId);
       }
     }
-    this.reconcileBackgroundTurns(
-      context,
-      notification,
-      resolvedCollaborationRoute,
-      isTerminalError,
-    );
+    if (!isStaleParentTerminal) {
+      this.reconcileBackgroundTurns(
+        context,
+        notification,
+        resolvedCollaborationRoute,
+        isTerminalError,
+      );
+    }
     const eventPayload = gatewayTurnAuthorityRetired
       ? {
           ...(this.readObject(notification.params) ?? {}),
@@ -3972,6 +4044,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       textDelta,
       payload: eventPayload,
     });
+
+    // Preserve the terminal event and its exact authority cleanup, but do not
+    // let a late terminal for A clear the session or continuation state of B.
+    if (isStaleParentTerminal) {
+      this.clearTaskCompleteFallback(context, rawRoute.turnId);
+      context.reviewTurnIds.delete(rawRoute.turnId!);
+      return;
+    }
 
     if (notification.method === "thread/started") {
       const startedThreadId = normalizeProviderThreadId(
@@ -4604,6 +4684,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   }
 
   private updateSession(context: CodexSessionContext, updates: Partial<ProviderSession>): void {
+    if (
+      "activeTurnId" in updates &&
+      updates.activeTurnId === undefined &&
+      context.session.activeTurnId !== undefined
+    ) {
+      this.rememberTerminalTurn(context, context.session.activeTurnId);
+    }
     context.session = {
       ...context.session,
       ...updates,

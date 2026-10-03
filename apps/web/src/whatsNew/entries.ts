@@ -22,6 +22,18 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.26",
+    date: "Oct 3",
+    features: [
+      {
+        id: "subagent-lifecycle",
+        title: "Accurate subagent status and control",
+        description:
+          "Finished subagents no longer appear active because of an older status. Stopping a child targets its own turn, and late Codex responses cannot overwrite a completed or newer turn. Subagent continuation failures no longer fail the main conversation.",
+      },
+    ],
+  },
+  {
     version: "0.9.25",
     date: "Oct 3",
     features: [

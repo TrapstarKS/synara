@@ -60,6 +60,7 @@ import {
 } from "../lib/subagentPresentation";
 import {
   hasLiveTurnTailWork,
+  isLatestTurnSettled,
   isProviderFileEditWorkLogEntry,
   type WorkLogEntry,
 } from "../session-logic";
@@ -2306,9 +2307,17 @@ export function enrichSubagentWorkEntries(
       });
       const status = deriveSubagentStatus(matchedThread);
       const fallbackStatusLabel = humanizeSubagentRawStatus(subagent.rawStatus);
+      // A settled child can outlive the last running spawn/wait snapshot.
+      // Keep live child work authoritative, but do not revive a finished turn
+      // from its old collab hint when no new turn is running.
+      const settledThreadStatusLabel =
+        matchedThread && isLatestTurnSettled(matchedThread.latestTurn, matchedThread.session)
+          ? terminalSubagentStatusLabel(matchedThread.latestTurn?.state, undefined)
+          : undefined;
       const terminalStatusLabel = status.isActive
         ? undefined
-        : terminalSubagentStatusLabel(subagent.rawStatus, entry.subagentAction?.status);
+        : (settledThreadStatusLabel ??
+          terminalSubagentStatusLabel(subagent.rawStatus, entry.subagentAction?.status));
       const matchedPresentation =
         matchedThread !== undefined
           ? resolveSubagentPresentationForThread({ thread: matchedThread, threads })
@@ -2326,7 +2335,9 @@ export function enrichSubagentWorkEntries(
       if (terminalStatusLabel ?? status.label ?? fallbackStatusLabel) {
         nextSubagent.statusLabel = terminalStatusLabel ?? status.label ?? fallbackStatusLabel;
       }
-      if (status.isActive || fallbackStatusLabel === "Running") {
+      if (terminalStatusLabel !== undefined) {
+        nextSubagent.isActive = false;
+      } else if (status.isActive || fallbackStatusLabel === "Running") {
         nextSubagent.isActive = true;
       }
       return nextSubagent;

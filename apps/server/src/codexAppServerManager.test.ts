@@ -1945,6 +1945,132 @@ it("requires a Codex version with exact MCP call metadata before starting a gate
   expect(gate).toHaveBeenCalledOnce();
 });
 
+describe("turn response lifecycle ordering", () => {
+  it.each(["sendTurn", "steerTurn"] as const)(
+    "%s does not resurrect a turn completed in the response batch",
+    async (operation) => {
+      const { manager, context, updateSession, emitEvent, writeMessage } =
+        createCollabNotificationHarness();
+      updateSession.mockRestore();
+      const cancelTurn = vi.fn(() => Promise.resolve());
+      Object.assign(context, {
+        gatewaySessionLease: {
+          nativeMcpCalls: { startTurn: vi.fn(), start: vi.fn(), finish: vi.fn() },
+          cancelTurn,
+        },
+      });
+      const pending = manager[operation]({ threadId: context.session.threadId, input: "Continue" });
+      const request = writeMessage.mock.calls[0]?.[1] as { id: number };
+      const result =
+        operation === "sendTurn" ? { turn: { id: "turn_parent" } } : { turnId: "turn_parent" };
+      const internals = manager as unknown as {
+        handleStdoutLine: (context: unknown, line: string) => void;
+      };
+      // A single stdout callback drains all complete frames before the request
+      // promise continuation runs, even when the response precedes completion.
+      for (const frame of [
+        {
+          method: "turn/started",
+          params: { threadId: "provider_parent", turn: { id: "turn_parent" } },
+        },
+        { id: request.id, result },
+        {
+          method: "turn/completed",
+          params: { threadId: "provider_parent", turn: { id: "turn_parent", status: "completed" } },
+        },
+      ])
+        internals.handleStdoutLine(context, JSON.stringify(frame));
+
+      await pending;
+      expect(context.session.status).toBe("ready");
+      expect(context.session.activeTurnId).toBeUndefined();
+      expect(cancelTurn).toHaveBeenCalledExactlyOnceWith("turn_parent");
+      expect(emitEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ method: "turn/completed", turnId: "turn_parent" }),
+      );
+    },
+  );
+
+  it.each(["turn/completed", "turn/aborted", "error"])(
+    "keeps a newer parent turn active when a stale %s arrives",
+    (method) => {
+      const { manager, context, updateSession, emitEvent } = createCollabNotificationHarness();
+      updateSession.mockRestore();
+      const cancelTurn = vi.fn(() => Promise.resolve());
+      Object.assign(context, {
+        gatewaySessionLease: {
+          nativeMcpCalls: { startTurn: vi.fn(), start: vi.fn(), finish: vi.fn() },
+          cancelTurn,
+        },
+      });
+      handleServerNotificationForTest(manager, context, {
+        method: "turn/started",
+        params: { threadId: "provider_parent", turn: { id: "new-parent-turn" } },
+      });
+      handleServerNotificationForTest(manager, context, {
+        method,
+        params: {
+          threadId: "provider_parent",
+          turn: { id: "turn_parent", status: "completed" },
+          ...(method === "error"
+            ? { error: { message: "Old turn failed" }, willRetry: false }
+            : {}),
+        },
+      });
+      expect(context.session.status).toBe("running");
+      expect(context.session.activeTurnId).toBe("new-parent-turn");
+      expect(cancelTurn).toHaveBeenCalledExactlyOnceWith("turn_parent");
+      expect(emitEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ method, turnId: "turn_parent" }),
+      );
+    },
+  );
+
+  it("does not replace a newer native turn with an older delayed response", async () => {
+    const { manager, context, updateSession } = createCollabNotificationHarness();
+    updateSession.mockRestore();
+    let resolveResponse!: (response: unknown) => void;
+    vi.spyOn(
+      manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+      "sendRequest",
+    ).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveResponse = resolve;
+        }),
+    );
+    const pending = manager.sendTurn({ threadId: context.session.threadId, input: "Continue" });
+    handleServerNotificationForTest(manager, context, {
+      method: "turn/started",
+      params: { threadId: "provider_parent", turn: { id: "new-parent-turn" } },
+    });
+    resolveResponse({ turn: { id: "turn_parent" } });
+    await pending;
+    expect(context.session.activeTurnId).toBe("new-parent-turn");
+  });
+
+  it("does not retire the newer legacy bearer on an old parent completion", () => {
+    const { manager, context, updateSession, emitEvent } = createCollabNotificationHarness();
+    updateSession.mockRestore();
+    const retireTurn = vi.fn(() => Promise.resolve());
+    Object.assign(context, { gatewaySessionLease: { retireTurn } });
+    handleServerNotificationForTest(manager, context, {
+      method: "turn/started",
+      params: { threadId: "provider_parent", turn: { id: "new-parent-turn" } },
+    });
+    handleServerNotificationForTest(manager, context, {
+      method: "turn/completed",
+      params: { threadId: "provider_parent", turn: { id: "turn_parent", status: "completed" } },
+    });
+    expect(context.session.activeTurnId).toBe("new-parent-turn");
+    expect(retireTurn).not.toHaveBeenCalled();
+    const terminal = emitEvent.mock.calls.at(-1)?.[0] as ProviderEvent;
+    expect(terminal.method).toBe("turn/completed");
+    expect(terminal.turnId).toBe("turn_parent");
+    expect(terminal.payload).not.toHaveProperty(AGENT_GATEWAY_TURN_AUTHORITY_RETIRED);
+  });
+});
+
 describe("sendTurn", () => {
   it("preserves child routing across a new parent turn", async () => {
     const { manager, context } = createSendTurnHarness();
@@ -5136,6 +5262,141 @@ describe("handleServerNotification error normalization", () => {
     }
   });
 
+  it("does not start a nested native parent directly after grandchild completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, context } = createCollabNotificationHarness();
+      (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(
+        String(context.session.threadId),
+        context,
+      );
+      const sendRequest = vi
+        .spyOn(
+          manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+          "sendRequest",
+        )
+        .mockResolvedValue({});
+      context.collabReceiverParents.set("child", "provider_parent");
+      context.collabReceiverParents.set("grandchild", "child");
+      for (const [method, threadId, turnId] of [
+        ["turn/started", "provider_parent", "turn_parent"],
+        ["turn/started", "child", "child-turn"],
+        ["turn/started", "grandchild", "grandchild-turn"],
+        ["turn/completed", "child", "child-turn"],
+        ["turn/completed", "grandchild", "grandchild-turn"],
+      ])
+        handleServerNotificationForTest(manager, context, {
+          method,
+          params: { threadId, turn: { id: turnId, status: "completed" } },
+        });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sendRequest).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a rejected wakeup superseded by a native parent turn", async () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+      updateSession.mockRestore();
+      (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(
+        String(context.session.threadId),
+        context,
+      );
+      let rejectWake!: (error: Error) => void;
+      const sendRequest = vi
+        .spyOn(
+          manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+          "sendRequest",
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((_, reject) => {
+              rejectWake = reject;
+            }),
+        )
+        .mockResolvedValue({});
+      const notify = (method: string, threadId: string, turnId: string) =>
+        handleServerNotificationForTest(manager, context, {
+          method,
+          params: { threadId, turn: { id: turnId, status: "completed" } },
+        });
+      notify("turn/completed", "provider_parent", "turn_parent");
+      notify("turn/completed", "child", "child-turn");
+      await vi.advanceTimersByTimeAsync(500);
+      notify("turn/started", "provider_parent", "new-parent-turn");
+      notify("turn/completed", "provider_parent", "new-parent-turn");
+      rejectWake(new Error("Old continuation rejected"));
+      await Promise.resolve();
+      notify("turn/completed", "sibling", "sibling-turn");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sendRequest).toHaveBeenCalledTimes(2);
+      expect(
+        emitEvent.mock.calls.some(
+          ([event]) => (event as ProviderEvent).method === "subagent/wakeupFailed",
+        ),
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a child interrupt without an exact turn before cancelling authority", async () => {
+    const { manager, context, writeMessage } = createCollabNotificationHarness();
+    const cancelTurn = vi.fn(() => Promise.resolve());
+    Object.assign(context, {
+      gatewaySessionLease: {
+        nativeMcpCalls: { startTurn: vi.fn(), start: vi.fn(), finish: vi.fn() },
+        cancelTurn,
+      },
+    });
+    const sendRequest = vi
+      .spyOn(
+        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+        "sendRequest",
+      )
+      .mockResolvedValue({});
+    await expect(
+      manager.interruptTurn(context.session.threadId, undefined, "child"),
+    ).rejects.toThrow(/exact.*turn/i);
+    expect(cancelTurn).not.toHaveBeenCalled();
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(writeMessage).not.toHaveBeenCalled();
+  });
+
+  it("interrupts only the explicit child turn while the native parent remains active", async () => {
+    const { manager, context } = createCollabNotificationHarness();
+    const cancelTurn = vi.fn(() => Promise.resolve());
+    const retireTurn = vi.fn(() => Promise.resolve());
+    const release = vi.fn();
+    Object.assign(context, {
+      gatewaySessionLease: {
+        nativeMcpCalls: { startTurn: vi.fn(), start: vi.fn(), finish: vi.fn() },
+        cancelTurn,
+        retireTurn,
+        release,
+      },
+    });
+    const sendRequest = vi
+      .spyOn(
+        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+        "sendRequest",
+      )
+      .mockResolvedValue({});
+    await manager.interruptTurn(context.session.threadId, TurnId.makeUnsafe("child-turn"), "child");
+    expect(cancelTurn).toHaveBeenCalledExactlyOnceWith("child-turn");
+    expect(retireTurn).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith(context, "turn/interrupt", {
+      threadId: "child",
+      turnId: "child-turn",
+    });
+    expect(context.session.activeTurnId).toBe("turn_parent");
+    expect(context.gatewayCredentialRetired).toBe(false);
+  });
+
   it("coalesces child results into one empty-input continuation of the idle parent", async () => {
     vi.useFakeTimers();
     try {
@@ -5402,7 +5663,7 @@ describe("handleServerNotification error normalization", () => {
     ).toBe(false);
   });
 
-  it("retires gateway authority before publishing every terminal parent-turn notification", () => {
+  it("retires gateway authority before publishing every current parent-turn terminal", () => {
     const terminalNotifications = [
       {
         expectedTurnId: "turn-completed",
@@ -5440,6 +5701,7 @@ describe("handleServerNotification error normalization", () => {
 
     for (const { expectedTurnId, notification } of terminalNotifications) {
       const { manager, context, emitEvent } = createCollabNotificationHarness();
+      context.session.activeTurnId = expectedTurnId;
       const cancelTurn = vi.fn(() => Promise.resolve());
       const retireTurn = vi.fn(() => {
         expect(emitEvent).not.toHaveBeenCalled();

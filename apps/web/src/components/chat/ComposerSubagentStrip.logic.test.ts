@@ -480,6 +480,116 @@ describe("deriveComposerSubagentStripItems", () => {
       expect(items).toEqual([]);
     });
 
+    it.each([
+      ["completed", "ready", "idle", "Completed"],
+      ["interrupted", "closed", "stopped", "Stopped"],
+      ["error", "error", "error", "Failed"],
+    ] as const)(
+      "retires a %s child despite an older running collab snapshot",
+      (state, sessionStatus, orchestrationStatus, statusLabel) => {
+        const child = settledSubagentThread("toolu_x");
+        child.session = { ...child.session!, status: sessionStatus, orchestrationStatus };
+        child.latestTurn = {
+          turnId: TurnId.makeUnsafe("child-turn-1"),
+          state,
+          requestedAt: "2026-07-14T00:00:01.000Z",
+          startedAt: "2026-07-14T00:00:01.000Z",
+          completedAt: "2026-07-14T00:00:02.000Z",
+          assistantMessageId: null,
+        };
+        const entries = [
+          workEntry({
+            id: "old-spawn",
+            turnId: "turn-1",
+            itemType: "collab_agent_tool_call",
+            subagents: [subagent({ threadId: "toolu_x", rawStatus: "running", isActive: true })],
+          }),
+        ];
+
+        const enriched = enrichSubagentWorkEntries(entries, [child], parentThreadId);
+        expect(enriched[0]?.subagents?.[0]).toMatchObject({ isActive: false, statusLabel });
+        // The stale row must retire both during the parent's turn and after it ends.
+        for (const liveTurnId of [TurnId.makeUnsafe("turn-1"), null]) {
+          expect(deriveComposerSubagentStripItems({ workEntries: enriched, liveTurnId })).toEqual(
+            [],
+          );
+        }
+        expect(entries[0]?.subagents?.[0]?.isActive).toBe(true);
+      },
+    );
+
+    it.each(["missing child", "missing lifecycle", "idle without a settled turn"] as const)(
+      "keeps the running collab fallback with %s",
+      (scenario) => {
+        const child = settledSubagentThread("toolu_x");
+        if (scenario === "missing lifecycle") child.session = null;
+        const enriched = enrichSubagentWorkEntries(
+          [
+            workEntry({
+              id: "spawn-before-child-detail",
+              turnId: "turn-1",
+              itemType: "collab_agent_tool_call",
+              subagents: [subagent({ threadId: "toolu_x", rawStatus: "running" })],
+            }),
+          ],
+          scenario === "missing child" ? [] : [child],
+          parentThreadId,
+        );
+
+        const items = subagentRows(
+          deriveComposerSubagentStripItems({ workEntries: enriched, liveTurnId: null }),
+        );
+        expect(items).toHaveLength(1);
+        expect(items[0]).toMatchObject({ statusKind: "running", isActive: true });
+      },
+    );
+
+    it.each(["completed", "running"] as const)(
+      "keeps a newly running child active while its latest turn projection is %s",
+      (state) => {
+        const child = settledSubagentThread("toolu_x");
+        child.session = {
+          ...child.session!,
+          status: "running",
+          orchestrationStatus: "running",
+          activeTurnId: TurnId.makeUnsafe("child-turn-2"),
+          updatedAt: "2026-07-14T00:00:03.000Z",
+        };
+        child.latestTurn = {
+          turnId: TurnId.makeUnsafe(state === "completed" ? "child-turn-1" : "child-turn-2"),
+          state,
+          requestedAt: "2026-07-14T00:00:01.000Z",
+          startedAt: "2026-07-14T00:00:01.000Z",
+          completedAt: state === "completed" ? "2026-07-14T00:00:02.000Z" : null,
+          assistantMessageId: null,
+        };
+        const enriched = enrichSubagentWorkEntries(
+          [
+            workEntry({
+              id: "old-wait-result",
+              turnId: "turn-1",
+              itemType: "collab_agent_tool_call",
+              subagents: [
+                subagent({ threadId: "toolu_x", rawStatus: "completed", isActive: false }),
+              ],
+            }),
+          ],
+          [child],
+          parentThreadId,
+        );
+
+        const items = subagentRows(
+          deriveComposerSubagentStripItems({ workEntries: enriched, liveTurnId: null }),
+        );
+        expect(items).toHaveLength(1);
+        expect(items[0]).toMatchObject({
+          statusLabel: "Running",
+          statusKind: "running",
+          isActive: true,
+        });
+      },
+    );
+
     it("keeps Idle for a child thread idling mid-lifecycle without a terminal signal", () => {
       const items = enrichedItems(
         workEntry({

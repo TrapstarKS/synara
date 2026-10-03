@@ -556,6 +556,68 @@ turnPreparationLayer("CodexAdapterLive turn input preparation", (it) => {
   );
 });
 
+it.each(["native children start", "an older send response arrives"])(
+  "keeps the root watchdog turn when %s",
+  async (scenario) => {
+    const manager = new FakeCodexManager();
+    const isTurnActive = vi
+      .spyOn(manager, "isTurnActive")
+      .mockImplementation((_threadId, turnId) => turnId === asTurnId("root-turn"));
+    const intervals = vi.spyOn(globalThis, "setInterval");
+    const layer = makeCodexAdapterLive({ manager }).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const adapter = yield* CodexAdapter;
+          const tick = intervals.mock.calls.find(([, interval]) => interval === 15_000)?.[0];
+          assert.equal(typeof tick, "function");
+          const emitStart = (child: boolean) => {
+            manager.emit("event", {
+              id: asEventId(child ? "child-watchdog-start" : "root-watchdog-start"),
+              kind: "notification",
+              provider: "codex",
+              createdAt: new Date().toISOString(),
+              method: "turn/started",
+              threadId: asThreadId("watchdog-parent"),
+              turnId: asTurnId(child ? "child-turn" : "root-turn"),
+              ...(child
+                ? { providerThreadId: "child-provider", providerParentThreadId: "root-provider" }
+                : {}),
+              payload: {},
+            } satisfies ProviderEvent);
+          };
+          if (scenario === "native children start") {
+            emitStart(false);
+            emitStart(true);
+          } else {
+            manager.sendTurnImpl.mockImplementationOnce(async () => {
+              emitStart(false);
+              return { threadId: asThreadId("watchdog-parent"), turnId: asTurnId("old-turn") };
+            });
+            yield* adapter.sendTurn({
+              threadId: asThreadId("watchdog-parent"),
+              input: "Continue",
+              attachments: [],
+            });
+          }
+          isTurnActive.mockClear();
+          if (typeof tick === "function") tick();
+          assert.deepEqual(isTurnActive.mock.calls, [
+            [asThreadId("watchdog-parent"), asTurnId("root-turn")],
+          ]);
+        }).pipe(Effect.provide(layer)),
+      );
+    } finally {
+      intervals.mockRestore();
+      isTurnActive.mockRestore();
+    }
+  },
+);
+
 const lifecycleManager = new FakeCodexManager();
 const lifecycleLayer = it.layer(
   makeCodexAdapterLive({ manager: lifecycleManager }).pipe(
@@ -566,6 +628,25 @@ const lifecycleLayer = it.layer(
 );
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("maps a subagent wakeup failure to a warning without failing the root turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const pending = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-wakeup-warning"),
+        kind: "error",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "subagent/wakeupFailed",
+        threadId: asThreadId("thread-1"),
+        message: "Could not resume after subagent completion",
+      } satisfies ProviderEvent);
+      const event = yield* Fiber.join(pending);
+      assert.equal(event._tag, "Some");
+      if (event._tag === "Some") assert.equal(event.value.type, "runtime.warning");
+    }),
+  );
+
   it.effect("recovers a child display name from read-only thread metadata", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

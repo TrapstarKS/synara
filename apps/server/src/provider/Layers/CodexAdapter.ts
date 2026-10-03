@@ -294,6 +294,7 @@ function providerErrorMapsToWarning(event: ProviderEvent): boolean {
   return (
     event.kind === "error" &&
     (event.method === "process/stderr" ||
+      event.method === "subagent/wakeupFailed" ||
       event.method === "mcpServer/elicitation/request/unrenderable" ||
       (event.method === "error" &&
         typeof event.message === "string" &&
@@ -2050,6 +2051,11 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       turnWatchdogs.set(threadId, { turnId, lastActivityAt: Date.now() });
     };
 
+    const armAcknowledgedTurnWatchdog = (threadId: ThreadId, turnId: TurnId): void => {
+      // A late response must not replace the watchdog of a newer native turn.
+      if (manager.isTurnActive(threadId, turnId)) armTurnWatchdog(threadId, turnId);
+    };
+
     const trackTurnWatchdogActivity = (
       threadId: ThreadId,
       runtimeEvents: ReadonlyArray<ProviderRuntimeEvent>,
@@ -2059,7 +2065,11 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         entry.lastActivityAt = Date.now();
       }
       for (const runtimeEvent of runtimeEvents) {
-        if (runtimeEvent.type === "turn.started" && runtimeEvent.turnId) {
+        if (
+          runtimeEvent.type === "turn.started" &&
+          runtimeEvent.turnId &&
+          runtimeEvent.providerRefs?.providerParentThreadId === undefined
+        ) {
           armTurnWatchdog(threadId, runtimeEvent.turnId);
         }
       }
@@ -2210,9 +2220,11 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           try: () => manager.sendTurn(managerInput),
           catch: (cause) => toRequestError(input.threadId, "turn/start", cause),
         }).pipe(
-          // Armed here as well as on `turn.started`, so a child that goes silent
+          // Armed here as well as on `turn.started`, so a root turn that goes silent
           // before its first notification is still covered.
-          Effect.tap((result) => Effect.sync(() => armTurnWatchdog(input.threadId, result.turnId))),
+          Effect.tap((result) =>
+            Effect.sync(() => armAcknowledgedTurnWatchdog(input.threadId, result.turnId)),
+          ),
           Effect.map((result) => ({
             ...result,
             threadId: input.threadId,
@@ -2228,7 +2240,9 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           try: () => manager.steerTurn(managerInput),
           catch: (cause) => toRequestError(input.threadId, "turn/steer", cause),
         }).pipe(
-          Effect.tap((result) => Effect.sync(() => armTurnWatchdog(input.threadId, result.turnId))),
+          Effect.tap((result) =>
+            Effect.sync(() => armAcknowledgedTurnWatchdog(input.threadId, result.turnId)),
+          ),
           // The `turn/steer` response carries no runtime event and the model
           // only consumes injected input at its next turn boundary, so without
           // this a landed steer is indistinguishable from a dropped one.
@@ -2259,7 +2273,9 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         try: () => manager.startReview(input),
         catch: (cause) => toRequestError(input.threadId, "review/start", cause),
       }).pipe(
-        Effect.tap((result) => Effect.sync(() => armTurnWatchdog(input.threadId, result.turnId))),
+        Effect.tap((result) =>
+          Effect.sync(() => armAcknowledgedTurnWatchdog(input.threadId, result.turnId)),
+        ),
         Effect.map((result) => ({
           ...result,
           threadId: input.threadId,

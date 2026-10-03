@@ -5253,7 +5253,12 @@ const make = Effect.gen(function* () {
     // Forward the observed turn only as an expectation. ProviderService owns the
     // exact generation-scoped provider turn and rejects a stale mismatch.
     const providerThreadId = resolveSubagentProviderThreadId(thread.id, providerThread.id);
-    const liveTurnId = yield* resolveLiveProviderTurnId(input.threadId);
+    // The shared runtime reports the parent's active turn. A child interrupt
+    // must keep the child's own turn id, or it can revoke the parent's call
+    // authority while sending an unrelated turn id to the child conversation.
+    const liveTurnId = providerThreadId
+      ? undefined
+      : yield* resolveLiveProviderTurnId(input.threadId);
     const turnId = liveTurnId ?? input.turnId ?? thread.session?.activeTurnId ?? undefined;
     const result = yield* runBoundedProviderCall({
       label: "The provider interrupt",

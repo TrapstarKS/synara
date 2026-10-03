@@ -16114,6 +16114,12 @@ describe("ProviderCommandReactor", () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
 
+    harness.setRuntimeSessionTurnState({
+      threadId: "thread-1",
+      status: "running",
+      activeTurnId: asTurnId("turn-parent-live"),
+    });
+
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -16191,6 +16197,12 @@ describe("ProviderCommandReactor", () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
 
+    harness.setRuntimeSessionTurnState({
+      threadId: "thread-1",
+      status: "running",
+      activeTurnId: asTurnId("turn-parent-live"),
+    });
+
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -16248,6 +16260,12 @@ describe("ProviderCommandReactor", () => {
   it("infers the parent provider session for synthetic subagent ids that are missing parent metadata", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
+
+    harness.setRuntimeSessionTurnState({
+      threadId: "thread-1",
+      status: "running",
+      activeTurnId: asTurnId("turn-parent-live"),
+    });
 
     await Effect.runPromise(
       harness.engine.dispatch({
