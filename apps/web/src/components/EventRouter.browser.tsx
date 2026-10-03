@@ -18,6 +18,7 @@ import {
   type ServerConfig,
   type WsWelcomePayload,
   WS_METHODS,
+  WsRpcError,
 } from "@synara/contracts";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { HttpResponse, http, ws } from "msw";
@@ -67,6 +68,10 @@ import {
 } from "../test/browserHarness";
 import { getThreadFromState } from "../threadDerivation";
 import { resetThreadDetailResumeCursorsForTests } from "../threadDetailResumeCursors";
+import {
+  resetRetainedThreadDetailSubscriptionsForTests,
+  retainThreadDetailSubscription,
+} from "../threadDetailSubscriptionRetention";
 import { useWorkspacePathsStore } from "../workspacePathsStore";
 import { resetWsNativeApiForTest } from "../wsNativeApi";
 import { registerTerminalRuntimeCleanup } from "../lib/terminalStateCleanup";
@@ -107,6 +112,14 @@ let pendingThreadDetailSnapshotResponse: {
   readonly requestId: string;
   readonly result: unknown;
 } | null = null;
+let holdColdThreadSnapshots = false;
+let maxHeldDetailSnapshotResponses = 0;
+const heldDetailSnapshotResponses: {
+  readonly client: EffectRpcWebSocketClient;
+  readonly requestId: string;
+  readonly threadId: ThreadId;
+  readonly result: unknown;
+}[] = [];
 
 const wsLink = ws.link(/ws(s)?:\/\/.*/);
 
@@ -248,6 +261,35 @@ function buildFixture(): TestFixture {
   };
 }
 
+function prepareColdThreadFixture(): OrchestrationThread[] {
+  const baseThread = fixture.snapshot.threads[0]!;
+  const threads = Array.from({ length: 12 }, (_, index) => {
+    const threadId = index === 0 ? THREAD_ID : ThreadId.makeUnsafe(`cold-thread-${index}`);
+    const turnId = TurnId.makeUnsafe(`cold-turn-${index}`);
+    return {
+      ...baseThread,
+      id: threadId,
+      latestTurn: {
+        turnId,
+        state: "running" as const,
+        requestedAt: NOW_ISO,
+        startedAt: NOW_ISO,
+        completedAt: null,
+        assistantMessageId: null,
+      },
+      session: {
+        ...baseThread.session!,
+        threadId,
+        status: "running" as const,
+        activeTurnId: turnId,
+      },
+    };
+  });
+  fixture.snapshot = { ...fixture.snapshot, threads };
+  holdColdThreadSnapshots = true;
+  return threads;
+}
+
 function getThreadDetailFromFixtureSnapshot(threadId: ThreadId): OrchestrationThread {
   const thread = fixture.snapshot.threads.find((entry) => entry.id === threadId);
   if (!thread) {
@@ -261,6 +303,7 @@ function findThreadDetailFromFixtureSnapshot(threadId: ThreadId): OrchestrationT
 }
 
 function resolveWsRpc(tag: string, body?: unknown): unknown {
+  if (tag === ORCHESTRATION_WS_METHODS.unsubscribeShell) return null;
   if (tag === ORCHESTRATION_WS_METHODS.getShellSnapshot) {
     getShellSnapshotRequestCount += 1;
     return createShellSnapshotFromReadModel(fixture.snapshot);
@@ -390,6 +433,7 @@ const worker = setupWorker(
         subscribeThreadRequests.push(threadId);
         threadStreamRequestIdByThreadId.set(threadId, request.id);
         threadStreamClientByThreadId.set(threadId, client);
+        if (holdColdThreadSnapshots) return;
         if (delayNextThreadSnapshot) {
           delayNextThreadSnapshot = false;
           return;
@@ -408,6 +452,19 @@ const worker = setupWorker(
         return;
       }
       const result = resolveWsRpc(method, requestBody);
+      if (method === ORCHESTRATION_WS_METHODS.getThreadDetailSnapshot && holdColdThreadSnapshots) {
+        heldDetailSnapshotResponses.push({
+          client,
+          requestId: request.id,
+          threadId: requestBody.threadId as ThreadId,
+          result,
+        });
+        maxHeldDetailSnapshotResponses = Math.max(
+          maxHeldDetailSnapshotResponses,
+          heldDetailSnapshotResponses.length,
+        );
+        return;
+      }
       if (
         method === ORCHESTRATION_WS_METHODS.getThreadDetailSnapshot &&
         delayNextThreadDetailSnapshotResponse
@@ -430,7 +487,7 @@ const worker = setupWorker(
 async function mountApp(options?: {
   routeThreadId?: ThreadId;
   waitForThreadId?: ThreadId | null;
-}): Promise<{ cleanup: () => Promise<void> }> {
+}): Promise<{ cleanup: () => Promise<void>; router: ReturnType<typeof getRouter> }> {
   const host = createFullscreenTestHost();
 
   const routeThreadId = options?.routeThreadId ?? THREAD_ID;
@@ -468,6 +525,7 @@ async function mountApp(options?: {
   let cleanedUp = false;
 
   return {
+    router,
     cleanup: async () => {
       if (cleanedUp) return;
       cleanedUp = true;
@@ -572,6 +630,7 @@ describe("EventRouter scoped orchestration sync", () => {
       threadShellById: {},
       threadSessionById: {},
       threadTurnStateById: {},
+      threadDetailSyncById: {},
       messageIdsByThreadId: {},
       messageByThreadId: {},
       activityIdsByThreadId: {},
@@ -599,6 +658,10 @@ describe("EventRouter scoped orchestration sync", () => {
     getThreadDetailSnapshotRequestCount = 0;
     delayNextThreadDetailSnapshotResponse = false;
     pendingThreadDetailSnapshotResponse = null;
+    holdColdThreadSnapshots = false;
+    maxHeldDetailSnapshotResponses = 0;
+    heldDetailSnapshotResponses.length = 0;
+    resetRetainedThreadDetailSubscriptionsForTests();
     resetThreadDetailResumeCursorsForTests();
   });
 
@@ -1095,6 +1158,191 @@ describe("EventRouter scoped orchestration sync", () => {
       await mounted.cleanup();
     }
   }, 60_000);
+
+  it.each(["one visible", "twelve retained"] as const)(
+    "caps cold detail recovery with %s threads and hydrates every admitted thread",
+    async (scenario) => {
+      const threads = prepareColdThreadFixture();
+      const releases =
+        scenario === "twelve retained"
+          ? threads.map((thread) => retainThreadDetailSubscription(thread.id))
+          : [];
+      const expectedLeases = scenario === "twelve retained" ? 8 : 1;
+      const mounted = await mountApp({ waitForThreadId: null });
+
+      try {
+        await vi.waitFor(() => expect(threadStreamRequestIdByThreadId.size).toBe(expectedLeases));
+        for (const thread of threads) {
+          expect(useStore.getState().threadDetailSyncById?.[thread.id]).not.toBe("synced");
+        }
+        // With no cached detail, only actual leases recover: twelve running
+        // shell rows alone must not cause twelve speculative history reads.
+        await vi.waitFor(
+          () =>
+            expect(heldDetailSnapshotResponses.length).toBeGreaterThanOrEqual(
+              Math.min(2, expectedLeases),
+            ),
+          { timeout: 4_000 },
+        );
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+        expect(heldDetailSnapshotResponses).toHaveLength(Math.min(2, expectedLeases));
+
+        const hydrated = new Set<ThreadId>();
+        while (hydrated.size < expectedLeases) {
+          await vi.waitFor(() => expect(heldDetailSnapshotResponses.length).toBeGreaterThan(0));
+          const pending = heldDetailSnapshotResponses.shift()!;
+          sendEffectRpcExit(pending.client, pending.requestId, pending.result);
+          await vi.waitFor(() =>
+            expect(useStore.getState().threadDetailSyncById?.[pending.threadId]).toBe("synced"),
+          );
+          hydrated.add(pending.threadId);
+        }
+        expect(maxHeldDetailSnapshotResponses).toBeLessThanOrEqual(2);
+        expect(getThreadDetailSnapshotRequestCount).toBe(expectedLeases);
+        expect([...hydrated]).toContain(THREAD_ID);
+        for (const thread of threads.slice(expectedLeases)) {
+          expect(useStore.getState().threadDetailSyncById?.[thread.id]).not.toBe("synced");
+        }
+      } finally {
+        await mounted.cleanup();
+        holdColdThreadSnapshots = false;
+        for (const pending of heldDetailSnapshotResponses.splice(0)) {
+          sendEffectRpcExit(pending.client, pending.requestId, pending.result);
+        }
+        for (const release of releases) release();
+        resetRetainedThreadDetailSubscriptionsForTests();
+      }
+    },
+  );
+
+  it("keeps old cold reads within budget while navigation replaces their leases", async () => {
+    const threads = prepareColdThreadFixture();
+    const mounted = await mountApp({ waitForThreadId: null });
+    const secondThreadId = threads[1]!.id;
+    const thirdThreadId = threads[2]!.id;
+
+    try {
+      await vi.waitFor(() => expect(heldDetailSnapshotResponses).toHaveLength(1), {
+        timeout: 4_000,
+      });
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: secondThreadId } });
+      await vi.waitFor(() => expect(heldDetailSnapshotResponses).toHaveLength(2), {
+        timeout: 4_000,
+      });
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: thirdThreadId } });
+      await vi.waitFor(() => expect(threadStreamRequestIdByThreadId.has(thirdThreadId)).toBe(true));
+      const shell = createShellSnapshotFromReadModel(fixture.snapshot);
+      sendShellEventPush({
+        kind: "thread-upserted",
+        sequence: 2,
+        thread: shell.threads.find((thread) => thread.id === thirdThreadId)!,
+      });
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+      expect(heldDetailSnapshotResponses).toHaveLength(2);
+      expect(getThreadDetailSnapshotRequestCount).toBe(2);
+
+      const first = heldDetailSnapshotResponses.shift()!;
+      expect(first.threadId).toBe(THREAD_ID);
+      sendEffectRpcExit(first.client, first.requestId, first.result);
+      await vi.waitFor(() =>
+        expect(
+          heldDetailSnapshotResponses.some((pending) => pending.threadId === thirdThreadId),
+        ).toBe(true),
+      );
+      expect(useStore.getState().threadDetailSyncById?.[THREAD_ID]).not.toBe("synced");
+      for (const pending of heldDetailSnapshotResponses.splice(0)) {
+        sendEffectRpcExit(pending.client, pending.requestId, pending.result);
+      }
+      await vi.waitFor(() =>
+        expect(useStore.getState().threadDetailSyncById?.[thirdThreadId]).toBe("synced"),
+      );
+      expect(useStore.getState().threadDetailSyncById?.[secondThreadId]).not.toBe("synced");
+      expect(maxHeldDetailSnapshotResponses).toBe(2);
+    } finally {
+      await mounted.cleanup();
+      holdColdThreadSnapshots = false;
+      for (const pending of heldDetailSnapshotResponses.splice(0)) {
+        sendEffectRpcExit(pending.client, pending.requestId, pending.result);
+      }
+    }
+  });
+
+  it.each(["read failure", "welcome replacement", "unmount"] as const)(
+    "settles cold recovery ownership after %s",
+    async (operation) => {
+      const threads = prepareColdThreadFixture();
+      const releases = threads.map((thread) => retainThreadDetailSubscription(thread.id));
+      const mounted = await mountApp({ waitForThreadId: null });
+
+      try {
+        await vi.waitFor(() => expect(threadStreamRequestIdByThreadId.size).toBe(8));
+        await vi.waitFor(() => expect(heldDetailSnapshotResponses).toHaveLength(2), {
+          timeout: 4_000,
+        });
+        const requestsBefore = getThreadDetailSnapshotRequestCount;
+        if (operation === "welcome replacement") {
+          const subscriptionsBefore = subscribeThreadRequestCountById.get(THREAD_ID) ?? 0;
+          sendServerWelcomePush();
+          await vi.waitFor(() =>
+            expect(subscribeThreadRequestCountById.get(THREAD_ID)).toBeGreaterThan(
+              subscriptionsBefore,
+            ),
+          );
+          const shell = createShellSnapshotFromReadModel(fixture.snapshot);
+          for (const [index, thread] of shell.threads.slice(0, 8).entries()) {
+            sendShellEventPush({ kind: "thread-upserted", sequence: index + 2, thread });
+          }
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+          expect(getThreadDetailSnapshotRequestCount).toBe(requestsBefore);
+        } else if (operation === "unmount") {
+          await mounted.cleanup();
+        }
+
+        const first = heldDetailSnapshotResponses.shift()!;
+        if (operation === "read failure") {
+          first.client.send(
+            JSON.stringify({
+              _tag: "Exit",
+              requestId: first.requestId,
+              exit: {
+                _tag: "Failure",
+                cause: [
+                  {
+                    _tag: "Fail",
+                    error: new WsRpcError({ message: "Fixture snapshot read failed." }),
+                  },
+                ],
+              },
+            }),
+          );
+        } else {
+          sendEffectRpcExit(first.client, first.requestId, first.result);
+        }
+        if (operation === "unmount") {
+          for (const pending of heldDetailSnapshotResponses.splice(0)) {
+            sendEffectRpcExit(pending.client, pending.requestId, pending.result);
+          }
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+          expect(getThreadDetailSnapshotRequestCount).toBe(requestsBefore);
+        } else {
+          await vi.waitFor(() =>
+            expect(getThreadDetailSnapshotRequestCount).toBe(requestsBefore + 1),
+          );
+          expect(heldDetailSnapshotResponses).toHaveLength(2);
+        }
+        expect(useStore.getState().threadDetailSyncById?.[first.threadId]).not.toBe("synced");
+        expect(maxHeldDetailSnapshotResponses).toBe(2);
+      } finally {
+        await mounted.cleanup();
+        holdColdThreadSnapshots = false;
+        for (const pending of heldDetailSnapshotResponses.splice(0)) {
+          sendEffectRpcExit(pending.client, pending.requestId, pending.result);
+        }
+        for (const release of releases) release();
+        resetRetainedThreadDetailSubscriptionsForTests();
+      }
+    },
+  );
 
   it("polls a subscribed running thread to recover missed detail events", async () => {
     const runningTurnId = TurnId.makeUnsafe("turn-catchup-running");

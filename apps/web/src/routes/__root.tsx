@@ -1259,6 +1259,7 @@ function EventRouter() {
   const pathnameRef = useRef(pathname);
   const handledBootstrapThreadIdRef = useRef<string | null>(null);
   const visibleThreadIdsRef = useRef(subscribedThreadIds);
+  const renderedThreadIdsRef = useRef(visibleThreadIds);
   const reconcileThreadSubscriptionsRef = useRef<
     ((threadIds: readonly ThreadId[]) => Promise<void>) | null
   >(null);
@@ -1270,6 +1271,7 @@ function EventRouter() {
   useEffect(() => {
     pathnameRef.current = pathname;
     visibleThreadIdsRef.current = subscribedThreadIds;
+    renderedThreadIdsRef.current = visibleThreadIds;
     subscribedThreadIdsRef.current = subscribedThreadIds;
     // Retention must know what is on screen: an evicted visible thread keeps its
     // shell row and renders as an empty conversation until a snapshot lands.
@@ -1436,7 +1438,6 @@ function EventRouter() {
       threadSnapshotRequestInFlight.delete(threadId);
       threadSnapshotRefreshPending.delete(threadId);
       threadSnapshotNotFoundRetryAttempted.delete(threadId);
-      threadProjectionReconcileInFlight.delete(threadId);
       threadProjectionReconcilePendingById.delete(threadId);
       clearThreadProjectionTerminalFence(threadId);
       threadCatchupBackoffById.delete(threadId);
@@ -1519,7 +1520,6 @@ function EventRouter() {
         threadSnapshotRefreshPending.delete(threadId);
         threadSnapshotNotFoundRetryAttempted.delete(threadId);
         threadReplayRequestInFlight.delete(threadId);
-        threadProjectionReconcileInFlight.delete(threadId);
         threadProjectionReconcilePendingById.delete(threadId);
         clearThreadProjectionTerminalFence(threadId);
         threadSubscriptionGenerationById.delete(threadId);
@@ -1730,7 +1730,9 @@ function EventRouter() {
           threadSnapshotRequestInFlight.clear();
           threadSnapshotRefreshPending.clear();
           threadReplayRequestInFlight.clear();
-          threadProjectionReconcileInFlight.clear();
+          // A prior generation's RPC still owns its slot until it settles.
+          // Dropping the ledger here would let reconnect exceed the read budget.
+          threadProjectionReconcilePendingById.clear();
           threadProjectionTerminalFencePending.clear();
           threadProjectionTerminalFenceSequenceById.clear();
           threadProjectionTerminalFenceArmedAtById.clear();
@@ -1933,6 +1935,36 @@ function EventRouter() {
         });
     };
 
+    let prioritizeRenderedProjection = true;
+    const drainThreadProjectionReconciles = (): void => {
+      if (disposed) return;
+      while (
+        threadProjectionReconcileInFlight.size < THREAD_DETAIL_PROJECTION_RECONCILE_MAX_CONCURRENCY
+      ) {
+        const eligible: ThreadId[] = [];
+        for (const [threadId, generation] of threadProjectionReconcilePendingById) {
+          if (
+            !subscribedThreadIds.has(threadId) ||
+            threadSubscriptionGenerationById.get(threadId) !== generation
+          ) {
+            threadProjectionReconcilePendingById.delete(threadId);
+          } else if (!threadProjectionReconcileInFlight.has(threadId)) {
+            eligible.push(threadId);
+          }
+        }
+        const oldest = eligible[0];
+        if (oldest === undefined) return;
+        const next = prioritizeRenderedProjection
+          ? (eligible.find((threadId) => renderedThreadIdsRef.current.includes(threadId)) ?? oldest)
+          : oldest;
+        // A newly visible conversation can pass queued warming, but the next
+        // slot returns to FIFO so repeated foreground repairs cannot starve it.
+        prioritizeRenderedProjection = next === oldest;
+        threadProjectionReconcilePendingById.delete(next);
+        void reconcileThreadProjection(next).catch(() => undefined);
+      }
+    };
+
     const reconcileThreadProjection = async (
       threadId: ThreadId,
       options?: { readonly queueIfInFlight?: boolean },
@@ -1941,12 +1973,23 @@ function EventRouter() {
       if (disposed || !subscribedThreadIds.has(threadId) || subscriptionGeneration === undefined) {
         return;
       }
-      if (threadProjectionReconcileInFlight.has(threadId)) {
-        if (options?.queueIfInFlight === true) {
+      const activeGeneration = threadProjectionReconcileInFlight.get(threadId);
+      if (activeGeneration !== undefined) {
+        if (activeGeneration !== subscriptionGeneration || options?.queueIfInFlight === true) {
           threadProjectionReconcilePendingById.set(threadId, subscriptionGeneration);
         }
         return;
       }
+      // Every recovery path shares this admission point, including missing
+      // snapshots, shell pushes and draft promotion. One queued entry per live
+      // lease bounds demand while its initial stream snapshot is still pending.
+      if (
+        threadProjectionReconcileInFlight.size >= THREAD_DETAIL_PROJECTION_RECONCILE_MAX_CONCURRENCY
+      ) {
+        threadProjectionReconcilePendingById.set(threadId, subscriptionGeneration);
+        return;
+      }
+      threadProjectionReconcilePendingById.delete(threadId);
       threadProjectionReconcileInFlight.set(threadId, subscriptionGeneration);
       let projectionConfirmed = false;
       let projectionSatisfiesTerminalFence = false;
@@ -2033,11 +2076,6 @@ function EventRouter() {
           threadProjectionReconcileInFlight.delete(threadId);
         }
         if (threadSubscriptionGenerationById.get(threadId) === subscriptionGeneration) {
-          if (threadProjectionReconcilePendingById.get(threadId) === subscriptionGeneration) {
-            threadProjectionReconcilePendingById.delete(threadId);
-            void reconcileThreadProjection(threadId).catch(() => undefined);
-            return;
-          }
           if (projectionAttemptFailed) {
             // A failed reconcile is not evidence of a quiet healthy stream.
             // Retry it at the base cadence, while preserving backoff when the
@@ -2062,6 +2100,9 @@ function EventRouter() {
             nextThreadProjectionReconcileAtById.delete(threadId);
           }
         }
+        // Also drain after an obsolete generation or a failed read settles.
+        // Neither may free another generation's slot or strand queued repairs.
+        drainThreadProjectionReconciles();
       }
     };
 
@@ -2457,10 +2498,6 @@ function EventRouter() {
     void ensureScopedSubscriptions();
     const threadDetailCatchupInterval = window.setInterval(() => {
       const now = Date.now();
-      let availableProjectionReconcileSlots = Math.max(
-        0,
-        THREAD_DETAIL_PROJECTION_RECONCILE_MAX_CONCURRENCY - threadProjectionReconcileInFlight.size,
-      );
       for (const threadId of subscribedThreadIds) {
         const draftThreadAwaitingProjection = isDraftThreadAwaitingProjection(threadId);
         if (shouldPollThreadDetailCatchup(threadId)) {
@@ -2527,12 +2564,7 @@ function EventRouter() {
           );
           continue;
         }
-        if (
-          availableProjectionReconcileSlots > 0 &&
-          !threadProjectionReconcileInFlight.has(threadId) &&
-          now >= nextProjectionReconcileAt
-        ) {
-          availableProjectionReconcileSlots -= 1;
+        if (!threadProjectionReconcileInFlight.has(threadId) && now >= nextProjectionReconcileAt) {
           void reconcileThreadProjection(threadId).catch(() => undefined);
         }
       }
@@ -2550,7 +2582,7 @@ function EventRouter() {
       needsBroadGitInvalidation = false;
       pendingGitInvalidationThreadIds = new Set();
       pendingStudioOutputInvalidationThreadIds = new Set();
-      threadProjectionReconcileInFlight.clear();
+      threadProjectionReconcilePendingById.clear();
       threadProjectionTerminalFencePending.clear();
       threadProjectionTerminalFenceSequenceById.clear();
       threadProjectionTerminalFenceArmedAtById.clear();

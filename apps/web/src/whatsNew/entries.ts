@@ -22,6 +22,18 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.25",
+    date: "Oct 3",
+    features: [
+      {
+        id: "cold-conversation-loading",
+        title: "Smoother conversation loading",
+        description:
+          "Conversations waiting for their history now share a bounded recovery queue. Switching between threads keeps ongoing reads tracked, prioritizes the visible conversation, and lets queued histories continue loading.",
+      },
+    ],
+  },
+  {
     version: "0.9.24",
     date: "Oct 3",
     features: [
