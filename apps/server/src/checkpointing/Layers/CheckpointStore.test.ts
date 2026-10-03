@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Fiber, Layer, ManagedRuntime, Option } from "effect";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CheckpointStoreLive } from "./CheckpointStore.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
@@ -16,8 +16,22 @@ import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { CheckpointRef } from "@synara/contracts";
 
-const REMOVE_ARTIFACTS_COMMAND = "rm --cached --force -r --ignore-unmatch -- :(top)Artifacts";
-const ADD_CHECKPOINT_PATHS_COMMAND = "add -A -- . :(exclude,top)Artifacts";
+const REMOVE_ARTIFACTS_COMMAND =
+  "rm --cached --quiet --force -r --ignore-unmatch -- :(top,icase)Artifacts";
+const ADD_CHECKPOINT_PATHS_COMMAND = "add -A -- . :(exclude,top,icase)Artifacts";
+let policyRoot = "";
+
+function mockGit(implementation: GitCoreShape["execute"]) {
+  return vi.fn<GitCoreShape["execute"]>((input) => {
+    if (input.operation === "CheckpointStore.pathPolicy.root")
+      return Effect.succeed({ code: 0, stdout: `${policyRoot}\n`, stderr: "" });
+    if (input.operation === "CheckpointStore.pathPolicy.config")
+      return Effect.succeed({ code: 1, stdout: "", stderr: "" });
+    if (input.operation === "CheckpointStore.pathPolicy.commit")
+      return Effect.succeed({ code: 0, stdout: "Legacy checkpoint\n", stderr: "" });
+    return implementation(input);
+  });
+}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
   const started = Date.now();
@@ -30,16 +44,20 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
 
 describe("CheckpointStoreLive", () => {
   let runtime: ManagedRuntime.ManagedRuntime<CheckpointStore, unknown> | null = null;
+  beforeEach(() => {
+    policyRoot = mkdtempSync(join(tmpdir(), "synara-checkpoint-policy-test-"));
+  });
 
   afterEach(async () => {
     if (runtime) {
       await runtime.dispose();
     }
     runtime = null;
+    rmSync(policyRoot, { recursive: true, force: true });
   });
 
   it("does not classify an uninitialized Git directory as checkpointable", async () => {
-    const execute = vi.fn<GitCoreShape["execute"]>((input) => {
+    const execute = mockGit((input) => {
       const args = input.args.join(" ");
       if (args === "rev-parse --is-inside-work-tree") {
         return Effect.succeed({ code: 0, stdout: "true\n", stderr: "" });
@@ -70,7 +88,7 @@ describe("CheckpointStoreLive", () => {
     const addGate = new Promise<void>((resolve) => {
       releaseAdd = resolve;
     });
-    const execute = vi.fn<GitCoreShape["execute"]>((input) => {
+    const execute = mockGit((input) => {
       const args = input.args.join(" ");
       if (args === "rev-parse --git-path index") {
         return Effect.succeed({ code: 0, stdout: "/repo/.git/index\n", stderr: "" });
@@ -145,7 +163,7 @@ describe("CheckpointStoreLive", () => {
     let capturedSeed = "";
     let capturedIndexMtimeMs = 0;
 
-    const execute = vi.fn<GitCoreShape["execute"]>((input) => {
+    const execute = mockGit((input) => {
       const args = input.args.join(" ");
       if (args === "rev-parse --git-path index") {
         return Effect.succeed({ code: 0, stdout: `${workingIndexPath}\n`, stderr: "" });
@@ -213,7 +231,7 @@ describe("CheckpointStoreLive", () => {
 
   it("clears in-flight capture state when the owner is interrupted", async () => {
     let addCalls = 0;
-    const execute = vi.fn<GitCoreShape["execute"]>((input) => {
+    const execute = mockGit((input) => {
       const args = input.args.join(" ");
       if (args === "rev-parse --git-path index") {
         return Effect.succeed({ code: 0, stdout: "/repo/.git/index\n", stderr: "" });
@@ -285,7 +303,7 @@ describe("CheckpointStoreLive", () => {
 
   it("skips every capture when a repository has no HEAD commit", async () => {
     const missingRef = "refs/synara-checkpoints/thread/missing";
-    const execute = vi.fn<GitCoreShape["execute"]>((input) => {
+    const execute = mockGit((input) => {
       const args = input.args.join(" ");
       if (args === `rev-parse --verify --quiet ${missingRef}^{commit}`) {
         return Effect.succeed({ code: 1, stdout: "", stderr: "" });
@@ -322,7 +340,7 @@ describe("CheckpointStoreLive", () => {
   it("skips the capture when skipIfExists is set and the ref already exists", async () => {
     const existingRef = "refs/synara-checkpoints/thread/existing";
     const missingRef = "refs/synara-checkpoints/thread/missing";
-    const execute = vi.fn<GitCoreShape["execute"]>((input) => {
+    const execute = mockGit((input) => {
       const args = input.args.join(" ");
       if (args === `rev-parse --verify --quiet ${existingRef}^{commit}`) {
         return Effect.succeed({ code: 0, stdout: "existing-commit\n", stderr: "" });
@@ -390,7 +408,7 @@ describe("CheckpointStoreLive", () => {
     const fromRef = CheckpointRef.makeUnsafe("refs/synara-checkpoints/thread/turn/start");
     const toRef = CheckpointRef.makeUnsafe("refs/synara-checkpoints/thread/turn/end");
     const commands: string[] = [];
-    const execute = vi.fn<GitCoreShape["execute"]>((input) => {
+    const execute = mockGit((input) => {
       const args = input.args.join(" ");
       commands.push(args);
       if (args === `rev-parse --verify --quiet ${fromRef}^{commit}`) {
@@ -403,14 +421,15 @@ describe("CheckpointStoreLive", () => {
         return Effect.succeed({ code: 0, stdout: "turn patch", stderr: "" });
       }
       if (
-        args === "diff --name-only --no-renames -z from-oid to-oid -- . :(exclude,top)Artifacts"
+        args ===
+        "diff --name-only --no-renames --no-relative -z from-oid to-oid -- . :(exclude,top,icase)Artifacts"
       ) {
         return Effect.succeed({ code: 0, stdout: "src/file.ts\0", stderr: "" });
       }
       if (input.args[0] === "apply" && input.args[1] === "--reverse") {
         return Effect.succeed({ code: 0, stdout: "", stderr: "" });
       }
-      if (args === "reset --quiet from-oid -- src/file.ts") {
+      if (args === "reset --quiet from-oid -- :(top,literal)src/file.ts") {
         return Effect.fail(
           new GitCommandError({
             operation: input.operation,
@@ -490,6 +509,73 @@ describe("CheckpointStoreLive", () => {
     expect(result).toContain("cannot lock ref");
     expect(result).not.toContain(deletableRef);
   });
+
+  it.each([
+    { code: 1, stdout: "", stderr: "listing failed" },
+    { code: 0, stdout: "", stderr: "", stdoutTruncated: true },
+  ])(
+    "does not delete affected files when the rollback tree listing fails or truncates (%j)",
+    async (listing) => {
+      const file = join(policyRoot, "source.txt");
+      writeFileSync(file, "keep these bytes\n");
+      const execute = mockGit((input) => {
+        const args = input.args.join(" ");
+        if (args.includes("^{commit}"))
+          return Effect.succeed({ code: 0, stdout: "commit-oid\n", stderr: "" });
+        if (args.startsWith("diff --patch"))
+          return Effect.succeed({ code: 0, stdout: "fixture patch", stderr: "" });
+        if (args.startsWith("diff --name-only"))
+          return Effect.succeed({ code: 0, stdout: "source.txt\0", stderr: "" });
+        if (input.args[0] === "apply")
+          return Effect.succeed({ code: 1, stdout: "", stderr: "conflict" });
+        if (args === "rev-parse --verify HEAD")
+          return Effect.succeed({ code: 0, stdout: "head\n", stderr: "" });
+        if (args === "rev-parse --git-path index")
+          return Effect.succeed({
+            code: 0,
+            stdout: `${join(policyRoot, "absent-index")}\n`,
+            stderr: "",
+          });
+        if (args === "read-tree HEAD" || input.args[0] === "rm" || input.args[0] === "add")
+          return Effect.succeed({ code: 0, stdout: "", stderr: "" });
+        if (args === "write-tree")
+          return Effect.succeed({ code: 0, stdout: "before-tree\n", stderr: "" });
+        if (input.args.includes("ls-tree")) {
+          expect(input.cwd).toBe(policyRoot);
+          expect(input.args).toContain("--literal-pathspecs");
+          expect(input.args).toContain("--full-tree");
+          expect(input.allowNonZeroExit).not.toBe(true);
+          return Effect.succeed(listing);
+        }
+        throw new Error(`Unexpected git args: ${args}`);
+      });
+      runtime = ManagedRuntime.make(
+        CheckpointStoreLive.pipe(
+          Layer.provide(Layer.succeed(GitCore, { execute } as unknown as GitCoreShape)),
+          Layer.provide(NodeServices.layer),
+        ),
+      );
+      const result = await runtime.runPromise(
+        Effect.gen(function* () {
+          const store = yield* CheckpointStore;
+          return yield* store
+            .reverseCheckpointDiff({
+              cwd: policyRoot,
+              fromCheckpointRef: CheckpointRef.makeUnsafe("refs/synara-checkpoints/test/start"),
+              toCheckpointRef: CheckpointRef.makeUnsafe("refs/synara-checkpoints/test/end"),
+            })
+            .pipe(Effect.result);
+        }),
+      );
+      expect(result._tag).toBe("Failure");
+      expect(readFileSync(file, "utf8")).toBe("keep these bytes\n");
+      expect(
+        execute.mock.calls.some(
+          ([input]) => input.args[0] === "restore" || input.args[0] === "reset",
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("tolerates deleting checkpoint refs that are already absent", async () => {
     // `git update-ref -d` exits 0 for a ref that does not exist, so the

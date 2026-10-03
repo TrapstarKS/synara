@@ -3126,6 +3126,18 @@ const make = Effect.gen(function* () {
         timeoutMs: PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
       });
     }).pipe(
+      // Workspace resolution and Git probes share the capture budget: a stalled
+      // probe otherwise holds the global provider delivery permit until its timeout.
+      Effect.timeoutOption(PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS),
+      Effect.flatMap((completed) =>
+        Option.isSome(completed)
+          ? Effect.void
+          : Effect.logWarning("provider turn start checkpoint timed out", {
+              threadId: input.threadId,
+              messageId: input.messageId,
+              timeoutMs: PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
+            }),
+      ),
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)

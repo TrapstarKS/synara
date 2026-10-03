@@ -10,6 +10,7 @@
  * @module CheckpointStoreLive
  */
 import { randomUUID } from "node:crypto";
+import { lstat } from "node:fs/promises";
 
 import { Cause, Deferred, Effect, Exit, Layer, FileSystem, Option, Path, Semaphore } from "effect";
 
@@ -18,10 +19,15 @@ import { GitCommandError } from "../../git/Errors.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointRef } from "@synara/contracts";
+import {
+  checkpointExcludedPathspecs,
+  checkpointRemovalPathspecs,
+  checkpointPolicyTrailer,
+  makeCheckpointPathPolicyResolver,
+  type ResolvedCheckpointPathPolicy,
+} from "../checkpointPathPolicy.ts";
 
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
-const CHECKPOINT_ARTIFACTS_PATHSPEC = ":(top)Artifacts";
-const CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC = ":(exclude,top)Artifacts";
 
 // Individual git commands are already bounded by GitCore's default timeout;
 // this aggregate cap exists to unstick the shared in-flight capture slot if a
@@ -34,6 +40,7 @@ const makeCheckpointStore = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const git = yield* GitCore;
+  const pathPolicies = makeCheckpointPathPolicyResolver(git);
   const captureLock = yield* Semaphore.make(1);
   const inFlightCaptures = new Map<string, Deferred.Deferred<void, CheckpointStoreError>>();
 
@@ -181,22 +188,21 @@ const makeCheckpointStore = Effect.gen(function* () {
                 env: commitEnv,
               });
             }
-            // Exclude the workspace-root Artifacts tree from every Synara
-            // checkpoint. Generated QA outputs and recovery databases can be
-            // multi-gigabyte and should not hold a provider turn at startup.
-            // Remove indexed entries from this temporary index only; the user's
-            // working index and files on disk remain untouched.
+            const { policy } = yield* pathPolicies.current(input.cwd, commitEnv);
+            // Prune only this throwaway index, before refresh/add can read output
+            // blobs. The same frozen policy is recorded with the checkpoint.
             yield* git.execute({
               operation,
               cwd: input.cwd,
               args: [
                 "rm",
                 "--cached",
+                "--quiet",
                 "--force",
                 "-r",
                 "--ignore-unmatch",
                 "--",
-                CHECKPOINT_ARTIFACTS_PATHSPEC,
+                ...checkpointRemovalPathspecs(policy),
               ],
               env: commitEnv,
             });
@@ -233,7 +239,7 @@ const makeCheckpointStore = Effect.gen(function* () {
             yield* git.execute({
               operation,
               cwd: input.cwd,
-              args: ["add", "-A", "--", ".", CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC],
+              args: ["add", "-A", "--", ".", ...checkpointExcludedPathspecs(policy)],
               env: commitEnv,
             });
 
@@ -253,7 +259,7 @@ const makeCheckpointStore = Effect.gen(function* () {
               });
             }
 
-            const message = `Synara checkpoint ref=${input.checkpointRef}`;
+            const message = `Synara checkpoint ref=${input.checkpointRef}\n\n${checkpointPolicyTrailer(policy)}`;
             const commitTreeResult = yield* git.execute({
               operation,
               cwd: input.cwd,
@@ -400,6 +406,8 @@ const makeCheckpointStore = Effect.gen(function* () {
         return false;
       }
 
+      const { policy } = yield* pathPolicies.forCommits(input.cwd, [commitOid]);
+      const exclusions = checkpointExcludedPathspecs(policy);
       yield* git.execute({
         operation,
         cwd: input.cwd,
@@ -411,13 +419,13 @@ const makeCheckpointStore = Effect.gen(function* () {
           "--staged",
           "--",
           ".",
-          CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC,
+          ...exclusions,
         ],
       });
       yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["clean", "-fd", "--", ".", CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC],
+        args: ["clean", "-fd", "--", ".", ...exclusions],
       });
 
       const headExists = yield* hasHeadCommit(input.cwd);
@@ -425,7 +433,7 @@ const makeCheckpointStore = Effect.gen(function* () {
         yield* git.execute({
           operation,
           cwd: input.cwd,
-          args: ["reset", "--quiet", "--", ".", CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC],
+          args: ["reset", "--quiet", "--", ".", ...exclusions],
         });
       }
 
@@ -460,6 +468,7 @@ const makeCheckpointStore = Effect.gen(function* () {
         });
       }
 
+      const { policy } = yield* pathPolicies.forCommits(input.cwd, [fromCommitOid, toCommitOid]);
       const result = yield* git.execute({
         operation,
         cwd: input.cwd,
@@ -476,7 +485,7 @@ const makeCheckpointStore = Effect.gen(function* () {
           toCommitOid,
           "--",
           ".",
-          CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC,
+          ...checkpointExcludedPathspecs(policy),
         ],
         maxOutputBytes: input.maxOutputBytes ?? CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
       });
@@ -491,6 +500,9 @@ const makeCheckpointStore = Effect.gen(function* () {
     readonly cwd: string;
     readonly treeOid: string;
     readonly paths: ReadonlyArray<string>;
+    readonly repositoryRoot: string;
+    readonly existingPaths: ReadonlyArray<string>;
+    readonly absentPaths: ReadonlyArray<string>;
   }) =>
     Effect.gen(function* () {
       const operation = "CheckpointStore.restoreWorktreePathsFromTree";
@@ -500,23 +512,58 @@ const makeCheckpointStore = Effect.gen(function* () {
 
       const trackedResult = yield* git.execute({
         operation,
-        cwd: input.cwd,
-        args: ["ls-tree", "-r", "--name-only", "-z", input.treeOid, "--", ...input.paths],
-        allowNonZeroExit: true,
+        cwd: input.repositoryRoot,
+        args: [
+          "--literal-pathspecs",
+          "ls-tree",
+          "--full-tree",
+          "-r",
+          "--name-only",
+          "-z",
+          input.treeOid,
+          "--",
+          ...input.paths,
+        ],
       });
+      if (trackedResult.code !== 0 || trackedResult.stdoutTruncated) {
+        return yield* new GitCommandError({
+          operation,
+          command: "git ls-tree",
+          cwd: input.repositoryRoot,
+          detail: "Could not list the pre-undo tree; refusing to remove any workspace paths.",
+        });
+      }
       const trackedPaths = trackedResult.stdout.split("\0").filter((entry) => entry.length > 0);
+      const trackedPathSet = new Set(trackedPaths);
+      const expectedPaths = new Set(input.existingPaths);
+      if (
+        trackedPathSet.size !== expectedPaths.size ||
+        input.existingPaths.some((file) => !trackedPathSet.has(file))
+      ) {
+        return yield* new CheckpointInvariantError({
+          operation,
+          detail:
+            "The pre-undo tree does not contain every existing affected path; refusing partial recovery.",
+        });
+      }
       if (trackedPaths.length > 0) {
         yield* git.execute({
           operation,
-          cwd: input.cwd,
-          args: ["restore", "--source", input.treeOid, "--worktree", "--", ...trackedPaths],
+          cwd: input.repositoryRoot,
+          args: [
+            "restore",
+            "--source",
+            input.treeOid,
+            "--worktree",
+            "--",
+            ...trackedPaths.map((file) => `:(top,literal)${file}`),
+          ],
         });
       }
 
-      const trackedPathSet = new Set(trackedPaths);
       yield* Effect.forEach(
-        input.paths.filter((entry) => !trackedPathSet.has(entry)),
-        (relativePath) => fs.remove(path.join(input.cwd, relativePath), { force: true }),
+        input.absentPaths,
+        (relativePath) => fs.remove(path.join(input.repositoryRoot, relativePath), { force: true }),
         { discard: true },
       );
     });
@@ -535,6 +582,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     readonly patchPath: string;
     readonly affectedPaths: ReadonlyArray<string>;
     readonly strictApplyStderr: string;
+    readonly pathPolicy: ResolvedCheckpointPathPolicy;
   }) =>
     Effect.gen(function* () {
       const operation = "CheckpointStore.reverseCheckpointDiff";
@@ -543,8 +591,8 @@ const makeCheckpointStore = Effect.gen(function* () {
         GIT_INDEX_FILE: path.join(input.tempDir, `undo-index-${randomUUID()}`),
       };
 
-      const headExists = yield* hasHeadCommit(input.cwd);
-      if (headExists) {
+      const workingIndexInfo = yield* seedCheckpointIndex(input.cwd, mergeIndexEnv.GIT_INDEX_FILE!);
+      if (workingIndexInfo === null && (yield* hasHeadCommit(input.cwd))) {
         yield* git.execute({
           operation,
           cwd: input.cwd,
@@ -555,9 +603,82 @@ const makeCheckpointStore = Effect.gen(function* () {
       yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["add", "-A", "--", ".", CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC],
+        args: [
+          "rm",
+          "--cached",
+          "--quiet",
+          "--force",
+          "-r",
+          "--ignore-unmatch",
+          "--",
+          ...checkpointRemovalPathspecs(input.pathPolicy.policy),
+        ],
         env: mergeIndexEnv,
       });
+      yield* git.execute({
+        operation,
+        cwd: input.cwd,
+        args: ["add", "-A", "--", ".", ...checkpointExcludedPathspecs(input.pathPolicy.policy)],
+        env: mergeIndexEnv,
+      });
+      // A force-added or newly ignored affected file is still part of this undo.
+      // Record actual presence before applying, then rebuild only these entries
+      // without a stat cache so their current bytes are the recovery baseline.
+      const existingPaths: string[] = [];
+      const absentPaths: string[] = [];
+      for (const file of input.affectedPaths) {
+        const info = yield* Effect.tryPromise({
+          try: () =>
+            lstat(path.join(input.pathPolicy.repositoryRoot, file)).catch((cause: unknown) => {
+              if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+              throw cause;
+            }),
+          catch: (cause) =>
+            new CheckpointInvariantError({
+              operation,
+              detail: "Could not inspect an affected path before undo.",
+              cause,
+            }),
+        });
+        if (!info) absentPaths.push(file);
+        else if (info.isFile() || info.isSymbolicLink()) existingPaths.push(file);
+        else
+          return yield* new CheckpointInvariantError({
+            operation,
+            detail: "An affected path is no longer a file; refusing an unsafe three-way undo.",
+          });
+      }
+      if (input.affectedPaths.length > 0) {
+        yield* git.execute({
+          operation,
+          cwd: input.pathPolicy.repositoryRoot,
+          args: [
+            "rm",
+            "--cached",
+            "--quiet",
+            "--force",
+            "-r",
+            "--ignore-unmatch",
+            "--",
+            ...input.affectedPaths.map((file) => `:(top,literal)${file}`),
+          ],
+          env: mergeIndexEnv,
+        });
+      }
+      if (existingPaths.length > 0) {
+        yield* git.execute({
+          operation,
+          cwd: input.pathPolicy.repositoryRoot,
+          args: [
+            "add",
+            "-A",
+            "--force",
+            "--",
+            ...existingPaths.map((file) => `:(top,literal)${file}`),
+          ],
+          env: mergeIndexEnv,
+        });
+      }
       // Snapshot of the pre-attempt working tree, used to undo a conflicted
       // 3-way apply (which writes conflict markers before failing).
       const preAttemptTreeResult = yield* git.execute({
@@ -584,6 +705,9 @@ const makeCheckpointStore = Effect.gen(function* () {
           cwd: input.cwd,
           treeOid: preAttemptTreeOid,
           paths: input.affectedPaths,
+          repositoryRoot: input.pathPolicy.repositoryRoot,
+          existingPaths,
+          absentPaths,
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("failed to roll back a conflicted checkpoint undo", {
@@ -623,6 +747,8 @@ const makeCheckpointStore = Effect.gen(function* () {
         return false;
       }
 
+      const pathPolicy = yield* pathPolicies.forCommits(input.cwd, [fromCommitOid, toCommitOid]);
+      const exclusions = checkpointExcludedPathspecs(pathPolicy.policy);
       const diff = yield* git.execute({
         operation,
         cwd: input.cwd,
@@ -634,11 +760,12 @@ const makeCheckpointStore = Effect.gen(function* () {
           "--no-color",
           "--no-ext-diff",
           "--no-textconv",
+          "--no-relative",
           fromCommitOid,
           toCommitOid,
           "--",
           ".",
-          CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC,
+          ...exclusions,
         ],
         maxOutputBytes: input.maxOutputBytes ?? CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
       });
@@ -653,12 +780,13 @@ const makeCheckpointStore = Effect.gen(function* () {
           "diff",
           "--name-only",
           "--no-renames",
+          "--no-relative",
           "-z",
           fromCommitOid,
           toCommitOid,
           "--",
           ".",
-          CHECKPOINT_ARTIFACTS_EXCLUDE_PATHSPEC,
+          ...exclusions,
         ],
         maxOutputBytes: input.maxOutputBytes ?? CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
       });
@@ -683,6 +811,7 @@ const makeCheckpointStore = Effect.gen(function* () {
                 patchPath,
                 affectedPaths,
                 strictApplyStderr: strictApply.stderr,
+                pathPolicy,
               });
             }
             if (affectedPaths.length > 0) {
@@ -690,7 +819,13 @@ const makeCheckpointStore = Effect.gen(function* () {
                 git.execute({
                   operation,
                   cwd: input.cwd,
-                  args: ["reset", "--quiet", fromCommitOid, "--", ...affectedPaths],
+                  args: [
+                    "reset",
+                    "--quiet",
+                    fromCommitOid,
+                    "--",
+                    ...affectedPaths.map((file) => `:(top,literal)${file}`),
+                  ],
                 }),
               );
               if (Exit.isFailure(resetExit)) {

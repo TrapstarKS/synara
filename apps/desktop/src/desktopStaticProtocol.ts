@@ -49,3 +49,34 @@ export function createDesktopStaticProtocolResolver(
     }
   };
 }
+
+/**
+ * Switch the shell's next navigation without moving or deleting its bundled
+ * root. The backend's HTTP clients continue to use that original directory.
+ * Only missing assets fall back, so a new navigation never receives old HTML.
+ */
+export function createDesktopStaticProtocolSelector(
+  bundledRoot: string,
+  pathExists: PathExists = existsSync,
+) {
+  const bundled = createDesktopStaticProtocolResolver(bundledRoot, pathExists);
+  let current = bundled;
+  let previous: ReturnType<typeof createDesktopStaticProtocolResolver> | null = null;
+  return {
+    select(currentRoot: string | null, previousRoot: string | null): void {
+      current = currentRoot
+        ? createDesktopStaticProtocolResolver(currentRoot, pathExists)
+        : bundled;
+      previous = previousRoot
+        ? createDesktopStaticProtocolResolver(previousRoot, pathExists)
+        : null;
+    },
+    resolve(requestUrl: string): DesktopStaticProtocolResponse {
+      const response = current(requestUrl);
+      if (!("error" in response)) return response;
+      const previousResponse = previous?.(requestUrl);
+      if (previousResponse && !("error" in previousResponse)) return previousResponse;
+      return bundled(requestUrl);
+    },
+  };
+}

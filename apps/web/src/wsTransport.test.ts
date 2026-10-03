@@ -62,6 +62,7 @@ import {
   emitWsCompatibilityIssue,
   readLatestWsCompatibilityIssue,
 } from "./wsTransportEvents";
+import { acquireRendererReload } from "./lib/rendererReloadSafety";
 
 type WsEventType = "open" | "message" | "close" | "error";
 type WsListener = (event?: { data?: unknown }) => void;
@@ -1765,6 +1766,7 @@ describe("WsTransport", () => {
     });
     // Attach a rejection handler immediately so failed assertions still allow cleanup.
     void mutation.catch(() => undefined);
+    expect(transport.getPendingMutationCount()).toBe(1);
     try {
       await waitForSockets(1);
       const socket = sockets[0]!;
@@ -1787,6 +1789,7 @@ describe("WsTransport", () => {
         }),
       );
       await mutation;
+      expect(transport.getPendingMutationCount()).toBe(0);
       expect(transport.getState()).toBe("open");
       expect(states.mock.calls.filter(([state]) => state === "open")).toHaveLength(1);
       expect(socket.requests(WS_METHODS.terminalWrite)).toHaveLength(1);
@@ -1794,6 +1797,71 @@ describe("WsTransport", () => {
       await transport.dispose();
       await mutation.catch(() => undefined);
     }
+  });
+
+  it("allows pending reads but blocks reload around an unacknowledged write and seals new writes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(200, NEGOTIATION_RESULT))),
+    );
+    const transport = new WsTransport("ws://localhost:3020");
+    const pending: Promise<unknown>[] = [];
+    let releaseReload: (() => void) | null = null;
+    try {
+      await waitForSockets(1);
+      const socket = sockets[0]!;
+      socket.serveVoidRpc(new Set([WS_METHODS.terminalWrite, WS_METHODS.serverGetConfig]));
+      await vi.waitFor(() => expect(transport.getState()).toBe("open"));
+      const write = transport.request(
+        WS_METHODS.terminalWrite,
+        {
+          threadId: "thread-handoff",
+          terminalId: "default",
+          data: "once",
+        },
+        { timeoutMs: null },
+      );
+      pending.push(write.catch(() => undefined));
+      for (let index = 0; index < 12; index += 1) {
+        pending.push(
+          transport
+            .request(WS_METHODS.serverGetConfig, undefined, { timeoutMs: null })
+            .catch(() => undefined),
+        );
+      }
+      await vi.waitFor(() => expect(socket.requests(WS_METHODS.serverGetConfig)).toHaveLength(12));
+      expect(transport.getPendingMutationCount()).toBe(1);
+      socket.receive(
+        JSON.stringify({
+          _tag: "Exit",
+          requestId: socket.requests(WS_METHODS.terminalWrite)[0]!.id,
+          exit: { _tag: "Success", value: null },
+        }),
+      );
+      await write;
+      expect(transport.getPendingMutationCount()).toBe(0);
+      releaseReload = acquireRendererReload();
+      expect(releaseReload).not.toBeNull();
+      await expect(
+        transport.request(WS_METHODS.terminalWrite, {
+          threadId: "thread-handoff",
+          terminalId: "default",
+          data: "must not send",
+        }),
+      ).rejects.toThrow("interface is reloading");
+      expect(socket.requests(WS_METHODS.terminalWrite)).toHaveLength(1);
+      pending.push(
+        transport
+          .request(WS_METHODS.serverGetConfig, undefined, { timeoutMs: null })
+          .catch(() => undefined),
+      );
+      await vi.waitFor(() => expect(socket.requests(WS_METHODS.serverGetConfig)).toHaveLength(13));
+    } finally {
+      releaseReload?.();
+      await transport.dispose();
+      await Promise.all(pending);
+    }
+    expect(transport.getPendingMutationCount()).toBe(0);
   });
 
   it("recovers 12 thread streams together without replaying a mutation whose reply was lost", async () => {

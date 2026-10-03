@@ -22,7 +22,8 @@
   "include": [
     "**/*.ts",
     "../apps/server/src/device/helperSandbox.ts",
-    "../apps/desktop/src/desktopAppIcon.ts"
+    "../apps/desktop/src/desktopAppIcon.ts",
+    "../packages/contracts/src/liveUiUpdate.ts"
   ],
   "exclude": ["computer-use-fixtures"]
 }

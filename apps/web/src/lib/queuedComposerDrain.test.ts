@@ -11,6 +11,7 @@ import type { QueuedComposerTurn } from "../composerDraftStore";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { resetComposerDraftStore } from "../composerDraftStoreTestFixtures";
 import { useStore } from "../store";
+import { acquireRendererReload } from "./rendererReloadSafety";
 import { initialState } from "../storeState";
 import { makeActivity, makeState, makeThread } from "../storeTestFixtures";
 import type { Thread, ThreadSession } from "../types";
@@ -172,6 +173,39 @@ describe("queued composer drain watcher", () => {
     resetQueuedComposerDrainForTests();
     resetComposerDraftStore();
     useStore.setState(initialState);
+  });
+
+  it("pauses reload without charging retries or losing the queued turn, then resumes on release", async () => {
+    vi.useFakeTimers();
+    seedThread(makeThread({ id: THREAD_ID, session: makeSession("ready") }));
+    dispatch.mockResolvedValueOnce(false);
+    useComposerDraftStore
+      .getState()
+      .enqueueQueuedTurn(THREAD_ID, makeQueuedChatTurn("reload-held"));
+    await flushDrain();
+    await flushDrain();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(getQueuedComposerAutoDispatchRetryDelay(THREAD_ID, "reload-held")).toBe(1_000);
+    const release = acquireRendererReload();
+    expect(release).not.toBeNull();
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(getQueuedComposerAutoDispatchRetryDelay(THREAD_ID, "reload-held")).toBe(-59_000);
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.queuedTurns,
+      ).toHaveLength(1);
+      expect(tryBeginQueuedComposerAutoDispatch(THREAD_ID)).toBe(false);
+    } finally {
+      release?.();
+    }
+    await flushDrain();
+    await flushDrain();
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(getQueuedComposerAutoDispatchRetryDelay(THREAD_ID, "reload-held")).toBeUndefined();
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.queuedTurns ?? [],
+    ).toHaveLength(0);
   });
 
   it("holds every cache review status without consuming retries and resumes after clearance", async () => {

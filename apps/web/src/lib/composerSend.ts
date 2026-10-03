@@ -37,6 +37,7 @@ import {
 import { appSnapUploadName, normalizeComposerImageSource } from "./composerImageSource";
 import { randomUUID } from "./utils";
 import { resolveWsHttpUrl } from "./wsHttpUrl";
+import { runRendererOperation } from "./rendererReloadSafety";
 
 const ATTACHMENT_CANCEL_CONCURRENCY = 2;
 const ATTACHMENT_CANCEL_BODY_MAX_BYTES = 512;
@@ -297,7 +298,13 @@ async function cancelManagedAttachments(attachmentIds: readonly string[]): Promi
   );
 }
 
-export async function stageUploadComposerAttachments(input: {
+export function stageUploadComposerAttachments(
+  input: Parameters<typeof stageComposerAttachments>[0],
+): Promise<StagedComposerAttachments> {
+  return runRendererOperation(() => stageComposerAttachments(input));
+}
+
+async function stageComposerAttachments(input: {
   threadId: string;
   images: ReadonlyArray<ComposerImageAttachment>;
   files?: ReadonlyArray<ComposerFileAttachment>;

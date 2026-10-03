@@ -4,7 +4,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/apps/server/src/persistence/Migrations.ts"],
+      "inputs": ["$TURBO_EXTENDS$", "$TURBO_ROOT$/apps/server/src/persistence/Migrations.ts"],
       "outputs": ["dist-electron/**"],
     },
     "dev": {

@@ -161,11 +161,16 @@ The intended loop is:
 Synara's checkpoint and revert controls can help recover task work, but committed Git history remains
 the strongest boundary for important changes.
 
-Automatic workspace checkpoints omit the repository-root `Artifacts/` directory. Generated QA
-outputs and recovery data can be very large; keeping them out of checkpoint snapshots prevents them
-from delaying provider turn startup. Files in that directory remain on disk, but are not included in
-checkpoint diffs or restores. Pre-turn baseline capture has a 10-second limit; if it expires, the
-provider turn proceeds and may have no recoverable workspace baseline.
+Automatic workspace checkpoints omit the repository-root `Artifacts/` tree regardless of letter
+case. Generated artifact-folder variants are also omitted when they contain no versioned code.
+Projects can specify additional literal paths with `synara.checkpointExcludePath` in their local Git
+configuration. Exclusions are recorded with the checkpoint and remain protected during restore and
+Undo, even after the current configuration changes. See [checkpoint exclusions](checkpoints.md).
+
+The complete pre-turn checkpoint operation, including repository detection, has a 10-second limit.
+If it fails or expires, the provider turn proceeds and may have no recoverable workspace baseline.
+Capture failures do not authorize changing repository permissions or reporting a missing baseline
+as successfully captured.
 
 ## Parallel work
 

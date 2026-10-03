@@ -5,6 +5,41 @@
 
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@synara/contracts";
 
+export function shouldShowDesktopInterfaceUpdate(
+  state: DesktopUpdateState | null,
+  bridgeAvailable: boolean,
+): boolean {
+  return (
+    bridgeAvailable &&
+    state?.interfaceUpdate !== undefined &&
+    state.interfaceUpdate.status !== "unsupported"
+  );
+}
+
+export function isDesktopInterfaceUpdateBusy(state: DesktopUpdateState | null): boolean {
+  return (
+    state?.interfaceUpdate?.status === "preparing" || state?.interfaceUpdate?.status === "reloading"
+  );
+}
+
+export function getDesktopInterfaceUpdateMessage(
+  state: DesktopUpdateState,
+  uiVersion: string,
+): string {
+  const update = state.interfaceUpdate;
+  if (update?.message) return update.message;
+  if (update?.status === "restart-required") {
+    return "This update changes the native app. Restart and install to complete the update.";
+  }
+  if (update?.status === "preparing")
+    return "Preparing a compatible interface update. You can keep working.";
+  if (update?.status === "reloading")
+    return "Reloading the interface and reconnecting to the running server.";
+  if (update?.status === "unsupported")
+    return "Interface updates are unavailable in this native app.";
+  return `Interface ${uiVersion}. Native app ${state.currentVersion}. Native changes require a restart.`;
+}
+
 export type DesktopUpdateButtonAction = "check" | "download" | "install" | "none";
 
 export function resolveDesktopUpdateButtonAction(

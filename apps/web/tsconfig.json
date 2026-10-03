@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["vite/client"],
@@ -26,6 +27,9 @@
     "perf",
     "scripts/production-assets*.ts",
     "scripts/reactCompiler*.ts",
-    "vite.config.ts"
+    "vite.config.ts",
+    "../../scripts/lib/live-ui-compatibility.ts",
+    "../../scripts/update-release-package-versions.ts",
+    "../../packages/contracts/src/liveUiUpdate.ts"
   ]
 }

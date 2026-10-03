@@ -18,6 +18,7 @@ import {
   runLockedQueuedComposerAutoDispatch,
   tryBeginQueuedComposerAutoDispatch,
 } from "../../lib/queuedComposerDrain";
+import { isRendererReloadPending, onRendererReloadChange } from "../../lib/rendererReloadSafety";
 import { derivePhase } from "../../session-logic";
 import { useStore } from "../../store";
 import { getThreadFromState } from "../../threadDerivation";
@@ -165,6 +166,14 @@ export function useChatQueuedTurns({
   // Bumped to re-evaluate auto-dispatch when only non-reactive guards (refs)
   // blocked it; nothing else re-triggers the effect once they reset.
   const [queuedAutoDispatchTick, setQueuedAutoDispatchTick] = useState(0);
+
+  useEffect(
+    () =>
+      onRendererReloadChange(() => {
+        setQueuedAutoDispatchTick((tick) => tick + 1);
+      }),
+    [],
+  );
 
   useEffect(() => {
     queuedComposerTurnsRef.current = queuedComposerTurns;
@@ -410,6 +419,7 @@ export function useChatQueuedTurns({
   ]);
 
   useEffect(() => {
+    if (isRendererReloadPending()) return;
     if (hasPendingCacheReview) {
       clearQueuedComposerAutoDispatchRetry(threadId);
       return;

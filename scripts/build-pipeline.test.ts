@@ -13,6 +13,9 @@ function taskGraph(task: string, filter: string, env: NodeJS.ProcessEnv = proces
       env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      // The compatibility inputs appear for each build task. The current graph
+      // is over 2 MiB, so Node's 1 MiB default truncates valid dry-run JSON.
+      maxBuffer: 8 * 1024 * 1024,
     }),
   ) as { tasks: Array<{ taskId: string; hash: string; inputs: Record<string, string> }> };
 }

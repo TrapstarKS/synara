@@ -22,6 +22,7 @@ import { getThreadFromState } from "../threadDerivation";
 import type { SessionPhase } from "../types";
 import { dispatchQueuedComposerTurnHeadless } from "./queuedComposerDispatch";
 import { newMessageId } from "./utils";
+import { isRendererReloadPending, onRendererReloadChange } from "./rendererReloadSafety";
 
 export interface QueuedComposerAutoDispatchGates {
   hasQueueableLiveTurn: boolean;
@@ -109,7 +110,7 @@ export function isQueuedComposerAwaitingTurnStart(threadId: ThreadId): boolean {
 }
 
 export function tryBeginQueuedComposerAutoDispatch(threadId: ThreadId): boolean {
-  if (autoDispatchLocks.has(threadId)) {
+  if (isRendererReloadPending() || autoDispatchLocks.has(threadId)) {
     return false;
   }
   autoDispatchLocks.add(threadId);
@@ -181,9 +182,14 @@ export function startQueuedComposerDrainWatcher(options?: {
       resetRetriesForRelevantThreadChanges(current, previous);
       requestQueuedComposerDrainPass();
     });
+    const unsubscribeReload = onRendererReloadChange((pending) => {
+      if (pending) scheduleQueuedComposerDrainWake(null);
+      else requestQueuedComposerDrainPass();
+    });
     stopDrainSubscriptions = () => {
       unsubscribeDrafts();
       unsubscribeStore();
+      unsubscribeReload();
     };
     requestQueuedComposerDrainPass();
   }
@@ -521,6 +527,7 @@ export function clearQueuedComposerAutoDispatchRetry(threadId: ThreadId): void {
 }
 
 function runQueuedComposerDrainPass(): void {
+  if (isRendererReloadPending()) return;
   const steerExpiryMs = advanceSteerGates();
   const awaitingStartExpiryMs = advanceAwaitingTurnStarts();
   let earliestWakeMs =

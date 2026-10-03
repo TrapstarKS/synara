@@ -7,5 +7,14 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "perf", "tsdown.config.ts", "scripts", "integration", "../../scripts/lib"]
+  "include": [
+    "src",
+    "perf",
+    "tsdown.config.ts",
+    "scripts",
+    "integration",
+    "../../scripts/lib",
+    "../../scripts/update-release-package-versions.ts",
+    "../../packages/contracts/src/liveUiUpdate.ts"
+  ]
 }

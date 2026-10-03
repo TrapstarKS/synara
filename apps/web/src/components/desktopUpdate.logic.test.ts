@@ -9,12 +9,15 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDownloadPercent,
   getDesktopUpdateErrorSignature,
+  getDesktopInterfaceUpdateMessage,
+  isDesktopInterfaceUpdateBusy,
   isDesktopUpdateButtonDisabled,
   isDesktopUpdateInstallInFlight,
   resolveDesktopUpdateButtonAction,
   shouldRecommendManualDesktopDownload,
   shouldShowArm64IntelBuildWarning,
   shouldShowDesktopUpdateButton,
+  shouldShowDesktopInterfaceUpdate,
   shouldToastDesktopUpdateActionResult,
 } from "./desktopUpdate.logic";
 
@@ -36,6 +39,54 @@ const baseState: DesktopUpdateState = {
   flavor: "production",
   releaseUrl: null,
 };
+
+describe("compatible interface update presentation", () => {
+  const interfaceUpdate = {
+    status: "applied" as const,
+    currentVersion: "1.1.0",
+    targetVersion: "1.1.0",
+    attemptId: "attempt",
+    message: null,
+  };
+  it("separates UI and native versions while keeping the native install available", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "downloaded",
+      downloadedVersion: "1.1.0",
+      interfaceUpdate,
+    };
+    expect(getDesktopInterfaceUpdateMessage(state, "1.1.0")).toContain("Interface 1.1.0");
+    expect(getDesktopInterfaceUpdateMessage(state, "1.1.0")).toContain("Native app 1.0.0");
+    expect(resolveDesktopUpdateButtonAction(state)).toBe("install");
+    expect(state.currentVersion).toBe("1.0.0");
+  });
+  it("hides the option for old native builds and unsupported platforms", () => {
+    expect(shouldShowDesktopInterfaceUpdate(baseState, true)).toBe(false);
+    expect(shouldShowDesktopInterfaceUpdate({ ...baseState, interfaceUpdate }, false)).toBe(false);
+    expect(
+      shouldShowDesktopInterfaceUpdate(
+        { ...baseState, interfaceUpdate: { ...interfaceUpdate, status: "unsupported" } },
+        true,
+      ),
+    ).toBe(false);
+    expect(shouldShowDesktopInterfaceUpdate({ ...baseState, interfaceUpdate }, true)).toBe(true);
+  });
+  it("explains the required restart and distinguishes preparing from completed", () => {
+    expect(
+      getDesktopInterfaceUpdateMessage(
+        { ...baseState, interfaceUpdate: { ...interfaceUpdate, status: "restart-required" } },
+        "1.0.0",
+      ),
+    ).toContain("Restart and install");
+    expect(
+      isDesktopInterfaceUpdateBusy({
+        ...baseState,
+        interfaceUpdate: { ...interfaceUpdate, status: "preparing" },
+      }),
+    ).toBe(true);
+    expect(isDesktopInterfaceUpdateBusy({ ...baseState, interfaceUpdate })).toBe(false);
+  });
+});
 
 describe("desktop update button state", () => {
   it("keeps a manual check button available when idle", () => {

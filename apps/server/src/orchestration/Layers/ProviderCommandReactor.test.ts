@@ -66,7 +66,7 @@ import {
   type ComputerServiceShape,
 } from "../../computer/Services/ComputerService.ts";
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
-import { TextGenerationError } from "../../git/Errors.ts";
+import { GitCommandError, TextGenerationError } from "../../git/Errors.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -132,6 +132,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
 import {
   CheckpointStore,
+  PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS,
   type CheckpointStoreShape,
 } from "../../checkpointing/Services/CheckpointStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -10912,6 +10913,160 @@ describe("ProviderCommandReactor", () => {
     });
     expect(captureCheckpoint.mock.calls[0]?.[0].checkpointRef).toContain("/message-start/");
   });
+
+  it("bounds a stalled checkpoint repository probe and releases later thread commands", async () => {
+    const probeStarted = Effect.runSync(Deferred.make<void>());
+    const isGitRepository = vi.fn<CheckpointStoreShape["isGitRepository"]>(() =>
+      Effect.succeed(false),
+    );
+    isGitRepository.mockImplementationOnce(() =>
+      Deferred.succeed(probeStarted, undefined).pipe(Effect.andThen(Effect.never)),
+    );
+    const captureCheckpoint = vi.fn<CheckpointStoreShape["captureCheckpoint"]>(() => Effect.void);
+    const harness = await createHarness({
+      checkpointStore: { isGitRepository, captureCheckpoint },
+    });
+    const createdAt = new Date().toISOString();
+    const secondThreadId = ThreadId.makeUnsafe("thread-checkpoint-following");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("cmd-checkpoint-following-thread"),
+        threadId: secondThreadId,
+        projectId: asProjectId("project-1"),
+        title: "Following thread",
+        modelSelection: { provider: "codex", model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    await harness.drain();
+
+    // Keep SQLite and Effect's scheduler real; advance only the deadline timers.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await dispatchHarnessUserTurn(harness, {
+        messageId: "checkpoint-stalled-probe",
+        text: "continue after the checkpoint deadline",
+        createdAt,
+      });
+      await Effect.runPromise(Deferred.await(probeStarted));
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("cmd-checkpoint-following-turn"),
+          threadId: secondThreadId,
+          message: {
+            messageId: asMessageId("checkpoint-following-turn"),
+            role: "user",
+            text: "another thread must still start",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(PRE_TURN_CHECKPOINT_CAPTURE_TIMEOUT_MS - 1);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(harness.sendTurn).toHaveBeenCalledTimes(2), {
+        timeout: 500,
+        interval: 10,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await harness.drain();
+    expect(harness.sendTurn.mock.calls.map(([input]) => input.threadId)).toEqual([
+      ThreadId.makeUnsafe("thread-1"),
+      secondThreadId,
+    ]);
+    expect(captureCheckpoint).not.toHaveBeenCalled();
+    expect((await readHarnessThread(harness))?.checkpoints).toEqual([]);
+    expect(harness.stopSession).not.toHaveBeenCalled();
+  });
+
+  it("does not send when the checkpoint preparation is interrupted by its owning scope", async () => {
+    const probeStarted = Effect.runSync(Deferred.make<void>());
+    let probeInterrupted = false;
+    const captureCheckpoint = vi.fn<CheckpointStoreShape["captureCheckpoint"]>(() => Effect.void);
+    const harness = await createHarness({
+      checkpointStore: {
+        isGitRepository: () =>
+          Deferred.succeed(probeStarted, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                probeInterrupted = true;
+              }),
+            ),
+          ),
+        captureCheckpoint,
+      },
+    });
+    await dispatchHarnessUserTurn(harness, {
+      messageId: "checkpoint-interrupted-probe",
+      text: "cancel before provider dispatch",
+      createdAt: new Date().toISOString(),
+    });
+    await Effect.runPromise(Deferred.await(probeStarted));
+    if (!scope) throw new Error("The reactor test scope is unavailable.");
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    scope = null;
+    await waitFor(() => probeInterrupted);
+
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(captureCheckpoint).not.toHaveBeenCalled();
+    expect((await readHarnessThread(harness))?.checkpoints).toEqual([]);
+  });
+
+  it.each(["EACCES: Permission denied", "ENOSPC: No space left on device"])(
+    "sends once when checkpoint capture fails with %s",
+    async (detail) => {
+      const captureCheckpoint = vi.fn<CheckpointStoreShape["captureCheckpoint"]>(() =>
+        Effect.fail(
+          new GitCommandError({
+            operation: "CheckpointStore.captureCheckpoint",
+            command: "git add -A",
+            cwd: "/tmp/provider-project",
+            detail,
+          }),
+        ),
+      );
+      const copyCheckpointRef = vi.fn<CheckpointStoreShape["copyCheckpointRef"]>(() =>
+        Effect.succeed(true),
+      );
+      const deleteCheckpointRefs = vi.fn<CheckpointStoreShape["deleteCheckpointRefs"]>(
+        () => Effect.void,
+      );
+      const harness = await createHarness({
+        checkpointStore: {
+          isGitRepository: () => Effect.succeed(true),
+          captureCheckpoint,
+          copyCheckpointRef,
+          deleteCheckpointRefs,
+        },
+      });
+      await dispatchHarnessUserTurn(harness, {
+        messageId: "checkpoint-capture-failed",
+        text: "send despite unavailable checkpoint storage",
+        createdAt: new Date().toISOString(),
+      });
+      await harness.drain();
+
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      expect(captureCheckpoint).toHaveBeenCalledTimes(1);
+      expect(copyCheckpointRef).not.toHaveBeenCalled();
+      expect(deleteCheckpointRefs).not.toHaveBeenCalled();
+      expect((await readHarnessThread(harness))?.checkpoints).toEqual([]);
+      expect(harness.stopSession).not.toHaveBeenCalled();
+    },
+  );
 
   it("waits for the Studio output baseline before sending the provider turn", async () => {
     let releaseCapture: (() => void) | undefined;

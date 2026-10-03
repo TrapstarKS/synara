@@ -382,6 +382,33 @@ export interface DesktopRuntimeInfo {
   runningUnderArm64Translation: boolean;
 }
 
+/** A compatible renderer update leaves the running native app and server unchanged. */
+export interface DesktopInterfaceUpdateState {
+  status:
+    | "unsupported"
+    | "idle"
+    | "preparing"
+    | "ready"
+    | "reloading"
+    | "applied"
+    | "restart-required"
+    | "blocked"
+    | "error";
+  currentVersion: string;
+  targetVersion: string | null;
+  attemptId: string | null;
+  message: string | null;
+}
+
+export interface DesktopInterfaceUpdateApplyInput {
+  attemptId: string;
+  serverInstanceId: string;
+}
+
+export interface DesktopInterfaceUpdateConfirmInput extends DesktopInterfaceUpdateApplyInput {
+  version: string;
+}
+
 export interface DesktopUpdateState {
   enabled: boolean;
   status: DesktopUpdateStatus;
@@ -405,6 +432,7 @@ export interface DesktopUpdateState {
   // read-only install location, unsupported platform). Null when no GitHub
   // update source is configured.
   releaseUrl: string | null;
+  interfaceUpdate?: DesktopInterfaceUpdateState;
 }
 
 export interface DesktopUpdateActionResult {
@@ -861,6 +889,12 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  /** macOS renderer-only update. Older native builds may omit this capability. */
+  interfaceUpdate?: {
+    prepare: () => Promise<DesktopUpdateActionResult>;
+    apply: (input: DesktopInterfaceUpdateApplyInput) => Promise<DesktopUpdateActionResult>;
+    confirm: (input: DesktopInterfaceUpdateConfirmInput) => Promise<boolean>;
+  };
   /** Stable→Beta opt-in surface. Absent on builds that do not ship it. */
   beta?: {
     getState: () => Promise<DesktopBetaChannelState>;

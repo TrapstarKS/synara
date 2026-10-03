@@ -40,6 +40,10 @@ import { finalizeSignedMacDmg, rebuildUnsignedMacDmg } from "./lib/mac-dmg-final
 import { finalizeMacUpdateZip } from "./lib/mac-update-zip-finalize.ts";
 import { collectStageRuntimePackages } from "./lib/release-stage-dependencies.ts";
 import {
+  assertLiveUiReleaseBuildOutputs,
+  createLiveUiManifest,
+} from "./lib/live-ui-compatibility.ts";
+import {
   RELEASE_LOCKFILE_PATH,
   RELEASE_PATCHES_PATH,
   RELEASE_WORKSPACE_MANIFEST_PATHS,
@@ -1227,6 +1231,18 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   yield* validateBundledClientAssets(path.dirname(bundledClientEntry));
 
+  const verifyLiveUiOutputs = (root: string) =>
+    Effect.try({
+      try: () => assertLiveUiReleaseBuildOutputs(root, createLiveUiManifest(repoRoot, appVersion)),
+      catch: (cause) =>
+        new BuildScriptError({
+          message:
+            "Live UI compatibility metadata is missing or stale; rebuild the release outputs.",
+          cause,
+        }),
+    });
+  yield* verifyLiveUiOutputs(repoRoot);
+
   yield* fs.makeDirectory(path.join(stageAppDir, "apps/desktop"), { recursive: true });
   yield* fs.makeDirectory(path.join(stageAppDir, "apps/server"), { recursive: true });
 
@@ -1235,6 +1251,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
   yield* fs.copy(distDirs.serverDist, path.join(stageAppDir, "apps/server/dist"));
   yield* stageClientFavicons(stageAppDir, options.flavor);
+
+  // Recheck the isolated copies, so a rebuild racing the copy cannot cause us
+  // to sign a mixture whose source stamps passed only before staging.
+  yield* verifyLiveUiOutputs(stageAppDir);
 
   yield* assertPlatformBuildResources(
     options.platform,

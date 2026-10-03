@@ -113,6 +113,17 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
   ),
 );
 
+/** Force the current snapshot through the existing serializer before a controlled reload. */
+export function persistComposerDraftsNow(): void {
+  composerPersistStorage.setItem(COMPOSER_DRAFT_STORAGE_KEY, {
+    // As with Zustand's middleware, deferred storage receives the full state.
+    // Its PersistStorage signature names the eventual shape; it partializes once on flush.
+    state: useComposerDraftStore.getState() as unknown as PersistedComposerDraftStoreState,
+    version: COMPOSER_DRAFT_STORAGE_VERSION,
+  });
+  composerPersistStorage.flush();
+}
+
 export function useComposerThreadDraft(threadId: ThreadId): ComposerThreadDraftState {
   return useComposerDraftStore((state) => selectComposerThreadDraft(state, threadId));
 }

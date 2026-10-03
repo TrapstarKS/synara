@@ -4,7 +4,7 @@
   "tasks": {
     "build": {
       "inputs": [
-        "$TURBO_DEFAULT$",
+        "$TURBO_EXTENDS$",
         "$TURBO_ROOT$/scripts/lib/brand-assets.ts",
         "$TURBO_ROOT$/scripts/lib/resolve-catalog.ts",
         "$TURBO_ROOT$/assets/dev/**",

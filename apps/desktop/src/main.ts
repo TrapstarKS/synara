@@ -40,6 +40,7 @@ import {
   session,
   shell,
   systemPreferences,
+  webContents,
 } from "electron";
 import { configureElectronNetwork } from "betterwright/electron";
 import type {
@@ -51,10 +52,13 @@ import type {
 import * as Effect from "effect/Effect";
 import type {
   DesktopAppIcon,
+  DesktopInterfaceUpdateApplyInput,
+  DesktopInterfaceUpdateConfirmInput,
   DesktopTheme,
   DesktopUpdateActionResult,
   DesktopUpdateState,
 } from "@synara/contracts";
+import { LIVE_UI_MANIFEST_FILENAME, parseLiveUiManifest } from "@synara/contracts";
 import {
   autoUpdater,
   BaseUpdater,
@@ -289,7 +293,14 @@ import {
   resolveDesktopUserDataPath,
 } from "./desktopUserDataProfile";
 import { isBrokenPipeError } from "./desktopProcessErrors";
-import { createDesktopStaticProtocolResolver } from "./desktopStaticProtocol";
+import { createDesktopStaticProtocolSelector } from "./desktopStaticProtocol";
+import { LiveUiUpdateController } from "./liveUiUpdateController";
+import {
+  LiveUiRestartRequiredError,
+  prepareLiveUiUpdate,
+  readLiveUiSigningIdentity,
+  type LiveUiSigningIdentity,
+} from "./liveUiPreparation";
 import {
   readCustomTitleBarPreference,
   resolveDesktopCustomTitleBarState,
@@ -1018,6 +1029,8 @@ let settleActiveUpdateCheck: (() => void) | null = null;
 let activeUpdatePreparation: Promise<void> | null = null;
 let updaterConfigured = false;
 let updateState: DesktopUpdateState = initialUpdateState();
+let liveUiUpdates: LiveUiUpdateController | null = null;
+const liveUiStartupAbort = new AbortController();
 let updateBackgroundedAtMs: number | null = null;
 let updateBackgroundBlurTimer: ReturnType<typeof setTimeout> | null = null;
 let updateCheckTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1679,13 +1692,143 @@ function registerDesktopProtocol(): void {
     );
   }
 
-  const resolveStaticRequest = createDesktopStaticProtocolResolver(staticRoot);
+  const staticProtocol = createDesktopStaticProtocolSelector(staticRoot);
 
   protocol.registerFileProtocol(DESKTOP_SCHEME, (request, callback) => {
-    callback(resolveStaticRequest(request.url));
+    callback(staticProtocol.resolve(request.url));
   });
 
   desktopProtocolRegistered = true;
+  configureLiveUiUpdates(staticRoot, staticProtocol.select);
+}
+
+function liveUiReloadBlockedReason(): string | null {
+  if (isQuitting || isUpdaterInstallPreparing || isUpdaterQuitAndInstallInFlight) {
+    return "An app restart is already in progress.";
+  }
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    return "Open the main Synara window before updating its interface.";
+  }
+  if (!backendProcess || backendProcess.exitCode !== null || backendProcess.signalCode !== null) {
+    return "Wait for the agent server to reconnect before updating the interface.";
+  }
+  // A guest can be idle between two agent tools and still own live DOM/CDP refs.
+  // Native WebContentsViews and the external ChatGPT browser are independent.
+  if (
+    webContents
+      .getAllWebContents()
+      .some((contents) => !contents.isDestroyed() && contents.getType() === "webview")
+  ) {
+    return "A page in the embedded browser depends on this interface. Its reload is deferred to preserve the page and any agent using it.";
+  }
+  return null;
+}
+
+function configureLiveUiUpdates(
+  staticRoot: string,
+  selectRoots: (current: string | null, previous: string | null) => void,
+): void {
+  if (liveUiUpdates) return;
+  let manifest = null;
+  try {
+    const manifestPath = Path.join(staticRoot, LIVE_UI_MANIFEST_FILENAME);
+    if (FS.statSync(manifestPath).size <= 16 * 1024) {
+      manifest = parseLiveUiManifest(JSON.parse(FS.readFileSync(manifestPath, "utf8")));
+    }
+  } catch {
+    // Older packages can still use the normal updater; no unverified hot swap.
+  }
+  const currentManifest = manifest?.version === app.getVersion() ? manifest : null;
+  const supported = process.platform === "darwin" && app.isPackaged && currentManifest !== null;
+  // Pin the startup identity, not the signature of a bundle replaced later on disk.
+  const signerPromise: Promise<LiveUiSigningIdentity | null> = supported
+    ? readLiveUiSigningIdentity(ownMacAppBundlePath(), APP_USER_MODEL_ID, liveUiStartupAbort.signal)
+        .then((signer) => {
+          if (
+            startupBundleIdentity &&
+            (!startupBundleIdentity.signature ||
+              !isBundleStable(
+                startupBundleIdentity.signature,
+                readBundleSignature(startupBundleIdentity.path),
+              ))
+          )
+            return null;
+          return signer;
+        })
+        .catch(() => null)
+    : Promise.resolve(null);
+  liveUiUpdates = new LiveUiUpdateController({
+    currentVersion: app.getVersion(),
+    unsupportedReason: () => {
+      if (process.platform !== "darwin")
+        return "Interface updates without restarting are currently available on macOS. Use the full app update on this platform.";
+      if (!app.isPackaged || isDevelopment)
+        return "Interface updates require a packaged Synara app.";
+      if (!currentManifest)
+        return "Install a full update once to enable verified interface updates in this app.";
+      if (!updaterConfigured) return "Updates are not enabled for this installation.";
+      return null;
+    },
+    runtimeIdentity: () => backendProcess,
+    prepare: async (signal) => {
+      const blocked = isQuitting || isUpdaterInstallPreparing || isUpdaterQuitAndInstallInFlight;
+      if (blocked) throw new Error("An app restart is already in progress.");
+      const signer = await signerPromise;
+      signal.throwIfAborted();
+      if (!signer || !currentManifest) {
+        throw new LiveUiRestartRequiredError(
+          "The installed app's signing identity could not be verified. Use the full app update when you are ready to restart.",
+        );
+      }
+      await prepareUpdateWithoutInstalling(
+        liveUiUpdates?.getState().currentVersion ?? app.getVersion(),
+      );
+      signal.throwIfAborted();
+      const artifact = downloadedUpdateArtifact;
+      if (updateState.status === "up-to-date") return null;
+      if (!artifact || updateState.status !== "downloaded") {
+        throw new Error(
+          updateState.message ??
+            "The update is not ready to apply. Wait for the download to finish and try again.",
+        );
+      }
+      if (artifact.version === liveUiUpdates?.getState().currentVersion) return null;
+      if (!isAcceptableUpdateVersion(artifact.version))
+        throw new LiveUiRestartRequiredError(
+          "The downloaded update is not on this app's update channel.",
+        );
+      return prepareLiveUiUpdate(
+        {
+          artifact: artifact.identity,
+          version: artifact.version,
+          currentManifest,
+          expectedSigner: signer,
+          expectedBundleId: APP_USER_MODEL_ID,
+          cacheRoot: Path.join(app.getPath("userData"), "interface-updates"),
+          signal,
+        },
+        {
+          // Electron's patched fs walks app.asar as a virtual directory. Use
+          // its existing raw filesystem boundary to remove physical staging.
+          removeTree: (directory) =>
+            OriginalFS.promises.rm(directory, { recursive: true, force: true }),
+        },
+      );
+    },
+    classifyError: (error) =>
+      error instanceof LiveUiRestartRequiredError ? "restart-required" : "error",
+    reloadBlockedReason: liveUiReloadBlockedReason,
+    selectRoots,
+    reload: () => {
+      const window = mainWindow;
+      if (!window || window.isDestroyed())
+        throw new Error("The main window is no longer available.");
+      // Same window, preload, backend and browser host. No quit/install path.
+      window.webContents.reloadIgnoringCache();
+    },
+    onState: (interfaceUpdate) => setUpdateState({ interfaceUpdate }),
+  });
+  setUpdateState({ interfaceUpdate: liveUiUpdates.getState() });
 }
 
 function dispatchMenuAction(action: string): void {
@@ -1960,6 +2103,11 @@ function configureApplicationMenu(): void {
         { type: "separator" },
         { role: "reload" },
         { role: "forceReload" },
+        {
+          label: "Update interface and reload",
+          enabled: process.platform === "darwin" && app.isPackaged && !isDevelopment,
+          click: () => dispatchMenuAction("update-interface"),
+        },
         { role: "toggleDevTools" },
         { type: "separator" },
         ...zoomMenuItems,
@@ -3239,7 +3387,7 @@ function beginActiveUpdateCheck(): () => void {
   return finish;
 }
 
-async function checkForUpdates(reason: string): Promise<void> {
+async function checkForUpdates(reason: string, allowDownloaded = false): Promise<void> {
   if (isQuitting || isUpdaterInstallPreparing || !updaterConfigured || updateCheckInFlight) return;
   if (automaticUpdateActivitySuppressed) {
     if (!isExplicitUpdateCheckReason(reason)) {
@@ -3257,7 +3405,7 @@ async function checkForUpdates(reason: string): Promise<void> {
   if (
     updateState.status === "checking" ||
     updateState.status === "downloading" ||
-    updateState.status === "downloaded"
+    (updateState.status === "downloaded" && !allowDownloaded)
   ) {
     console.info(
       `[desktop-updater] Skipping update check (${reason}) while status=${updateState.status}.`,
@@ -3410,6 +3558,24 @@ function prepareAvailableUpdateInBackground(reason: string): void {
   // recovery — can await this one instead of racing a second download
   // against it.
   activeUpdatePreparation = preparation;
+}
+
+/** Join the updater's existing check/download without entering its install path. */
+async function prepareUpdateWithoutInstalling(interfaceVersion: string): Promise<void> {
+  const checking = activeUpdateCheck;
+  if (checking) await checking;
+  else if (
+    updateState.status !== "downloaded" ||
+    updateState.downloadedVersion === interfaceVersion
+  ) {
+    // The UI may already be newer than the native app. Explicit checks must be
+    // able to discover the next compatible UI instead of sticking on one ZIP.
+    await checkForUpdates("renderer", updateState.downloadedVersion === interfaceVersion);
+  }
+  const preparation = activeUpdatePreparation;
+  if (preparation) await preparation;
+  else if (updateState.status === "available") await downloadAvailableUpdate();
+  if (downloadedUpdateIdentityTask) await downloadedUpdateIdentityTask;
 }
 
 /**
@@ -3591,7 +3757,12 @@ async function installDownloadedUpdate(): Promise<{
   accepted: boolean;
   completed: boolean;
 }> {
-  if (isQuitting || !updaterConfigured || updateState.status !== "downloaded") {
+  if (
+    isQuitting ||
+    liveUiUpdates?.isBusy() ||
+    !updaterConfigured ||
+    updateState.status !== "downloaded"
+  ) {
     return { accepted: false, completed: false };
   }
   const preparationAttempt = updateInstallPreparation.begin();
@@ -4742,6 +4913,8 @@ async function shutdownDesktopRuntime(reason: string): Promise<void> {
   }
 
   isQuitting = true;
+  liveUiStartupAbort.abort();
+  liveUiUpdates?.dispose();
   hideDesktopWindowForImmediateQuit();
   stopMobileCompanion?.();
   writeDesktopLogHeader(`${reason} shutdown start`);
@@ -5315,6 +5488,70 @@ function registerIpcHandlers(): void {
     } satisfies DesktopUpdateActionResult;
   });
 
+  const isInterfaceUpdateCaller = (event: Electron.IpcMainInvokeEvent): boolean => {
+    const contents = mainWindow?.webContents;
+    const frame = event.senderFrame;
+    if (
+      !contents ||
+      contents.isDestroyed() ||
+      !frame ||
+      event.sender !== contents ||
+      frame !== contents.mainFrame
+    )
+      return false;
+    try {
+      const current = new URL(frame.url);
+      const expected = new URL(desktopIdentity.entryUrl);
+      return current.protocol === expected.protocol && current.hostname === expected.hostname;
+    } catch {
+      return false;
+    }
+  };
+  const interfaceUpdateInput = (value: unknown): DesktopInterfaceUpdateApplyInput | null => {
+    if (!value || typeof value !== "object") return null;
+    const input = value as Record<string, unknown>;
+    if (
+      typeof input.attemptId !== "string" ||
+      input.attemptId.length > 128 ||
+      !input.attemptId.trim() ||
+      typeof input.serverInstanceId !== "string" ||
+      input.serverInstanceId.length > 256 ||
+      !input.serverInstanceId.trim()
+    )
+      return null;
+    return { attemptId: input.attemptId, serverInstanceId: input.serverInstanceId };
+  };
+  ipcMain.removeHandler(IPC.interfaceUpdatePrepare);
+  ipcMain.handle(IPC.interfaceUpdatePrepare, async (event) => {
+    const accepted =
+      isInterfaceUpdateCaller(event) &&
+      !isQuitting &&
+      !isUpdaterInstallPreparing &&
+      liveUiUpdates !== null;
+    if (accepted) await liveUiUpdates?.prepare();
+    return { accepted, completed: false, state: updateState } satisfies DesktopUpdateActionResult;
+  });
+  ipcMain.removeHandler(IPC.interfaceUpdateApply);
+  ipcMain.handle(IPC.interfaceUpdateApply, (event, rawInput: unknown) => {
+    const input = interfaceUpdateInput(rawInput);
+    const accepted = Boolean(
+      input && isInterfaceUpdateCaller(event) && liveUiUpdates?.apply(input),
+    );
+    return { accepted, completed: false, state: updateState } satisfies DesktopUpdateActionResult;
+  });
+  ipcMain.removeHandler(IPC.interfaceUpdateConfirm);
+  ipcMain.handle(IPC.interfaceUpdateConfirm, (event, rawInput: unknown) => {
+    const input = interfaceUpdateInput(rawInput);
+    const version = input ? (rawInput as DesktopInterfaceUpdateConfirmInput).version : undefined;
+    return Boolean(
+      input &&
+      typeof version === "string" &&
+      version.length <= 128 &&
+      isInterfaceUpdateCaller(event) &&
+      liveUiUpdates?.confirm({ ...input, version }),
+    );
+  });
+
   ipcMain.removeHandler(IPC.notificationsIsSupported);
   ipcMain.handle(IPC.notificationsIsSupported, async () => Notification.isSupported());
 
@@ -5682,6 +5919,7 @@ function attachRendererCrashRecovery(window: BrowserWindow): void {
   };
 
   window.webContents.on("render-process-gone", (_event, details) => {
+    if (liveUiUpdates?.failLoading(`The updated interface exited (${details.reason}).`)) return;
     // A renderer that dies while hosting the quit-confirmation ask can never
     // answer it — declining would abandon a requested quit and (worse) show
     // the recovery prompt below, leaving a dead-UI app alive forever. Allow
@@ -5737,6 +5975,11 @@ function attachRendererCrashRecovery(window: BrowserWindow): void {
   });
   window.webContents.on("responsive", () => {
     writeDesktopLogHeader("renderer responsive");
+  });
+
+  window.webContents.on("did-fail-load", (_event, errorCode, description, _url, isMainFrame) => {
+    if (isMainFrame && errorCode !== -3)
+      liveUiUpdates?.failLoading(`The updated interface could not load: ${description}`);
   });
 
   window.webContents.on("did-start-loading", () => {
@@ -5909,6 +6152,9 @@ async function bootstrap(): Promise<void> {
   // update out of it, which is exactly how 0.6.0 stranded its users. The
   // updater touches no database state, so configuring it first is safe.
   configureAutoUpdater();
+  // The protocol and interface controller exist before updater configuration.
+  // Publish the resolved availability without starting a download or reload.
+  liveUiUpdates?.refreshAvailability();
 
   const migrationRecoveryOutcome = await handleDesktopMigrationRecovery();
   if (migrationRecoveryOutcome !== "continue") {

@@ -2,7 +2,10 @@ import * as Path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createDesktopStaticProtocolResolver } from "./desktopStaticProtocol";
+import {
+  createDesktopStaticProtocolResolver,
+  createDesktopStaticProtocolSelector,
+} from "./desktopStaticProtocol";
 
 const staticRoot = Path.resolve("/virtual/synara-static");
 const rootIndex = Path.join(staticRoot, "index.html");
@@ -57,4 +60,33 @@ describe("createDesktopStaticProtocolResolver", () => {
       ),
     ).toBe(true);
   });
+});
+
+it("switches shell HTML while retaining previous hashed chunks and the backend root", () => {
+  const newerRoot = Path.resolve("/virtual/synara-next");
+  const newestRoot = Path.resolve("/virtual/synara-newest");
+  const paths = new Set([
+    rootIndex,
+    Path.join(staticRoot, "assets", "old-123.js"),
+    Path.join(newerRoot, "index.html"),
+    Path.join(newerRoot, "assets", "new-456.js"),
+    Path.join(newestRoot, "index.html"),
+  ]);
+  const selector = createDesktopStaticProtocolSelector(staticRoot, (file) => paths.has(file));
+  const backend = createDesktopStaticProtocolResolver(staticRoot, (file) => paths.has(file));
+  selector.select(newerRoot, null);
+  expect(selector.resolve("synara://app/thread/one")).toEqual({
+    path: Path.join(newerRoot, "index.html"),
+  });
+  expect(selector.resolve("synara://app/assets/old-123.js")).toEqual({
+    path: Path.join(staticRoot, "assets", "old-123.js"),
+  });
+  expect(backend("synara://app/thread/one")).toEqual({ path: rootIndex });
+  selector.select(newestRoot, newerRoot);
+  expect(selector.resolve("synara://app/assets/new-456.js")).toEqual({
+    path: Path.join(newerRoot, "assets", "new-456.js"),
+  });
+  expect(selector.resolve("synara://app/assets/missing.js")).toEqual({ error: -6 });
+  selector.select(null, null);
+  expect(selector.resolve("synara://app/thread/one")).toEqual({ path: rootIndex });
 });

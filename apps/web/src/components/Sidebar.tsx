@@ -9,6 +9,7 @@ import {
   BookIcon,
   ChatBubbleIcon,
   CircleQuestionIcon,
+  ChevronDownIcon,
   ClockIcon,
   CopyIcon,
   CustomizeIcon,
@@ -243,6 +244,11 @@ import {
 import { useHandleNewChat } from "../hooks/useHandleNewChat";
 import { useHandleNewStudioChat } from "../hooks/useHandleNewStudioChat";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { APP_VERSION } from "../branding";
+import {
+  useDesktopInterfaceUpdateAction,
+  useDesktopUpdateState,
+} from "../hooks/useDesktopInterfaceUpdate";
 import { useProviderStatusesForLocalConfig } from "../hooks/useProviderStatusesForLocalConfig";
 import { useThreadHandoff } from "../hooks/useThreadHandoff";
 import { useFeedbackDialogStore } from "../feedbackDialogStore";
@@ -263,12 +269,15 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDownloadPercent,
   getDesktopUpdateErrorSignature,
+  getDesktopInterfaceUpdateMessage,
+  isDesktopInterfaceUpdateBusy,
   isDesktopUpdateButtonDisabled,
   isDesktopUpdateInstallInFlight,
   resolveDesktopUpdateButtonAction,
   shouldRecommendManualDesktopDownload,
   shouldShowArm64IntelBuildWarning,
   shouldShowDesktopUpdateButton,
+  shouldShowDesktopInterfaceUpdate,
   shouldToastDesktopUpdateActionResult,
 } from "./desktopUpdate.logic";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
@@ -1716,7 +1725,11 @@ export default function Sidebar() {
   const suppressProjectClickAfterDragRef = useRef(false);
   const optimisticPinnedStateByProjectIdRef = useRef(new Map<ProjectId, boolean>());
   const latestPinnedMutationVersionByProjectIdRef = useRef(new Map<ProjectId, number>());
-  const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
+  const [desktopUpdateState, setDesktopUpdateState] = useDesktopUpdateState();
+  const handleInterfaceUpdate = useDesktopInterfaceUpdateAction(
+    desktopUpdateState,
+    setDesktopUpdateState,
+  );
   const [installingDesktopUpdate, setInstallingDesktopUpdate] = useState(false);
   const [optimisticPinnedStateByProjectId, setOptimisticPinnedStateByProjectId] = useState<
     ReadonlyMap<ProjectId, boolean>
@@ -5554,39 +5567,6 @@ export default function Sidebar() {
     visibleSidebarThreadIds,
   ]);
 
-  useEffect(() => {
-    if (!isElectron) return;
-    const bridge = window.desktopBridge;
-    if (
-      !bridge ||
-      typeof bridge.getUpdateState !== "function" ||
-      typeof bridge.onUpdateState !== "function"
-    ) {
-      return;
-    }
-
-    let disposed = false;
-    let receivedSubscriptionUpdate = false;
-    const unsubscribe = bridge.onUpdateState((nextState) => {
-      if (disposed) return;
-      receivedSubscriptionUpdate = true;
-      setDesktopUpdateState(nextState);
-    });
-
-    void bridge
-      .getUpdateState()
-      .then((nextState) => {
-        if (disposed || receivedSubscriptionUpdate) return;
-        setDesktopUpdateState(nextState);
-      })
-      .catch(() => undefined);
-
-    return () => {
-      disposed = true;
-      unsubscribe();
-    };
-  }, []);
-
   // Single entry point for update error toasts. Attaches the manual-download
   // fallback (copy link + "Download manually") whenever a release URL is known,
   // and dedupes by error signature so the same failure is not toasted twice.
@@ -5660,6 +5640,12 @@ export default function Sidebar() {
   }, [desktopUpdateState?.status, desktopUpdateState?.errorContext]);
 
   const showDesktopUpdateButton = isElectron && shouldShowDesktopUpdateButton(desktopUpdateState);
+  const showInterfaceUpdate =
+    isElectron &&
+    shouldShowDesktopInterfaceUpdate(
+      desktopUpdateState,
+      Boolean(window.desktopBridge?.interfaceUpdate),
+    );
   const isBetaDesktopFlavor = desktopUpdateState?.flavor === "beta";
 
   const desktopUpdateTooltip = desktopUpdateState
@@ -5669,7 +5655,9 @@ export default function Sidebar() {
     : "Update available";
 
   const desktopUpdateButtonDisabled =
-    isDesktopUpdateButtonDisabled(desktopUpdateState) || installingDesktopUpdate;
+    isDesktopUpdateButtonDisabled(desktopUpdateState) ||
+    installingDesktopUpdate ||
+    isDesktopInterfaceUpdateBusy(desktopUpdateState);
   const desktopUpdateButtonAction = desktopUpdateState
     ? resolveDesktopUpdateButtonAction(desktopUpdateState)
     : "none";
@@ -5985,6 +5973,7 @@ export default function Sidebar() {
     desktopUpdateButtonAction,
     desktopUpdateButtonDisabled,
     desktopUpdateState,
+    setDesktopUpdateState,
     surfaceDesktopUpdateError,
   ]);
 
@@ -6665,6 +6654,54 @@ export default function Sidebar() {
                     />
                     <TooltipPopup side="top">{desktopUpdateTooltip}</TooltipPopup>
                   </Tooltip>
+                ) : null}
+                {showInterfaceUpdate && desktopUpdateState ? (
+                  <Menu>
+                    <SidebarIconButton
+                      render={<MenuTrigger />}
+                      icon={ChevronDownIcon}
+                      label="Update options"
+                      tooltip="Update options"
+                    />
+                    <ComposerPickerMenuPopup align="end" side="top" className="w-80 min-w-64">
+                      <div className="px-2 py-1 text-ui-xs text-muted-foreground">
+                        <div>Interface {APP_VERSION}</div>
+                        <div>Native app {desktopUpdateState.currentVersion}</div>
+                      </div>
+                      <MenuItem
+                        className={SIDEBAR_CONTEXT_MENU_ITEM_CLASS_NAME}
+                        disabled={
+                          installingDesktopUpdate ||
+                          isDesktopInterfaceUpdateBusy(desktopUpdateState)
+                        }
+                        onClick={() => void handleInterfaceUpdate()}
+                      >
+                        Update interface and reload
+                      </MenuItem>
+                      <div
+                        className="px-2 py-1 text-ui-xs leading-snug text-muted-foreground"
+                        role="status"
+                      >
+                        {getDesktopInterfaceUpdateMessage(desktopUpdateState, APP_VERSION)}
+                      </div>
+                      <MenuSeparator />
+                      <MenuItem
+                        className={SIDEBAR_CONTEXT_MENU_ITEM_CLASS_NAME}
+                        disabled={
+                          desktopUpdateButtonDisabled || desktopUpdateButtonAction === "none"
+                        }
+                        onClick={handleDesktopUpdateButtonClick}
+                      >
+                        {desktopUpdateButtonAction === "install"
+                          ? "Restart and install native update"
+                          : desktopUpdateButtonAction === "download"
+                            ? "Download native update"
+                            : desktopUpdateButtonAction === "none"
+                              ? "Native app is current"
+                              : "Check native updates"}
+                      </MenuItem>
+                    </ComposerPickerMenuPopup>
+                  </Menu>
                 ) : null}
                 <SidebarHelpMenu
                   onOpenShortcuts={() =>

@@ -13,6 +13,7 @@ import { reconcileDeletedThreadFromClient } from "../../lib/deletedThreadClientR
 import { armQueuedComposerSteerGate } from "../../lib/queuedComposerDrain";
 import { appendOriginalComposerPromptBlocks } from "../../lib/terminalContext";
 import { clearPendingTurnDispatch, markPendingTurnDispatch } from "../../pendingTurnDispatch";
+import { isRendererReloadPending, runRendererOperation } from "../../lib/rendererReloadSafety";
 import {
   buildPlanImplementationPrompt,
   buildPlanImplementationThreadTitle,
@@ -140,7 +141,7 @@ export function useChatTurnFollowUps({
   planSidebarOpenOnNextThreadRef,
   navigate,
 }: ChatTurnFollowUpsInput) {
-  async function onSubmitPlanFollowUp({
+  async function submitPlanFollowUp({
     text,
     interactionMode: nextInteractionMode,
     dispatchMode,
@@ -301,7 +302,7 @@ export function useChatTurnFollowUps({
     }
   }
 
-  const onEditUserMessage = useCallback(
+  const editUserMessage = useCallback(
     async (messageId: MessageId, text: string): Promise<boolean> => {
       const api = readNativeApi();
       if (!api || !activeThread || !isServerThread || isRevertingCheckpoint) {
@@ -442,7 +443,7 @@ export function useChatTurnFollowUps({
     turnDispatchSettings,
   ]);
 
-  const onImplementPlanInNewThread = useCallback(async () => {
+  const implementPlanInNewThread = useCallback(async () => {
     const api = readNativeApi();
     if (
       !api ||
@@ -595,6 +596,21 @@ export function useChatTurnFollowUps({
     syncServerShellSnapshot,
     turnDispatchSettings,
   ]);
+  const onEditUserMessage = useCallback(
+    (...args: Parameters<typeof editUserMessage>) => {
+      if (isRendererReloadPending()) return Promise.resolve(false);
+      return runRendererOperation(() => editUserMessage(...args));
+    },
+    [editUserMessage],
+  );
+  const onImplementPlanInNewThread = useCallback(() => {
+    if (isRendererReloadPending()) return Promise.resolve();
+    return runRendererOperation(implementPlanInNewThread);
+  }, [implementPlanInNewThread]);
+  const onSubmitPlanFollowUp = (input: Parameters<typeof submitPlanFollowUp>[0]) => {
+    if (isRendererReloadPending()) return Promise.resolve(false);
+    return runRendererOperation(() => submitPlanFollowUp(input));
+  };
   return {
     onSubmitPlanFollowUp,
     onEditUserMessage,

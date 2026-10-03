@@ -15,8 +15,27 @@ import { defineConfig, type Plugin } from "vite";
 import pkg from "./package.json" with { type: "json" };
 import { listFiles, pruneProductionIcons } from "./scripts/production-assets";
 import { createReactCompilerCache } from "./scripts/reactCompilerCache";
+import { LIVE_UI_MANIFEST_FILENAME } from "../../packages/contracts/src/liveUiUpdate.ts";
+import { createLiveUiManifest } from "../../scripts/lib/live-ui-compatibility";
 
 const port = Number(process.env.PORT ?? 5733);
+function liveUiManifestPlugin(): Plugin {
+  let root = process.cwd();
+  return {
+    name: "synara-live-ui-manifest",
+    apply: "build",
+    configResolved(config) {
+      root = path.resolve(config.root, "../..");
+    },
+    buildStart() {
+      this.emitFile({
+        type: "asset",
+        fileName: LIVE_UI_MANIFEST_FILENAME,
+        source: `${JSON.stringify(createLiveUiManifest(root, pkg.version))}\n`,
+      });
+    },
+  };
+}
 const sourcemapEnv = process.env.SYNARA_WEB_SOURCEMAP?.trim().toLowerCase();
 
 const buildSourcemap =
@@ -181,6 +200,7 @@ async function cachedReactCompilerPlugin(): Promise<Plugin> {
 
 export default defineConfig({
   plugins: [
+    liveUiManifestPlugin(),
     tanstackRouter({
       target: "react",
       autoCodeSplitting: true,

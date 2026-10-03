@@ -22,6 +22,24 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.27",
+    date: "Oct 3",
+    features: [
+      {
+        id: "checkpoint-generated-outputs",
+        title: "Checkpoints without generated output delays",
+        description:
+          "Checkpoints recognize generated artifact folders and support custom excluded paths. Saved exclusions remain protected during restore and Undo. Repository checks now share the pre-send checkpoint deadline, so a stalled Git check cannot hold up new agent messages indefinitely.",
+      },
+      {
+        id: "live-interface-updates",
+        title: "Update the interface while agents keep working",
+        description:
+          "On macOS, use Update interface and reload for compatible interface releases. Synara checks the signed update, saves drafts, and reconnects to the same running server. Native changes still require a full restart, and the interface and native versions are shown separately.",
+      },
+    ],
+  },
+  {
     version: "0.9.26",
     date: "Oct 3",
     features: [

@@ -45,6 +45,7 @@ import {
 import { toastManager } from "../ui/toast";
 import type { ChatTurnSubmissionInput } from "./chatSendTypes";
 import { handleChatAutomationSend } from "./handleChatAutomationSend";
+import { isRendererReloadPending, runRendererOperation } from "../../lib/rendererReloadSafety";
 import { prepareChatSendWorkspace } from "./prepareChatSendWorkspace";
 import {
   buildQueuedComposerPreviewText,
@@ -237,7 +238,7 @@ export function useChatTurnSubmission({
     resetLocalDispatch,
   });
 
-  const onSend = useCallback(
+  const submitTurn = useCallback(
     async (
       e?: { preventDefault: () => void },
       requestedDispatchMode?: "queue" | "steer",
@@ -1039,6 +1040,16 @@ export function useChatTurnSubmission({
       setOptimisticUserMessages,
       executePreparedTurn,
     ],
+  );
+  const onSend = useCallback(
+    (...args: Parameters<typeof submitTurn>) => {
+      if (isRendererReloadPending()) {
+        args[0]?.preventDefault();
+        return Promise.resolve(false);
+      }
+      return runRendererOperation(() => submitTurn(...args));
+    },
+    [submitTurn],
   );
   return { onSend };
 }

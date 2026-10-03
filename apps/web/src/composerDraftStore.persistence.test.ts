@@ -1,6 +1,10 @@
 import { OrchestrationProposedPlanId, ProjectId, ThreadId } from "@synara/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { partializeComposerDraftStoreState, useComposerDraftStore } from "./composerDraftStore";
+import {
+  partializeComposerDraftStoreState,
+  persistComposerDraftsNow,
+  useComposerDraftStore,
+} from "./composerDraftStore";
 import {
   normalizeCurrentPersistedComposerDraftStoreState,
   toHydratedThreadDraft,
@@ -24,6 +28,35 @@ import {
 } from "./lib/terminalContext";
 
 describe("composerDraftStore persisted-state hydration", () => {
+  it("flushes the latest full draft once before reload, preserving prompt, options and queued attachments", async () => {
+    resetComposerDraftStore();
+    const threadId = ThreadId.makeUnsafe("interface-update-persistence");
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadId, "Typed while the update downloaded");
+    store.setEnableComputerControl(threadId, true);
+    store.enqueueQueuedTurn(
+      threadId,
+      makeQueuedChatTurn(
+        "saved-queue",
+        makeImage({
+          id: "saved-image",
+          previewUrl: "data:image/png;base64,AQID",
+        }),
+      ),
+    );
+    const expected = partializeComposerDraftStoreState(useComposerDraftStore.getState());
+    persistComposerDraftsNow();
+    const options = useComposerDraftStore.persist.getOptions();
+    if (!options.name || !options.storage) throw new Error("Composer persistence is unavailable");
+    const saved = await options.storage.getItem(options.name);
+    expect(saved?.state).toEqual(expected);
+    expect(saved?.state.draftsByThreadId[threadId]?.prompt).toBe(
+      "Typed while the update downloaded",
+    );
+    expect(saved?.state.draftsByThreadId[threadId]?.enableComputerControl).toBe(true);
+    expect(saved?.state.draftsByThreadId[threadId]?.queuedTurns).toHaveLength(1);
+  });
+
   it.each([true, false])(
     "restores a Computer-only choice of %s after serialization and hydration",
     (enabled) => {

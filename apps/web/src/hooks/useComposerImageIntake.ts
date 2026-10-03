@@ -6,6 +6,7 @@ import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS, type ThreadId } from "@synara/contr
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 import type { ComposerImageAttachment } from "../composerDraftStore";
+import { beginRendererOperation, isRendererReloadPending } from "../lib/rendererReloadSafety";
 import {
   prepareComposerImageAttachmentsFromFiles,
   type ComposerImageBuildResult,
@@ -49,6 +50,11 @@ export class ComposerImageIntakeQueue {
 
   enqueue(job: ComposerImageIntakeJob): Promise<void> {
     if (this.#disposed || job.files.length === 0) return Promise.resolve();
+    if (isRendererReloadPending()) {
+      job.onError("The interface is reloading. Add attachments after it reconnects.");
+      return Promise.resolve();
+    }
+    const finishOperation = beginRendererOperation();
     const generation = this.#generation;
     this.#setPendingCount(this.#pendingCount + job.files.length);
     const prepareFiles = job.prepareFiles ?? prepareComposerImageAttachmentsFromFiles;
@@ -75,7 +81,10 @@ export class ComposerImageIntakeQueue {
         if (this.#isStale(generation)) return;
         job.onError(cause instanceof Error ? cause.message : "Synara could not prepare image.");
       })
-      .finally(() => this.#setPendingCount(Math.max(0, this.#pendingCount - job.files.length)));
+      .finally(() => {
+        this.#setPendingCount(Math.max(0, this.#pendingCount - job.files.length));
+        finishOperation();
+      });
     this.#tail = task;
     return task;
   }

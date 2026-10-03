@@ -9,11 +9,23 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "tsdown";
+import { createLiveUiBuildTracker } from "../../scripts/lib/live-ui-compatibility.ts";
+import pkg from "./package.json" with { type: "json" };
 
 const sourcemapEnv = process.env.SYNARA_DESKTOP_SOURCEMAP?.trim().toLowerCase();
 const buildSourcemap = sourcemapEnv === "1" || sourcemapEnv === "true";
 const windowsUpdaterPublisher = process.env.AZURE_TRUSTED_SIGNING_SUBJECT_DN?.trim() ?? "";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const liveUiBuild = createLiveUiBuildTracker({
+  repoRoot,
+  version: pkg.version,
+  outputDir: path.join(repoRoot, "apps/desktop/dist-electron"),
+  parts: ["main", "preload", "guestPreload", "cuaDriverHostStandalone"],
+});
+const liveUiHooks = (part: string) => ({
+  "build:prepare": () => liveUiBuild.begin(part),
+  "build:done": () => liveUiBuild.complete(part),
+});
 const migrationRuntimeSource = fs.readFileSync(
   path.join(repoRoot, "apps/server/src/persistence/Migrations.ts"),
   "utf8",
@@ -33,6 +45,7 @@ export default defineConfig([
   {
     ...shared,
     entry: ["src/main.ts"],
+    hooks: liveUiHooks("main"),
     clean: true,
     // Electron exposes this builtin only at runtime; keeping it external avoids
     // asking Rolldown to resolve a package that intentionally does not exist.
@@ -46,10 +59,12 @@ export default defineConfig([
   {
     ...shared,
     entry: ["src/preload.ts"],
+    hooks: liveUiHooks("preload"),
   },
   {
     ...shared,
     entry: ["src/browserAnnotations/guestPreload.ts"],
+    hooks: liveUiHooks("guestPreload"),
   },
   {
     ...shared,
@@ -57,6 +72,7 @@ export default defineConfig([
     // `node dist-electron/cuaDriverHostStandalone.js --driver <path>`. It
     // must bundle the shared protocol (no node_modules on the target).
     entry: ["src/cuaDriverHostStandalone.ts"],
+    hooks: liveUiHooks("cuaDriverHostStandalone"),
     noExternal: (id) => id.startsWith("@synara/"),
   },
 ]);

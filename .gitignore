@@ -33,6 +33,8 @@ __screenshots__/
 /.tmp/
 /~/
 /bootstrap.js
+/Artifacts/
+/artifacts/
 /preload.js
 /browser-sidebar-comment-preload.js
 /main-*.js

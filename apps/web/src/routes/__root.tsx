@@ -1,4 +1,5 @@
 import { EditorDirtyRouteGuard } from "../components/EditorDirtyRouteGuard";
+import { useDesktopInterfaceUpdateCoordinator } from "../hooks/useDesktopInterfaceUpdate";
 import {
   PROVIDER_DISPLAY_NAMES,
   ThreadId,
@@ -257,6 +258,7 @@ export const Route = createRootRouteWithContext<{
 });
 
 function RootRouteView() {
+  useDesktopInterfaceUpdateCoordinator();
   useAppTypography();
   useAppDensity();
   useChatWidth();

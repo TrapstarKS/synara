@@ -1,6 +1,11 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalDependencies": ["tsconfig.base.json", "patches/**"],
+  "globalDependencies": [
+    "tsconfig.base.json",
+    "patches/**",
+    ".mise.toml",
+    ".github/workflows/release.yml"
+  ],
   "globalEnv": [
     "AZURE_TRUSTED_SIGNING_SUBJECT_DN",
     "VITE_WS_URL",
@@ -37,6 +42,27 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/server/**",
+        "$TURBO_ROOT$/apps/desktop/**",
+        "$TURBO_ROOT$/apps/web/package.json",
+        "$TURBO_ROOT$/apps/web/src/**",
+        "$TURBO_ROOT$/packages/contracts/**",
+        "$TURBO_ROOT$/packages/shared/**",
+        "$TURBO_ROOT$/scripts/**",
+        "$TURBO_ROOT$/extensions/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/dist-electron/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/.electron-runtime/**",
+        "!$TURBO_ROOT$/**/.build/**",
+        "!$TURBO_ROOT$/**/target/**",
+        "!$TURBO_ROOT$/**/.cache/**",
+        "!$TURBO_ROOT$/**/AGENTS.md",
+        "!$TURBO_ROOT$/**/CLAUDE.md"
+      ],
       "outputs": ["dist/**", "dist-electron/**"]
     },
     "dev": {

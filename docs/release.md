@@ -349,6 +349,11 @@ full subject distinguished name.
 
 ## 4) Ongoing release checklist
 
+Interface-only updates use the compatibility manifests and build stamps described
+in [interface updates](interface-updates.md). Rebuild all three outputs from the
+same source before packaging; do not replace manifests in an old build to make an
+update appear compatible with a running backend.
+
 1. Ensure `main` is green in CI.
 2. Run the build-only native CI validation for the release-candidate branch and version.
 3. Bump app version as needed.

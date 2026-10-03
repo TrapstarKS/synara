@@ -32,8 +32,16 @@ import {
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
 } from "./terminalContext";
 import { newCommandId, newMessageId } from "./utils";
+import { isRendererReloadPending, runRendererOperation } from "./rendererReloadSafety";
 
-export async function dispatchQueuedComposerTurnHeadless(input: {
+export function dispatchQueuedComposerTurnHeadless(
+  input: Parameters<typeof dispatchQueuedComposerTurn>[0],
+): Promise<boolean> {
+  if (isRendererReloadPending()) return Promise.resolve(false);
+  return runRendererOperation(() => dispatchQueuedComposerTurn(input));
+}
+
+async function dispatchQueuedComposerTurn(input: {
   threadId: ThreadId;
   queuedTurn: QueuedComposerTurn;
   dispatchMode: "queue" | "steer";

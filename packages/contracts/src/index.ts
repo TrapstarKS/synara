@@ -14,6 +14,7 @@ export * from "./browserAutomationToolCatalogue";
 export * from "./browserVault";
 export * from "./browserAnnotations";
 export * from "./ipc";
+export * from "./liveUiUpdate";
 export * from "./terminal";
 export * from "./provider";
 export * from "./providerDiscovery";

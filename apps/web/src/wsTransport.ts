@@ -70,6 +70,8 @@ import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { APP_VERSION } from "./branding";
+import { isWsRequestSafeToAbandonForReload } from "./wsReadOnlyMethods";
+import { isRendererReloadPending } from "./lib/rendererReloadSafety";
 import { useDeviceStateStore } from "./deviceStateStore";
 import { useComputerStateStore } from "./computerStateStore";
 import {
@@ -746,6 +748,7 @@ export function shouldKeepServerLifecycleStream(activeChannels: ReadonlySet<stri
 }
 
 export class WsTransport {
+  private pendingMutationCount = 0;
   private readonly explicitUrl: string | null;
   private readonly listeners = new Map<string, Set<(message: WsPush) => void>>();
   private readonly stateListeners = new Set<(state: WsTransportState) => void>();
@@ -819,9 +822,14 @@ export class WsTransport {
     options?: WsRequestOptions,
   ): Promise<T> {
     if (this.disposed) throw new Error("Transport disposed");
+    if (isRendererReloadPending() && !isWsRequestSafeToAbandonForReload(method)) {
+      throw new Error("The interface is reloading. Try again after it reconnects.");
+    }
     const requestOptions: WsRequestOptions =
       options?.timeoutMs === undefined ? { ...options, timeoutMs: REQUEST_TIMEOUT_MS } : options;
     const abortScope = makeRequestAbortScope(requestOptions);
+    const mutation = !isWsRequestSafeToAbandonForReload(method);
+    if (mutation) this.pendingMutationCount += 1;
     try {
       if (method === ORCHESTRATION_WS_METHODS.unsubscribeShell) {
         this.shellSubscribed = false;
@@ -930,6 +938,7 @@ export class WsTransport {
       }
       throw error;
     } finally {
+      if (mutation) this.pendingMutationCount -= 1;
       abortScope.cleanup();
     }
   }
@@ -1016,6 +1025,10 @@ export class WsTransport {
 
   getState(): WsTransportState {
     return this.state;
+  }
+
+  getPendingMutationCount(): number {
+    return this.pendingMutationCount;
   }
 
   getCompatibility(): WsBootstrapNegotiateResult | null {

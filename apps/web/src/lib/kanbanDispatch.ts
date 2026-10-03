@@ -27,6 +27,7 @@ import {
 } from "../composerDraftStore";
 import { useKanbanUiStore } from "../kanbanUiStore";
 import { readNativeApi } from "../nativeApi";
+import { runRendererOperation } from "./rendererReloadSafety";
 import { useStore } from "../store";
 import { getThreadFromState } from "../threadDerivation";
 import type { SidebarThreadSummary } from "../types";
@@ -116,9 +117,11 @@ export function dispatchKanbanDraftThread(
   if (existing) {
     return existing;
   }
-  const dispatchPromise = dispatchKanbanDraftThreadOnce(input).finally(() => {
-    inFlightDispatchByThreadId.delete(input.threadId);
-  });
+  const dispatchPromise = runRendererOperation(() => dispatchKanbanDraftThreadOnce(input)).finally(
+    () => {
+      inFlightDispatchByThreadId.delete(input.threadId);
+    },
+  );
   inFlightDispatchByThreadId.set(input.threadId, dispatchPromise);
   return dispatchPromise;
 }

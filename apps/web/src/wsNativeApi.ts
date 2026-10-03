@@ -63,10 +63,23 @@ import { isMacNavigatorPlatform } from "./lib/utils";
 import { WsTransport, type WsThreadStreamFailure } from "./wsTransport";
 import { emitWsCompatibilityIssue, emitWsTransportState } from "./wsTransportEvents";
 import { resolveWsHttpUrl } from "./lib/wsHttpUrl";
+import { runRendererOperation } from "./lib/rendererReloadSafety";
 
 export type { WsThreadStreamFailure } from "./wsTransport";
 
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
+
+/** Only an open, negotiated connection proves the identity used by reload handoff. */
+export function readWsServerInstanceId(): string | null {
+  const transport = instance?.transport;
+  return transport?.getState() === "open"
+    ? (transport.getCompatibility()?.serverInstanceId ?? null)
+    : null;
+}
+
+export function readPendingWsMutationCount(): number {
+  return instance?.transport.getPendingMutationCount() ?? 0;
+}
 
 export function readWsServerCapabilities(): ReadonlyArray<string> | null {
   return instance?.transport.getCompatibility()?.capabilities ?? null;
@@ -751,16 +764,17 @@ export function createWsNativeApi(): NativeApi {
           timeoutMs: null,
         }),
       prewarmVoice: (input) => transport.request(WS_METHODS.serverPrewarmVoice, input),
-      transcribeVoice: async (input) => {
-        try {
-          return await requestVoiceTranscriptionUpload(input);
-        } catch (error) {
-          if (!(error instanceof VoiceUploadRouteUnavailableError)) {
-            throw error;
+      transcribeVoice: (input) =>
+        runRendererOperation(async () => {
+          try {
+            return await requestVoiceTranscriptionUpload(input);
+          } catch (error) {
+            if (!(error instanceof VoiceUploadRouteUnavailableError)) {
+              throw error;
+            }
+            return transport.request(WS_METHODS.serverTranscribeVoice, input, { timeoutMs: null });
           }
-          return transport.request(WS_METHODS.serverTranscribeVoice, input, { timeoutMs: null });
-        }
-      },
+        }),
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
     },
     stats: {
