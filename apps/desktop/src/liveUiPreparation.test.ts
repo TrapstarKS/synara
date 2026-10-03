@@ -115,7 +115,7 @@ const goodManifest: LiveUiManifest = {
 };
 const clientPrefix = "Synara.app/Contents/Resources/app.asar/apps/server/dist/client/";
 const signer = { certificateSha1: "b".repeat(40) };
-const bundleId = "com.synara.desktop";
+const bundleId = "com.emanueledipietro.synara";
 
 function appEntries(manifest: unknown = goodManifest): FixtureEntry[] {
   return [
