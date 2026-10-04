@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createPackagedDesktopSmokeEnvironment,
   hasPackagedDesktopStartupProof,
+  PACKAGED_DESKTOP_SMOKE_FIXTURE_PREFIX,
   parsePackagedDesktopStartupArgs,
   readPackagedStartupLogTails,
   readPackagedStartupDiagnostics,
@@ -25,6 +26,16 @@ afterEach(() => {
 });
 
 describe("packaged desktop startup verification", () => {
+  it.skipIf(process.platform === "win32")(
+    "keeps the packaged smoke admin socket within the macOS Unix socket path budget",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), PACKAGED_DESKTOP_SMOKE_FIXTURE_PREFIX));
+      temporaryRoots.push(root);
+      const adminSocket = join(root, "state", "synara-mobile", "admin.sock");
+      expect(Buffer.byteLength(adminSocket)).toBeLessThan(104);
+    },
+  );
+
   it("preserves bounded startup failure details before the isolated tree is removed", () => {
     const root = mkdtempSync(join(tmpdir(), "synara-startup-diagnostics-"));
     temporaryRoots.push(root);

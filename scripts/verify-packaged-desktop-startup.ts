@@ -22,6 +22,8 @@ import { NetError, NetService } from "@synara/shared/Net";
 import { probeMobileCompanion } from "@synara/shared/mobileCompanionHealth";
 
 export type PackagedDesktopPlatform = "linux" | "mac" | "win";
+// Leave space for macOS's long TMPDIR and the companion's Unix socket suffix.
+export const PACKAGED_DESKTOP_SMOKE_FIXTURE_PREFIX = "smk-";
 
 export interface PackagedDesktopStartupOptions {
   readonly assetsDirectory: string;
@@ -429,7 +431,7 @@ export async function verifyPackagedDesktopStartup(
   const { createPrivateFixtureDirectory } = (await import(
     new URL("../extensions/mobile-remote/lib/test-private-directory.mjs", import.meta.url).href
   )) as { createPrivateFixtureDirectory: (prefix: string) => string };
-  const temporaryRoot = createPrivateFixtureDirectory(`synara-packaged-smoke-${options.platform}-`);
+  const temporaryRoot = createPrivateFixtureDirectory(PACKAGED_DESKTOP_SMOKE_FIXTURE_PREFIX);
   const extractionRoot = join(temporaryRoot, "payload");
 
   let child: ChildProcess | null = null;
