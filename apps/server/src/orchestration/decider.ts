@@ -2033,6 +2033,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         (thread.claudeCacheReview?.reviewId ?? null) !== command.expectedReviewId
       )
         return [];
+      // Agent follow-ups have no operator waiting to answer a cache prompt.
+      // Persist the existing compact choice with the initial hold so recovery
+      // cannot strand a pending review between two commands. Renewed reviews
+      // retain the explicit choice already made for that message.
+      const automaticReview =
+        command.hold?.session.providerName === "claudeAgent" &&
+        command.expectedReviewId === null &&
+        command.review &&
+        thread.messages.some(
+          (message) =>
+            message.id === command.review?.messageId &&
+            message.role === "user" &&
+            message.dispatchOrigin === "agent" &&
+            !/^\/compact(?:\s|$)/.test(message.text.trim()),
+        )
+          ? command.review
+          : null;
       const reviewEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -2043,7 +2060,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.claude-cache-set",
         payload: {
           threadId: command.threadId,
-          review: command.review,
+          review: automaticReview ? { ...automaticReview, status: "responding" } : command.review,
           updatedAt: command.createdAt,
         },
       };
@@ -2060,6 +2077,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               type: "thread.session-set",
               payload: { threadId: command.threadId, session: command.hold.session },
             },
+            ...(automaticReview
+              ? [
+                  {
+                    ...withEventBase({
+                      aggregateKind: "thread",
+                      aggregateId: command.threadId,
+                      occurredAt: command.createdAt,
+                      commandId: command.commandId,
+                    }),
+                    type: "thread.claude-cache-response-requested" as const,
+                    payload: {
+                      threadId: command.threadId,
+                      review: automaticReview,
+                      decision: "compact" as const,
+                      createdAt: command.createdAt,
+                    },
+                  },
+                ]
+              : []),
           ]
         : reviewEvent;
     }

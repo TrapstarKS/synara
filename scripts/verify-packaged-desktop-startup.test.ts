@@ -1,11 +1,14 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
+import { once } from "node:events";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createPackagedDesktopSmokeEnvironment,
+  hasPackagedDesktopStartupProof,
   parsePackagedDesktopStartupArgs,
   readPackagedStartupLogTails,
   readPackagedStartupDiagnostics,
@@ -129,11 +132,32 @@ describe("packaged desktop startup verification", () => {
         PATH: process.env.PATH,
         SYNARA_AUTH_TOKEN: "must-not-leak",
         ELECTRON_RUN_AS_NODE: "1",
+        NODE_OPTIONS: "--import=outside-loader.mjs",
+        NODE_PATH: "/outside/node_modules",
+        SYNARA_MOBILE_UPSTREAM: "http://127.0.0.1:58000",
+        SYNARA_MOBILE_UPSTREAM_TOKEN: "production-credential",
+        SYNARA_MOBILE_ORIGIN: "https://production.tail.ts.net:8443",
+        SYNARA_MOBILE_HOME: "/outside/mobile",
+        SYNARA_MOBILE_DESKTOP_HOME: "/outside/desktop",
+        SYNARA_MOBILE_PORT: "58091",
+        SYNARA_MOBILE_PARENT_STDIN: "1",
+        synara_mobile_upstream_token: "lowercase-production-credential",
+        synara_auth_token: "lowercase-desktop-credential",
       },
     );
 
     expect(env.SYNARA_AUTH_TOKEN).toBeUndefined();
     expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(env.NODE_OPTIONS).toBeUndefined();
+    expect(env.NODE_PATH).toBeUndefined();
+    expect(env.SYNARA_MOBILE_UPSTREAM).toBeUndefined();
+    expect(env.SYNARA_MOBILE_UPSTREAM_TOKEN).toBeUndefined();
+    expect(env.SYNARA_MOBILE_PARENT_STDIN).toBeUndefined();
+    expect(env.synara_mobile_upstream_token).toBeUndefined();
+    expect(env.synara_auth_token).toBeUndefined();
+    expect(env.SYNARA_MOBILE_PORT).toBeUndefined();
+    expect(env.SYNARA_MOBILE_ORIGIN).toBe("https://mobile.test:8443");
+    expect(env.SYNARA_MOBILE_DESKTOP_HOME).toBe(env.SYNARA_BETA_HOME);
     for (const name of [
       "HOME",
       "USERPROFILE",
@@ -144,11 +168,68 @@ describe("packaged desktop startup verification", () => {
       "XDG_DATA_HOME",
       "SYNARA_HOME",
       "SYNARA_BETA_HOME",
+      "SYNARA_MOBILE_HOME",
     ] as const) {
       expect(env[name]?.startsWith(root)).toBe(true);
       expect(existsSync(env[name]!)).toBe(true);
     }
     expect(env.SYNARA_BETA_HOME).not.toBe(env.SYNARA_HOME);
+  });
+
+  it("points Stable companion discovery only to its isolated Stable home", () => {
+    const root = mkdtempSync(join(tmpdir(), "synara-packaged-stable-env-test-"));
+    temporaryRoots.push(root);
+    const env = createPackagedDesktopSmokeEnvironment(
+      root,
+      { platform: "linux", version: "1.2.3", executableName: "synara" },
+      {},
+    );
+    expect(env.SYNARA_MOBILE_DESKTOP_HOME).toBe(env.SYNARA_HOME);
+    expect(env.SYNARA_MOBILE_HOME).toBe(join(root, "synara-mobile"));
+  });
+
+  it("requires a responsive companion as well as the backend and window startup proof", async () => {
+    const root = mkdtempSync(join(tmpdir(), "synara-packaged-companion-test-"));
+    temporaryRoots.push(root);
+    const logPath = join(root, "desktop-main.log");
+    const desktopProof =
+      "app ready\nbootstrap main window created\nbootstrap backend ready source=health\n";
+    writeFileSync(logPath, desktopProof);
+    let status = 503;
+    let body = '{"paired":false}';
+    const companion = createServer((req, res) => {
+      expect(req.url).toBe("/mobile/api/status");
+      expect(req.method).toBe("GET");
+      expect(req.headers.cookie).toBeUndefined();
+      expect(req.headers.authorization).toBeUndefined();
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(body);
+    });
+    companion.listen(0, "127.0.0.1");
+    await once(companion, "listening");
+    try {
+      const address = companion.address();
+      if (!address || typeof address === "string") throw new Error("Missing companion port");
+      const probe = () =>
+        hasPackagedDesktopStartupProof(logPath, address.port, AbortSignal.timeout(2000));
+      expect(await probe()).toBe(false);
+      status = 200;
+      body = '{"paired":"false"}';
+      expect(await probe()).toBe(false);
+      body = '{"paired":false}';
+      expect(await probe()).toBe(true);
+      writeFileSync(logPath, "app ready\n");
+      expect(await probe()).toBe(false);
+      writeFileSync(logPath, desktopProof);
+      companion.closeAllConnections();
+      await new Promise<void>((resolveClose) => companion.close(() => resolveClose()));
+      expect(await probe()).toBe(false);
+    } finally {
+      companion.closeAllConnections();
+      if (companion.listening) {
+        await new Promise<void>((resolveClose) => companion.close(() => resolveClose()));
+      }
+    }
   });
 
   it("rejects a missing packaged peer even when the development tree provides it", () => {

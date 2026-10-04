@@ -228,6 +228,12 @@ automatic queue promotion for that task, while other tasks can continue.
 Creating a hold and marking its session ready is one atomic operation: a stop, archive, deletion,
 or rollback recorded after the original request prevents a delayed cache check from restoring it.
 
+For messages sent by another Synara agent, an initial hold on an idle Claude thread automatically
+chooses **Compact, then send**. The hold and choice are persisted together, so a restart cannot leave
+that automated send waiting for an operator to choose. Manual sends keep the review controls, and
+revalidation of an already accepted review preserves the prior choice. Failure or uncertain delivery
+still holds the message rather than repeating it or sending the full cold context implicitly.
+
 This check also covers long pauses in an existing process and model changes on the next send.
 A warm observation for the previous model cannot bypass the review for a different requested model;
 checking does not switch the native model or overwrite its cache evidence. It uses saved observations because some

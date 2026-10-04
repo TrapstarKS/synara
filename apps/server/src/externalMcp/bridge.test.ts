@@ -6,6 +6,7 @@ import { PassThrough, Readable, Writable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  assertPrivateWindowsRuntimePathAsync,
   discoverExternalMcpRuntime,
   externalMcpClientStorePath,
   fetchExternalMcpWithTimeout,
@@ -25,9 +26,16 @@ import {
 
 const temporaryDirectories: string[] = [];
 const RUNTIME_SECRET = "bridge-test-runtime-secret-000000001";
+const { createPrivateFixtureDirectory } = (await import(
+  new URL("../../../../extensions/mobile-remote/lib/test-private-directory.mjs", import.meta.url)
+    .href
+)) as { createPrivateFixtureDirectory: (prefix: string) => string };
 
 function makeBaseDir() {
-  const value = fs.mkdtempSync(path.join(os.tmpdir(), "synara-mcp-bridge-test-"));
+  const value =
+    process.platform === "win32"
+      ? createPrivateFixtureDirectory("synara-mcp-bridge-test-")
+      : fs.mkdtempSync(path.join(os.tmpdir(), "synara-mcp-bridge-test-"));
   temporaryDirectories.push(value);
   return value;
 }
@@ -66,6 +74,27 @@ afterEach(() => {
 });
 
 describe("external MCP stdio bridge", () => {
+  it.skipIf(process.platform !== "win32")(
+    "validates real private Windows directory and file ACLs asynchronously",
+    async () => {
+      const directory = makeBaseDir();
+      const runtimePath = path.join(directory, "runtime-test.json");
+      fs.writeFileSync(runtimePath, '{"fixture":true}');
+      await expect(
+        assertPrivateWindowsRuntimePathAsync(directory, "directory"),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertPrivateWindowsRuntimePathAsync(runtimePath, "file"),
+      ).resolves.toBeUndefined();
+      const cancellation = new AbortController();
+      cancellation.abort();
+      await expect(
+        assertPrivateWindowsRuntimePathAsync(directory, "directory", cancellation.signal),
+      ).rejects.toThrow("Could not verify private Windows runtime-state directory");
+    },
+    30_000,
+  );
+
   it("accepts only current-user private Windows runtime ACL snapshots", () => {
     const privateAcl = {
       currentSid: "S-1-5-21-current",

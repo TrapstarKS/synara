@@ -1218,6 +1218,8 @@ describe("ProviderCommandReactor", () => {
       readonly text: string;
       readonly createdAt: string;
       readonly attachments?: ReadonlyArray<ChatAttachment>;
+      readonly dispatchOrigin?: "user" | "automation" | "agent";
+      readonly dispatchMode?: "queue" | "steer";
     },
   ) {
     return Effect.runPromise(
@@ -1231,6 +1233,8 @@ describe("ProviderCommandReactor", () => {
           text: input.text,
           attachments: input.attachments ?? [],
         },
+        ...(input.dispatchOrigin !== undefined ? { dispatchOrigin: input.dispatchOrigin } : {}),
+        ...(input.dispatchMode !== undefined ? { dispatchMode: input.dispatchMode } : {}),
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         createdAt: input.createdAt,
@@ -2439,6 +2443,175 @@ describe("ProviderCommandReactor", () => {
       );
       await harness.drain();
     }
+
+    it.each(["queue", "steer"] as const)(
+      "automatically compacts an idle Claude agent %s message before sending it once",
+      async (dispatchMode) => {
+        const { harness, startClaudeCompaction, setObservation } = await createCompactionHarness();
+        await dispatchHarnessUserTurn(harness, {
+          messageId: "agent-cache-message",
+          text: "Continue with this exact agent message",
+          dispatchOrigin: "agent",
+          dispatchMode,
+          createdAt: new Date().toISOString(),
+        });
+        await harness.drain();
+
+        expect(startClaudeCompaction).toHaveBeenCalledTimes(1);
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+        expect(harness.steerTurn).not.toHaveBeenCalled();
+        const review = (await readHarnessThread(harness))?.claudeCacheReview;
+        expect(review).toMatchObject({
+          messageId: "agent-cache-message",
+          status: "compacting",
+        });
+        const turnId = startClaudeCompaction.mock.calls[0]![0].turnId;
+        setObservation({ ...review!.assessment, contextTokens: 110_000 });
+        await emitCompactionTerminal(harness, turnId, {
+          state: "completed",
+          contextCompacted: true,
+        });
+        await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+        await harness.drain();
+
+        expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe(
+          "Continue with this exact agent message",
+        );
+        const thread = await readHarnessThread(harness);
+        expect(thread?.claudeCacheReview).toBeNull();
+        expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+        expect(thread?.messages[0]?.turnId).not.toBe(turnId);
+        await emitCompactionTerminal(
+          harness,
+          turnId,
+          { state: "completed", contextCompacted: true },
+          "agent-duplicate",
+        );
+        expect(startClaudeCompaction).toHaveBeenCalledTimes(1);
+        expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(["failed", "aborted"] as const)(
+      "does not send or retry an agent message after automatic compaction %s",
+      async (state) => {
+        const { harness, startClaudeCompaction } = await createCompactionHarness();
+        await dispatchHarnessUserTurn(harness, {
+          messageId: "agent-failed-compaction",
+          text: "Keep the delegated message saved",
+          dispatchOrigin: "agent",
+          createdAt: new Date().toISOString(),
+        });
+        await harness.drain();
+        const turnId = startClaudeCompaction.mock.calls[0]![0].turnId;
+        await emitCompactionTerminal(harness, turnId, { state });
+        await waitFor(
+          async () => (await readHarnessThread(harness))?.claudeCacheReview?.status === "failed",
+        );
+        await harness.drain();
+        expect((await readHarnessThread(harness))?.claudeCacheReview?.status).toBe("failed");
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+        expect(startClaudeCompaction).toHaveBeenCalledTimes(1);
+        expect((await readHarnessThread(harness))?.messages).toContainEqual(
+          expect.objectContaining({ id: "agent-failed-compaction", turnId: null }),
+        );
+      },
+    );
+
+    it("honors a manual Continue after automatic compaction was rejected", async () => {
+      const { harness, startClaudeCompaction } = await createCompactionHarness();
+      startClaudeCompaction.mockImplementation(() =>
+        Effect.fail(
+          new ProviderAdapterValidationError({
+            provider: "claudeAgent",
+            operation: "startClaudeCompaction",
+            issue: "Native compaction unavailable",
+          }),
+        ),
+      );
+      await dispatchHarnessUserTurn(harness, {
+        messageId: "agent-manual-continue",
+        text: "Retain the explicitly chosen full context",
+        dispatchOrigin: "agent",
+        createdAt: new Date().toISOString(),
+      });
+      await waitFor(
+        async () => (await readHarnessThread(harness))?.claudeCacheReview?.status === "failed",
+      );
+      await harness.drain();
+      const review = (await readHarnessThread(harness))?.claudeCacheReview;
+      expect(review?.status).toBe("failed");
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      await respondToReview(harness, review, "continue");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.drain();
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      expect(startClaudeCompaction).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe(
+        "Retain the explicitly chosen full context",
+      );
+    });
+
+    it("does not release an agent message stopped during automatic compaction", async () => {
+      const { harness, startClaudeCompaction } = await createCompactionHarness();
+      await dispatchHarnessUserTurn(harness, {
+        messageId: "agent-stopped-compaction",
+        text: "Cancel this automatic continuation",
+        dispatchOrigin: "agent",
+        createdAt: new Date().toISOString(),
+      });
+      await harness.drain();
+      const turnId = startClaudeCompaction.mock.calls[0]![0].turnId;
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.makeUnsafe("cmd-agent-stop-compaction"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      await harness.drain();
+      await emitCompactionTerminal(harness, turnId, { state: "completed", contextCompacted: true });
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(startClaudeCompaction).toHaveBeenCalledTimes(1);
+      expect((await readHarnessThread(harness))?.claudeCacheReview).toBeNull();
+    });
+
+    it.each(["warm", "small", "unknown", "codex"] as const)(
+      "does not compact an agent send for %s context",
+      async (scenario) => {
+        const expired = expiredCacheObservation();
+        const observation: ClaudeCacheObservation =
+          scenario === "warm"
+            ? { ...expired, state: "likely-warm", lastResponseAt: new Date().toISOString() }
+            : scenario === "small"
+              ? { ...expired, contextTokens: 100_000 }
+              : scenario === "unknown"
+                ? { observedAt: expired.observedAt, state: "unknown", source: "local-estimate" }
+                : expired;
+        const startClaudeCompaction = vi.fn<
+          NonNullable<ProviderServiceShape["startClaudeCompaction"]>
+        >(({ threadId, turnId }) => Effect.succeed({ threadId, turnId }));
+        const harness = await createHarness({
+          threadModelSelection:
+            scenario === "codex"
+              ? { provider: "codex", model: "gpt-5-codex" }
+              : { provider: "claudeAgent", model: "claude-opus-4-6" },
+          getClaudeCacheObservation: () => Effect.succeed(observation),
+          startClaudeCompaction,
+        });
+        await dispatchHarnessUserTurn(harness, {
+          messageId: "agent-no-compaction",
+          text: "Continue the normal agent send",
+          dispatchOrigin: "agent",
+          createdAt: new Date().toISOString(),
+        });
+        await harness.drain();
+        expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+        expect(startClaudeCompaction).not.toHaveBeenCalled();
+        expect((await readHarnessThread(harness))?.claudeCacheReview == null).toBe(true);
+      },
+    );
 
     it("retains completion context while parked and consumes it only after Continue sends", async () => {
       const { harness } = await createCompactionHarness();

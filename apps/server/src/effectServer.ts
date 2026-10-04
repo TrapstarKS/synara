@@ -15,6 +15,7 @@ import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
   persistServerRuntimeState,
+  recoverWindowsServerRuntimeCredential,
 } from "./serverRuntimeState";
 import { remoteAccessPolicyError, ServerConfig } from "./config";
 import { resolveListeningPort } from "./startupAccess";
@@ -230,18 +231,25 @@ export const createEffectServer = Effect.fn(function* (
     config.port,
   );
   agentGatewayCredentials.setListeningPort(listeningPort);
-  yield* persistServerRuntimeState({
+  const persistedRuntimeState = makePersistedServerRuntimeState({
+    config,
+    port: listeningPort,
+  });
+  const runtimePersistence = yield* persistServerRuntimeState({
     path: config.serverRuntimeStatePath,
-    state: makePersistedServerRuntimeState({
-      config,
-      port: listeningPort,
-    }),
+    state: persistedRuntimeState,
   }).pipe(
     Effect.mapError(
       (cause) => new ServerLifecycleError({ operation: "persistServerRuntimeState", cause }),
     ),
   );
   yield* Effect.addFinalizer(() => clearPersistedServerRuntimeState(config.serverRuntimeStatePath));
+  if (!runtimePersistence.desktopCredentialPublished && persistedRuntimeState.desktopAuthToken) {
+    yield* recoverWindowsServerRuntimeCredential({
+      path: config.serverRuntimeStatePath,
+      state: persistedRuntimeState,
+    }).pipe(Effect.forkScoped);
+  }
   yield* readiness.markHttpListening;
 
   const subscriptionsScope = yield* Scope.make("sequential");

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.28] — 2026-10-04
+
+### Fixed
+
+- The desktop checks whether its remote companion actually responds and restarts its own child after sustained failures, including a process that remains alive without serving requests. Backend and provider sessions remain running during this recovery.
+- Windows runtime permission checks no longer block the companion's HTTP server or WebSocket heartbeats while PowerShell runs. Concurrent discovery requests share the pending validation, and older results cannot overwrite a newer cache generation.
+- Windows desktop runtime publication retries failed private-directory checks without restarting the backend. Credentials remain withheld until validation succeeds, and recovery is cancelled before shutdown removes the runtime file.
+- The mobile computer selector refreshes availability after connection changes and while visible, without resetting unsaved preferences or repeatedly renewing push subscriptions. Transient failures no longer incorrectly instruct users to reopen the desktop.
+- Follow-ups sent by Synara agents to an idle Claude thread automatically select **Compact, then send** when a new expired-cache review is required. The choice is persisted with the hold, and delivery still waits for verified native compaction. Manual sends retain their existing choices.
+
 ## [0.9.23] — 2026-10-02
 
 ### Changed

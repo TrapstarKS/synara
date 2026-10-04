@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
-export function powershell(script, environment = {}) {
-  return execFileSync(
+function invocation(script, environment) {
+  return [
     "powershell.exe",
     [
       "-NoProfile",
@@ -16,14 +16,16 @@ export function powershell(script, environment = {}) {
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
     },
-  ).trim();
+  ];
+}
+
+export function powershell(script, environment = {}) {
+  return execFileSync(...invocation(script, environment)).trim();
 }
 
 // chmod does not restrict Windows ACLs. Check before reading or writing credentials.
-export function assertPrivateWindowsPath(path) {
-  powershell(
-    `
-    $item = Get-Item -LiteralPath $env:SYNARA_MOBILE_PRIVATE_PATH -Force
+const privatePathCheck = `
+    $item = Get-Item -LiteralPath $privatePath -Force
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Private path is a reparse point' }
     $acl = Get-Acl -LiteralPath $item.FullName
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -36,7 +38,23 @@ export function assertPrivateWindowsPath(path) {
         throw 'Private path is accessible by other users; use a private directory under your user profile'
       }
     }
-  `,
-    { SYNARA_MOBILE_PRIVATE_PATH: path },
+  `;
+
+export function assertPrivateWindowsPath(path) {
+  powershell(`$privatePath = $env:SYNARA_MOBILE_PRIVATE_PATH\n${privatePathCheck}`, {
+    SYNARA_MOBILE_PRIVATE_PATH: path,
+  });
+}
+
+/** Validate a runtime directory and file without blocking HTTP or WebSocket heartbeats. */
+export function assertPrivateWindowsPaths(paths, run = execFile) {
+  return new Promise((resolve, reject) =>
+    run(
+      ...invocation(
+        `foreach ($privatePath in @(ConvertFrom-Json -InputObject $env:SYNARA_MOBILE_PRIVATE_PATHS)) { ${privatePathCheck} }`,
+        { SYNARA_MOBILE_PRIVATE_PATHS: JSON.stringify(paths) },
+      ),
+      (error) => (error ? reject(error) : resolve()),
+    ),
   );
 }

@@ -197,10 +197,15 @@ function offline(req, res) {
       "Retry-After": "2",
     });
     return res.end(
-      '<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="2"><title>Synara</title><style>html{color-scheme:light dark;font:16px system-ui}body{display:grid;min-height:90vh;place-items:center;margin:0;background:#101010;color:#ededed}main{max-width:28rem;padding:2rem;text-align:center}p{color:#a1a1a1}a{color:inherit}</style><main><h1>Reconectando ao Synara</h1><p>Abra o Synara no computador escolhido. Esta tela reconecta automaticamente.</p><a href="/mobile">Escolher outro computador</a></main></html>',
+      '<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="2"><title>Synara</title><style>html{color-scheme:light dark;font:16px system-ui}body{display:grid;min-height:90vh;place-items:center;margin:0;background:#101010;color:#ededed}main{max-width:28rem;padding:2rem;text-align:center}p{color:#a1a1a1}a{color:inherit}</style><main><h1>Reconectando ao Synara</h1><p>A conexão com o computador está temporariamente indisponível. Esta tela reconecta automaticamente.</p><a href="/mobile">Escolher outro computador</a></main></html>',
     );
   }
-  return json(res, 503, { error: "Synara desktop is not running" }, { "Retry-After": "2" });
+  return json(
+    res,
+    503,
+    { error: "Synara connection is temporarily unavailable" },
+    { "Retry-After": "2" },
+  );
 }
 function peerHeaders(req, peer) {
   const headers = proxyHeaders(req, peer);
@@ -659,7 +664,7 @@ function watchPeer(peer) {
       link.error = link.unauthorized
         ? "Pareie este computador de novo."
         : [502, 503, 504].includes(response.statusCode)
-          ? "Acesso remoto indisponível. Abra o Synara no computador; reconectando…"
+          ? "Conexão remota interrompida. Reconectando automaticamente…"
           : `HTTP ${response.statusCode}`;
       response.resume();
       request.destroy();

@@ -372,6 +372,8 @@ jobs:
         run: |
           npm ci --prefix extensions/mobile-remote --ignore-scripts --no-audit --no-fund
           node --test extensions/mobile-remote/lib/*.test.mjs
+          bun run --cwd apps/desktop test src/mobileCompanion.test.ts
+          bun run --cwd apps/server test src/serverRuntimeState.test.ts src/externalMcp/bridge.test.ts
 
       - name: Test native image paths and Codex homes
         shell: bash

@@ -9,16 +9,17 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Effect } from "effect";
+import { NetError, NetService } from "@synara/shared/Net";
+import { probeMobileCompanion } from "@synara/shared/mobileCompanionHealth";
 
 export type PackagedDesktopPlatform = "linux" | "mac" | "win";
 
@@ -287,8 +288,22 @@ export function createPackagedDesktopSmokeEnvironment(
     SYNARA_DISABLE_AUTO_UPDATE: "1",
     ELECTRON_ENABLE_LOGGING: "1",
   };
-  delete env.SYNARA_AUTH_TOKEN;
-  delete env.ELECTRON_RUN_AS_NODE;
+  for (const name of Object.keys(env)) {
+    const normalized = name.toUpperCase();
+    if (
+      normalized.startsWith("SYNARA_MOBILE_") ||
+      ["SYNARA_AUTH_TOKEN", "ELECTRON_RUN_AS_NODE", "NODE_OPTIONS", "NODE_PATH"].includes(
+        normalized,
+      )
+    ) {
+      delete env[name];
+    }
+  }
+  env.SYNARA_MOBILE_HOME = join(root, "synara-mobile");
+  env.SYNARA_MOBILE_DESKTOP_HOME =
+    options.executableName === "synara-beta" ? env.SYNARA_BETA_HOME : env.SYNARA_HOME;
+  // A fixture origin prevents all automatic Tailscale discovery and Serve changes.
+  env.SYNARA_MOBILE_ORIGIN = "https://mobile.test:8443";
   for (const path of [
     env.HOME,
     env.APPDATA,
@@ -298,8 +313,9 @@ export function createPackagedDesktopSmokeEnvironment(
     env.XDG_DATA_HOME,
     env.SYNARA_HOME,
     env.SYNARA_BETA_HOME,
+    env.SYNARA_MOBILE_HOME,
   ]) {
-    if (path) mkdirSync(path, { recursive: true });
+    if (path) mkdirSync(path, { recursive: true, mode: 0o700 });
   }
   if (options.platform === "mac") {
     const userDataPath = join(
@@ -355,13 +371,18 @@ async function terminateProcessTree(child: ChildProcess): Promise<void> {
   await waitForExit(child, 2_000);
 }
 
-function hasStartupProof(logPath: string): boolean {
+export async function hasPackagedDesktopStartupProof(
+  logPath: string,
+  mobilePort: number,
+  signal: AbortSignal,
+): Promise<boolean> {
   try {
     const log = readFileSync(logPath, "utf8");
     return (
       log.includes("app ready") &&
       log.includes("bootstrap main window created") &&
-      log.includes("bootstrap backend ready source=")
+      log.includes("bootstrap backend ready source=") &&
+      (await probeMobileCompanion(mobilePort, signal))
     );
   } catch {
     return false;
@@ -404,17 +425,35 @@ export async function verifyPackagedDesktopStartup(
       `Packaged ${options.platform} startup smoke must run on its native host, not ${process.platform}.`,
     );
   }
-  const temporaryRoot = mkdtempSync(join(tmpdir(), `synara-packaged-smoke-${options.platform}-`));
+  // Reuse the fixture ACL policy before writing any temporary credentials.
+  const { createPrivateFixtureDirectory } = (await import(
+    new URL("../extensions/mobile-remote/lib/test-private-directory.mjs", import.meta.url).href
+  )) as { createPrivateFixtureDirectory: (prefix: string) => string };
+  const temporaryRoot = createPrivateFixtureDirectory(`synara-packaged-smoke-${options.platform}-`);
   const extractionRoot = join(temporaryRoot, "payload");
-  mkdirSync(extractionRoot, { recursive: true });
 
   let child: ChildProcess | null = null;
   let logDirectory: string | null = null;
   let outputTail = "";
   try {
+    mkdirSync(extractionRoot, { recursive: true });
     const launch = prepareLaunch(options, extractionRoot);
     const env = createPackagedDesktopSmokeEnvironment(join(temporaryRoot, "state"), options);
     verifyPackagedRuntimeDependencies(launch.runtime, env, options.timeoutMs);
+    const mobilePort = await Effect.runPromise(
+      Effect.gen(function* () {
+        const net = yield* NetService;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const candidate = yield* net.reserveLoopbackPort();
+          if (candidate === 58090 || candidate === 58091) continue;
+          if (yield* net.isPortAvailableOnLoopback(candidate)) return candidate;
+        }
+        return yield* Effect.fail(
+          new NetError({ message: "Could not reserve an isolated mobile companion port." }),
+        );
+      }).pipe(Effect.provide(NetService.layer)),
+    );
+    env.SYNARA_MOBILE_PORT = String(mobilePort);
     // Beta deliberately ignores SYNARA_HOME to avoid opening Stable's data.
     const appHome =
       options.executableName === "synara-beta" ? env.SYNARA_BETA_HOME! : env.SYNARA_HOME!;
@@ -445,13 +484,8 @@ export async function verifyPackagedDesktopStartup(
     child.stderr?.on("data", retainOutputTail);
 
     const deadline = Date.now() + options.timeoutMs;
+    const startupSignal = AbortSignal.timeout(options.timeoutMs);
     while (Date.now() < deadline) {
-      if (hasStartupProof(logPath)) {
-        console.log(
-          `Packaged ${options.platform}/${options.arch} startup smoke passed from isolated state.`,
-        );
-        return;
-      }
       if (childOutcome.launchError) {
         throw new Error(`Packaged app could not start: ${childOutcome.launchError.message}`);
       }
@@ -460,9 +494,21 @@ export async function verifyPackagedDesktopStartup(
           `Packaged app exited before startup proof (code=${childOutcome.exited.code ?? "null"}, signal=${childOutcome.exited.signal ?? "null"}).`,
         );
       }
+      if (
+        (await hasPackagedDesktopStartupProof(logPath, mobilePort, startupSignal)) &&
+        !childOutcome.exited &&
+        !childOutcome.launchError
+      ) {
+        console.log(
+          `Packaged ${options.platform}/${options.arch} startup smoke passed with its mobile companion from isolated state.`,
+        );
+        return;
+      }
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
     }
-    throw new Error(`Packaged startup proof timed out after ${options.timeoutMs}ms.`);
+    throw new Error(
+      `Packaged backend, window and mobile companion startup proof timed out after ${options.timeoutMs}ms.`,
+    );
   } catch (error) {
     if (logDirectory) {
       console.error(readPackagedStartupLogTails(logDirectory));

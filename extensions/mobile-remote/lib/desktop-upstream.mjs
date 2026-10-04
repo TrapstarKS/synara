@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { assertPrivateWindowsPath } from "./windows.mjs";
+import { assertPrivateWindowsPaths } from "./windows.mjs";
 
 const DEFAULT_DESKTOP_EXECUTABLE = "/Applications/Synara.app/Contents/MacOS/Synara";
 const SERVER_ENTRY_SUFFIX = "/apps/server/dist/index.mjs";
@@ -62,7 +62,7 @@ export function discoverDesktopUpstream({
   exec = run,
   platform = process.platform,
 } = {}) {
-  if (platform !== "darwin") return discoverRuntimeUpstream({ desktopHome });
+  if (platform !== "darwin") return discoverRuntimeUpstream({ desktopHome, platform });
   let rows;
   try {
     rows = parseProcessTable(exec("/bin/ps", ["-axo", "pid=,ppid=,command="]), desktopExecutable);
@@ -99,17 +99,31 @@ export function discoverDesktopUpstream({
 export async function discoverRuntimeUpstream({
   desktopHome = resolve(process.env.SYNARA_MOBILE_DESKTOP_HOME || join(homedir(), ".synara")),
   fetchImpl = fetch,
+  platform = process.platform,
+  assertPrivatePaths = assertPrivateWindowsPaths,
 } = {}) {
-  const candidates = ["userdata", "dev"].flatMap((kind) => {
+  const candidates = [];
+  for (const kind of ["userdata", "dev"]) {
     const path = join(desktopHome, kind, "server-runtime.json");
-    if (!existsSync(path)) return [];
-    for (const entry of [dirname(path), path]) {
+    if (!existsSync(path)) continue;
+    const entries = [dirname(path), path];
+    const inspect = (entry) => {
       const stat = lstatSync(entry);
       if (stat.isSymbolicLink() || !(entry === path ? stat.isFile() : stat.isDirectory()))
         throw new Error("Unsafe Synara runtime path");
-      if (process.platform === "win32") assertPrivateWindowsPath(entry);
-      else if (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0)
+      if (platform !== "win32" && (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0))
         throw new Error("Synara runtime must be private to the current user");
+      return stat;
+    };
+    const before = entries.map(inspect);
+    if (platform === "win32") {
+      await assertPrivatePaths(entries);
+      // Rotation or replacement while PowerShell runs requires a fresh validation.
+      for (const [index, entry] of entries.entries()) {
+        const after = inspect(entry);
+        if (after.dev !== before[index].dev || after.ino !== before[index].ino)
+          throw new Error("Synara runtime path changed during validation");
+      }
     }
     const state = JSON.parse(readFileSync(path, "utf8"));
     if (
@@ -123,15 +137,15 @@ export async function discoverRuntimeUpstream({
       state.externalMcpRuntimeSecret.length < 32
     )
       throw new Error("Invalid Synara runtime state");
-    if (!/^[a-f0-9]{48}$/i.test(state.desktopAuthToken ?? "")) return [];
+    if (!/^[a-f0-9]{48}$/i.test(state.desktopAuthToken ?? "")) continue;
     try {
       process.kill(state.pid, 0);
     } catch (error) {
-      if (error.code === "ESRCH") return [];
+      if (error.code === "ESRCH") continue;
       if (error.code !== "EPERM") throw error;
     }
-    return [state];
-  });
+    candidates.push(state);
+  }
   if (!candidates.length) throw new Error("Open an updated Synara desktop to enable mobile access");
   if (candidates.length > 1)
     throw new Error("Multiple Synara desktops found; use a separate desktop home");
@@ -185,23 +199,43 @@ export function createUpstreamResolver({
 } = {}) {
   const fixed = upstream ? fixedTarget(upstream, token) : null;
   let cached,
+    pending,
     expiresAt = 0;
+  const invalidate = () => {
+    cached = undefined;
+    pending = undefined;
+    expiresAt = 0;
+  };
   return {
     resolve({ fresh = false } = {}) {
       if (fixed) return fixed;
-      if (!fresh && cached && now() < expiresAt) return cached;
-      cached = discover();
-      // Keep sync macOS callers compatible while invalidating failed async discovery.
-      if (cached?.then)
-        cached = cached.catch((error) => {
-          expiresAt = 0;
-          throw error;
-        });
+      if (fresh) invalidate();
+      if (pending) return pending;
+      if (cached && now() < expiresAt) return cached;
+      const discovered = discover();
+      if (typeof discovered?.then === "function") {
+        const current = Promise.resolve(discovered).then(
+          (target) => {
+            if (pending === current) {
+              pending = undefined;
+              cached = target;
+              expiresAt = now() + cacheMs;
+            }
+            return target;
+          },
+          (error) => {
+            if (pending === current) invalidate();
+            throw error;
+          },
+        );
+        pending = current;
+        return current;
+      }
+      // Keep the synchronous macOS discovery contract.
+      cached = discovered;
       expiresAt = now() + cacheMs;
       return cached;
     },
-    invalidate() {
-      if (!fixed) expiresAt = 0;
-    },
+    invalidate,
   };
 }

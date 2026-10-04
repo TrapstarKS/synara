@@ -37,6 +37,13 @@ compaction turn identity. The review appears in full, detail, and shell snapshot
 | Compact, then send         | Run a separate native `/compact` operation; deliver the held message only after verified success. |
 | Cancel this send           | Clear the pending send while retaining the conversation message.                                  |
 
+An initial idle-Claude hold for a message whose persisted origin is `agent` automatically chooses
+**Compact, then send**. The decider records the responding review, ready session and existing compact
+response event in the same decision. This avoids a crash window between saving the hold and selecting
+the default. It uses the ordinary compaction and delivery safeguards below; direct `/compact`
+commands, manual sends, other providers and revalidation of an accepted review keep their existing
+behavior. A failed or uncertain compaction does not implicitly authorize sending the full context.
+
 Once a choice is accepted, the review panel hides and progress moves to the transcript: the Claude
 adapter publishes a "Compacting context" row when native compaction starts (explicit `/compact` or a
 native `compacting` status), resolves it at the compact boundary, and marks it failed if the turn ends

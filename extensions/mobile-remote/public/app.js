@@ -1,5 +1,11 @@
 const $ = (id) => document.getElementById(id);
 let status;
+let statusRequest;
+let refreshGeneration = 0;
+let initialized = false;
+let availabilityTimer;
+let pageActive = true;
+const connectionError = "Não foi possível conectar. Tentando reconectar…";
 let standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
 const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
 $("install-ios").hidden = !ios;
@@ -29,11 +35,11 @@ if (code) {
 const message = (value) => {
   $("message").textContent = value;
 };
-async function api(path, value) {
+async function api(path, value, signal) {
   const response = await fetch(
     "/mobile/api/" + path,
     value === undefined
-      ? {}
+      ? { signal, cache: "no-store" }
       : {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -60,47 +66,101 @@ function renderHosts() {
     }),
   );
 }
-async function refresh() {
-  status = await api("status");
-  $("pair").hidden = status.paired;
-  $("paired").hidden = !status.paired;
-  $("install").hidden = Boolean(standalone);
-  $("connection").textContent = !status.paired
-    ? "Não conectado"
-    : status.monitor.state === "connected"
-      ? "Computador conectado"
-      : "Computador indisponível";
-  if (!status.paired) return;
-  if (status.hosts?.length > 1) renderHosts();
-  $("device-name").textContent = status.name;
-  for (const key of Object.keys(status.preferences))
-    $("preferences").elements[key].checked = status.preferences[key];
-  let browserSubscription = null;
-  if (
-    "serviceWorker" in navigator &&
-    "Notification" in window &&
-    Notification.permission === "granted"
-  ) {
-    const registration = await navigator.serviceWorker.getRegistration("/");
-    browserSubscription = await registration?.pushManager?.getSubscription();
-    // Reconcile a rotated endpoint without asking for permission outside a tap.
-    if (browserSubscription && status.subscribed)
-      await api("subscribe", browserSubscription.toJSON());
+async function refresh({ availabilityOnly = false } = {}) {
+  if (availabilityOnly && statusRequest) return;
+  const generation = availabilityOnly ? refreshGeneration : ++refreshGeneration;
+  statusRequest?.controller.abort();
+  const request = { controller: new AbortController(), availabilityOnly };
+  statusRequest = request;
+  let statusReadComplete = false;
+  const timeout = setTimeout(() => request.controller.abort(), 5000);
+  try {
+    const nextStatus = await api("status", undefined, request.controller.signal);
+    clearTimeout(timeout);
+    if (statusRequest !== request || request.controller.signal.aborted) return;
+    status = nextStatus;
+    // Notification reconciliation can wait on the browser or a POST. Only the
+    // status GET owns the polling slot, so those waits cannot freeze availability.
+    statusReadComplete = true;
+    statusRequest = undefined;
+    scheduleAvailability();
+    if ($("message").textContent === connectionError) message("");
+    $("pair").hidden = status.paired;
+    $("paired").hidden = !status.paired;
+    $("install").hidden = Boolean(standalone);
+    $("hosts-section").hidden = true;
+    $("connection").textContent = !status.paired
+      ? "Não conectado"
+      : status.monitor.state === "connected"
+        ? "Computador conectado"
+        : "Computador indisponível";
+    if (!status.paired) {
+      initialized = false;
+      refreshGeneration += 1;
+      return;
+    }
+    if (status.hosts?.length > 1) renderHosts();
+    // Availability polling must not reset unsaved preferences or renew push endpoints.
+    if (availabilityOnly && initialized) return;
+    $("device-name").textContent = status.name;
+    for (const key of Object.keys(status.preferences))
+      $("preferences").elements[key].checked = status.preferences[key];
+    initialized = true;
+    let browserSubscription = null;
+    if (
+      "serviceWorker" in navigator &&
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      browserSubscription = await registration?.pushManager?.getSubscription();
+      if (generation !== refreshGeneration || request.controller.signal.aborted) return;
+      // Reconcile a rotated endpoint without asking for permission outside a tap.
+      if (browserSubscription && status.subscribed)
+        await api("subscribe", browserSubscription.toJSON());
+    }
+    if (generation !== refreshGeneration || request.controller.signal.aborted) return;
+    const active = status.subscribed && Boolean(browserSubscription);
+    $("push-state").textContent = active
+      ? "Ativadas"
+      : status.subscribed
+        ? "Reativar neste aparelho"
+        : "Desativadas";
+    $("test").disabled = !active;
+    $("disable").hidden = !status.subscribed && !browserSubscription;
+    $("enable").hidden = active;
+    $("push-detail").textContent = status.pushError
+      ? "A entrega falhou. Confira a internet do computador e envie um novo teste."
+      : status.lastPushAt
+        ? "Último envio: " + new Date(status.lastPushAt).toLocaleString("pt-BR")
+        : "";
+  } catch (error) {
+    if (statusRequest === request || (statusReadComplete && generation === refreshGeneration))
+      throw error;
+  } finally {
+    clearTimeout(timeout);
+    if (statusRequest === request) statusRequest = undefined;
   }
-  const active = status.subscribed && Boolean(browserSubscription);
-  $("push-state").textContent = active
-    ? "Ativadas"
-    : status.subscribed
-      ? "Reativar neste aparelho"
-      : "Desativadas";
-  $("test").disabled = !active;
-  $("disable").hidden = !status.subscribed && !browserSubscription;
-  $("enable").hidden = active;
-  $("push-detail").textContent = status.pushError
-    ? "A entrega falhou. Confira a internet do computador e envie um novo teste."
-    : status.lastPushAt
-      ? "Último envio: " + new Date(status.lastPushAt).toLocaleString("pt-BR")
-      : "";
+}
+function scheduleAvailability() {
+  clearTimeout(availabilityTimer);
+  if (pageActive && !document.hidden)
+    availabilityTimer = setTimeout(() => void refreshAvailability(), 5000);
+}
+async function refreshAvailability() {
+  clearTimeout(availabilityTimer);
+  if (!pageActive || document.hidden) return;
+  try {
+    await refresh({ availabilityOnly: true });
+  } catch {
+    if (pageActive && !document.hidden) $("connection").textContent = "Reconectando…";
+  } finally {
+    scheduleAvailability();
+  }
+}
+function pauseAvailability() {
+  clearTimeout(availabilityTimer);
+  if (statusRequest?.availabilityOnly) statusRequest.controller.abort();
 }
 function action(id, fn, event = "click") {
   $(id).addEventListener(event, async (e) => {
@@ -211,6 +271,19 @@ action("logout", async () => {
 });
 if ("serviceWorker" in navigator)
   navigator.serviceWorker.register("/mobile/sw.js", { scope: "/" }).catch(() => {});
-refresh().catch(() =>
-  message("Não foi possível conectar. Confira o Tailscale e tente abrir novamente."),
-);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) pauseAvailability();
+  else void refreshAvailability();
+});
+window.addEventListener("online", () => void refreshAvailability());
+window.addEventListener("pagehide", () => {
+  pageActive = false;
+  pauseAvailability();
+});
+window.addEventListener("pageshow", () => {
+  pageActive = true;
+  void refreshAvailability();
+});
+refresh()
+  .catch(() => message(connectionError))
+  .finally(scheduleAvailability);

@@ -104,3 +104,69 @@ test("resolver caches discovery briefly, invalidates on failure and preserves fi
   });
   assert.throws(() => createUpstreamResolver({ upstream: "https://example.com" }));
 });
+
+test("resolver shares pending discovery even after its cache TTL elapsed", async () => {
+  const pending = Promise.withResolvers();
+  const target = { origin: "http://127.0.0.1:5001", token };
+  let calls = 0;
+  let clock = 0;
+  const resolver = createUpstreamResolver({
+    discover: () => {
+      calls++;
+      return pending.promise;
+    },
+    cacheMs: 10,
+    now: () => clock,
+  });
+  const first = resolver.resolve();
+  clock = 20;
+  assert.equal(resolver.resolve(), first);
+  assert.equal(calls, 1);
+  pending.resolve(target);
+  assert.equal(await first, target);
+  clock = 21;
+  assert.equal(await resolver.resolve(), target);
+  assert.equal(calls, 1, "the cache TTL starts after discovery completes");
+});
+
+test("an older failed discovery cannot invalidate a newer successful result", async () => {
+  const old = Promise.withResolvers();
+  const current = { origin: "http://127.0.0.1:5002", token: "b".repeat(48) };
+  let calls = 0;
+  const resolver = createUpstreamResolver({
+    discover: () => (++calls === 1 ? old.promise : Promise.resolve(current)),
+  });
+  const first = resolver.resolve();
+  resolver.invalidate();
+  assert.equal(await resolver.resolve(), current);
+  const rejected = assert.rejects(first, /old endpoint unavailable/);
+  old.reject(new Error("old endpoint unavailable"));
+  await rejected;
+  assert.equal(await resolver.resolve(), current);
+  assert.equal(calls, 2, "a stale rejection must not expire the current cache");
+});
+
+test("invalidation detaches older work without replacing a new pending discovery", async () => {
+  const old = Promise.withResolvers();
+  const next = Promise.withResolvers();
+  const previous = { origin: "http://127.0.0.1:5001", token };
+  const current = { origin: "http://127.0.0.1:5002", token: "b".repeat(48) };
+  let clock = 0;
+  let calls = 0;
+  const resolver = createUpstreamResolver({
+    discover: () => (++calls === 1 ? old.promise : next.promise),
+    cacheMs: 10,
+    now: () => clock,
+  });
+  const first = resolver.resolve();
+  const second = resolver.resolve({ fresh: true });
+  assert.notEqual(first, second);
+  old.resolve(previous);
+  assert.equal(await first, previous);
+  clock = 20;
+  assert.equal(resolver.resolve(), second);
+  next.resolve(current);
+  assert.equal(await second, current);
+  assert.equal(await resolver.resolve(), current);
+  assert.equal(calls, 2);
+});

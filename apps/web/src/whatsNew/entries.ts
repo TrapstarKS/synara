@@ -22,6 +22,24 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.28",
+    date: "Oct 4",
+    features: [
+      {
+        id: "remote-control-recovery",
+        title: "Remote Control recovers from stalled connections",
+        description:
+          "Synara checks that its remote companion responds and restarts that companion after sustained failures while your backend and agents keep running. Windows permission checks no longer block remote traffic, and the mobile computer list updates automatically when connectivity returns.",
+      },
+      {
+        id: "agent-claude-compact-then-send",
+        title: "Agent follow-ups compact cold Claude context automatically",
+        description:
+          "When an agent sends a message to an idle Claude thread that needs an expired-cache review, Synara chooses Compact, then send automatically. The message waits for verified compaction instead of waiting for an operator to pick an option. Manual sends keep their existing choices.",
+      },
+    ],
+  },
+  {
     version: "0.9.27",
     date: "Oct 3",
     features: [

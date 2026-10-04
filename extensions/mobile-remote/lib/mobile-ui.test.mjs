@@ -10,9 +10,24 @@ async function uiScenario({
   permission = "granted",
   userAgent = "iPhone",
   standalone = true,
+  initialStatus = {},
+  statusReader,
+  subscriptionReader,
+  subscribeResponse,
 }) {
   const elements = new Map();
   const writes = [];
+  const reads = [];
+  const timers = new Map();
+  let nextTimer = 0;
+  let remoteStatus = {
+    paired: true,
+    name: "iPhone",
+    subscribed,
+    preferences: { completed: true, failed: true, approval: true, input: true },
+    monitor: { state: "connected" },
+    ...initialStatus,
+  };
   let permissionRequests = 0;
   const handlers = {};
   const clicks = {};
@@ -23,6 +38,10 @@ async function uiScenario({
         hidden: false,
         disabled: false,
         value: "",
+        replaceChildren(...children) {
+          this.children = children;
+        },
+        setAttribute() {},
         elements: Object.fromEntries(
           ["completed", "failed", "approval", "input"].map((key) => [key, { checked: false }]),
         ),
@@ -33,7 +52,14 @@ async function uiScenario({
     return elements.get(id);
   };
   const context = vm.createContext({
-    document: { getElementById: element },
+    document: {
+      hidden: false,
+      getElementById: element,
+      createElement: () => ({ setAttribute() {} }),
+      addEventListener(name, handler) {
+        handlers[name] = handler;
+      },
+    },
     window: {
       addEventListener(name, handler) {
         handlers[name] = handler;
@@ -42,6 +68,7 @@ async function uiScenario({
     URLSearchParams,
     URL,
     Uint8Array,
+    AbortController,
     matchMedia: () => ({ matches: standalone }),
     location: { hash: "", origin: "https://mobile.test" },
     history: { replaceState() {} },
@@ -50,7 +77,9 @@ async function uiScenario({
       serviceWorker: {
         register: async () => ({}),
         getRegistration: async () => ({
-          pushManager: { getSubscription: async () => subscription },
+          pushManager: {
+            getSubscription: async () => (subscriptionReader ? subscriptionReader() : subscription),
+          },
         }),
       },
     },
@@ -61,27 +90,183 @@ async function uiScenario({
       },
     },
     fetch: async (url, options) => {
-      if (url.endsWith("/subscribe")) writes.push(JSON.parse(options.body));
+      if (url.endsWith("/subscribe")) {
+        writes.push(JSON.parse(options.body));
+        if (subscribeResponse) await subscribeResponse();
+      }
+      if (url.endsWith("/status")) {
+        reads.push(options);
+        const value = statusReader ? await statusReader(options) : structuredClone(remoteStatus);
+        return { ok: true, json: async () => value };
+      }
       return {
         ok: true,
-        json: async () =>
-          url.endsWith("/status")
-            ? {
-                paired: true,
-                name: "iPhone",
-                subscribed,
-                preferences: { completed: true, failed: true, approval: true, input: true },
-                monitor: { state: "connected" },
-              }
-            : { ok: true },
+        json: async () => ({ ok: true }),
       };
     },
-    setTimeout,
+    setTimeout(callback, delay) {
+      const id = ++nextTimer;
+      timers.set(id, { callback, delay });
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
   });
   context.window.Notification = context.Notification;
   vm.runInContext(source, context);
-  await vm.runInContext("refresh()", context);
-  return { elements, writes, permissionRequests, handlers, clicks };
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  await flush();
+  return {
+    elements,
+    writes,
+    reads,
+    timers,
+    permissionRequests,
+    handlers,
+    clicks,
+    context,
+    flush,
+    setStatus(value) {
+      remoteStatus = { ...remoteStatus, ...value };
+    },
+    setStatusReader(value) {
+      statusReader = value;
+    },
+    async poll() {
+      const entry = [...timers.entries()].find(([, timer]) => timer.delay === 5000);
+      assert.ok(entry, "availability must schedule another bounded status read");
+      timers.delete(entry[0]);
+      entry[1].callback();
+      await flush();
+    },
+  };
+}
+
+test("an open computer selector recovers without rewriting preferences or resubscribing", async () => {
+  const hosts = [
+    { id: "local", name: "Mac", online: true },
+    { id: "windows", name: "Windows", online: false },
+  ];
+  const result = await uiScenario({
+    subscribed: true,
+    subscription: { toJSON: () => ({ endpoint: "https://web.push.apple.com/current" }) },
+    initialStatus: { hosts, host: "windows" },
+  });
+  assert.equal(result.elements.get("connection").textContent, "Windows indisponível");
+  result.elements.get("preferences").elements.completed.checked = false;
+  const writes = result.writes.length;
+  result.setStatus({ hosts: hosts.map((host) => ({ ...host, online: true })) });
+  await result.poll();
+  assert.equal(result.elements.get("connection").textContent, "Windows conectado");
+  assert.equal(result.elements.get("preferences").elements.completed.checked, false);
+  assert.equal(result.writes.length, writes, "availability reads must never renew push endpoints");
+  assert.equal(result.reads.length, 2);
+});
+
+test("status refresh is single-flight and pauses when the page is hidden", async () => {
+  const result = await uiScenario({});
+  let release;
+  result.setStatusReader(
+    ({ signal }) =>
+      new Promise((resolve, reject) => {
+        release = resolve;
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      }),
+  );
+  await result.poll();
+  result.handlers.online();
+  await result.flush();
+  assert.equal(result.reads.length, 2);
+  result.context.document.hidden = true;
+  result.handlers.visibilitychange();
+  await result.flush();
+  assert.equal(result.reads.at(-1).signal.aborted, true);
+  assert.equal(result.timers.size, 0);
+  release({ paired: false });
+  result.setStatusReader(undefined);
+  result.context.document.hidden = false;
+  result.handlers.visibilitychange();
+  await result.flush();
+  assert.equal(result.reads.length, 3);
+  assert.equal(result.elements.get("paired").hidden, false);
+});
+
+test("a failed first request recovers and initializes controls without reopening the page", async () => {
+  const result = await uiScenario({
+    statusReader: async () => {
+      throw new Error("offline");
+    },
+  });
+  result.setStatusReader(undefined);
+  await result.poll();
+  assert.equal(result.elements.get("connection").textContent, "Computador conectado");
+  assert.equal(result.elements.get("device-name").textContent, "iPhone");
+  assert.equal(result.elements.get("preferences").elements.completed.checked, true);
+  assert.equal(result.elements.get("message").textContent, "");
+});
+
+test("an unresponsive status request times out and allows the next recovery check", async () => {
+  const result = await uiScenario({});
+  result.setStatusReader(
+    ({ signal }) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("timed out")), { once: true });
+      }),
+  );
+  await result.poll();
+  await result.poll();
+  assert.equal(result.reads.at(-1).signal.aborted, true);
+  assert.equal(result.elements.get("connection").textContent, "Reconectando…");
+  result.setStatusReader(undefined);
+  await result.poll();
+  assert.equal(result.elements.get("connection").textContent, "Computador conectado");
+  assert.equal(result.reads.length, 3);
+});
+
+test("an old availability result cannot restore pairing after logout", async () => {
+  const result = await uiScenario({});
+  let release;
+  result.setStatusReader(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  await result.poll();
+  result.setStatusReader(undefined);
+  result.setStatus({ paired: false });
+  await result.clicks["logout:click"]({ preventDefault() {}, currentTarget: {} });
+  release({ paired: true, monitor: { state: "connected" } });
+  await result.flush();
+  assert.equal(result.elements.get("paired").hidden, true);
+  assert.equal(result.elements.get("connection").textContent, "Não conectado");
+});
+
+for (const blocked of ["browser subscription", "subscription POST"]) {
+  test(`availability recovers while ${blocked} is pending`, async () => {
+    const hosts = [
+      { id: "local", name: "Mac", online: true },
+      { id: "windows", name: "Windows", online: false },
+    ];
+    const pending = () => new Promise(() => {});
+    const result = await uiScenario({
+      subscribed: true,
+      subscription: { toJSON: () => ({ endpoint: "https://web.push.apple.com/current" }) },
+      initialStatus: { hosts, host: "windows" },
+      ...(blocked === "browser subscription"
+        ? { subscriptionReader: pending }
+        : { subscribeResponse: pending }),
+    });
+    result.elements.get("preferences").elements.completed.checked = false;
+    const writes = result.writes.length;
+    result.setStatus({ hosts: hosts.map((host) => ({ ...host, online: true })) });
+    await result.poll();
+    assert.equal(result.reads.length, 2);
+    assert.equal(result.elements.get("connection").textContent, "Windows conectado");
+    assert.equal(result.elements.get("preferences").elements.completed.checked, false);
+    assert.equal(result.writes.length, writes);
+  });
 }
 
 test("Samsung Android offers installation only on a tap and hides it after installation", async () => {

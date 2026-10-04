@@ -11,6 +11,7 @@ import {
   EXTERNAL_MCP_MAX_WAIT_MS,
   type ExternalMcpPairResult,
 } from "@synara/contracts";
+import { execProcessFile } from "@synara/shared/processRuntime";
 
 import type { PersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { ensurePrivateDirectorySync } from "../privatePathPermissions.ts";
@@ -88,6 +89,27 @@ export function isOwnerPrivateWindowsRuntimeAcl(snapshot: WindowsRuntimeAclSnaps
       rule.sid === snapshot.currentSid ||
       WINDOWS_TRUSTED_RUNTIME_ACL_SIDS.has(rule.sid),
   );
+}
+
+function parseWindowsRuntimeAclSnapshot(raw: string): WindowsRuntimeAclSnapshot {
+  const parsed = JSON.parse(raw) as Partial<WindowsRuntimeAclSnapshot>;
+  if (
+    typeof parsed.currentSid !== "string" ||
+    typeof parsed.ownerSid !== "string" ||
+    typeof parsed.hasDacl !== "boolean" ||
+    typeof parsed.isReparsePoint !== "boolean" ||
+    !Array.isArray(parsed.rules) ||
+    parsed.rules.some(
+      (rule) =>
+        typeof rule !== "object" ||
+        rule === null ||
+        typeof rule.sid !== "string" ||
+        typeof rule.type !== "string",
+    )
+  ) {
+    throw new Error("invalid Windows ACL response");
+  }
+  return parsed as WindowsRuntimeAclSnapshot;
 }
 
 export class ExternalMcpBridgeError extends Error {
@@ -230,24 +252,7 @@ export function assertPrivateWindowsRuntimePath(
   try {
     const invocation = makeWindowsRuntimeAclPowerShellInvocation(targetPath);
     const raw = execFileSync("powershell.exe", invocation.args, invocation.options);
-    const parsed = JSON.parse(raw) as Partial<WindowsRuntimeAclSnapshot>;
-    if (
-      typeof parsed.currentSid !== "string" ||
-      typeof parsed.ownerSid !== "string" ||
-      typeof parsed.hasDacl !== "boolean" ||
-      typeof parsed.isReparsePoint !== "boolean" ||
-      !Array.isArray(parsed.rules) ||
-      parsed.rules.some(
-        (rule) =>
-          typeof rule !== "object" ||
-          rule === null ||
-          typeof rule.sid !== "string" ||
-          typeof rule.type !== "string",
-      )
-    ) {
-      throw new Error("invalid Windows ACL response");
-    }
-    snapshot = parsed as WindowsRuntimeAclSnapshot;
+    snapshot = parseWindowsRuntimeAclSnapshot(raw);
   } catch (cause) {
     throw new ExternalMcpBridgeError(
       `Could not verify private Windows runtime-state ${kind}: ${targetPath}`,
@@ -259,6 +264,50 @@ export function assertPrivateWindowsRuntimePath(
       `Runtime-state ${kind} ${targetPath} is not owned by the current user, is accessible by other users, or is a reparse point.`,
     );
   }
+}
+
+export function assertPrivateWindowsRuntimePathAsync(
+  targetPath: string,
+  kind: "file" | "directory",
+  signal?: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const invocation = makeWindowsRuntimeAclPowerShellInvocation(targetPath);
+    execProcessFile(
+      "powershell.exe",
+      invocation.args,
+      { ...invocation.options, platform: "win32", ...(signal ? { signal } : {}) },
+      (cause, stdout) => {
+        if (cause) {
+          reject(
+            new ExternalMcpBridgeError(
+              `Could not verify private Windows runtime-state ${kind}: ${targetPath}`,
+              { cause },
+            ),
+          );
+          return;
+        }
+        try {
+          const snapshot = parseWindowsRuntimeAclSnapshot(stdout);
+          if (!isOwnerPrivateWindowsRuntimeAcl(snapshot)) {
+            throw new ExternalMcpBridgeError(
+              `Runtime-state ${kind} ${targetPath} is not owned by the current user, is accessible by other users, or is a reparse point.`,
+            );
+          }
+          resolve();
+        } catch (cause) {
+          reject(
+            cause instanceof ExternalMcpBridgeError
+              ? cause
+              : new ExternalMcpBridgeError(
+                  `Could not verify private Windows runtime-state ${kind}: ${targetPath}`,
+                  { cause },
+                ),
+          );
+        }
+      },
+    );
+  });
 }
 
 function readPrivateRuntimeState(sourcePath: string): string {

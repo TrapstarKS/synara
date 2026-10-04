@@ -43,6 +43,7 @@ function makeReadModel(
   input: {
     review?: PendingClaudeCacheReview | null;
     session?: OrchestrationSession | null;
+    messages?: OrchestrationReadModel["threads"][number]["messages"];
   } = {},
 ): OrchestrationReadModel {
   return {
@@ -65,7 +66,7 @@ function makeReadModel(
         updatedAt: NOW,
         latestTurn: null,
         handoff: null,
-        messages: [],
+        messages: input.messages ?? [],
         session: input.session ?? null,
         activities: [],
         proposedPlans: [],
@@ -100,6 +101,40 @@ async function decide(command: OrchestrationCommand, readModel: OrchestrationRea
 
 describe("decider Claude cache review", () => {
   const compactionTurnId = TurnId.makeUnsafe("turn-cache-compaction");
+  const agentMessage: OrchestrationReadModel["threads"][number]["messages"][number] = {
+    id: MESSAGE_ID,
+    role: "user",
+    text: "Continue the delegated task",
+    dispatchOrigin: "agent",
+    turnId: null,
+    streaming: false,
+    source: "native",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  function initialAgentHold(): Extract<OrchestrationCommand, { type: "thread.claude-cache.set" }> {
+    return {
+      type: "thread.claude-cache.set",
+      commandId: CommandId.makeUnsafe("cmd-agent-cache-hold"),
+      threadId: THREAD_ID,
+      review: REVIEW,
+      expectedReviewId: null,
+      hold: {
+        sourceEventSequence: REVIEW.sourceEventSequence,
+        session: {
+          threadId: THREAD_ID,
+          providerName: "claudeAgent",
+          status: "ready",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      },
+      createdAt: NOW,
+    };
+  }
 
   function compacted(overrides: { reviewId?: string; turnId?: TurnId } = {}): OrchestrationCommand {
     return {
@@ -195,6 +230,83 @@ describe("decider Claude cache review", () => {
       });
     },
   );
+
+  it("atomically chooses compaction for an initial agent cache hold", async () => {
+    const command = initialAgentHold();
+    let readModel = makeReadModel({ messages: [agentMessage] });
+    const events = await decide(command, readModel);
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.claude-cache-set",
+      "thread.session-set",
+      "thread.claude-cache-response-requested",
+    ]);
+    expect(events[0]).toMatchObject({ payload: { review: { ...REVIEW, status: "responding" } } });
+    expect(events[2]).toMatchObject({ payload: { review: REVIEW, decision: "compact" } });
+    for (const [index, event] of events.entries()) {
+      readModel = await Effect.runPromise(
+        projectEvent(readModel, { ...event, sequence: 43 + index }),
+      );
+    }
+    expect(await decide(command, readModel)).toEqual([]);
+    expect(await decide(respond(), readModel)).toEqual([]);
+  });
+
+  it.each([undefined, "user", "automation"] as const)(
+    "preserves the pending choice for a %s-originated message",
+    async (dispatchOrigin) => {
+      const events = await decide(
+        initialAgentHold(),
+        makeReadModel({ messages: [{ ...agentMessage, dispatchOrigin }] }),
+      );
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.claude-cache-set",
+        "thread.session-set",
+      ]);
+      expect(events[0]).toMatchObject({ payload: { review: REVIEW } });
+    },
+  );
+
+  it("preserves explicit review decisions when an agent message needs revalidation", async () => {
+    const events = await decide(
+      { ...initialAgentHold(), expectedReviewId: REVIEW.reviewId },
+      makeReadModel({
+        review: { ...REVIEW, status: "responding" },
+        messages: [agentMessage],
+      }),
+    );
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ payload: { review: REVIEW } });
+  });
+
+  it.each(["/compact", "  /compact Preserve the task"])(
+    "does not request another compaction before the explicit command %s",
+    async (text) => {
+      const events = await decide(
+        initialAgentHold(),
+        makeReadModel({ messages: [{ ...agentMessage, text }] }),
+      );
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({ payload: { review: REVIEW } });
+    },
+  );
+
+  it("does not add the automatic decision outside an initial Claude hold", async () => {
+    const command = initialAgentHold();
+    const readModel = makeReadModel({ messages: [agentMessage] });
+    const events = await decide(
+      {
+        ...command,
+        hold: {
+          ...command.hold!,
+          session: { ...command.hold!.session, providerName: "codex" },
+        },
+      },
+      readModel,
+    );
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ payload: { review: REVIEW } });
+    expect(await decide({ ...command, hold: undefined }, readModel)).toHaveLength(1);
+  });
 
   it("does not replace a held review when the setter expected no review", async () => {
     const events = await decide(

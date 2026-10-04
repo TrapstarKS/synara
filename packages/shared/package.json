@@ -88,6 +88,10 @@
       "types": "./src/processRuntime.ts",
       "import": "./src/processRuntime.ts"
     },
+    "./mobileCompanionHealth": {
+      "types": "./src/mobileCompanionHealth.ts",
+      "import": "./src/mobileCompanionHealth.ts"
+    },
     "./filesystemPlatform": {
       "types": "./src/filesystemPlatform.ts",
       "import": "./src/filesystemPlatform.ts"

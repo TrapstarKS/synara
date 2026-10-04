@@ -80,6 +80,14 @@ opt-in startup/MCP smoke. This checks the normal home, process-local config,
 authenticated MCP discovery, and process teardown without an account login or
 model turn. The test CLI is not included in the desktop artifact.
 
+Both native jobs also run the remote companion's recovery tests. Packaged startup
+must prove that the extracted desktop's bundled companion answers its loopback
+status endpoint, in addition to starting the backend and window. The smoke uses
+a private temporary mobile home, an unused port and an explicit test origin; it
+does not change Tailscale or use a user's pairing state. This verifies native
+packaging and local service availability, not connectivity to a particular user's
+computer over their tailnet.
+
 ### Verification record: September 19, 2026
 
 The [previous build-only run](https://github.com/TrapstarKS/synara/actions/runs/35435489024)
