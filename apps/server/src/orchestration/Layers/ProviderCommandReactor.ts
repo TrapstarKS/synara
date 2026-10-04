@@ -3693,6 +3693,7 @@ const make = Effect.gen(function* () {
       entry.messageId === event.payload.messageId;
     const reservationAtStart = pendingQueuedDispatchBySessionThread.get(sessionThreadId);
     const isPendingQueuedDispatch = matchesEvent(reservationAtStart);
+    let pendingQueuedGoalStartedAt: string | null | undefined;
     const ownsReservation = (entry: PendingQueuedDispatch | undefined) =>
       isPendingQueuedDispatch && entry === reservationAtStart;
     const clearPendingQueuedDispatch = Effect.sync(() => {
@@ -3757,6 +3758,9 @@ const make = Effect.gen(function* () {
       const thread = yield* resolveThread(event.payload.threadId);
       if (!thread || isExpiredSidechat(thread)) {
         return;
+      }
+      if (isPendingQueuedDispatch) {
+        pendingQueuedGoalStartedAt = thread.goalStartedAt ?? null;
       }
       if (event.payload.awaitPrecondition) {
         const authorization = yield* threadAwaitGuard.check({
@@ -3852,10 +3856,24 @@ const make = Effect.gen(function* () {
         // terminal event for the shared provider session.
         yield* bindPendingQueuedDispatchToTurn(liveTurnId);
         if (event.payload.dispatchMode === "steer") {
+          const replacementRecorded = yield* queuedTurnPromotions.markReplacesTurn({
+            queuedEventSequence: event.sequence,
+            threadId: event.payload.threadId,
+            replacedTurnId: liveTurnId,
+            updatedAt: event.payload.createdAt,
+          });
+          if (!replacementRecorded) {
+            return yield* Effect.fail(
+              new Error(
+                `Queued steer ${event.sequence} could not record replaced turn ${liveTurnId}.`,
+              ),
+            );
+          }
           // Preserve steer semantics: jump the queue (enqueue unshifts steers)
           // and ask the live turn to stop so the steer dispatches next.
           yield* interruptProviderTurn({
             threadId: event.payload.threadId,
+            turnId: liveTurnId,
             createdAt: event.payload.createdAt,
           });
         }
@@ -4109,9 +4127,42 @@ const make = Effect.gen(function* () {
       }
     }).pipe(
       Effect.onExit((exit) =>
-        releaseOrphanedQueuedDispatchReservation(
-          Exit.isSuccess(exit) || !Cause.hasInterruptsOnly(exit.cause),
-        ),
+        Effect.gen(function* () {
+          const pauseExit = yield* Effect.exit(
+            Effect.gen(function* () {
+              if (
+                Exit.isFailure(exit) &&
+                !Cause.hasInterruptsOnly(exit.cause) &&
+                isPendingQueuedDispatch &&
+                pendingQueuedGoalStartedAt !== undefined &&
+                classifyProviderAttemptOutcome(exit)._tag !== "safe_retry"
+              ) {
+                // The replaced turn deliberately did not create an automatic goal
+                // continuation. If its promoted user instruction cannot start a
+                // provider turn, pause the same goal instead of leaving it active
+                // and idle with no future terminal event to resume the loop.
+                yield* pauseActiveThreadGoal({
+                  threadId: event.payload.threadId,
+                  expectedGoalStartedAt: pendingQueuedGoalStartedAt,
+                });
+              }
+            }),
+          );
+          const releaseExit = yield* Effect.exit(
+            releaseOrphanedQueuedDispatchReservation(
+              Exit.isSuccess(exit) || !Cause.hasInterruptsOnly(exit.cause),
+            ),
+          );
+          if (Exit.isFailure(pauseExit) && Exit.isFailure(releaseExit)) {
+            return yield* Effect.failCause(Cause.combine(pauseExit.cause, releaseExit.cause));
+          }
+          if (Exit.isFailure(pauseExit)) {
+            return yield* Effect.failCause(pauseExit.cause);
+          }
+          if (Exit.isFailure(releaseExit)) {
+            return yield* Effect.failCause(releaseExit.cause);
+          }
+        }),
       ),
     );
   });
@@ -5333,9 +5384,22 @@ const make = Effect.gen(function* () {
   const processTurnInterruptRequested = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
+    const replacementTurnId =
+      event.payload.turnId ??
+      (event.causationEventId !== null
+        ? yield* resolveLiveProviderTurnId(event.payload.threadId)
+        : undefined);
+    if (event.causationEventId !== null && replacementTurnId !== undefined) {
+      yield* queuedTurnPromotions.markCausalSteerReplacement({
+        queuedEventId: event.causationEventId,
+        threadId: event.payload.threadId,
+        replacedTurnId: replacementTurnId,
+        updatedAt: event.payload.createdAt,
+      });
+    }
     yield* interruptProviderTurn({
       threadId: event.payload.threadId,
-      turnId: event.payload.turnId,
+      ...(event.payload.turnId !== undefined ? { turnId: event.payload.turnId } : {}),
       createdAt: event.payload.createdAt,
       intentionalQuit: event.commandId?.startsWith("quit-resume-interrupt:") === true,
     });

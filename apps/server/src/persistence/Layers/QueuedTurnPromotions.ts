@@ -15,7 +15,8 @@ const columns = (sql: SqlClient.SqlClient) => sql`
   dispatch_mode AS "dispatchMode",
   state,
   claim_owner AS "claimOwner",
-  attempt_count AS "attemptCount"
+  attempt_count AS "attemptCount",
+  replaced_turn_id AS "replacedTurnId"
 `;
 
 const make = Effect.gen(function* () {
@@ -38,11 +39,11 @@ const make = Effect.gen(function* () {
       INSERT INTO queued_turn_promotions (
         queued_event_sequence, thread_id, message_id, dispatch_mode, state,
         claim_owner, claimed_at, claim_expires_at, attempt_count,
-        created_at, updated_at, promoted_at
+        created_at, updated_at, promoted_at, replaced_turn_id
       ) VALUES (
         ${input.queuedEventSequence}, ${input.threadId}, ${input.messageId},
         ${input.dispatchMode}, 'queued', NULL, NULL, NULL, 0,
-        ${input.createdAt}, ${input.createdAt}, NULL
+        ${input.createdAt}, ${input.createdAt}, NULL, NULL
       )
       ON CONFLICT DO UPDATE SET
         queued_event_sequence = excluded.queued_event_sequence,
@@ -54,7 +55,8 @@ const make = Effect.gen(function* () {
         attempt_count = 0,
         created_at = excluded.created_at,
         updated_at = excluded.updated_at,
-        promoted_at = NULL
+        promoted_at = NULL,
+        replaced_turn_id = NULL
       WHERE queued_turn_promotions.state IN ('promoted', 'cancelled')
         AND excluded.queued_event_sequence > queued_turn_promotions.queued_event_sequence
     `.pipe(Effect.asVoid, Effect.mapError(toPersistenceSqlError("QueuedTurnPromotion.enqueue")));
@@ -166,6 +168,80 @@ const make = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("QueuedTurnPromotion.hasPendingMessage")),
     );
 
+  const markReplacesTurn: QueuedTurnPromotionRepositoryShape["markReplacesTurn"] = (input) =>
+    sql<{ readonly sequence: number }>`
+      UPDATE queued_turn_promotions
+      SET replaced_turn_id = ${input.replacedTurnId}, updated_at = ${input.updatedAt}
+      WHERE queued_event_sequence = ${input.queuedEventSequence}
+        AND thread_id = ${input.threadId}
+        AND dispatch_mode = 'steer'
+        AND state IN ('queued', 'promoting', 'promoted')
+      RETURNING queued_event_sequence AS sequence
+    `.pipe(
+      Effect.map((rows) => rows.length === 1),
+      Effect.mapError(toPersistenceSqlError("QueuedTurnPromotion.markReplacesTurn")),
+    );
+
+  const markCausalSteerReplacement: QueuedTurnPromotionRepositoryShape["markCausalSteerReplacement"] =
+    (input) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const sources = yield* sql<{
+              readonly sequence: number;
+              readonly eventType: string;
+              readonly dispatchMode: string | null;
+            }>`
+              SELECT sequence, event_type AS "eventType",
+                json_extract(payload_json, '$.dispatchMode') AS "dispatchMode"
+              FROM orchestration_events
+              WHERE event_id = ${input.queuedEventId} AND stream_id = ${input.threadId}
+            `;
+            const source = sources[0];
+            if (
+              source === undefined ||
+              source.dispatchMode !== "steer" ||
+              (source.eventType !== "thread.turn-queued" &&
+                source.eventType !== "thread.turn-start-requested")
+            ) {
+              return false;
+            }
+            const rows = yield* sql<{ readonly sequence: number }>`
+              UPDATE queued_turn_promotions
+              SET replaced_turn_id = ${input.replacedTurnId}, updated_at = ${input.updatedAt}
+              WHERE queued_event_sequence = ${source.sequence}
+                AND thread_id = ${input.threadId}
+                AND dispatch_mode = 'steer'
+                AND state IN ('queued', 'promoting', 'promoted')
+              RETURNING queued_event_sequence AS sequence
+            `;
+            if (rows.length !== 1) {
+              return yield* Effect.fail(
+                new Error(
+                  `Causal queued steer ${source.sequence} has no active promotion ledger row.`,
+                ),
+              );
+            }
+            return true;
+          }),
+        )
+        .pipe(
+          Effect.mapError(toPersistenceSqlError("QueuedTurnPromotion.markCausalSteerReplacement")),
+        );
+
+  const isTurnReplacedBySteer: QueuedTurnPromotionRepositoryShape["isTurnReplacedBySteer"] = (
+    input,
+  ) =>
+    sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM queued_turn_promotions
+      WHERE thread_id = ${input.threadId} AND dispatch_mode = 'steer'
+          AND replaced_turn_id = ${input.turnId}
+          AND state IN ('queued', 'promoting', 'promoted')
+    `.pipe(
+      Effect.map((rows) => (rows[0]?.count ?? 0) > 0),
+      Effect.mapError(toPersistenceSqlError("QueuedTurnPromotion.isTurnReplacedBySteer")),
+    );
+
   const listPendingThreadIds = sql<{ readonly threadId: string }>`
     SELECT DISTINCT thread_id AS "threadId"
     FROM queued_turn_promotions
@@ -185,6 +261,9 @@ const make = Effect.gen(function* () {
     cancelMessage,
     cancelThread,
     hasPendingMessage,
+    markReplacesTurn,
+    markCausalSteerReplacement,
+    isTurnReplacedBySteer,
     listPendingThreadIds,
   } satisfies QueuedTurnPromotionRepositoryShape;
 });

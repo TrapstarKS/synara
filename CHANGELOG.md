@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.29] — 2026-10-04
+
+### Fixed
+
+- Active thread goals stay active when Synara interrupts a provider turn only to promote newer user guidance. The exact replaced turn is recorded durably, so restarts and promotion races cannot turn that internal replacement into a user pause or start a competing continuation from the old turn.
+- If the promoted instruction fails before a provider turn can start, Synara pauses the same goal and surfaces the failure instead of leaving the objective active with no turn able to continue it. Explicit stops, provider failures and unrelated interruptions keep their existing pause behavior.
+
 ## [0.9.28] — 2026-10-04
 
 ### Fixed

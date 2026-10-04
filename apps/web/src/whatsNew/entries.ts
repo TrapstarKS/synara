@@ -22,6 +22,18 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.29",
+    date: "Oct 4",
+    features: [
+      {
+        id: "goals-preserve-mid-turn-guidance",
+        title: "Goals keep going through mid-turn guidance",
+        description:
+          "When a provider cannot accept new guidance during a live turn, Synara can replace that turn with your newer instruction without pausing the active goal or starting a competing continuation. Explicit Stop and real provider failures still pause the goal, and a promoted instruction that cannot start now surfaces the failure and pauses cleanly.",
+      },
+    ],
+  },
+  {
     version: "0.9.28",
     date: "Oct 4",
     features: [

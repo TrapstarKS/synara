@@ -11,6 +11,7 @@ export interface QueuedTurnPromotion {
   readonly state: "queued" | "promoting" | "promoted" | "cancelled";
   readonly claimOwner: string | null;
   readonly attemptCount: number;
+  readonly replacedTurnId: string | null;
 }
 
 export interface QueuedTurnPromotionRepositoryShape {
@@ -58,6 +59,22 @@ export interface QueuedTurnPromotionRepositoryShape {
   readonly hasPendingMessage: (input: {
     readonly threadId: string;
     readonly messageId: string;
+  }) => Effect.Effect<boolean, PersistenceSqlError>;
+  readonly markReplacesTurn: (input: {
+    readonly queuedEventSequence: number;
+    readonly threadId: string;
+    readonly replacedTurnId: string;
+    readonly updatedAt: string;
+  }) => Effect.Effect<boolean, PersistenceSqlError>;
+  readonly markCausalSteerReplacement: (input: {
+    readonly queuedEventId: string;
+    readonly threadId: string;
+    readonly replacedTurnId: string;
+    readonly updatedAt: string;
+  }) => Effect.Effect<boolean, PersistenceSqlError>;
+  readonly isTurnReplacedBySteer: (input: {
+    readonly threadId: string;
+    readonly turnId: string;
   }) => Effect.Effect<boolean, PersistenceSqlError>;
   readonly listPendingThreadIds: Effect.Effect<ReadonlyArray<string>, PersistenceSqlError>;
 }

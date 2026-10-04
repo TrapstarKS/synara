@@ -71,7 +71,9 @@ import {
 import { ProjectionPendingInteractionRepositoryLive } from "../../persistence/Layers/ProjectionPendingInteractions.ts";
 import { ProviderRuntimeEventRepositoryLive } from "../../persistence/Layers/ProviderRuntimeEvents.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { QueuedTurnPromotionRepositoryLive } from "../../persistence/Layers/QueuedTurnPromotions.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
+import { QueuedTurnPromotionRepository } from "../../persistence/Services/QueuedTurnPromotions.ts";
 import {
   PROVIDER_RUNTIME_INGESTION_CONSUMER,
   ProviderRuntimeEventRepository,
@@ -694,6 +696,7 @@ const make = Effect.gen(function* () {
   const pendingInteractions = yield* ProjectionPendingInteractionRepository;
   const runtimeEvents = yield* ProviderRuntimeEventRepository;
   const commandReceipts = yield* OrchestrationCommandReceiptRepository;
+  const queuedTurnPromotions = yield* QueuedTurnPromotionRepository;
   const outstandingTurnIdsByThreadRef = yield* Ref.make<ReadonlyMap<ThreadId, ReadonlySet<TurnId>>>(
     new Map(),
   );
@@ -2491,25 +2494,38 @@ const make = Effect.gen(function* () {
               Boolean(activeThreadGoal(settledThread)?.trim()) &&
               settledThread.goalPausedAt == null
             ) {
-              if (event.type === "turn.completed" && runtimeTurnState(event) === "completed") {
-                yield* orchestrationEngine.dispatch({
-                  type: "thread.goal.continue",
-                  commandId: providerCommandId(event, "goal-continue", thread.id),
+              const turnState =
+                event.type === "turn.completed" ? runtimeTurnState(event) : "interrupted";
+              const replacedByQueuedSteer =
+                eventTurnId !== undefined &&
+                (yield* queuedTurnPromotions.isTurnReplacedBySteer({
                   threadId: thread.id,
-                  goalStartedAt: settledThread.goalStartedAt ?? null,
-                  trigger: "turn-completed",
-                  ...(eventTurnId !== undefined ? { sourceTurnId: eventTurnId } : {}),
-                  createdAt: now,
-                });
-              } else {
-                // A failed, aborted, cancelled, or interrupted turn must stop
-                // autonomous resurrection until the user explicitly resumes.
-                yield* orchestrationEngine.dispatch({
-                  type: "thread.meta.update",
-                  commandId: providerCommandId(event, "goal-auto-pause", thread.id),
-                  threadId: thread.id,
-                  goalPaused: true,
-                });
+                  turnId: eventTurnId,
+                }));
+              // Synara can end a turn only to promote newer user guidance. The
+              // promoted turn owns the durable objective from there, even when
+              // a provider reports the replaced turn as cleanly completed.
+              if (!replacedByQueuedSteer) {
+                if (event.type === "turn.completed" && turnState === "completed") {
+                  yield* orchestrationEngine.dispatch({
+                    type: "thread.goal.continue",
+                    commandId: providerCommandId(event, "goal-continue", thread.id),
+                    threadId: thread.id,
+                    goalStartedAt: settledThread.goalStartedAt ?? null,
+                    trigger: "turn-completed",
+                    ...(eventTurnId !== undefined ? { sourceTurnId: eventTurnId } : {}),
+                    createdAt: now,
+                  });
+                } else {
+                  // A failed, aborted, cancelled, or interrupted turn must stop
+                  // autonomous resurrection until the user explicitly resumes.
+                  yield* orchestrationEngine.dispatch({
+                    type: "thread.meta.update",
+                    commandId: providerCommandId(event, "goal-auto-pause", thread.id),
+                    threadId: thread.id,
+                    goalPaused: true,
+                  });
+                }
               }
             }
           }
@@ -3717,6 +3733,7 @@ export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
 ).pipe(
+  Layer.provideMerge(QueuedTurnPromotionRepositoryLive),
   Layer.provide(
     Layer.mergeAll(
       ProjectionTurnRepositoryLive,

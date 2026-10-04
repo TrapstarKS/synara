@@ -12515,6 +12515,8 @@ describe("ProviderCommandReactor", () => {
       readonly messageId: MessageId;
       readonly text: string;
       readonly attachments?: ReadonlyArray<ChatAttachment>;
+      readonly dispatchMode?: "queue" | "steer";
+      readonly provider?: ProviderKind;
     },
   ) {
     const now = new Date().toISOString();
@@ -12531,7 +12533,7 @@ describe("ProviderCommandReactor", () => {
         session: {
           threadId: ThreadId.makeUnsafe("thread-1"),
           status: "running",
-          providerName: "codex",
+          providerName: input.provider ?? "codex",
           runtimeMode: "approval-required",
           activeTurnId: input.liveTurnId,
           lastError: null,
@@ -12554,6 +12556,7 @@ describe("ProviderCommandReactor", () => {
         },
         runtimeMode: "approval-required",
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        ...(input.dispatchMode !== undefined ? { dispatchMode: input.dispatchMode } : {}),
         createdAt: now,
       }),
     );
@@ -12574,13 +12577,17 @@ describe("ProviderCommandReactor", () => {
 
   const settleLiveTurn = async (
     harness: Awaited<ReturnType<typeof createHarness>>,
-    input: { readonly turnId: TurnId; readonly eventId: string },
+    input: {
+      readonly turnId: TurnId;
+      readonly eventId: string;
+      readonly provider?: ProviderKind;
+    },
   ) => {
     harness.setRuntimeSessionTurnState({ threadId: "thread-1", status: "ready" });
     await harness.emitRuntimeEvent({
       type: "turn.completed",
       eventId: asEventId(input.eventId),
-      provider: "codex",
+      provider: input.provider ?? "codex",
       threadId: ThreadId.makeUnsafe("thread-1"),
       createdAt: new Date().toISOString(),
       turnId: input.turnId,
@@ -12700,6 +12707,66 @@ describe("ProviderCommandReactor", () => {
       threadId: ThreadId.makeUnsafe("thread-1"),
       input: "promote me after the failed promotion",
     });
+  });
+
+  it("pauses an active goal when a promoted steer cannot start a provider turn", async () => {
+    const harness = await createHarness({
+      threadModelSelection: { provider: "opencode", model: "openai/gpt-5" },
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-goal-promoted-steer-start-failure"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        goal: "Complete the task after applying the latest user guidance",
+        goalStartBehavior: "defer",
+      }),
+    );
+
+    const attachment = {
+      type: "image",
+      id: `att_v2_${"b1c2d3e4".repeat(4)}`,
+      name: "missing-before-promoted-steer.png",
+      mimeType: "image/png",
+      sizeBytes: 3,
+    } as const;
+    const attachmentPath = await harness.stageAttachment(attachment);
+    const queuedSequence = await seedQueuedTurnBehindLiveTurn(harness, {
+      liveTurnId: asTurnId("turn-replaced-before-promoted-steer-failure"),
+      messageId: asMessageId("msg-promoted-steer-start-failure"),
+      text: "Apply this requirement before finishing.",
+      attachments: [attachment],
+      dispatchMode: "steer",
+      provider: "opencode",
+    });
+    fs.rmSync(attachmentPath, { force: true });
+
+    await settleLiveTurn(harness, {
+      turnId: asTurnId("turn-replaced-before-promoted-steer-failure"),
+      eventId: "evt-replaced-before-promoted-steer-failure",
+      provider: "opencode",
+    });
+
+    await waitFor(async () => {
+      const promotion = await Effect.runPromise(
+        harness.queuedTurnPromotionRepository.getBySequence(queuedSequence),
+      );
+      const thread = await readHarnessThread(harness);
+      return Option.getOrUndefined(promotion)?.state === "promoted" && thread?.goalPausedAt != null;
+    });
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect((await readHarnessThread(harness))?.goalPausedAt).toBeTruthy();
+
+    const events = Array.from(
+      await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0))),
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "thread.goal-continuation-requested" &&
+          event.payload.sourceTurnId === "turn-replaced-before-promoted-steer-failure",
+      ),
+    ).toBe(false);
   });
 
   it("does not promote another queued turn while the reactor is shutting down", async () => {

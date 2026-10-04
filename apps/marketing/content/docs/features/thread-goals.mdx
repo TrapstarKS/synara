@@ -38,11 +38,14 @@ The same actions are available from the composer:
 
 After a clean turn completes, Synara can start another turn to continue an eligible active goal. The continuation uses the same provider-independent orchestration path rather than provider-specific hidden prompts.
 
-Automatic continuation yields to higher-priority work and gates. It does not start while the task has queued user work, a pending approval or question, an incompatible Plan-mode decision, or another active turn. Interruptions, provider failures, timeouts, and explicit pauses stop continuation instead of immediately resurrecting the task.
+Automatic continuation yields to higher-priority work and gates. It does not start while the task has queued user work, a pending approval or question, an incompatible Plan-mode decision, or another active turn. Explicit stops, provider failures, timeouts, and unrelated interruptions pause continuation instead of immediately resurrecting the task.
+
+When a provider cannot accept guidance during a live turn, Synara may interrupt that turn so the newer user instruction can run next. That replacement does not pause the goal or start a competing automatic continuation from the old turn. The promoted user turn keeps ownership of the same objective and decides whether it should continue, complete, or block.
 
 <Callout type="info" title="Your message wins">
-  A queued user instruction takes priority over an automatic goal continuation. Goals preserve the
-  objective; they do not take control away from the task owner.
+  A queued user instruction takes priority over an automatic goal continuation. It keeps the active
+  objective even when Synara must replace the current provider turn to deliver that instruction.
+  Goals preserve the objective; they do not take control away from the task owner.
 </Callout>
 
 ## Achievement and blocked goals

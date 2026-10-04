@@ -323,6 +323,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
+        [122, "QueuedSteerReplacementTurns"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -396,6 +397,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 119, name: "AwaitedDispatches" },
           { migration_id: 120, name: "CoordinatorQuestions" },
           { migration_id: 121, name: "BackfillClaudeNativeSubagentEffort" },
+          { migration_id: 122, name: "QueuedSteerReplacementTurns" },
         ],
       );
       const preserved = yield* sql<{ readonly count: number }>`
@@ -510,6 +512,7 @@ agentGatewayRetentionLegacyLayer(
           [119, "AwaitedDispatches"],
           [120, "CoordinatorQuestions"],
           [121, "BackfillClaudeNativeSubagentEffort"],
+          [122, "QueuedSteerReplacementTurns"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -626,6 +629,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
+        [122, "QueuedSteerReplacementTurns"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -683,6 +687,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [119, "AwaitedDispatches"],
           [120, "CoordinatorQuestions"],
           [121, "BackfillClaudeNativeSubagentEffort"],
+          [122, "QueuedSteerReplacementTurns"],
         ],
       );
 
@@ -794,6 +799,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
+        [122, "QueuedSteerReplacementTurns"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -847,6 +853,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [119, "AwaitedDispatches"],
           [120, "CoordinatorQuestions"],
           [121, "BackfillClaudeNativeSubagentEffort"],
+          [122, "QueuedSteerReplacementTurns"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -1038,6 +1045,7 @@ mindMigrationLayer("Mind migration", (it) => {
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
+        [122, "QueuedSteerReplacementTurns"],
       ]);
 
       yield* sql`INSERT INTO mind_memories (id, project_id, text, type, text_hash, peak_weight, created_at, last_accessed_at) VALUES ('m1', 'p1', 'delete me', 'semantic', 'hash', 0.6, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`;
@@ -1090,6 +1098,7 @@ mindRuntimeIntegrityLayer("Mind runtime integrity migration", (it) => {
           [119, "AwaitedDispatches"],
           [120, "CoordinatorQuestions"],
           [121, "BackfillClaudeNativeSubagentEffort"],
+          [122, "QueuedSteerReplacementTurns"],
         ]);
         const rows = yield* sql<{
           readonly id: string;
@@ -1180,6 +1189,7 @@ mindTextRevisionsLayer("Mind text revisions migration", (it) => {
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
+        [122, "QueuedSteerReplacementTurns"],
       ]);
 
       const columns = yield* sql<{ readonly name: string }>`
@@ -1233,6 +1243,7 @@ mindProfileLayer("Mind profiles migration", (it) => {
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
+        [122, "QueuedSteerReplacementTurns"],
       ]);
 
       // Profiles are decoupled from the projection: deleting the project row
@@ -1301,6 +1312,7 @@ mindDecouplingLayer("Mind projection decoupling migration", (it) => {
         [119, "AwaitedDispatches"],
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
+        [122, "QueuedSteerReplacementTurns"],
       ]);
 
       const profileFks = yield* sql<{ readonly referenced: string }>`

@@ -65,8 +65,9 @@ task when the work needs a different owner, branch, or review boundary.
 
 For work that should continue across several turns, set a deliberate
 [thread goal](https://www.trysynara.com/docs/features/thread-goals). A goal can continue after a
-clean turn, but queued user work, approvals, questions, interruptions, failures, and pause rules
-remain in control.
+clean turn, but queued user work, approvals, questions, failures, explicit stops, and pause rules
+remain in control. If Synara interrupts a turn only to promote newer queued guidance, the promoted
+turn keeps the active goal instead of treating that internal replacement as a user stop.
 
 Use a [thread fork](https://www.trysynara.com/docs/workflows/forks) when a new task should inherit
 the conversation or split from one exact turn. Use a

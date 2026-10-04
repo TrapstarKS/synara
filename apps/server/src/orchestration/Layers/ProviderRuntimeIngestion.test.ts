@@ -37,6 +37,7 @@ import {
   ProviderRuntimeEventRepository,
   type PersistedProviderRuntimeEvent,
 } from "../../persistence/Services/ProviderRuntimeEvents.ts";
+import { QueuedTurnPromotionRepository } from "../../persistence/Services/QueuedTurnPromotions.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -348,6 +349,7 @@ describe("ProviderRuntimeIngestion", () => {
     | OrchestrationEngineService
     | ProviderRuntimeIngestionService
     | ProviderRuntimeEventRepository
+    | QueuedTurnPromotionRepository
     | SqlClient.SqlClient
     | ProjectionSnapshotQuery,
     unknown
@@ -418,6 +420,9 @@ describe("ProviderRuntimeIngestion", () => {
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
     const runtimeEventRepository = await runtime.runPromise(
       Effect.service(ProviderRuntimeEventRepository),
+    );
+    const queuedTurnPromotions = await runtime.runPromise(
+      Effect.service(QueuedTurnPromotionRepository),
     );
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     scope = await Effect.runPromise(Scope.make("sequential"));
@@ -506,6 +511,7 @@ describe("ProviderRuntimeIngestion", () => {
       drain,
       startIngestion,
       runtimeEventRepository,
+      queuedTurnPromotions,
       readProjectedThread,
     };
   }
@@ -1565,6 +1571,177 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(events.some((event) => event.type === "thread.goal-continuation-requested")).toBe(false);
   });
+
+  it.each(["interrupted", "completed"] as const)(
+    "keeps an active goal through a queued steer replacement reported as %s",
+    async (replacedTurnState) => {
+      const harness = await createHarness({
+        parentModelSelection: { provider: "opencode", model: "openai/gpt-5" },
+      });
+      const threadId = asThreadId("thread-1");
+      const interruptedTurnId = asTurnId("turn-before-queued-steer");
+      const promotedTurnId = asTurnId("turn-promoted-steer");
+      const messageId = asMessageId("message-queued-steer");
+      const createdAt = new Date().toISOString();
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-goal-before-queued-steer"),
+          threadId,
+          goal: "Finish the full task after incorporating user guidance",
+          goalStartBehavior: "defer",
+        }),
+      );
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-before-queued-steer-started"),
+        provider: "opencode",
+        threadId,
+        createdAt,
+        turnId: interruptedTurnId,
+      });
+      await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.activeTurnId === interruptedTurnId,
+      );
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("cmd-queue-steer-with-active-goal"),
+          threadId,
+          message: {
+            messageId,
+            role: "user",
+            text: "Use this additional requirement and keep going.",
+            attachments: [],
+          },
+          dispatchMode: "steer",
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt,
+        }),
+      );
+      const eventsBeforeInterrupt = Array.from(
+        await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0))),
+      );
+      const queuedEvent = eventsBeforeInterrupt.find(
+        (event) => event.type === "thread.turn-queued" && event.payload.messageId === messageId,
+      );
+      expect(queuedEvent?.type).toBe("thread.turn-queued");
+      if (queuedEvent?.type !== "thread.turn-queued") return;
+      await Effect.runPromise(
+        harness.queuedTurnPromotions.enqueue({
+          queuedEventSequence: queuedEvent.sequence,
+          threadId,
+          messageId,
+          dispatchMode: "steer",
+          createdAt,
+        }),
+      );
+      expect(
+        await Effect.runPromise(
+          harness.queuedTurnPromotions.markReplacesTurn({
+            queuedEventSequence: queuedEvent.sequence,
+            threadId,
+            replacedTurnId: interruptedTurnId,
+            updatedAt: createdAt,
+          }),
+        ),
+      ).toBe(true);
+
+      // Reproduce the real race: the command reactor can dispatch and mark the
+      // queued steer promoted before runtime ingestion settles the interrupted
+      // old turn. Replacement ownership must survive that state transition.
+      const claim = await Effect.runPromise(
+        harness.queuedTurnPromotions.claimNext({
+          threadId,
+          claimOwner: "test-promoter",
+          claimedAt: createdAt,
+          claimExpiresAt: "2099-01-01T00:00:00.000Z",
+        }),
+      );
+      expect(Option.isSome(claim)).toBe(true);
+      if (Option.isNone(claim)) return;
+      expect(
+        await Effect.runPromise(
+          harness.queuedTurnPromotions.markPromoted({
+            queuedEventSequence: claim.value.queuedEventSequence,
+            claimOwner: "test-promoter",
+            promotedAt: new Date().toISOString(),
+          }),
+        ),
+      ).toBe(true);
+
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-before-queued-steer-interrupted"),
+        provider: "opencode",
+        threadId,
+        createdAt: new Date().toISOString(),
+        turnId: interruptedTurnId,
+        payload: { state: replacedTurnState },
+      });
+      await harness.drain();
+      let thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+      expect(thread.session?.activeTurnId).toBeNull();
+      expect(thread.goalPausedAt).toBeNull();
+      const eventsAfterReplacedTurn = Array.from(
+        await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0))),
+      );
+      expect(
+        eventsAfterReplacedTurn.some(
+          (event) =>
+            event.type === "thread.goal-continuation-requested" &&
+            event.payload.sourceTurnId === interruptedTurnId,
+        ),
+      ).toBe(false);
+
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-promoted-steer-started"),
+        provider: "opencode",
+        threadId,
+        createdAt: new Date().toISOString(),
+        turnId: promotedTurnId,
+      });
+      await waitForThread(
+        harness.engine,
+        (entry) => entry.session?.activeTurnId === promotedTurnId,
+      );
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-promoted-steer-completed"),
+        provider: "opencode",
+        threadId,
+        createdAt: new Date().toISOString(),
+        turnId: promotedTurnId,
+        payload: { state: "completed" },
+      });
+      await harness.drain();
+
+      thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+      expect(thread.goalPausedAt).toBeNull();
+      const eventsAfterPromotedTurn = Array.from(
+        await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0))),
+      );
+      expect(eventsAfterPromotedTurn).toContainEqual(
+        expect.objectContaining({
+          type: "thread.goal-continuation-requested",
+          payload: expect.objectContaining({
+            threadId,
+            sourceTurnId: promotedTurnId,
+            trigger: "turn-completed",
+          }),
+        }),
+      );
+    },
+  );
 
   it.each(["success", "restart-failure", "user-interrupt", "user-cancel"] as const)(
     "preserves Devin recovery goal ownership through %s",

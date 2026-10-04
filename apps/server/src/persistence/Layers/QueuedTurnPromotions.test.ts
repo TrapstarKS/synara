@@ -18,7 +18,7 @@ layer("QueuedTurnPromotionRepository", (it) => {
         const repository = yield* QueuedTurnPromotionRepository;
         const sql = yield* SqlClient.SqlClient;
         const now = "2026-07-14T00:00:00.000Z";
-        const insertSourceEvent = (id: number) =>
+        const insertSourceEvent = (id: number, dispatchMode: "queue" | "steer") =>
           sql<{ readonly sequence: number }>`
           INSERT INTO orchestration_events (
             event_id, aggregate_kind, stream_id, stream_version, event_type,
@@ -27,13 +27,18 @@ layer("QueuedTurnPromotionRepository", (it) => {
           ) VALUES (
             ${`evt-queued-promotion-${id}`}, 'thread', 'thread-queued-promotion', ${id - 1},
             'thread.turn-queued', ${now}, ${`cmd-queued-promotion-${id}`},
-            NULL, NULL, 'server', '{}', '{}'
+            NULL, NULL, 'server',
+            ${JSON.stringify({
+              threadId: "thread-queued-promotion",
+              messageId: `message-${id}`,
+              dispatchMode,
+            })}, '{}'
           )
           RETURNING sequence
         `.pipe(Effect.map((rows) => rows[0]!.sequence));
 
-        const queuedSequence = yield* insertSourceEvent(1);
-        const steerSequence = yield* insertSourceEvent(2);
+        const queuedSequence = yield* insertSourceEvent(1, "queue");
+        const steerSequence = yield* insertSourceEvent(2, "steer");
         yield* repository.enqueue({
           queuedEventSequence: queuedSequence,
           threadId: "thread-queued-promotion",
@@ -48,6 +53,20 @@ layer("QueuedTurnPromotionRepository", (it) => {
           dispatchMode: "steer",
           createdAt: now,
         });
+        assert.isTrue(
+          yield* repository.markReplacesTurn({
+            queuedEventSequence: steerSequence,
+            threadId: "thread-queued-promotion",
+            replacedTurnId: "turn-replaced-by-steer",
+            updatedAt: now,
+          }),
+        );
+        assert.isTrue(
+          yield* repository.isTurnReplacedBySteer({
+            threadId: "thread-queued-promotion",
+            turnId: "turn-replaced-by-steer",
+          }),
+        );
 
         const firstClaim = yield* repository.claimNext({
           threadId: "thread-queued-promotion",
@@ -74,6 +93,12 @@ layer("QueuedTurnPromotionRepository", (it) => {
             promotedAt: now,
           }),
         );
+        assert.isTrue(
+          yield* repository.isTurnReplacedBySteer({
+            threadId: "thread-queued-promotion",
+            turnId: "turn-replaced-by-steer",
+          }),
+        );
 
         const nextClaim = yield* repository.claimNext({
           threadId: "thread-queued-promotion",
@@ -88,7 +113,7 @@ layer("QueuedTurnPromotionRepository", (it) => {
           updatedAt: now,
         });
 
-        const laterSteerSequence = yield* insertSourceEvent(3);
+        const laterSteerSequence = yield* insertSourceEvent(3, "steer");
         yield* repository.enqueue({
           queuedEventSequence: laterSteerSequence,
           threadId: "thread-queued-promotion",
@@ -96,6 +121,14 @@ layer("QueuedTurnPromotionRepository", (it) => {
           dispatchMode: "steer",
           createdAt: now,
         });
+        assert.isTrue(
+          yield* repository.markCausalSteerReplacement({
+            queuedEventId: "evt-queued-promotion-3",
+            threadId: "thread-queued-promotion",
+            replacedTurnId: "turn-replaced-by-later-steer",
+            updatedAt: now,
+          }),
+        );
         const laterGeneration = yield* repository.claimNext({
           threadId: "thread-queued-promotion",
           claimOwner: "owner-later-generation",
@@ -114,6 +147,12 @@ layer("QueuedTurnPromotionRepository", (it) => {
           threadId: "thread-queued-promotion",
           updatedAt: now,
         });
+        assert.isFalse(
+          yield* repository.isTurnReplacedBySteer({
+            threadId: "thread-queued-promotion",
+            turnId: "turn-replaced-by-later-steer",
+          }),
+        );
         assert.isFalse(
           yield* repository.hasPendingMessage({
             threadId: "thread-queued-promotion",
