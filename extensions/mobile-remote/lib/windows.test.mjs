@@ -193,6 +193,10 @@ test("Windows ACL batch uses one bounded asynchronous process and preserves stri
       assert.ok(script.includes(guard), guard);
     assert.ok(script.includes("S-1-5-18"));
     assert.ok(script.includes("S-1-5-32-544"));
+    assert.ok(script.includes("$privatePaths = ConvertFrom-Json"));
+    assert.ok(script.includes("foreach ($privatePath in $privatePaths)"));
+    assert.ok(script.includes("$privatePath -isnot [string]"));
+    assert.ok(!script.includes("@(ConvertFrom-Json"));
     assert.ok(!script.includes(paths[1]), "path values must never become PowerShell code");
     complete = done;
   });

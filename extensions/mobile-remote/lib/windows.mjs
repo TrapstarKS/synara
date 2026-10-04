@@ -51,7 +51,11 @@ export function assertPrivateWindowsPaths(paths, run = execFile) {
   return new Promise((resolve, reject) =>
     run(
       ...invocation(
-        `foreach ($privatePath in @(ConvertFrom-Json -InputObject $env:SYNARA_MOBILE_PRIVATE_PATHS)) { ${privatePathCheck} }`,
+        `$privatePaths = ConvertFrom-Json -InputObject $env:SYNARA_MOBILE_PRIVATE_PATHS
+         foreach ($privatePath in $privatePaths) {
+           if ($privatePath -isnot [string] -or [string]::IsNullOrWhiteSpace($privatePath)) { throw 'Invalid private path' }
+           ${privatePathCheck}
+         }`,
         { SYNARA_MOBILE_PRIVATE_PATHS: JSON.stringify(paths) },
       ),
       (error) => (error ? reject(error) : resolve()),
