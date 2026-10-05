@@ -174,7 +174,8 @@ it.skipIf(!binary)(
         await new Promise<void>((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve())),
         );
-        await rm(root, { recursive: true, force: true });
+        // Windows releases the exited Codex tree's handles asynchronously (EBUSY).
+        await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       }
     }
   },
