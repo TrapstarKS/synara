@@ -88,6 +88,10 @@ export const ProjectionThread = Schema.Struct({
   goalPausedAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  // Omission preserves the durable circuit-breaker state during legacy
+  // whole-row upserts; explicit zero/null resets it.
+  goalBlockCount: Schema.optional(NonNegativeInt),
+  goalBlockLastTurnId: Schema.optional(Schema.NullOr(TurnId)),
   goalAchievements: Schema.optional(Schema.NullOr(ThreadGoalAchievements)).pipe(
     Schema.withDecodingDefault(() => null),
   ),

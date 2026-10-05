@@ -217,6 +217,7 @@ managedAttachmentsFreshLayer("managed attachment migration on a fresh database",
       assert.deepInclude(executed, [66, "DurableProviderRuntimeEvents"]);
       assert.deepInclude(executed, [67, "ProviderDeliveryReconciliation"]);
       assert.deepInclude(executed, [79, "Spaces"]);
+      assert.deepInclude(executed, [123, "ProjectionThreadsGoalBlockStreak"]);
 
       const tables = yield* sql<{ readonly name: string }>`
         SELECT name
@@ -324,6 +325,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
+        [123, "ProjectionThreadsGoalBlockStreak"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -398,6 +400,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 120, name: "CoordinatorQuestions" },
           { migration_id: 121, name: "BackfillClaudeNativeSubagentEffort" },
           { migration_id: 122, name: "QueuedSteerReplacementTurns" },
+          { migration_id: 123, name: "ProjectionThreadsGoalBlockStreak" },
         ],
       );
       const preserved = yield* sql<{ readonly count: number }>`
@@ -513,6 +516,7 @@ agentGatewayRetentionLegacyLayer(
           [120, "CoordinatorQuestions"],
           [121, "BackfillClaudeNativeSubagentEffort"],
           [122, "QueuedSteerReplacementTurns"],
+          [123, "ProjectionThreadsGoalBlockStreak"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -630,6 +634,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
+        [123, "ProjectionThreadsGoalBlockStreak"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -688,6 +693,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [120, "CoordinatorQuestions"],
           [121, "BackfillClaudeNativeSubagentEffort"],
           [122, "QueuedSteerReplacementTurns"],
+          [123, "ProjectionThreadsGoalBlockStreak"],
         ],
       );
 
@@ -800,6 +806,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
+        [123, "ProjectionThreadsGoalBlockStreak"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -854,6 +861,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [120, "CoordinatorQuestions"],
           [121, "BackfillClaudeNativeSubagentEffort"],
           [122, "QueuedSteerReplacementTurns"],
+          [123, "ProjectionThreadsGoalBlockStreak"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -1046,6 +1054,7 @@ mindMigrationLayer("Mind migration", (it) => {
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
+        [123, "ProjectionThreadsGoalBlockStreak"],
       ]);
 
       yield* sql`INSERT INTO mind_memories (id, project_id, text, type, text_hash, peak_weight, created_at, last_accessed_at) VALUES ('m1', 'p1', 'delete me', 'semantic', 'hash', 0.6, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`;
@@ -1099,6 +1108,7 @@ mindRuntimeIntegrityLayer("Mind runtime integrity migration", (it) => {
           [120, "CoordinatorQuestions"],
           [121, "BackfillClaudeNativeSubagentEffort"],
           [122, "QueuedSteerReplacementTurns"],
+          [123, "ProjectionThreadsGoalBlockStreak"],
         ]);
         const rows = yield* sql<{
           readonly id: string;
@@ -1190,6 +1200,7 @@ mindTextRevisionsLayer("Mind text revisions migration", (it) => {
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
+        [123, "ProjectionThreadsGoalBlockStreak"],
       ]);
 
       const columns = yield* sql<{ readonly name: string }>`
@@ -1244,6 +1255,7 @@ mindProfileLayer("Mind profiles migration", (it) => {
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
+        [123, "ProjectionThreadsGoalBlockStreak"],
       ]);
 
       // Profiles are decoupled from the projection: deleting the project row
@@ -1313,6 +1325,7 @@ mindDecouplingLayer("Mind projection decoupling migration", (it) => {
         [120, "CoordinatorQuestions"],
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
+        [123, "ProjectionThreadsGoalBlockStreak"],
       ]);
 
       const profileFks = yield* sql<{ readonly referenced: string }>`

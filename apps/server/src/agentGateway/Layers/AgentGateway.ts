@@ -25,6 +25,7 @@ import {
   SYNARA_GATEWAY_MAX_THREADS_PER_OPERATION,
   SynaraSendMessageInput,
   MessageId,
+  THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
   THREAD_GOAL_MAX_CHARS,
   ThreadId,
   TurnId,
@@ -149,6 +150,16 @@ function readThreadGoalArg(args: Record<string, unknown>): string {
     );
   }
   return goal;
+}
+
+function agentCommandGuard(context: ToolContext) {
+  if (context.callerTurnId === null) {
+    throw new ToolInputError("Agent command requires an exact active caller turn.");
+  }
+  return {
+    agentCallerThreadId: ThreadId.makeUnsafe(context.callerThreadId),
+    agentCallerTurnId: TurnId.makeUnsafe(context.callerTurnId),
+  } as const;
 }
 
 export const makeAgentGateway = Effect.gen(function* () {
@@ -730,7 +741,8 @@ export const makeAgentGateway = Effect.gen(function* () {
     requiresActiveTurn: true,
     definition: {
       name: "synara_interrupt_thread",
-      description: "Interrupt the running turn of a Synara thread.",
+      description:
+        "Interrupt the running turn of a Synara thread that has no active persistent goal. Agent-originated interrupts cannot stop an active goal; keep working, complete it, or report a genuine blocker through synara_set_thread_goal. A user can still stop the task from the interface.",
       inputSchema: {
         type: "object",
         properties: {
@@ -748,6 +760,13 @@ export const makeAgentGateway = Effect.gen(function* () {
         const target = yield* requireThreadShell(threadId);
         // Stopping a higher-privileged thread's work is still driving it.
         yield* assertCallerMayDriveThread(caller, target);
+        if ((target.goal ?? "").trim().length > 0 && target.goalPausedAt == null) {
+          return yield* Effect.fail(
+            new ToolInputError(
+              `An agent cannot interrupt a thread while its persistent goal is active. Continue working, complete the goal, or report a genuine blocker with synara_set_thread_goal({ blocked: true }). The user can still stop the task from the interface.`,
+            ),
+          );
+        }
         const activeTurnId = target.session?.activeTurnId ?? null;
         const hadActiveTurn = activeTurnId !== null || target.latestTurn?.state === "running";
         const dispatched = yield* orchestrationEngine
@@ -755,6 +774,7 @@ export const makeAgentGateway = Effect.gen(function* () {
             type: "thread.turn.interrupt",
             commandId: CommandId.makeUnsafe(`agent:${randomUUID()}:interrupt`),
             threadId: target.id,
+            ...agentCommandGuard(context),
             createdAt: isoNow(),
           })
           .pipe(Effect.mapError((error) => new ToolInputError(errorText(error))));
@@ -877,7 +897,7 @@ export const makeAgentGateway = Effect.gen(function* () {
     definition: {
       name: "synara_set_thread_archived",
       description:
-        "Archive or unarchive a Synara thread. Defaults to your own thread when threadId is omitted.",
+        "Archive or unarchive a Synara thread. Defaults to your own thread when threadId is omitted. An agent cannot archive a thread while its persistent goal is active; the user can still stop or archive it from the interface.",
       inputSchema: {
         type: "object",
         properties: {
@@ -899,11 +919,19 @@ export const makeAgentGateway = Effect.gen(function* () {
         const caller = yield* requireThreadShell(context.callerThreadId);
         const target = yield* requireThreadShell(threadId);
         yield* assertCallerMayDriveThread(caller, target);
+        if (archived && (target.goal ?? "").trim().length > 0 && target.goalPausedAt == null) {
+          return yield* Effect.fail(
+            new ToolInputError(
+              `An agent cannot archive a thread while its persistent goal is active. Continue working, complete the goal, or report a genuine blocker with synara_set_thread_goal({ blocked: true }). The user can still stop or archive it from the interface.`,
+            ),
+          );
+        }
         yield* orchestrationEngine
           .dispatch({
             type: archived ? "thread.archive" : "thread.unarchive",
             commandId: CommandId.makeUnsafe(`agent:${randomUUID()}:archive`),
             threadId: target.id,
+            ...(archived ? agentCommandGuard(context) : {}),
           })
           .pipe(Effect.mapError((error) => new ToolInputError(errorText(error))));
         if (archived) {
@@ -931,8 +959,7 @@ export const makeAgentGateway = Effect.gen(function* () {
     requiresActiveTurn: true,
     definition: {
       name: "synara_set_thread_goal",
-      description:
-        "Set a persistent goal for a thread. Only set a goal when the user has explicitly asked for one (for example, 'keep working until X' or 'the goal of this thread is Y') or when dispatching a thread explicitly created to pursue a stated objective. Do NOT infer or invent goals from ordinary tasks or set one as a side effect of normal work. Clearing requires the same explicit user intent. When the active goal's objective has been accomplished, pass achieved: true instead of clearing: Synara records the achievement (with the time it took) and clears the goal. If the same external blocker prevents meaningful progress for three consecutive goal turns, pass blocked: true to pause the goal. Do not mark a goal blocked merely because the work is difficult, incomplete, or would benefit from clarification.",
+      description: `Set a persistent goal for a thread. Only set a goal when the user has explicitly asked for one (for example, 'keep working until X' or 'the goal of this thread is Y') or when dispatching a thread explicitly created to pursue a stated objective. Do NOT infer or invent goals from ordinary tasks or set one as a side effect of normal work. Clearing requires the same explicit user intent. When the active goal's objective has been accomplished, pass achieved: true instead of clearing: Synara records the achievement (with the time it took) and clears the goal. If an external blocker truly prevents meaningful progress, pass blocked: true once in that goal turn. Synara rejects the first ${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1} consecutive blocked-turn requests and keeps the goal active; only the ${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT}th consecutive blocked goal turn pauses it. A goal turn without a block report resets the streak. Do not report blocked merely because the work is difficult, incomplete, or would benefit from clarification.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -953,8 +980,7 @@ export const makeAgentGateway = Effect.gen(function* () {
           },
           blocked: {
             type: "boolean",
-            description:
-              "Pass true only after the same external blocker prevents meaningful progress for three consecutive goal turns. Pauses the active goal.",
+            description: `Pass true once in a goal turn only when an external blocker truly prevents meaningful progress. The first ${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1} consecutive requests are rejected; the ${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT}th pauses the active goal.`,
           },
         },
         required: [],
@@ -982,10 +1008,32 @@ export const makeAgentGateway = Effect.gen(function* () {
         const caller = yield* requireThreadShell(context.callerThreadId);
         const target = yield* requireThreadShell(threadId);
         yield* assertCallerMayDriveThread(caller, target);
+        if (target.id !== caller.id) {
+          const settingFreshGoal =
+            !achieved && !blocked && goal.length > 0 && (target.goal ?? "").trim().length === 0;
+          if (!settingFreshGoal) {
+            return yield* Effect.fail(
+              new ToolInputError(
+                `An agent can only assign a new goal to another thread that does not already own one. Only the goal thread itself can edit, clear, complete, or report a blocker for its persistent goal.`,
+              ),
+            );
+          }
+        }
+        const blockTurnId = blocked ? context.callerTurnId : null;
         if ((achieved || blocked) && (target.goal ?? "").trim().length === 0) {
           return yield* Effect.fail(
             new ToolInputError(
               `Thread has no active goal to mark ${achieved ? "achieved" : "blocked"}.`,
+            ),
+          );
+        }
+        if (blocked && target.goalPausedAt != null) {
+          return yield* Effect.fail(new ToolInputError(`Thread's active goal is already paused.`));
+        }
+        if (blocked && blockTurnId === null) {
+          return yield* Effect.fail(
+            new ToolInputError(
+              `A blocked goal report requires an exact active provider turn on the goal's thread.`,
             ),
           );
         }
@@ -994,15 +1042,47 @@ export const makeAgentGateway = Effect.gen(function* () {
             type: "thread.meta.update",
             commandId: CommandId.makeUnsafe(`agent:${randomUUID()}:goal`),
             threadId: target.id,
-            ...(achieved ? { goalAchieved: true } : blocked ? { goalPaused: true } : { goal }),
+            ...agentCommandGuard(context),
+            ...(achieved
+              ? { goalAchieved: true }
+              : blocked
+                ? {
+                    goalBlockAttempt: true,
+                    goalBlockTurnId: TurnId.makeUnsafe(blockTurnId!),
+                  }
+                : { goal }),
           })
           .pipe(Effect.mapError((error) => new ToolInputError(errorText(error))));
+        if (blocked) {
+          const updatedThread = (yield* orchestrationEngine.getReadModel()).threads.find(
+            (candidate) => candidate.id === target.id,
+          );
+          const blockCount = updatedThread?.goalBlockCount ?? target.goalBlockCount ?? 0;
+          const paused = updatedThread?.goalPausedAt != null;
+          const details = {
+            threadId: target.id,
+            goal: target.goal,
+            blocked: true,
+            paused,
+            blockCount,
+            blockLimit: THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
+            remainingBlockedTurns: Math.max(0, THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - blockCount),
+          };
+          if (!paused) {
+            return gatewayToolErrorResult(
+              new GatewayToolError(
+                "goal_block_refused",
+                `Blocked goal report ${blockCount}/${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT} recorded. Synara kept the goal active. Continue working or finish this turn; the next goal turn will start automatically. Report the blocker again only on a later goal turn if it still prevents meaningful progress.`,
+                details,
+              ),
+            );
+          }
+          return mcpToolResultJson(details);
+        }
         return mcpToolResultJson(
           achieved
             ? { threadId: target.id, goal: null, achieved: true }
-            : blocked
-              ? { threadId: target.id, goal: target.goal, blocked: true, paused: true }
-              : { threadId: target.id, goal: goal || null },
+            : { threadId: target.id, goal: goal || null },
         );
       }).pipe(Effect.catch((error) => Effect.succeed(mcpToolResultError(errorText(error))))),
   };

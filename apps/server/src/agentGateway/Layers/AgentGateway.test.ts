@@ -7,6 +7,7 @@ import type {
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationProjectShell,
+  OrchestrationReadModel,
   OrchestrationThread,
   OrchestrationThreadShell,
   ProviderKind,
@@ -24,6 +25,7 @@ import {
   MessageId,
   ModelSelection,
   ProjectId,
+  THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
   THREAD_GOAL_MAX_CHARS,
   ThreadId,
   TurnId,
@@ -711,11 +713,49 @@ function makeHarnessLayer(
 
   const engineLayer = Layer.succeed(OrchestrationEngineService, {
     getEventHighWaterSequence: Effect.succeed(0),
+    getReadModel: () =>
+      Effect.succeed({
+        snapshotSequence: dispatched.length,
+        spaces: [],
+        projects: [],
+        threads: [...threadsById.values()].map(makeThreadDetail),
+        updatedAt: NOW,
+      } as unknown as OrchestrationReadModel),
     dispatch: (command: OrchestrationCommand) =>
       Effect.sleep(options.dispatchDelayMs ?? 0).pipe(
         Effect.flatMap(() =>
           Effect.suspend(() => {
             dispatched.push(command);
+            if (command.type === "thread.meta.update") {
+              const target = threadsById.get(command.threadId);
+              if (target && command.goalBlockAttempt === true) {
+                const turnId =
+                  command.goalBlockTurnId ??
+                  target.session?.activeTurnId ??
+                  target.latestTurn?.turnId ??
+                  null;
+                if (turnId !== null && target.goalBlockLastTurnId !== turnId) {
+                  const goalBlockCount = Math.min(
+                    THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
+                    (target.goalBlockCount ?? 0) + 1,
+                  );
+                  threadsById.set(command.threadId, {
+                    ...target,
+                    goalBlockCount,
+                    goalBlockLastTurnId: turnId,
+                    ...(goalBlockCount >= THREAD_GOAL_BLOCK_ATTEMPT_LIMIT
+                      ? { goalPausedAt: NOW }
+                      : {}),
+                  });
+                }
+              } else if (target && command.goalBlockReset === true) {
+                threadsById.set(command.threadId, {
+                  ...target,
+                  goalBlockCount: 0,
+                  goalBlockLastTurnId: null,
+                });
+              }
+            }
             const advancedTurnState = options.advanceParentTurnAfterDispatch?.state ?? "running";
             if (
               options.advanceParentTurnAfterDispatch?.commandType === command.type &&
@@ -2261,6 +2301,14 @@ describe("AgentGateway", () => {
       assert.property(setThreadGoal?.inputSchema.properties, "blocked");
       assert.include(setThreadGoal?.description ?? "", "achieved: true");
       assert.include(setThreadGoal?.description ?? "", "blocked: true");
+      assert.include(
+        setThreadGoal?.description ?? "",
+        `first ${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1}`,
+      );
+      assert.include(
+        setThreadGoal?.description ?? "",
+        `${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT}th consecutive blocked goal turn`,
+      );
 
       const setThreadPullRequest = tools.find(
         (tool) => tool.name === "synara_set_thread_pull_request",
@@ -6027,7 +6075,7 @@ describe("AgentGateway", () => {
     }).pipe(Effect.provide(gatewayLayer));
   });
 
-  it.effect("archives, renames, sets, and clears thread metadata", () => {
+  it.effect("archives, renames, and assigns fresh thread goals", () => {
     const { gatewayLayer, makeHarness } = makeHarnessLayer(baseThreads);
     return Effect.gen(function* () {
       const harness = yield* makeHarness;
@@ -6046,25 +6094,33 @@ describe("AgentGateway", () => {
         name: "synara_set_thread_goal",
         args: { goal: "Ship the complete gateway feature" },
       });
-      const clearChildGoal = yield* harness.callTool({
+      const setChildGoal = yield* harness.callTool({
         token: "token-parent",
         name: "synara_set_thread_goal",
-        args: { threadId: "thread-child", goal: null },
+        args: { threadId: "thread-child", goal: "Complete delegated work" },
       });
 
       assert.isFalse(isToolError(setOwnGoal.result), toolErrorText(setOwnGoal.result));
-      assert.isFalse(isToolError(clearChildGoal.result), toolErrorText(clearChildGoal.result));
+      assert.isFalse(isToolError(setChildGoal.result), toolErrorText(setChildGoal.result));
       assert.equal(harness.dispatched[0]?.type, "thread.meta.update");
-      assert.equal(harness.dispatched[1]?.type, "thread.archive");
+      assert.deepInclude(harness.dispatched[1] as unknown as Record<string, unknown>, {
+        type: "thread.archive",
+        agentCallerThreadId: "thread-parent",
+        agentCallerTurnId: "turn-parent-active",
+      });
       assert.deepInclude(harness.dispatched[2] as unknown as Record<string, unknown>, {
         type: "thread.meta.update",
         threadId: "thread-parent",
         goal: "Ship the complete gateway feature",
+        agentCallerThreadId: "thread-parent",
+        agentCallerTurnId: "turn-parent-active",
       });
       assert.deepInclude(harness.dispatched[3] as unknown as Record<string, unknown>, {
         type: "thread.meta.update",
         threadId: "thread-child",
-        goal: "",
+        goal: "Complete delegated work",
+        agentCallerThreadId: "thread-parent",
+        agentCallerTurnId: "turn-parent-active",
       });
     }).pipe(Effect.provide(gatewayLayer));
   });
@@ -6116,7 +6172,7 @@ describe("AgentGateway", () => {
     }).pipe(Effect.provide(gatewayLayer));
   });
 
-  it.effect("marks an active goal achieved instead of plain-clearing it", () => {
+  it.effect("does not let another agent mark a target thread's goal achieved", () => {
     const { gatewayLayer, makeHarness } = makeHarnessLayer([
       ...baseThreads.filter((thread) => thread.id !== "thread-child"),
       makeThreadShell("thread-child", { goal: "Ship the gateway feature" }),
@@ -6129,17 +6185,38 @@ describe("AgentGateway", () => {
         args: { threadId: "thread-child", achieved: true },
       });
 
+      assert.isTrue(isToolError(response.result));
+      assert.include(toolErrorText(response.result), "Only the goal thread itself");
+      assert.lengthOf(harness.dispatched, 0);
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("marks its own active goal achieved instead of plain-clearing it", () => {
+    const { gatewayLayer, makeHarness } = makeHarnessLayer([
+      ...baseThreads.filter((thread) => thread.id !== "thread-parent"),
+      makeThreadShell("thread-parent", { goal: "Ship the gateway feature" }),
+    ]);
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const response = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_set_thread_goal",
+        args: { achieved: true },
+      });
+
       assert.isFalse(isToolError(response.result), toolErrorText(response.result));
       assert.deepEqual(toolResultJson(response.result), {
-        threadId: "thread-child",
+        threadId: "thread-parent",
         goal: null,
         achieved: true,
       });
       const dispatched = harness.dispatched[0] as unknown as Record<string, unknown>;
       assert.deepInclude(dispatched, {
         type: "thread.meta.update",
-        threadId: "thread-child",
+        threadId: "thread-parent",
         goalAchieved: true,
+        agentCallerThreadId: "thread-parent",
+        agentCallerTurnId: "turn-parent-active",
       });
       assert.notProperty(dispatched, "goal");
     }).pipe(Effect.provide(gatewayLayer));
@@ -6161,7 +6238,151 @@ describe("AgentGateway", () => {
     }).pipe(Effect.provide(gatewayLayer));
   });
 
-  it.effect("pauses an active goal when the agent reports a repeated blocker", () => {
+  it.effect("refuses an agent interrupt while the target persistent goal is active", () => {
+    const { gatewayLayer, makeHarness } = makeHarnessLayer([
+      ...baseThreads.filter((thread) => thread.id !== "thread-parent"),
+      makeThreadShell("thread-parent", { goal: "Ship the gateway feature" }),
+    ]);
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const response = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_interrupt_thread",
+        args: { threadId: "thread-parent" },
+      });
+
+      assert.isTrue(isToolError(response.result));
+      assert.include(toolErrorText(response.result), "cannot interrupt a thread");
+      assert.include(toolErrorText(response.result), "blocked: true");
+      assert.lengthOf(harness.dispatched, 0);
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("does not let another agent proxy-interrupt an active goal", () => {
+    const { gatewayLayer, makeHarness } = makeHarnessLayer([
+      ...baseThreads.filter((thread) => thread.id !== "thread-child"),
+      makeThreadShell("thread-child", { goal: "Complete delegated work" }),
+    ]);
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const response = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_interrupt_thread",
+        args: { threadId: "thread-child" },
+      });
+
+      assert.isTrue(isToolError(response.result));
+      assert.include(toolErrorText(response.result), "cannot interrupt a thread");
+      assert.lengthOf(harness.dispatched, 0);
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("still lets an agent interrupt a running thread without an active goal", () => {
+    const { gatewayLayer, makeHarness } = makeHarnessLayer(baseThreads);
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const response = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_interrupt_thread",
+        args: { threadId: "thread-parent" },
+      });
+
+      assert.isFalse(isToolError(response.result), toolErrorText(response.result));
+      assert.deepInclude(harness.dispatched[0] as unknown as Record<string, unknown>, {
+        type: "thread.turn.interrupt",
+        threadId: "thread-parent",
+        agentCallerThreadId: "thread-parent",
+        agentCallerTurnId: "turn-parent-active",
+      });
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("does not let an agent archive a thread with an active goal", () => {
+    const { gatewayLayer, makeHarness } = makeHarnessLayer([
+      ...baseThreads.filter((thread) => thread.id !== "thread-child"),
+      makeThreadShell("thread-child", { goal: "Complete delegated work" }),
+    ]);
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const response = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_set_thread_archived",
+        args: { threadId: "thread-child", archived: true },
+      });
+
+      assert.isTrue(isToolError(response.result));
+      assert.include(toolErrorText(response.result), "cannot archive a thread");
+      assert.include(toolErrorText(response.result), "blocked: true");
+      assert.lengthOf(harness.dispatched, 0);
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("records and rejects an early blocked-goal stop request", () => {
+    const { gatewayLayer, makeHarness } = makeHarnessLayer([
+      ...baseThreads.filter((thread) => thread.id !== "thread-parent"),
+      makeThreadShell("thread-parent", { goal: "Ship the gateway feature" }),
+    ]);
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const response = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_set_thread_goal",
+        args: { blocked: true },
+      });
+
+      assert.isTrue(isToolError(response.result));
+      const error = toolResultJson(response.result).error as Record<string, unknown>;
+      assert.equal(error.code, "goal_block_refused");
+      assert.deepEqual(error.details, {
+        threadId: "thread-parent",
+        goal: "Ship the gateway feature",
+        blocked: true,
+        paused: false,
+        blockCount: 1,
+        blockLimit: THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
+        remainingBlockedTurns: THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1,
+      });
+      assert.deepInclude(harness.dispatched[0] as unknown as Record<string, unknown>, {
+        type: "thread.meta.update",
+        threadId: "thread-parent",
+        goalBlockAttempt: true,
+        goalBlockTurnId: "turn-parent-active",
+        agentCallerThreadId: "thread-parent",
+        agentCallerTurnId: "turn-parent-active",
+      });
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("counts at most one blocked-goal stop request per provider turn", () => {
+    const { gatewayLayer, makeHarness } = makeHarnessLayer([
+      ...baseThreads.filter((thread) => thread.id !== "thread-parent"),
+      makeThreadShell("thread-parent", { goal: "Ship the gateway feature" }),
+    ]);
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const first = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_set_thread_goal",
+        args: { blocked: true },
+      });
+      const repeated = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_set_thread_goal",
+        args: { blocked: true },
+      });
+
+      assert.isTrue(isToolError(first.result));
+      assert.isTrue(isToolError(repeated.result));
+      const repeatedError = toolResultJson(repeated.result).error as Record<string, unknown>;
+      const repeatedDetails = repeatedError.details as Record<string, unknown>;
+      assert.equal(repeatedDetails.paused, false);
+      assert.equal(repeatedDetails.blockCount, 1);
+      assert.equal(repeatedDetails.remainingBlockedTurns, THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1);
+      assert.lengthOf(harness.dispatched, 2);
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("does not let another agent report a blocker for the target thread's goal", () => {
     const { gatewayLayer, makeHarness } = makeHarnessLayer([
       ...baseThreads.filter((thread) => thread.id !== "thread-child"),
       makeThreadShell("thread-child", { goal: "Ship the gateway feature" }),
@@ -6174,17 +6395,38 @@ describe("AgentGateway", () => {
         args: { threadId: "thread-child", blocked: true },
       });
 
+      assert.isTrue(isToolError(response.result));
+      assert.include(toolErrorText(response.result), "Only the goal thread itself");
+      assert.lengthOf(harness.dispatched, 0);
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("pauses an active goal on the eighth consecutive blocked goal turn", () => {
+    const { gatewayLayer, makeHarness } = makeHarnessLayer([
+      ...baseThreads.filter((thread) => thread.id !== "thread-parent"),
+      makeThreadShell("thread-parent", {
+        goal: "Ship the gateway feature",
+        goalBlockCount: THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1,
+        goalBlockLastTurnId: TurnId.makeUnsafe("turn-previous-block"),
+      }),
+    ]);
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const response = yield* harness.callTool({
+        token: "token-parent",
+        name: "synara_set_thread_goal",
+        args: { blocked: true },
+      });
+
       assert.isFalse(isToolError(response.result), toolErrorText(response.result));
       assert.deepEqual(toolResultJson(response.result), {
-        threadId: "thread-child",
+        threadId: "thread-parent",
         goal: "Ship the gateway feature",
         blocked: true,
         paused: true,
-      });
-      assert.deepInclude(harness.dispatched[0] as unknown as Record<string, unknown>, {
-        type: "thread.meta.update",
-        threadId: "thread-child",
-        goalPaused: true,
+        blockCount: THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
+        blockLimit: THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
+        remainingBlockedTurns: 0,
       });
     }).pipe(Effect.provide(gatewayLayer));
   });

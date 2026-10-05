@@ -20,6 +20,7 @@ import {
   ProviderStartOptions,
   ProjectCreateCommand,
   THREAD_NOTES_MAX_CHARS,
+  THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
   THREAD_GOAL_MAX_CHARS,
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
@@ -568,6 +569,80 @@ it.effect("rejects oversized thread goal payloads", () =>
       }),
     );
     assert.strictEqual(failed, true);
+  }),
+);
+
+it.effect("decodes durable goal blocker commands and projection payloads", () =>
+  Effect.gen(function* () {
+    assert.strictEqual(THREAD_GOAL_BLOCK_ATTEMPT_LIMIT, 8);
+    const command = yield* decodeOrchestrationCommand({
+      type: "thread.meta.update",
+      commandId: "cmd-goal-block-attempt",
+      threadId: "thread-1",
+      agentCallerThreadId: "thread-1",
+      agentCallerTurnId: "turn-goal-block-attempt",
+      goalBlockAttempt: true,
+      goalBlockTurnId: "turn-goal-block-attempt",
+    });
+    assert.strictEqual(command.type, "thread.meta.update");
+    if (command.type !== "thread.meta.update") return;
+    assert.strictEqual(command.agentCallerThreadId, "thread-1");
+    assert.strictEqual(command.agentCallerTurnId, "turn-goal-block-attempt");
+    assert.strictEqual(command.goalBlockAttempt, true);
+    assert.strictEqual(command.goalBlockTurnId, "turn-goal-block-attempt");
+
+    const payload = yield* decodeThreadMetaUpdatedPayload({
+      threadId: "thread-1",
+      goalBlockCount: 3,
+      goalBlockLastTurnId: "turn-goal-block-attempt",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(payload.goalBlockCount, 3);
+    assert.strictEqual(payload.goalBlockLastTurnId, "turn-goal-block-attempt");
+  }),
+);
+
+it.effect("strips internal goal blocker mutations from client meta commands", () =>
+  Effect.gen(function* () {
+    const command = yield* decodeClientOrchestrationCommand({
+      type: "thread.meta.update",
+      commandId: "cmd-client-goal-block-spoof",
+      threadId: "thread-1",
+      goalBlockAttempt: true,
+      goalBlockTurnId: "turn-spoofed",
+      goalBlockReset: true,
+      agentCallerThreadId: "thread-attacker",
+      agentCallerTurnId: "turn-attacker",
+    });
+    assert.strictEqual(command.type, "thread.meta.update");
+    assert.strictEqual("goalBlockAttempt" in command, false);
+    assert.strictEqual("goalBlockTurnId" in command, false);
+    assert.strictEqual("goalBlockReset" in command, false);
+    assert.strictEqual("agentCallerThreadId" in command, false);
+    assert.strictEqual("agentCallerTurnId" in command, false);
+
+    const archive = yield* decodeClientOrchestrationCommand({
+      type: "thread.archive",
+      commandId: "cmd-client-archive-spoof",
+      threadId: "thread-1",
+      agentCallerThreadId: "thread-attacker",
+      agentCallerTurnId: "turn-attacker",
+    });
+    assert.strictEqual(archive.type, "thread.archive");
+    assert.strictEqual("agentCallerThreadId" in archive, false);
+    assert.strictEqual("agentCallerTurnId" in archive, false);
+
+    const interrupt = yield* decodeClientOrchestrationCommand({
+      type: "thread.turn.interrupt",
+      commandId: "cmd-client-interrupt-spoof",
+      threadId: "thread-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      agentCallerThreadId: "thread-attacker",
+      agentCallerTurnId: "turn-attacker",
+    });
+    assert.strictEqual(interrupt.type, "thread.turn.interrupt");
+    assert.strictEqual("agentCallerThreadId" in interrupt, false);
+    assert.strictEqual("agentCallerTurnId" in interrupt, false);
   }),
 );
 

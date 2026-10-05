@@ -760,6 +760,12 @@ export function projectEvent(
                 ? { goalStartedAt: payload.goalStartedAt }
                 : {}),
               ...(payload.goalPausedAt !== undefined ? { goalPausedAt: payload.goalPausedAt } : {}),
+              ...(payload.goalBlockCount !== undefined
+                ? { goalBlockCount: payload.goalBlockCount }
+                : {}),
+              ...(payload.goalBlockLastTurnId !== undefined
+                ? { goalBlockLastTurnId: payload.goalBlockLastTurnId }
+                : {}),
               ...(payload.goalAchievements !== undefined
                 ? { goalAchievements: payload.goalAchievements }
                 : {}),

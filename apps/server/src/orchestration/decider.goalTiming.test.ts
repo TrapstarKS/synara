@@ -8,7 +8,9 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
   ProjectId,
+  THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
   ThreadId,
+  TurnId,
   type OrchestrationEvent,
   type OrchestrationReadModel,
 } from "@synara/contracts";
@@ -83,6 +85,40 @@ async function createThreadReadModel(now: string) {
   );
 }
 
+function withRunningTurn(
+  readModel: OrchestrationReadModel,
+  threadId: ThreadId,
+  turnId: TurnId,
+): OrchestrationReadModel {
+  return {
+    ...readModel,
+    threads: readModel.threads.map((thread) =>
+      thread.id === threadId
+        ? {
+            ...thread,
+            latestTurn: {
+              turnId,
+              state: "running" as const,
+              requestedAt: readModel.updatedAt,
+              startedAt: readModel.updatedAt,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId,
+              status: "running" as const,
+              providerName: "codex" as const,
+              runtimeMode: thread.runtimeMode,
+              activeTurnId: turnId,
+              lastError: null,
+              updatedAt: readModel.updatedAt,
+            },
+          }
+        : thread,
+    ),
+  };
+}
+
 async function decideGoalUpdate(
   readModel: OrchestrationReadModel,
   input: {
@@ -90,6 +126,9 @@ async function decideGoalUpdate(
     goal?: string;
     goalPaused?: boolean;
     goalAchieved?: boolean;
+    goalBlockAttempt?: boolean;
+    goalBlockTurnId?: string;
+    goalBlockReset?: boolean;
   },
 ) {
   const result = await Effect.runPromise(
@@ -101,6 +140,13 @@ async function decideGoalUpdate(
         ...(input.goal !== undefined ? { goal: input.goal } : {}),
         ...(input.goalPaused !== undefined ? { goalPaused: input.goalPaused } : {}),
         ...(input.goalAchieved !== undefined ? { goalAchieved: input.goalAchieved } : {}),
+        ...(input.goalBlockAttempt !== undefined
+          ? { goalBlockAttempt: input.goalBlockAttempt }
+          : {}),
+        ...(input.goalBlockTurnId !== undefined
+          ? { goalBlockTurnId: TurnId.makeUnsafe(input.goalBlockTurnId) }
+          : {}),
+        ...(input.goalBlockReset !== undefined ? { goalBlockReset: input.goalBlockReset } : {}),
       },
       readModel,
     }),
@@ -178,13 +224,24 @@ describe("decider thread goal timing", () => {
     });
     readModel = await applyEvent(readModel, setEvent, 3);
 
+    readModel = await applyEvent(
+      readModel,
+      await decideGoalUpdate(readModel, {
+        commandId: "cmd-goal-block-before-pause",
+        goalBlockAttempt: true,
+        goalBlockTurnId: "turn-goal-block-before-pause",
+      }),
+      4,
+    );
+    expect(readModel.threads[0]?.goalBlockCount).toBe(1);
+
     const pauseEvent = await decideGoalUpdate(readModel, {
       commandId: "cmd-goal-pause",
       goalPaused: true,
     });
     expect(pauseEvent.payload.goalPausedAt).toBe(pauseEvent.occurredAt);
     expect("goalStartedAt" in pauseEvent.payload).toBe(false);
-    readModel = await applyEvent(readModel, pauseEvent, 4);
+    readModel = await applyEvent(readModel, pauseEvent, 5);
 
     const repauseEvent = await decideGoalUpdate(readModel, {
       commandId: "cmd-goal-repause",
@@ -197,6 +254,8 @@ describe("decider thread goal timing", () => {
       goalPaused: false,
     });
     expect(resumeEvent.payload.goalPausedAt).toBeNull();
+    expect(resumeEvent.payload.goalBlockCount).toBe(0);
+    expect(resumeEvent.payload.goalBlockLastTurnId).toBeNull();
     const rebasedStartedAt = resumeEvent.payload.goalStartedAt;
     expect(typeof rebasedStartedAt).toBe("string");
     if (typeof rebasedStartedAt !== "string") return;
@@ -206,7 +265,7 @@ describe("decider thread goal timing", () => {
     const elapsedAtResume = Date.parse(resumeEvent.occurredAt) - Date.parse(rebasedStartedAt);
     expect(elapsedAtResume).toBe(elapsedAtPause);
 
-    readModel = await applyEvent(readModel, resumeEvent, 5);
+    readModel = await applyEvent(readModel, resumeEvent, 6);
     expect(readModel.threads[0]?.goalPausedAt).toBeNull();
     expect(readModel.threads[0]?.goalStartedAt).toBe(rebasedStartedAt);
   });
@@ -256,6 +315,100 @@ describe("decider thread goal timing", () => {
     });
     expect(resumeEvent.payload.goalPausedAt).toBeNull();
     expect(resumeEvent.payload.goalStartedAt).toBe(resumeEvent.occurredAt);
+  });
+
+  it("refuses seven distinct blocker stops and pauses on the eighth goal turn", async () => {
+    const now = new Date().toISOString();
+    let readModel = await createThreadReadModel(now);
+    readModel = await applyEvent(
+      readModel,
+      await decideGoalUpdate(readModel, {
+        commandId: "cmd-goal-block-limit-set",
+        goal: "Finish despite temporary blockers",
+      }),
+      3,
+    );
+
+    let sequence = 4;
+    for (let attempt = 1; attempt < THREAD_GOAL_BLOCK_ATTEMPT_LIMIT; attempt += 1) {
+      const turnId = `turn-goal-block-${attempt}`;
+      const event = await decideGoalUpdate(readModel, {
+        commandId: `cmd-goal-block-${attempt}`,
+        goalBlockAttempt: true,
+        goalBlockTurnId: turnId,
+      });
+      expect(event.payload.goalBlockCount).toBe(attempt);
+      expect(event.payload.goalBlockLastTurnId).toBe(turnId);
+      expect("goalPausedAt" in event.payload).toBe(false);
+      readModel = await applyEvent(readModel, event, sequence++);
+      expect(readModel.threads[0]?.goalPausedAt).toBeNull();
+    }
+
+    const repeatedSameTurn = await decideGoalUpdate(readModel, {
+      commandId: "cmd-goal-block-duplicate",
+      goalBlockAttempt: true,
+      goalBlockTurnId: `turn-goal-block-${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1}`,
+    });
+    expect("goalBlockCount" in repeatedSameTurn.payload).toBe(false);
+    readModel = await applyEvent(readModel, repeatedSameTurn, sequence++);
+    expect(readModel.threads[0]?.goalBlockCount).toBe(THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1);
+
+    const pauseEvent = await decideGoalUpdate(readModel, {
+      commandId: "cmd-goal-block-limit",
+      goalBlockAttempt: true,
+      goalBlockTurnId: `turn-goal-block-${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT}`,
+    });
+    expect(pauseEvent.payload.goalBlockCount).toBe(THREAD_GOAL_BLOCK_ATTEMPT_LIMIT);
+    expect(pauseEvent.payload.goalPausedAt).toBe(pauseEvent.occurredAt);
+    readModel = await applyEvent(readModel, pauseEvent, sequence);
+    expect(readModel.threads[0]?.goalPausedAt).toBe(pauseEvent.occurredAt);
+  });
+
+  it("resets the blocker streak after progress and when the goal changes", async () => {
+    const now = new Date().toISOString();
+    let readModel = await createThreadReadModel(now);
+    readModel = await applyEvent(
+      readModel,
+      await decideGoalUpdate(readModel, {
+        commandId: "cmd-goal-block-reset-set",
+        goal: "Finish the original objective",
+      }),
+      3,
+    );
+    readModel = await applyEvent(
+      readModel,
+      await decideGoalUpdate(readModel, {
+        commandId: "cmd-goal-block-reset-attempt",
+        goalBlockAttempt: true,
+        goalBlockTurnId: "turn-goal-block-reset",
+      }),
+      4,
+    );
+    expect(readModel.threads[0]?.goalBlockCount).toBe(1);
+
+    const resetEvent = await decideGoalUpdate(readModel, {
+      commandId: "cmd-goal-block-reset-progress",
+      goalBlockReset: true,
+    });
+    expect(resetEvent.payload.goalBlockCount).toBe(0);
+    expect(resetEvent.payload.goalBlockLastTurnId).toBeNull();
+    readModel = await applyEvent(readModel, resetEvent, 5);
+
+    readModel = await applyEvent(
+      readModel,
+      await decideGoalUpdate(readModel, {
+        commandId: "cmd-goal-block-reset-second-attempt",
+        goalBlockAttempt: true,
+        goalBlockTurnId: "turn-goal-block-reset-second",
+      }),
+      6,
+    );
+    const editEvent = await decideGoalUpdate(readModel, {
+      commandId: "cmd-goal-block-reset-edit",
+      goal: "Finish the revised objective",
+    });
+    expect(editEvent.payload.goalBlockCount).toBe(0);
+    expect(editEvent.payload.goalBlockLastTurnId).toBeNull();
   });
 
   it("records an achievement with the running elapsed time and clears the goal", async () => {
@@ -430,5 +583,120 @@ describe("decider thread goal timing", () => {
     expect(pauseEvent?.type).toBe("thread.meta-updated");
     if (pauseEvent?.type !== "thread.meta-updated") return;
     expect(pauseEvent.payload.goalPausedAt).toBe(pauseEvent.occurredAt);
+  });
+
+  it("rejects an agent interrupt against the authoritative active-goal state", async () => {
+    const now = new Date().toISOString();
+    const callerTurnId = TurnId.makeUnsafe("turn-agent-interrupt-guard");
+    let readModel = await createThreadReadModel(now);
+    const setEvent = await decideGoalUpdate(readModel, {
+      commandId: "cmd-goal-set-before-agent-interrupt",
+      goal: "Finish the implementation",
+    });
+    readModel = withRunningTurn(await applyEvent(readModel, setEvent, 3), THREAD_ID, callerTurnId);
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.turn.interrupt",
+            commandId: CommandId.makeUnsafe("cmd-agent-interrupt-active-goal"),
+            threadId: THREAD_ID,
+            agentCallerThreadId: THREAD_ID,
+            agentCallerTurnId: callerTurnId,
+            createdAt: now,
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow("cannot interrupt");
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.turn.interrupt",
+            commandId: CommandId.makeUnsafe("cmd-stale-agent-interrupt"),
+            threadId: THREAD_ID,
+            agentCallerThreadId: THREAD_ID,
+            agentCallerTurnId: TurnId.makeUnsafe("turn-stale-agent-interrupt"),
+            createdAt: now,
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow("no longer the active turn");
+  });
+
+  it("keeps existing goal ownership on its thread while permitting a fresh delegated goal", async () => {
+    const now = new Date().toISOString();
+    const callerTurnId = TurnId.makeUnsafe("turn-goal-owner-caller");
+    const targetThreadId = ThreadId.makeUnsafe("thread-goal-owner-target");
+    let readModel = withRunningTurn(await createThreadReadModel(now), THREAD_ID, callerTurnId);
+    const template = readModel.threads[0]!;
+    readModel = {
+      ...readModel,
+      threads: [
+        template,
+        {
+          ...template,
+          id: targetThreadId,
+          title: "Delegated target",
+          goal: "Target-owned objective",
+          goalStartedAt: now,
+          goalPausedAt: null,
+          latestTurn: null,
+          session: null,
+        },
+      ],
+    };
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.meta.update",
+            commandId: CommandId.makeUnsafe("cmd-cross-agent-achieve-goal"),
+            threadId: targetThreadId,
+            agentCallerThreadId: THREAD_ID,
+            agentCallerTurnId: callerTurnId,
+            goalAchieved: true,
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow("cannot mutate the persistent goal");
+
+    const emptyTargetReadModel: OrchestrationReadModel = {
+      ...readModel,
+      threads: readModel.threads.map((thread) =>
+        thread.id === targetThreadId
+          ? {
+              ...thread,
+              goal: "",
+              goalStartedAt: null,
+              goalPausedAt: null,
+            }
+          : thread,
+      ),
+    };
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-cross-agent-set-fresh-goal"),
+          threadId: targetThreadId,
+          agentCallerThreadId: THREAD_ID,
+          agentCallerTurnId: callerTurnId,
+          goal: "Fresh delegated objective",
+        },
+        readModel: emptyTargetReadModel,
+      }),
+    );
+    const event = Array.isArray(result) ? result[0] : result;
+    expect(event?.type).toBe("thread.meta-updated");
+    if (event?.type === "thread.meta-updated") {
+      expect(event.payload.goal).toBe("Fresh delegated objective");
+    }
   });
 });

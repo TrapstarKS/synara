@@ -19,6 +19,7 @@ import {
   RESERVED_VOID_SPACE_ID,
   SPACES_MAX_COUNT,
   THREAD_GOAL_ACHIEVEMENTS_MAX_COUNT,
+  THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
   TurnId,
 } from "@synara/contracts";
 import {
@@ -95,6 +96,66 @@ const STUDIO_PROJECT_KIND_SET = new Set<ProjectKind>(["studio"]);
 // Kinds that claim exclusive ownership of a workspace root. Chat containers are excluded: they
 // use placeholder roots (e.g. the home dir) that legitimately coexist with real projects.
 const WORKSPACE_OWNING_PROJECT_KIND_SET = new Set<ProjectKind>(["project", "studio"]);
+
+type AgentGuardedCommand = Extract<
+  OrchestrationCommand,
+  { type: "thread.archive" | "thread.meta.update" | "thread.turn.interrupt" }
+>;
+
+function threadLiveTurnId(thread: OrchestrationThread): TurnId | null {
+  if (thread.session?.status !== "error" && thread.session?.activeTurnId != null) {
+    return thread.session.activeTurnId;
+  }
+  return thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : null;
+}
+
+function threadHasActiveGoal(thread: OrchestrationThread): boolean {
+  return (thread.goal ?? "").trim().length > 0 && thread.goalPausedAt == null;
+}
+
+/**
+ * Agent tools read projections before dispatch, but that read cannot authorize a
+ * later write by itself. Internal agent commands carry their exact caller turn so
+ * the serialized decider can reject stale ownership and goal-state races.
+ */
+function requireLiveAgentCommandCaller(
+  command: AgentGuardedCommand,
+  readModel: OrchestrationReadModel,
+): Effect.Effect<OrchestrationThread | null, OrchestrationCommandInvariantError> {
+  const callerThreadId = command.agentCallerThreadId;
+  const callerTurnId = command.agentCallerTurnId;
+  if (callerThreadId === undefined && callerTurnId === undefined) {
+    return Effect.succeed(null);
+  }
+  if (callerThreadId === undefined || callerTurnId === undefined) {
+    return Effect.fail(
+      new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: "Agent command ownership requires both caller thread and caller turn.",
+      }),
+    );
+  }
+  const caller = readModel.threads.find(
+    (thread) => thread.id === callerThreadId && thread.deletedAt === null,
+  );
+  if (!caller) {
+    return Effect.fail(
+      new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: `Agent caller thread '${callerThreadId}' is no longer available.`,
+      }),
+    );
+  }
+  if (threadLiveTurnId(caller) !== callerTurnId) {
+    return Effect.fail(
+      new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: `Agent caller turn '${callerTurnId}' is no longer the active turn on thread '${callerThreadId}'.`,
+      }),
+    );
+  }
+  return Effect.succeed(caller);
+}
 
 function validateSidechatExecutionAvailable(
   command: Pick<OrchestrationCommand, "type">,
@@ -425,14 +486,15 @@ function resolveCreatedThreadWorkspaceMetadata(
 }
 
 /**
- * Stamps authoritative goal timestamps for `thread.meta.update`. `goalAchieved`
- * takes precedence over everything: it records a ThreadGoalAchievement (with
- * pause-adjusted elapsed time, anchored to the thread's latest turn) and clears
- * the goal in the same event. A goal change takes precedence over `goalPaused`
- * in the same command: a newly set goal starts the pursuit clock, an edit of an
- * existing goal keeps the running clock and pause state, and clearing resets
- * everything. Pause freezes the clock at `goalPausedAt`; resume rebases
- * `goalStartedAt` so the paused span is excluded from the elapsed time.
+ * Stamps authoritative goal timestamps and blocker state for
+ * `thread.meta.update`. `goalAchieved` takes precedence over everything: it
+ * records a ThreadGoalAchievement (with pause-adjusted elapsed time, anchored
+ * to the thread's latest turn) and clears the goal in the same event. A goal
+ * change takes precedence over pause/block intents in the same command: a newly
+ * set goal starts the pursuit clock, an edit keeps the running clock and pause
+ * state, and both reset the consecutive blocker circuit breaker. Pause freezes
+ * the clock at `goalPausedAt`; resume rebases `goalStartedAt` so the paused span
+ * is excluded and starts a fresh blocker streak.
  */
 function resolveThreadGoalPatch(
   command: Extract<OrchestrationCommand, { type: "thread.meta.update" }>,
@@ -442,9 +504,18 @@ function resolveThreadGoalPatch(
   goal?: string;
   goalStartedAt?: string | null;
   goalPausedAt?: string | null;
+  goalBlockCount?: number;
+  goalBlockLastTurnId?: TurnId | null;
   goalAchievements?: readonly ThreadGoalAchievement[];
 } {
   const activeGoal = (currentThread.goal ?? "").trim();
+  const blockCount = currentThread.goalBlockCount ?? 0;
+  const blockLastTurnId = currentThread.goalBlockLastTurnId ?? null;
+  const resetBlockPatch =
+    blockCount === 0 && blockLastTurnId === null
+      ? {}
+      : { goalBlockCount: 0, goalBlockLastTurnId: null };
+
   if (command.goalAchieved === true) {
     if (activeGoal.length === 0) {
       return {};
@@ -465,6 +536,7 @@ function resolveThreadGoalPatch(
       goal: "",
       goalStartedAt: null,
       goalPausedAt: null,
+      ...resetBlockPatch,
       goalAchievements: [...(currentThread.goalAchievements ?? []), achievement].slice(
         -THREAD_GOAL_ACHIEVEMENTS_MAX_COUNT,
       ),
@@ -472,22 +544,57 @@ function resolveThreadGoalPatch(
   }
   if (command.goal !== undefined) {
     if (command.goal.trim().length === 0) {
-      return { goal: command.goal, goalStartedAt: null, goalPausedAt: null };
+      return {
+        goal: command.goal,
+        goalStartedAt: null,
+        goalPausedAt: null,
+        ...resetBlockPatch,
+      };
     }
     if (activeGoal.length > 0) {
-      return { goal: command.goal };
+      return { goal: command.goal, ...resetBlockPatch };
     }
-    return { goal: command.goal, goalStartedAt: occurredAt, goalPausedAt: null };
+    return {
+      goal: command.goal,
+      goalStartedAt: occurredAt,
+      goalPausedAt: null,
+      ...resetBlockPatch,
+    };
   }
-  if (command.goalPaused === undefined || activeGoal.length === 0) {
+  if (activeGoal.length === 0) {
     return {};
+  }
+
+  if (command.goalBlockAttempt === true) {
+    const turnId =
+      command.goalBlockTurnId ??
+      currentThread.session?.activeTurnId ??
+      currentThread.latestTurn?.turnId ??
+      null;
+    if (turnId === null || blockLastTurnId === turnId) {
+      return {};
+    }
+    const nextBlockCount = Math.min(THREAD_GOAL_BLOCK_ATTEMPT_LIMIT, blockCount + 1);
+    return {
+      goalBlockCount: nextBlockCount,
+      goalBlockLastTurnId: turnId,
+      ...(nextBlockCount >= THREAD_GOAL_BLOCK_ATTEMPT_LIMIT ? { goalPausedAt: occurredAt } : {}),
+    };
+  }
+
+  const requestedBlockReset = command.goalBlockReset === true ? resetBlockPatch : {};
+  if (command.goalPaused === undefined) {
+    return requestedBlockReset;
   }
   const pausedAt = currentThread.goalPausedAt ?? null;
   if (command.goalPaused) {
-    return pausedAt === null ? { goalPausedAt: occurredAt } : {};
+    return {
+      ...requestedBlockReset,
+      ...(pausedAt === null ? { goalPausedAt: occurredAt } : {}),
+    };
   }
   if (pausedAt === null) {
-    return {};
+    return requestedBlockReset;
   }
   const startedMs = Date.parse(currentThread.goalStartedAt ?? "");
   const pausedMs = Date.parse(pausedAt);
@@ -496,7 +603,11 @@ function resolveThreadGoalPatch(
     Number.isFinite(startedMs) && Number.isFinite(pausedMs) && Number.isFinite(occurredMs)
       ? new Date(occurredMs - Math.max(0, pausedMs - startedMs)).toISOString()
       : occurredAt;
-  return { goalStartedAt: rebasedStartedAt, goalPausedAt: null };
+  return {
+    goalStartedAt: rebasedStartedAt,
+    goalPausedAt: null,
+    ...resetBlockPatch,
+  };
 }
 
 function resolveThreadWorkspaceMetadataPatch(
@@ -1442,18 +1553,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.archive": {
-      yield* requireThreadNotArchived({
+      const targetThread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const agentCaller = yield* requireLiveAgentCommandCaller(command, readModel);
       const occurredAt = nowIso();
       // Subagent threads are only reachable through their parent, so archiving a
       // thread archives its still-active subagent subtree with it. The commanded
       // thread goes last: the command receipt records the final event's aggregate.
-      const subagentThreadIds = collectSubagentDescendants(readModel.threads, command.threadId)
-        .filter((thread) => thread.deletedAt === null && (thread.archivedAt ?? null) === null)
-        .map((thread) => thread.id);
+      const subagentThreads = collectSubagentDescendants(
+        readModel.threads,
+        command.threadId,
+      ).filter((thread) => thread.deletedAt === null && (thread.archivedAt ?? null) === null);
+      const archiveThreads = [...subagentThreads, targetThread];
+      if (agentCaller) {
+        const protectedThread = archiveThreads.find(threadHasActiveGoal);
+        if (protectedThread) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `An agent cannot archive thread '${command.threadId}' because thread '${protectedThread.id}' in its archive subtree has an active persistent goal.`,
+          });
+        }
+      }
+      const subagentThreadIds = subagentThreads.map((thread) => thread.id);
       return [...subagentThreadIds, command.threadId].flatMap(
         (threadId): Array<Omit<OrchestrationEvent, "sequence">> => {
           const review = readModel.threads.find(
@@ -1527,6 +1651,39 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const agentCaller = yield* requireLiveAgentCommandCaller(command, readModel);
+      const agentGoalMutation =
+        command.goal !== undefined ||
+        command.goalPaused !== undefined ||
+        command.goalAchieved === true ||
+        command.goalBlockAttempt === true ||
+        command.goalBlockReset === true;
+      if (agentCaller && agentGoalMutation && agentCaller.id !== thread.id) {
+        const settingFreshGoal =
+          command.goal !== undefined &&
+          command.goal.trim().length > 0 &&
+          (thread.goal ?? "").trim().length === 0 &&
+          command.goalPaused === undefined &&
+          command.goalAchieved !== true &&
+          command.goalBlockAttempt !== true &&
+          command.goalBlockReset !== true;
+        if (!settingFreshGoal) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Agent thread '${agentCaller.id}' cannot mutate the persistent goal owned by thread '${thread.id}'.`,
+          });
+        }
+      }
+      if (
+        agentCaller &&
+        command.goalBlockAttempt === true &&
+        (agentCaller.id !== thread.id || command.goalBlockTurnId !== command.agentCallerTurnId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A blocked-goal report must come from the goal thread's exact active turn.",
+        });
+      }
       if (command.modelSelection !== undefined) {
         yield* validateNoPendingProviderHandoff(command, thread);
       }
@@ -2237,6 +2394,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const agentCaller = yield* requireLiveAgentCommandCaller(command, readModel);
+      if (agentCaller && threadHasActiveGoal(thread)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `An agent cannot interrupt thread '${thread.id}' while its persistent goal is active.`,
+        });
+      }
       const interruptEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",

@@ -26,6 +26,7 @@ import { OrchestrationProjectionPipeline } from "../../orchestration/Services/Pr
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 import backfill, { MIGRATION_121_PAGE_SIZE } from "./121_BackfillClaudeNativeSubagentEffort.ts";
+import addGoalBlockStreakColumns from "./123_ProjectionThreadsGoalBlockStreak.ts";
 
 const testLayer = OrchestrationProjectionPipelineLive.pipe(
   Layer.provideMerge(OrchestrationEventStoreLive),
@@ -49,6 +50,11 @@ const fixture = Effect.gen(function* () {
   const store = yield* OrchestrationEventStore;
   const pipeline = yield* OrchestrationProjectionPipeline;
   yield* runMigrations({ toMigrationInclusive: 120 });
+  // This fixture intentionally leaves migration 121 pending while exercising
+  // the current projection repository. Apply the later additive columns without
+  // recording migration 123 so the historical migration under test remains the
+  // only pending migration in `runMigrations({ toMigrationInclusive: 121 })`.
+  yield* addGoalBlockStreakColumns;
   let counter = 0;
   const projectId = ProjectId.makeUnsafe("project-121");
   const base = (threadId: ThreadId, command: string) => ({

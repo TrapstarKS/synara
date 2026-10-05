@@ -352,14 +352,16 @@ export const WsBootstrapNegotiateRpc = Rpc.make(WS_BOOTSTRAP_METHOD, {
   error: WsCompatibilityError,
 });
 
-export const WsOrchestrationDispatchCommandRpc = Rpc.make(
-  ORCHESTRATION_WS_METHODS.dispatchCommand,
-  {
-    payload: ClientOrchestrationCommand,
-    success: OrchestrationRpcSchemas.dispatchCommand.output,
-    error: WsRpcError,
-  },
-);
+export const WsOrchestrationDispatchCommandRpc: Rpc.Rpc<
+  typeof ORCHESTRATION_WS_METHODS.dispatchCommand,
+  typeof ClientOrchestrationCommand,
+  typeof OrchestrationRpcSchemas.dispatchCommand.output,
+  typeof WsRpcError
+> = Rpc.make(ORCHESTRATION_WS_METHODS.dispatchCommand, {
+  payload: ClientOrchestrationCommand,
+  success: OrchestrationRpcSchemas.dispatchCommand.output,
+  error: WsRpcError,
+});
 
 export const WsOrchestrationImportThreadRpc = Rpc.make(ORCHESTRATION_WS_METHODS.importThread, {
   payload: OrchestrationImportThreadInput,
@@ -1744,7 +1746,7 @@ export const WsCoordinationAnswerQuestionRpc = Rpc.make(COORDINATION_WS_METHODS.
   error: WsRpcError,
 });
 
-export const WsFeatureRpcGroup = RpcGroup.make(
+const WsOrchestrationFeatureRpcGroup = RpcGroup.make(
   WsCoordinationListRpc,
   WsCoordinationCancelWaitRpc,
   WsCoordinationAnswerQuestionRpc,
@@ -1789,6 +1791,9 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsFilesystemBrowseRpc,
   WsFilesystemStatRpc,
   WsShellOpenInEditorRpc,
+);
+
+const WsGitTerminalFeatureRpcGroup = RpcGroup.make(
   WsGitGithubRepositoryRpc,
   WsGitStatusRpc,
   WsGitReadWorkingTreeDiffRpc,
@@ -1831,6 +1836,9 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
   WsSubscribeTerminalEventsRpc,
+);
+
+const WsServerProviderFeatureRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerGetEnvironmentRpc,
   WsServerGetSettingsRpc,
@@ -1884,6 +1892,9 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsProviderRestartChatGptTunnelRpc,
   WsProviderRotateChatGptSecretRpc,
   WsProviderOpenChatGptLoginRpc,
+);
+
+const WsAutomationMindFeatureRpcGroup = RpcGroup.make(
   WsAutomationListRpc,
   WsAutomationGetMemoryRpc,
   WsAutomationCreateRpc,
@@ -1905,3 +1916,16 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsMindProfileGetRpc,
   WsMindProfileSetRpc,
 );
+
+type WsFeatureRpc =
+  | RpcGroup.Rpcs<typeof WsOrchestrationFeatureRpcGroup>
+  | RpcGroup.Rpcs<typeof WsGitTerminalFeatureRpcGroup>
+  | RpcGroup.Rpcs<typeof WsServerProviderFeatureRpcGroup>
+  | RpcGroup.Rpcs<typeof WsAutomationMindFeatureRpcGroup>;
+
+export const WsFeatureRpcGroup: RpcGroup.RpcGroup<WsFeatureRpc> =
+  WsOrchestrationFeatureRpcGroup.merge(
+    WsGitTerminalFeatureRpcGroup,
+    WsServerProviderFeatureRpcGroup,
+    WsAutomationMindFeatureRpcGroup,
+  );

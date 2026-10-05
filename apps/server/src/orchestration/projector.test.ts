@@ -187,6 +187,8 @@ describe("orchestration projector", () => {
         sidechatLastActivityAt: null,
         sidechatExpiredAt: null,
         lastKnownPr: null,
+        goalBlockCount: 0,
+        goalBlockLastTurnId: null,
         latestTurn: null,
         createdAt: now,
         updatedAt: now,

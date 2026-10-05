@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { THREAD_GOAL_BLOCK_ATTEMPT_LIMIT } from "@synara/contracts";
 
 import {
   activeThreadGoal,
@@ -64,5 +65,8 @@ describe("provider thread goal prompt", () => {
     expect(input).toContain("synara_set_thread_goal");
     expect(input).toContain("achieved: true");
     expect(input).toContain("blocked: true");
+    expect(input).toContain(`first ${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1}`);
+    expect(input).toContain(`${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT}th consecutive blocked goal turn`);
+    expect(input).toContain("resets the streak");
   });
 });

@@ -3,6 +3,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   ProjectId,
   ThreadId,
+  TurnId,
   type OrchestrationEvent,
   type OrchestrationReadModel,
 } from "@synara/contracts";
@@ -23,6 +24,9 @@ function makeThread(input: {
   parentThreadId?: ThreadId;
   archivedAt?: string;
   deletedAt?: string;
+  activeTurnId?: TurnId;
+  goal?: string;
+  goalPausedAt?: string | null;
 }): OrchestrationReadModel["threads"][number] {
   return {
     id: input.id,
@@ -39,14 +43,35 @@ function makeThread(input: {
     worktreePath: null,
     createdAt: NOW,
     updatedAt: NOW,
-    latestTurn: null,
+    latestTurn: input.activeTurnId
+      ? {
+          turnId: input.activeTurnId,
+          state: "running",
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: null,
+          assistantMessageId: null,
+        }
+      : null,
     handoff: null,
     messages: [],
-    session: null,
+    session: input.activeTurnId
+      ? {
+          threadId: input.id,
+          status: "running",
+          providerName: "claudeAgent",
+          runtimeMode: "auto",
+          activeTurnId: input.activeTurnId,
+          lastError: null,
+          updatedAt: NOW,
+        }
+      : null,
     activities: [],
     proposedPlans: [],
     checkpoints: [],
     deletedAt: input.deletedAt ?? null,
+    ...(input.goal !== undefined ? { goal: input.goal } : {}),
+    ...(input.goalPausedAt !== undefined ? { goalPausedAt: input.goalPausedAt } : {}),
     ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
     ...(input.archivedAt !== undefined ? { archivedAt: input.archivedAt } : {}),
   };
@@ -126,6 +151,32 @@ describe("decider thread archive cascade", () => {
     );
 
     expect(eventThreadIds(result)).toEqual([PARENT_THREAD_ID]);
+  });
+
+  it("atomically rejects an agent archive when a descendant has an active goal", async () => {
+    const callerTurnId = TurnId.makeUnsafe("turn-parent-archive-guard");
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.archive",
+            commandId: CommandId.makeUnsafe("cmd-agent-archive-parent"),
+            threadId: PARENT_THREAD_ID,
+            agentCallerThreadId: PARENT_THREAD_ID,
+            agentCallerTurnId: callerTurnId,
+          },
+          readModel: makeReadModel([
+            makeThread({ id: PARENT_THREAD_ID, activeTurnId: callerTurnId }),
+            makeThread({
+              id: CHILD_THREAD_ID,
+              parentThreadId: PARENT_THREAD_ID,
+              goal: "Complete delegated work",
+              goalPausedAt: null,
+            }),
+          ]),
+        }),
+      ),
+    ).rejects.toThrow("archive subtree has an active persistent goal");
   });
 
   it("restores the archived subagent subtree together with the parent", async () => {

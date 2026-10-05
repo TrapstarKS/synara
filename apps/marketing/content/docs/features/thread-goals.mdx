@@ -52,7 +52,9 @@ When a provider cannot accept guidance during a live turn, Synara may interrupt 
 
 When the agent completes the objective through Synara's goal-aware tool path, the active goal is cleared and an achievement badge is attached to the completing turn with the recorded elapsed time.
 
-If the same external blocker prevents meaningful progress for three consecutive goal turns, a goal-aware agent can mark the goal blocked. Synara pauses it rather than generating an endless retry loop. Difficulty, incomplete work, or a useful clarifying question are not enough on their own to classify a goal as blocked.
+If an external blocker truly prevents meaningful progress, a goal-aware agent can report it once in that goal turn. Synara refuses the first seven consecutive blocked-turn stop requests and keeps pursuing the objective. The eighth consecutive blocked goal turn pauses it instead of creating an endless loop. Any clean goal turn that does not report the blocker resets the streak. Difficulty, incomplete work, or a useful clarifying question are not enough on their own to classify a goal as blocked.
+
+Agent tools cannot bypass this circuit breaker by interrupting or archiving a thread with an active goal, including by archiving a parent whose descendant owns one. After a delegated thread receives its initial objective, only that thread's exact active turn can edit, clear, complete, or report a blocker for the goal. User controls remain authoritative: you can still stop, pause, clear, or archive the task directly whenever needed.
 
 You can resume a blocked or manually paused goal after the external condition changes.
 

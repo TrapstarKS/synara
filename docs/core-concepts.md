@@ -68,6 +68,10 @@ For work that should continue across several turns, set a deliberate
 clean turn, but queued user work, approvals, questions, failures, explicit stops, and pause rules
 remain in control. If Synara interrupts a turn only to promote newer queued guidance, the promoted
 turn keeps the active goal instead of treating that internal replacement as a user stop.
+Agent-reported blockers use a durable circuit breaker: Synara refuses the first seven consecutive
+blocked-turn stop requests, pauses on the eighth, and resets the streak after a clean goal turn that
+does not report the blocker. Once a thread owns an active goal, another agent cannot edit, complete,
+block, interrupt, or indirectly archive that goal on its behalf.
 
 Use a [thread fork](https://www.trysynara.com/docs/workflows/forks) when a new task should inherit
 the conversation or split from one exact turn. Use a

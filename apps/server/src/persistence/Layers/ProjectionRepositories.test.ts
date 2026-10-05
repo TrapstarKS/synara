@@ -109,6 +109,29 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       );
       yield* threads.upsert({ ...thread, claudeCacheReview: null });
       assert.isNull(Option.getOrNull(yield* threads.getById({ threadId }))?.claudeCacheReview);
+
+      const blockedGoalThread = {
+        ...thread,
+        goal: "Finish the durable goal",
+        goalBlockCount: 4,
+        goalBlockLastTurnId: TurnId.makeUnsafe("turn-goal-block-4"),
+      };
+      yield* threads.upsert(blockedGoalThread);
+      yield* threads.upsert({ ...thread, goal: blockedGoalThread.goal, title: "Legacy rename" });
+      const preservedGoalThread = Option.getOrNull(yield* threads.getById({ threadId }));
+      assert.strictEqual(preservedGoalThread?.goalBlockCount, 4);
+      assert.strictEqual(
+        preservedGoalThread?.goalBlockLastTurnId,
+        TurnId.makeUnsafe("turn-goal-block-4"),
+      );
+      yield* threads.upsert({
+        ...blockedGoalThread,
+        goalBlockCount: 0,
+        goalBlockLastTurnId: null,
+      });
+      const resetGoalThread = Option.getOrNull(yield* threads.getById({ threadId }));
+      assert.strictEqual(resetGoalThread?.goalBlockCount, 0);
+      assert.isNull(resetGoalThread?.goalBlockLastTurnId);
       const [row] = yield* sql<{ readonly review: string | null }>`
         SELECT claude_cache_review_json AS review FROM projection_threads
         WHERE thread_id = ${threadId}

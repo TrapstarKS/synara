@@ -625,6 +625,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           sidechatLastActivityAt: null,
           sidechatExpiredAt: null,
           lastKnownPr: null,
+          goalBlockCount: 0,
+          goalBlockLastTurnId: null,
           latestUserMessageAt: "2026-02-24T00:00:03.500Z",
           latestHumanMessageAt: null,
           // A present empty pending-interaction projection is authoritative;
@@ -2180,6 +2182,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           goal: "",
           goalStartedAt: null,
           goalPausedAt: null,
+          goalBlockCount: 0,
+          goalBlockLastTurnId: null,
           latestTurn: {
             turnId: asTurnId("turn-shell"),
             state: "completed",

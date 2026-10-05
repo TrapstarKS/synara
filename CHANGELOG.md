@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.30] — 2026-10-05
+
+### Fixed
+
+- Goal-aware agents can no longer pause an active objective after one blocker report or bypass the limit through another agent, an interrupt, or an archive cascade. Synara records at most one blocked-stop attempt per exact goal turn, refuses the first seven consecutive attempts, and pauses only on the eighth consecutive blocked goal turn. Goal mutations and stop requests are fenced to the caller's exact live turn, while user Stop and archive controls remain immediate.
+- The blocker streak survives server restarts and projection recovery, resets after a clean goal turn with progress, and is cleared when the goal is changed, completed, cleared, or resumed. Explicit Stop, manual pause, and real provider failures retain their immediate pause behavior.
+
 ## [0.9.29] — 2026-10-04
 
 ### Fixed

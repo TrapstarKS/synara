@@ -9,6 +9,7 @@ import {
   MessageId,
   ProjectId,
   ThreadId,
+  TurnId,
 } from "@synara/contracts";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { describe, expect, it } from "vitest";
@@ -95,6 +96,15 @@ describe("thread annotations round-trip", () => {
           goal: "Ship the complete thread-goal feature",
         }),
       );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-goal-block-once"),
+          threadId,
+          goalBlockAttempt: true,
+          goalBlockTurnId: TurnId.makeUnsafe("turn-goal-block-once"),
+        }),
+      );
 
       const detail = Option.getOrNull(await system.run(system.query.getThreadDetailById(threadId)));
       const snapshot = await system.run(system.query.getSnapshot());
@@ -111,6 +121,12 @@ describe("thread annotations round-trip", () => {
       expect(
         shellSnapshot.threads.find((thread) => thread.id === threadId)?.goalPausedAt,
       ).toBeNull();
+      expect(detail?.goalBlockCount).toBe(1);
+      expect(detail?.goalBlockLastTurnId).toBe("turn-goal-block-once");
+      expect(snapshot.threads.find((thread) => thread.id === threadId)?.goalBlockCount).toBe(1);
+      expect(shellSnapshot.threads.find((thread) => thread.id === threadId)?.goalBlockCount).toBe(
+        1,
+      );
 
       await system.dispose();
       system = await createSystem(dbPath);
@@ -118,6 +134,8 @@ describe("thread annotations round-trip", () => {
         await system.run(system.query.getThreadDetailById(threadId)),
       );
       expect(restartedDetail?.goal).toBe("Ship the complete thread-goal feature");
+      expect(restartedDetail?.goalBlockCount).toBe(1);
+      expect(restartedDetail?.goalBlockLastTurnId).toBe("turn-goal-block-once");
 
       await system.run(
         system.engine.dispatch({
@@ -131,6 +149,8 @@ describe("thread annotations round-trip", () => {
         await system.run(system.query.getThreadDetailById(threadId)),
       );
       expect(clearedDetail?.goal).toBe("");
+      expect(clearedDetail?.goalBlockCount).toBe(0);
+      expect(clearedDetail?.goalBlockLastTurnId).toBeNull();
     } finally {
       await system.dispose();
       fs.rmSync(stateDir, { recursive: true, force: true });

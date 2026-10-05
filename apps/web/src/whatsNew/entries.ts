@@ -22,6 +22,18 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.9.30",
+    date: "Oct 5",
+    features: [
+      {
+        id: "goals-resist-premature-blocks",
+        title: "Goals keep working through temporary blockers",
+        description:
+          "An agent can no longer pause an active goal after one blocker report or bypass the limit through another agent, interrupt, or archive cascade. Synara refuses the first seven consecutive blocked-turn stop requests, pauses on the eighth, counts only once per exact live turn, and resets after a clean progress turn. Your Stop and archive controls still act immediately.",
+      },
+    ],
+  },
+  {
     version: "0.9.29",
     date: "Oct 4",
     features: [

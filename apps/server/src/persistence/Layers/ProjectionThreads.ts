@@ -91,6 +91,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           goal,
           goal_started_at,
           goal_paused_at,
+          goal_block_count,
+          goal_block_last_turn_id,
           goal_achievements_json,
           latest_user_message_at,
           latest_human_message_at,
@@ -141,6 +143,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.goal},
           ${row.goalStartedAt ?? null},
           ${row.goalPausedAt ?? null},
+          ${row.goalBlockCount ?? 0},
+          ${row.goalBlockLastTurnId ?? null},
           ${row.goalAchievements == null ? null : JSON.stringify(row.goalAchievements)},
           ${row.latestUserMessageAt},
           ${row.latestHumanMessageAt ?? null},
@@ -195,6 +199,16 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           goal = excluded.goal,
           goal_started_at = excluded.goal_started_at,
           goal_paused_at = excluded.goal_paused_at,
+          goal_block_count = CASE
+            WHEN ${row.goalBlockCount === undefined ? 1 : 0} = 1
+              THEN projection_threads.goal_block_count
+            ELSE excluded.goal_block_count
+          END,
+          goal_block_last_turn_id = CASE
+            WHEN ${row.goalBlockLastTurnId === undefined ? 1 : 0} = 1
+              THEN projection_threads.goal_block_last_turn_id
+            ELSE excluded.goal_block_last_turn_id
+          END,
           goal_achievements_json = excluded.goal_achievements_json,
           latest_user_message_at = excluded.latest_user_message_at,
           latest_human_message_at = CASE
@@ -255,6 +269,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           goal,
           goal_started_at AS "goalStartedAt",
           goal_paused_at AS "goalPausedAt",
+          goal_block_count AS "goalBlockCount",
+          goal_block_last_turn_id AS "goalBlockLastTurnId",
           goal_achievements_json AS "goalAchievements",
           latest_user_message_at AS "latestUserMessageAt",
           latest_human_message_at AS "latestHumanMessageAt",
@@ -314,6 +330,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           goal,
           goal_started_at AS "goalStartedAt",
           goal_paused_at AS "goalPausedAt",
+          goal_block_count AS "goalBlockCount",
+          goal_block_last_turn_id AS "goalBlockLastTurnId",
           goal_achievements_json AS "goalAchievements",
           latest_user_message_at AS "latestUserMessageAt",
           latest_human_message_at AS "latestHumanMessageAt",

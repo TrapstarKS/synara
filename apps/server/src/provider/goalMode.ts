@@ -2,6 +2,8 @@
 // Purpose: Injects Synara's provider-independent persistent thread objective.
 // Layer: Provider prompt policy
 
+import { THREAD_GOAL_BLOCK_ATTEMPT_LIMIT } from "@synara/contracts";
+
 function escapeXmlText(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -63,5 +65,5 @@ The goal persists across turns. Make concrete progress toward the full objective
 
 Before claiming completion, inspect the current state and verify every requirement against authoritative evidence. When the full objective is complete, call synara_set_thread_goal with achieved: true before ending the turn so Synara can stop the continuation loop and record the achievement.
 
-If the same external blocker prevents meaningful progress for three consecutive goal turns, call synara_set_thread_goal with blocked: true so Synara pauses the goal instead of looping. Do not mark the goal blocked merely because the work is difficult, incomplete, or would benefit from clarification.`;
+If an external blocker truly prevents meaningful progress, call synara_set_thread_goal with blocked: true once in that goal turn. Synara refuses the first ${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1} consecutive blocked-turn requests and keeps the goal active; only the ${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT}th consecutive blocked goal turn pauses it. A goal turn that does not report the blocker resets the streak. Do not report blocked merely because the work is difficult, incomplete, or would benefit from clarification.`;
 }

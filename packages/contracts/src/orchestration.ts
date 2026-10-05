@@ -376,6 +376,9 @@ const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 export const CHAT_ASSISTANT_SELECTION_TEXT_MAX_CHARS = 4_000;
 export const THREAD_NOTES_MAX_CHARS = 16_384;
 export const THREAD_GOAL_MAX_CHARS = 4_096;
+// Match Claude Code's bounded stop-hook circuit breaker: the first seven
+// distinct blocked goal turns are refused, and the eighth may pause pursuit.
+export const THREAD_GOAL_BLOCK_ATTEMPT_LIMIT = 8;
 export const PINNED_MESSAGES_MAX_COUNT = 100;
 export const PINNED_MESSAGE_LABEL_MAX_CHARS = 60;
 // Correlation id is command id by design in this model.
@@ -748,6 +751,13 @@ export const ThreadGoalTimingFields = {
   goalStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   goalPausedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
 };
+/** Durable consecutive blocker circuit-breaker state for an active goal. */
+export const ThreadGoalBlockFields = {
+  goalBlockCount: Schema.optional(NonNegativeInt).pipe(Schema.withDecodingDefault(() => 0)),
+  goalBlockLastTurnId: Schema.optional(Schema.NullOr(TurnId)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+};
 /**
  * A completed goal, recorded when the decider processes a `goalAchieved` intent.
  * `elapsedMs` is the pause-adjusted pursuit duration (null for legacy goals with
@@ -914,6 +924,7 @@ export const OrchestrationThread = Schema.Struct({
   notes: Schema.optional(ThreadNotes),
   goal: Schema.optional(ThreadGoal),
   ...ThreadGoalTimingFields,
+  ...ThreadGoalBlockFields,
   goalAchievements: Schema.optional(ThreadGoalAchievements),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(Schema.withDecodingDefault(() => [])),
@@ -1005,6 +1016,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   handoff: Schema.NullOr(ThreadHandoff).pipe(Schema.withDecodingDefault(() => null)),
   goal: Schema.optional(ThreadGoal),
   ...ThreadGoalTimingFields,
+  ...ThreadGoalBlockFields,
   session: Schema.NullOr(OrchestrationSession),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
@@ -1301,10 +1313,24 @@ const ThreadDeleteCommand = Schema.Struct({
   threadId: ThreadId,
 });
 
-const ThreadArchiveCommand = Schema.Struct({
+const AgentCommandGuardFields = {
+  // Server-only ownership fence for agent-originated mutations. The decider
+  // verifies the caller still owns this exact live turn at commit time.
+  agentCallerThreadId: Schema.optional(ThreadId),
+  agentCallerTurnId: Schema.optional(TurnId),
+};
+
+const ThreadArchiveClientFields = {
   type: Schema.Literal("thread.archive"),
   commandId: CommandId,
   threadId: ThreadId,
+};
+
+const ClientThreadArchiveCommand = Schema.Struct(ThreadArchiveClientFields);
+
+const ThreadArchiveCommand = Schema.Struct({
+  ...ThreadArchiveClientFields,
+  ...AgentCommandGuardFields,
 });
 
 const ThreadUnarchiveCommand = Schema.Struct({
@@ -1313,7 +1339,7 @@ const ThreadUnarchiveCommand = Schema.Struct({
   threadId: ThreadId,
 });
 
-const ThreadMetaUpdateCommand = Schema.Struct({
+const ThreadMetaUpdateClientFields = {
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1347,6 +1373,18 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   // Marks the active goal accomplished: the decider records a ThreadGoalAchievement
   // (with pause-adjusted elapsed time) and clears the goal in the same event.
   goalAchieved: Schema.optional(Schema.Boolean),
+};
+
+const ClientThreadMetaUpdateCommand = Schema.Struct(ThreadMetaUpdateClientFields);
+
+const ThreadMetaUpdateCommand = Schema.Struct({
+  ...ThreadMetaUpdateClientFields,
+  ...AgentCommandGuardFields,
+  // Internal blocker circuit-breaker intents. One attempt is counted per exact
+  // provider turn; a clean non-blocked turn resets the consecutive streak.
+  goalBlockAttempt: Schema.optional(Schema.Boolean),
+  goalBlockTurnId: Schema.optional(Schema.NullOr(TurnId)),
+  goalBlockReset: Schema.optional(Schema.Boolean),
 });
 
 const ThreadPinnedMessageAddCommand = Schema.Struct({
@@ -1512,12 +1550,19 @@ const ThreadClaudeCacheCompactedCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadTurnInterruptCommand = Schema.Struct({
+const ThreadTurnInterruptClientFields = {
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
+};
+
+const ClientThreadTurnInterruptCommand = Schema.Struct(ThreadTurnInterruptClientFields);
+
+const ThreadTurnInterruptCommand = Schema.Struct({
+  ...ThreadTurnInterruptClientFields,
+  ...AgentCommandGuardFields,
 });
 
 const ThreadTaskStopCommand = Schema.Struct({
@@ -1684,9 +1729,9 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadProviderHandoffCommand,
   ThreadForkCreateCommand,
   ThreadDeleteCommand,
-  ThreadArchiveCommand,
+  ClientThreadArchiveCommand,
   ThreadUnarchiveCommand,
-  ThreadMetaUpdateCommand,
+  ClientThreadMetaUpdateCommand,
   ThreadPinnedMessageAddCommand,
   ThreadPinnedMessageRemoveCommand,
   ThreadPinnedMessageDoneSetCommand,
@@ -1695,7 +1740,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ThreadClaudeCacheRespondCommand,
-  ThreadTurnInterruptCommand,
+  ClientThreadTurnInterruptCommand,
   ThreadTaskStopCommand,
   ThreadTaskBackgroundCommand,
   ThreadApprovalRespondCommand,
@@ -2093,6 +2138,8 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   goalStartBehavior: Schema.optional(ThreadGoalStartBehavior),
   goalStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   goalPausedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  goalBlockCount: Schema.optional(NonNegativeInt),
+  goalBlockLastTurnId: Schema.optional(Schema.NullOr(TurnId)),
   goalAchievements: Schema.optional(ThreadGoalAchievements),
   updatedAt: IsoDateTime,
 });

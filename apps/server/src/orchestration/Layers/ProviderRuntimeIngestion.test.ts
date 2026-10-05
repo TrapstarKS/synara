@@ -1527,6 +1527,195 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  it("preserves a reported blocker across its goal turn and resets it after progress", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const blockedTurnId = asTurnId("turn-goal-blocked-once");
+    const progressTurnId = asTurnId("turn-goal-progress-after-block");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-goal-block-streak"),
+        threadId,
+        goal: "Finish after the blocker clears",
+      }),
+    );
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-goal-blocked-once-started"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId: blockedTurnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === blockedTurnId);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-goal-blocked-once"),
+        threadId,
+        goalBlockAttempt: true,
+        goalBlockTurnId: blockedTurnId,
+      }),
+    );
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-goal-blocked-once-completed"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId: blockedTurnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    let thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (entry) => entry.id === threadId,
+    )!;
+    expect(thread.goalBlockCount).toBe(1);
+    expect(thread.goalBlockLastTurnId).toBe(blockedTurnId);
+    expect(thread.goalPausedAt).toBeNull();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-goal-progress-after-block-started"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId: progressTurnId,
+    });
+    await waitForThread(harness.engine, (entry) => entry.session?.activeTurnId === progressTurnId);
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-goal-progress-after-block-completed"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId: progressTurnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (entry) => entry.id === threadId,
+    )!;
+    expect(thread.goalBlockCount).toBe(0);
+    expect(thread.goalBlockLastTurnId).toBeNull();
+    expect(thread.goalPausedAt).toBeNull();
+    const events = Array.from(
+      await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0))),
+    );
+    expect(events.filter((event) => event.type === "thread.goal-continuation-requested")).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ sourceTurnId: blockedTurnId }),
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({ sourceTurnId: progressTurnId }),
+      }),
+    ]);
+  });
+
+  it("does not let a late older terminal erase a newer blocker streak", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const olderTurnId = asTurnId("turn-before-newer-goal-block");
+    const blockedTurnId = asTurnId("turn-newer-goal-block");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-goal-before-late-terminal"),
+        threadId,
+        goal: "Finish without losing the current blocker streak",
+      }),
+    );
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-older-goal-turn-started"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId: olderTurnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === olderTurnId);
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-older-goal-turn-completed"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId: olderTurnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-newer-goal-block-started"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId: blockedTurnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === blockedTurnId);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-newer-goal-block"),
+        threadId,
+        goalBlockAttempt: true,
+        goalBlockTurnId: blockedTurnId,
+      }),
+    );
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-newer-goal-block-completed"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId: blockedTurnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    let thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (entry) => entry.id === threadId,
+    )!;
+    expect(thread.goalBlockCount).toBe(1);
+    expect(thread.goalBlockLastTurnId).toBe(blockedTurnId);
+    expect(thread.latestTurn?.turnId).toBe(blockedTurnId);
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-older-goal-turn-completed-late"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId: olderTurnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (entry) => entry.id === threadId,
+    )!;
+    expect(thread.goalBlockCount).toBe(1);
+    expect(thread.goalBlockLastTurnId).toBe(blockedTurnId);
+    expect(thread.latestTurn?.turnId).toBe(blockedTurnId);
+    const continuations = Array.from(
+      await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0))),
+    ).filter((event) => event.type === "thread.goal-continuation-requested");
+    expect(continuations).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ sourceTurnId: olderTurnId }),
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({ sourceTurnId: blockedTurnId }),
+      }),
+    ]);
+  });
+
   it("pauses an active goal instead of continuing after an interrupted completion", async () => {
     const harness = await createHarness();
     const turnId = asTurnId("turn-interrupted-goal");

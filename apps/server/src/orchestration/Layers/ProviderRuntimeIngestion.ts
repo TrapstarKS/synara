@@ -2485,6 +2485,12 @@ const make = Effect.gen(function* () {
             const settledThread = (yield* orchestrationEngine.getReadModel()).threads.find(
               (candidate) => candidate.id === thread.id,
             );
+            const ownsLatestGoalTurn =
+              eventTurnId !== undefined && sameId(settledThread?.latestTurn?.turnId, eventTurnId);
+            // A terminal can arrive after a newer turn has already settled and
+            // the session no longer has an active id. Goal continuation and
+            // blocker resets belong only to the latest projected goal turn;
+            // otherwise a delayed older completion can erase newer ownership.
             if (
               settledThread &&
               settledThread.deletedAt == null &&
@@ -2492,7 +2498,8 @@ const make = Effect.gen(function* () {
               !isExpiredSidechat(settledThread) &&
               settledThread.parentThreadId == null &&
               Boolean(activeThreadGoal(settledThread)?.trim()) &&
-              settledThread.goalPausedAt == null
+              settledThread.goalPausedAt == null &&
+              ownsLatestGoalTurn
             ) {
               const turnState =
                 event.type === "turn.completed" ? runtimeTurnState(event) : "interrupted";
@@ -2507,6 +2514,24 @@ const make = Effect.gen(function* () {
               // a provider reports the replaced turn as cleanly completed.
               if (!replacedByQueuedSteer) {
                 if (event.type === "turn.completed" && turnState === "completed") {
+                  const blockedThisTurn =
+                    eventTurnId !== undefined &&
+                    sameId(settledThread.goalBlockLastTurnId, eventTurnId);
+                  if (
+                    !blockedThisTurn &&
+                    ((settledThread.goalBlockCount ?? 0) > 0 ||
+                      settledThread.goalBlockLastTurnId != null)
+                  ) {
+                    // Consecutive means consecutive goal turns. Any clean turn
+                    // that did not ask to stop on a blocker proves the streak
+                    // ended, even when the goal still needs another iteration.
+                    yield* orchestrationEngine.dispatch({
+                      type: "thread.meta.update",
+                      commandId: providerCommandId(event, "goal-block-streak-reset", thread.id),
+                      threadId: thread.id,
+                      goalBlockReset: true,
+                    });
+                  }
                   yield* orchestrationEngine.dispatch({
                     type: "thread.goal.continue",
                     commandId: providerCommandId(event, "goal-continue", thread.id),
