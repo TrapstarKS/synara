@@ -39,8 +39,24 @@ describe("deriveUsagePace", () => {
     });
 
     expect(pace?.status).toBe("behind");
-    expect(pace?.expectedRemainingPercent).toBe(95);
-    expect(pace?.amountText).toBe("4% in deficit");
+    expect(pace?.expectedRemainingPercent).toBeCloseTo(98);
+    expect(pace?.amountText).toBe("7% in deficit");
+  });
+
+  it("does not claim a reserve right after a weekly reset", () => {
+    const resetMs = Date.parse("2026-06-15T18:00:00.000Z");
+    // 6d 23h until reset: one hour into the week, nothing used yet.
+    const nowMs = resetMs - (6 * 24 + 23) * 60 * 60_000;
+    const pace = deriveUsagePace({
+      remainingPercent: 100,
+      resetsAt: new Date(resetMs).toISOString(),
+      windowDurationMins: WEEK,
+      nowMs,
+    });
+
+    expect(pace?.status).toBe("ahead");
+    expect(pace?.expectedRemainingPercent).toBeGreaterThan(99);
+    expect(pace?.amountText).toBeNull();
   });
 
   it("shows deficit and run-out timing when usage is faster than the elapsed window pace", () => {

@@ -7,6 +7,8 @@ import type {
   ThreadCoordinationActionResult,
 } from "./threadCoordination";
 import type {
+  LoadProjectImportHistoryInput,
+  LoadProjectImportHistoryResult,
   ImportProjectInput,
   ImportProjectResult,
   ListProjectImportsInput,
@@ -72,6 +74,67 @@ import type {
   MindUpdateInput,
 } from "./mind";
 import type {
+  Todo,
+  TodoCreateInput,
+  TodoDeleteInput,
+  TodoListResult,
+  TodoStreamEvent,
+  TodoUpdateInput,
+} from "./todo";
+import type {
+  ProjectAgentConfigureInput,
+  ProjectAgentLinkProjectInput,
+  ProjectAgentUnlinkProjectInput,
+  ProjectAgentExportDocumentsInput,
+  ProjectAgentExportDocumentsResult,
+  ProjectAgentGetOverviewInput,
+  ProjectAgentDeleteGroupInput,
+  ProjectAgentGroupControlInput,
+  ProjectAgentDeleteGroupResult,
+  ProjectAgentListSummariesInput,
+  ProjectAgentListSummariesResult,
+  ProjectAgentGoalControlInput,
+  ProjectAgentListActivityInput,
+  ProjectAgentListActivityResult,
+  ProjectAgentListDocumentsInput,
+  ProjectAgentListDocumentsResult,
+  ProjectAgentListTasksInput,
+  ProjectAgentListTasksResult,
+  ProjectAgentOverview,
+  ProjectAgentReadDocumentInput,
+  ProjectAgentReadDocumentResult,
+  ProjectAgentRefreshDigestInput,
+  ProjectAgentStartGoalInput,
+  ProjectAgentStreamEvent,
+  ProjectAgentUpdateGoalInput,
+  ProjectAgentUpdateTaskInput,
+  ProjectAgentWriteDocumentInput,
+  ProjectAgentCreateTaskInput,
+  ProjectAgentExcludeThreadInput,
+  ProjectAgentBackfillInput,
+  ProjectAgentListThreadIndexInput,
+  ProjectAgentListThreadIndexResult,
+  ProjectAgentListEvidenceInput,
+  ProjectAgentListEvidenceResult,
+  ProjectAgentLibraryDeleteInput,
+  ProjectAgentLibraryHistoryInput,
+  ProjectAgentLibraryHistoryResult,
+  ProjectAgentLibraryListInput,
+  ProjectAgentLibraryListResult,
+  ProjectAgentLibraryMkdirInput,
+  ProjectAgentLibraryMutationResult,
+  ProjectAgentLibraryRenameInput,
+  ProjectAgentLibraryRestoreInput,
+  ProjectAgentLibraryStatusInput,
+  ProjectAgentLibraryStatusResult,
+  ProjectAgentResolveWorkerInput,
+  ProjectAgentResolveWorkerResult,
+  ProjectDocumentRevision,
+  ProjectGoal,
+  ProjectTask,
+  ProjectThreadIndexEntry,
+} from "./projectAgent";
+import type {
   GitCheckoutInput,
   GitActionProgressEvent,
   GitWorktreeSetupProgressEvent,
@@ -133,13 +196,23 @@ import type {
   PullRequestDetail,
   PullRequestDetailInput,
   PullRequestDiffResult,
-  PullRequestReviewRequestCountInput,
-  PullRequestReviewRequestCountResult,
   PullRequestSetPinnedInput,
   PullRequestSetPinnedResult,
-  PullRequestsListInput,
-  PullRequestsListResult,
 } from "./pullRequests";
+import type {
+  PullRequestAutoFixGetInput,
+  PullRequestAutoFixListResult,
+  PullRequestAutoFixResult,
+  PullRequestAutoFixSetInput,
+} from "./pullRequestAutoFix";
+import type {
+  GitHubInboxListInput,
+  GitHubInboxListResult,
+  GitHubIssueCommentInput,
+  GitHubIssueCommentResult,
+  GitHubIssueDetail,
+  GitHubIssueDetailInput,
+} from "./githubInbox";
 import type {
   ProjectCreateLocalFilePreviewGrantInput,
   ProjectCreateLocalFilePreviewGrantResult,
@@ -262,6 +335,8 @@ import type {
   ServerStopLocalServerResult,
   ServerUpdateSettingsInput,
   ServerUpdateSettingsResult,
+  ServerEditKeybindingsInput,
+  ServerEditKeybindingsResult,
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
   ServerVoicePrewarmInput,
@@ -344,8 +419,11 @@ import type {
   StatsGetProfileStatsResult,
   StatsGetProfileTokenStatsInput,
   StatsGetProfileTokenStatsResult,
+  StatsGetRecapInput,
+  StatsGetRecapResult,
 } from "./stats";
 import type { BrowserAnnotationMethods } from "./browserAnnotations";
+import { type KeybindingCommand, MAX_KEYBINDING_VALUE_LENGTH } from "./keybindings";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -355,12 +433,19 @@ export interface ContextMenuItem<T extends string = string> {
   destructive?: boolean;
   /** Central icon basename from the reversed set (e.g. `"pencil"`) or inline `<svg>` markup. */
   icon?: string;
+  /**
+   * Opens a submenu instead of resolving this row. Related actions (handoff targets, copy
+   * variants, fork targets) belong in one parent row rather than a flat run of siblings.
+   * Only leaf ids are ever returned; the parent `id` just identifies the group.
+   */
+  children?: readonly ContextMenuItem<T>[];
 }
 
 /** Context menu row sent over the desktop bridge with its icon pre-rasterized by the renderer. */
 export interface DesktopContextMenuItem<T extends string = string> extends ContextMenuItem<T> {
   /** `data:image/png;base64,` template image rendered at 2x for a 16pt menu icon. */
   iconDataUrl?: string;
+  children?: readonly DesktopContextMenuItem<T>[];
 }
 
 export type DesktopUpdateStatus =
@@ -375,6 +460,20 @@ export type DesktopUpdateStatus =
 
 export type DesktopRuntimeArch = "arm64" | "x64" | "other";
 export type DesktopTheme = "light" | "dark" | "system";
+
+/** Largest desktop blur radius the translucent window shell accepts, in points. */
+export const DESKTOP_WINDOW_BLUR_RADIUS_MAX = 64;
+/** Smallest one: an unblurred desktop behind a clear window reads as a hole, not as glass. */
+export const DESKTOP_WINDOW_BLUR_RADIUS_MIN = 1;
+
+/**
+ * Window backing the renderer asks for. `translucent` removes macOS vibrancy and sets the
+ * desktop blur to `blurRadius`; `opaque` restores vibrancy and ignores `blurRadius`.
+ */
+export interface DesktopWindowMaterial {
+  material: "opaque" | "translucent";
+  blurRadius: number;
+}
 
 export interface DesktopRuntimeInfo {
   hostArch: DesktopRuntimeArch;
@@ -762,8 +861,34 @@ export interface DesktopCustomTitleBarState {
   restartRequired: boolean;
 }
 
-export const DesktopAppIcon = Schema.Literals(["default", "icon", "dark"]);
+export const DesktopAppIcon = Schema.Literals(["default", "icon", "dark", "beta"]);
 export type DesktopAppIcon = typeof DesktopAppIcon.Type;
+
+/** Keybinding commands whose effective shortcut is mirrored onto a native application menu item. */
+export const DESKTOP_MENU_SHORTCUT_COMMANDS = [
+  "terminal.new",
+  "sidebar.toggle",
+  "browser.toggle",
+] as const satisfies ReadonlyArray<KeybindingCommand>;
+export type DesktopMenuShortcutCommand = (typeof DESKTOP_MENU_SHORTCUT_COMMANDS)[number];
+
+// Same fields as KeybindingShortcut, but `key` is not trimmed: the space key is " ".
+const DesktopMenuShortcut = Schema.Struct({
+  key: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_KEYBINDING_VALUE_LENGTH)),
+  metaKey: Schema.Boolean,
+  ctrlKey: Schema.Boolean,
+  shiftKey: Schema.Boolean,
+  altKey: Schema.Boolean,
+  modKey: Schema.Boolean,
+});
+
+/** The user's shortcut for each menu command; null leaves that menu item without an accelerator. */
+export const DesktopMenuShortcuts = Schema.Struct({
+  "terminal.new": Schema.NullOr(DesktopMenuShortcut),
+  "sidebar.toggle": Schema.NullOr(DesktopMenuShortcut),
+  "browser.toggle": Schema.NullOr(DesktopMenuShortcut),
+});
+export type DesktopMenuShortcuts = typeof DesktopMenuShortcuts.Type;
 
 export interface SynaraStorageSnapshot {
   readonly version: 1;
@@ -787,6 +912,25 @@ export interface DesktopComputerPreviewFrame {
   readonly jpeg: Uint8Array;
 }
 
+/** Sound the message trail follows: the Mac's audio output, the microphone, or both. */
+export type DesktopAudioLevelSource = "system" | "microphone" | "both";
+
+/** A Mac input device the message trail can listen to. `id` is the Core Audio UID. */
+export interface DesktopAudioInputDevice {
+  readonly id: string;
+  readonly name: string;
+  readonly bluetooth: boolean;
+  readonly default: boolean;
+}
+
+/**
+ * Whether the desktop is reading audio levels. "unsupported" means this host
+ * can never provide them (not macOS); "unavailable" means
+ * the reader failed, for example on macOS before 14.2 or without microphone
+ * access.
+ */
+export type DesktopAudioLevelStatus = "active" | "off" | "unsupported" | "unavailable";
+
 /**
  * Agent cursor colors mirrored from the renderer to the desktop main process.
  * Each channel is a `#rrggbb` string; an omitted channel keeps the driver's
@@ -807,7 +951,90 @@ export interface DesktopClipboardFile {
   readonly bytes: Uint8Array;
 }
 
+export const DESKTOP_RENDERER_ERROR_MESSAGE_MAX_LENGTH = 1024;
+export const DESKTOP_RENDERER_ERROR_STACK_MAX_LENGTH = 8 * 1024;
+
+/** Fixed, bounded exception fields accepted by Beta's diagnostics IPC. */
+export interface DesktopRendererError {
+  readonly message: string;
+  readonly stack?: string | undefined;
+}
+
+/** Fixed categories only: never carry RPC arguments, DOM text, paths, or IDs. */
+export const DesktopDiagnosticActivity = Schema.Literals([
+  "chat.send",
+  "chat.stop",
+  "chat.open",
+  "chat.unblock",
+  "workspace.change",
+  "project.create",
+  "project.import",
+  "project.import.preview",
+  "project.import.catalog",
+  "workspace.search",
+  "workspace.read",
+  "browser.open",
+  "browser.navigate",
+  "browser.resize",
+  "window.resize",
+  "transport.reconnect",
+  "renderer.ready",
+]);
+export type DesktopDiagnosticActivity = typeof DesktopDiagnosticActivity.Type;
+export const DesktopDiagnosticBreadcrumb = Schema.Struct({
+  activity: DesktopDiagnosticActivity,
+  phase: Schema.Literals(["started", "succeeded", "failed"]),
+});
+export type DesktopDiagnosticBreadcrumb = typeof DesktopDiagnosticBreadcrumb.Type;
+
+/** Handled failures carry fixed categories, never exception text or operation arguments. */
+export const DesktopDiagnosticIssue = Schema.Struct({
+  code: Schema.Literals([
+    "git.request.failed",
+    "git.branch.failed",
+    "git.commit.failed",
+    "git.push.failed",
+    "git.pr.failed",
+    "voice.record.failed",
+    "voice.transcribe.failed",
+    "claude.compaction.request-failed",
+    "claude.compaction.uncertain",
+    "claude.cache.request-failed",
+    "claude.cache.failed",
+    "claude.cache.uncertain",
+    "startup.database-locked",
+    "startup.migration-recovery-required",
+    "startup.migration-divergence-consent-required",
+    "startup.migration-runtime-identity-mismatch",
+    "startup.migration-schema-too-new",
+    "startup.migration-startup-block-invalid",
+  ]),
+  reason: Schema.optional(
+    Schema.Literals([
+      "unknown",
+      "auth",
+      "invalid-response",
+      "timeout",
+      "output-limit",
+      "live-owner",
+      "unknown-owner",
+    ]),
+  ),
+  durationMs: Schema.optional(Schema.Finite),
+});
+export type DesktopDiagnosticIssue = typeof DesktopDiagnosticIssue.Type;
+export const DESKTOP_DIAGNOSTIC_ISSUE_PREFIX = "SYNARA_DIAGNOSTIC_ISSUE ";
+export type DesktopDiagnosticReportStatus = "queued" | "sent" | "unavailable";
+
 export interface DesktopBridge {
+  /** Present only when the desktop main process enables baked-in Beta diagnostics. */
+  betaDiagnostics?: {
+    rendererReady: () => void;
+    reportError: (error: DesktopRendererError) => void;
+    recordActivity?: (breadcrumb: DesktopDiagnosticBreadcrumb) => void;
+    reportIssue?: (issue: DesktopDiagnosticIssue) => Promise<string | null>;
+    getReportStatus?: (id: string) => Promise<DesktopDiagnosticReportStatus>;
+  };
   safariAccess?: {
     getInfo: () => Promise<DesktopSafariAccessInfo>;
     openSettings: () => Promise<boolean>;
@@ -827,6 +1054,8 @@ export interface DesktopBridge {
   }) => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
+  /** macOS only; resolves false when the adjustable blur is unavailable. */
+  setWindowMaterial?: (input: DesktopWindowMaterial) => Promise<boolean>;
   getAppIcon?: () => Promise<DesktopAppIcon>;
   setAppIcon: (icon: DesktopAppIcon) => Promise<void>;
   showContextMenu: <T extends string>(
@@ -876,7 +1105,28 @@ export interface DesktopBridge {
   computer?: {
     setCursorStyle: (style: DesktopAgentCursorStyle | null) => Promise<void>;
   };
+  /**
+   * Loudness of the Mac's audio output and/or the microphone, in 0..1, for the
+   * message trail. Desktop on macOS only, in Stable and Beta; the main process
+   * refuses it elsewhere. Levels stream only while this window has a source set
+   * (`null` stops), and silence arrives once as 0. `microphoneId` picks the
+   * input device by `DesktopAudioInputDevice.id`; omitted or `null` follows
+   * the Mac's default input.
+   */
+  audioLevel?: {
+    setSource: (
+      source: DesktopAudioLevelSource | null,
+      microphoneId?: string | null,
+    ) => Promise<DesktopAudioLevelStatus>;
+    listMicrophones: () => Promise<readonly DesktopAudioInputDevice[]>;
+    onLevel: (listener: (level: number) => void) => () => void;
+  };
   onMenuAction: (listener: (action: string) => void) => () => void;
+  /**
+   * Mirrors the user's keybindings onto the native menu accelerators. Absent on
+   * builds that predate it; until a window reports, the menu keeps its defaults.
+   */
+  setMenuShortcuts?: (shortcuts: DesktopMenuShortcuts) => Promise<void>;
   onQuitConfirmationRequest: (
     listener: (request: DesktopQuitConfirmationRequest) => void,
   ) => () => void;
@@ -1092,16 +1342,19 @@ export interface NativeApi {
       callback: (event: GitWorktreeSetupProgressEvent) => void,
     ) => () => void;
   };
+  githubInbox: {
+    list: (input: GitHubInboxListInput) => Promise<GitHubInboxListResult>;
+    issueDetail: (input: GitHubIssueDetailInput) => Promise<GitHubIssueDetail>;
+    issueComment: (input: GitHubIssueCommentInput) => Promise<GitHubIssueCommentResult>;
+  };
   pullRequests: {
-    list: (input: PullRequestsListInput) => Promise<PullRequestsListResult>;
-    reviewRequestCount: (
-      input: PullRequestReviewRequestCountInput,
-    ) => Promise<PullRequestReviewRequestCountResult>;
     detail: (input: PullRequestDetailInput) => Promise<PullRequestDetail>;
     diff: (input: PullRequestDetailInput) => Promise<PullRequestDiffResult>;
     action: (input: PullRequestActionInput) => Promise<PullRequestActionResult>;
     comment: (input: PullRequestCommentInput) => Promise<PullRequestActionResult>;
     setPinned: (input: PullRequestSetPinnedInput) => Promise<PullRequestSetPinnedResult>;
+    getAutoFix: (input: PullRequestAutoFixGetInput) => Promise<PullRequestAutoFixListResult>;
+    setAutoFix: (input: PullRequestAutoFixSetInput) => Promise<PullRequestAutoFixResult>;
   };
   contextMenu: {
     show: <T extends string>(
@@ -1175,12 +1428,14 @@ export interface NativeApi {
       input: ServerVoiceTranscriptionInput,
     ) => Promise<ServerVoiceTranscriptionResult>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
+    editKeybindings: (input: ServerEditKeybindingsInput) => Promise<ServerEditKeybindingsResult>;
   };
   stats: {
     getProfileStats: (input: StatsGetProfileStatsInput) => Promise<StatsGetProfileStatsResult>;
     getProfileTokenStats: (
       input: StatsGetProfileTokenStatsInput,
     ) => Promise<StatsGetProfileTokenStatsResult>;
+    getRecap: (input: StatsGetRecapInput) => Promise<StatsGetRecapResult>;
   };
   provider: {
     getComposerCapabilities: (
@@ -1225,6 +1480,9 @@ export interface NativeApi {
     ) => Promise<OrchestrationImportThreadResult>;
     listProjectImports: (input: ListProjectImportsInput) => Promise<ListProjectImportsResult>;
     importProject: (input: ImportProjectInput) => Promise<ImportProjectResult>;
+    loadProjectImportHistory: (
+      input: LoadProjectImportHistoryInput,
+    ) => Promise<LoadProjectImportHistoryResult>;
     regenerateThreadTitle: (
       input: OrchestrationRegenerateThreadTitleInput,
     ) => Promise<OrchestrationRegenerateThreadTitleResult>;
@@ -1263,6 +1521,64 @@ export interface NativeApi {
       input: ThreadCoordinationAnswerQuestionInput,
     ) => Promise<ThreadCoordinationActionResult>;
   };
+  projectAgent: {
+    getOverview: (input: ProjectAgentGetOverviewInput) => Promise<ProjectAgentOverview>;
+    listSummaries: (
+      input?: ProjectAgentListSummariesInput,
+    ) => Promise<ProjectAgentListSummariesResult>;
+    configure: (input: ProjectAgentConfigureInput) => Promise<ProjectAgentOverview>;
+    linkProject: (input: ProjectAgentLinkProjectInput) => Promise<ProjectAgentOverview>;
+    unlinkProject: (input: ProjectAgentUnlinkProjectInput) => Promise<ProjectAgentOverview>;
+    startGoal: (input: ProjectAgentStartGoalInput) => Promise<ProjectGoal>;
+    updateGoal: (input: ProjectAgentUpdateGoalInput) => Promise<ProjectGoal>;
+    pauseGoal: (input: ProjectAgentGoalControlInput) => Promise<ProjectGoal>;
+    resumeGoal: (input: ProjectAgentGoalControlInput) => Promise<ProjectGoal>;
+    stopGoal: (input: ProjectAgentGoalControlInput) => Promise<ProjectGoal>;
+    listTasks: (input: ProjectAgentListTasksInput) => Promise<ProjectAgentListTasksResult>;
+    createTask: (input: ProjectAgentCreateTaskInput) => Promise<ProjectTask>;
+    updateTask: (input: ProjectAgentUpdateTaskInput) => Promise<ProjectTask>;
+    listEvidence: (input: ProjectAgentListEvidenceInput) => Promise<ProjectAgentListEvidenceResult>;
+    listThreadIndex: (
+      input: ProjectAgentListThreadIndexInput,
+    ) => Promise<ProjectAgentListThreadIndexResult>;
+    excludeThread: (input: ProjectAgentExcludeThreadInput) => Promise<ProjectThreadIndexEntry>;
+    backfillSummaries: (input: ProjectAgentBackfillInput) => Promise<ProjectAgentOverview>;
+    listActivity: (input: ProjectAgentListActivityInput) => Promise<ProjectAgentListActivityResult>;
+    listDocuments: (
+      input: ProjectAgentListDocumentsInput,
+    ) => Promise<ProjectAgentListDocumentsResult>;
+    readDocument: (input: ProjectAgentReadDocumentInput) => Promise<ProjectAgentReadDocumentResult>;
+    writeDocument: (input: ProjectAgentWriteDocumentInput) => Promise<ProjectDocumentRevision>;
+    exportDocuments: (
+      input: ProjectAgentExportDocumentsInput,
+    ) => Promise<ProjectAgentExportDocumentsResult>;
+    refreshDigest: (input: ProjectAgentRefreshDigestInput) => Promise<ProjectAgentOverview>;
+    pauseGroup: (input: ProjectAgentGroupControlInput) => Promise<ProjectAgentOverview>;
+    resumeGroup: (input: ProjectAgentGroupControlInput) => Promise<ProjectAgentOverview>;
+    archiveGroup: (input: ProjectAgentGroupControlInput) => Promise<ProjectAgentOverview>;
+    unarchiveGroup: (input: ProjectAgentGroupControlInput) => Promise<ProjectAgentOverview>;
+    restartCoordinator: (input: ProjectAgentGroupControlInput) => Promise<ProjectAgentOverview>;
+    deleteGroup: (input: ProjectAgentDeleteGroupInput) => Promise<ProjectAgentDeleteGroupResult>;
+    resolveWorker: (
+      input: ProjectAgentResolveWorkerInput,
+    ) => Promise<ProjectAgentResolveWorkerResult>;
+    library: {
+      list: (input: ProjectAgentLibraryListInput) => Promise<ProjectAgentLibraryListResult>;
+      mkdir: (input: ProjectAgentLibraryMkdirInput) => Promise<ProjectAgentLibraryMutationResult>;
+      rename: (input: ProjectAgentLibraryRenameInput) => Promise<ProjectAgentLibraryMutationResult>;
+      delete: (input: ProjectAgentLibraryDeleteInput) => Promise<ProjectAgentLibraryMutationResult>;
+      history: (
+        input: ProjectAgentLibraryHistoryInput,
+      ) => Promise<ProjectAgentLibraryHistoryResult>;
+      restore: (
+        input: ProjectAgentLibraryRestoreInput,
+      ) => Promise<ProjectAgentLibraryMutationResult>;
+      status: (input: ProjectAgentLibraryStatusInput) => Promise<ProjectAgentLibraryStatusResult>;
+    };
+    subscribe: (input: { projectId: string }) => Promise<void>;
+    unsubscribe: (input: { projectId: string }) => Promise<void>;
+    onEvent: (callback: (event: ProjectAgentStreamEvent) => void) => () => void;
+  };
   automation: {
     list: (input?: AutomationListInput) => Promise<AutomationListResult>;
     getMemory: (input: AutomationGetMemoryInput) => Promise<AutomationMemory | null>;
@@ -1288,6 +1604,13 @@ export interface NativeApi {
     history: (input: MindHistoryInput) => Promise<MindHistoryResult>;
     profileGet: (input: MindProfileGetInput) => Promise<MindProfileGetResult>;
     profileSet: (input: MindProfileSetInput) => Promise<MindProfile>;
+  };
+  todo: {
+    list: () => Promise<TodoListResult>;
+    create: (input: TodoCreateInput) => Promise<Todo>;
+    update: (input: TodoUpdateInput) => Promise<Todo>;
+    delete: (input: TodoDeleteInput) => Promise<void>;
+    onEvent: (callback: (event: TodoStreamEvent) => void) => () => void;
   };
   browser: BrowserControlMethods & {
     annotations: BrowserAnnotationMethods;

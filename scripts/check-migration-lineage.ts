@@ -74,6 +74,33 @@ const HANDLED_RELEASED_DIVERGENCES: readonly MigrationLineageAllowance[] = [
   { id: 106, name: "ProjectImportOrigins" },
   { id: 107, name: "ProjectionThreadsHumanMessage" },
   { id: 108, name: "GatewayCompletions" },
+  // Upstream v1.0.0 numbered its migrations 109-130 while the fork had already
+  // shipped its own 109-122 lineage. Same mechanism as above: an official
+  // tracker diverges at 109, reconciliation truncates from there, and the
+  // idempotent fork migrations replay before the upstream additions apply at
+  // their append-only 124-145 slots.
+  { id: 109, name: "ProjectAgent" },
+  { id: 110, name: "Groups" },
+  { id: 111, name: "GroupLibraryHosting" },
+  { id: 112, name: "CoordinatorAppearance" },
+  { id: 113, name: "ProjectAgentWakeCursor" },
+  { id: 114, name: "ProjectAgentLifecycle" },
+  { id: 115, name: "ProjectAgentManagedWorkers" },
+  { id: 116, name: "ProjectAgentWorkerRecovery" },
+  { id: 117, name: "WorkerMonitoringLiveness" },
+  { id: 118, name: "ProjectionThreadSessionProviderInstance" },
+  { id: 119, name: "ProviderSessionRuntimeInstanceId" },
+  { id: 120, name: "ProfileStatsDeletedProviderInstances" },
+  { id: 121, name: "ClearAutomationDefinitionProviderOptions" },
+  { id: 122, name: "ClearAutomationRunProviderOptions" },
+  { id: 123, name: "ScrubOrchestrationEventProviderOptions" },
+  { id: 124, name: "ProjectionTurnsPendingMessageIndex" },
+  { id: 125, name: "Todos" },
+  { id: 126, name: "ProjectionThreadsSidechatContext" },
+  { id: 127, name: "ProjectImportHistory" },
+  { id: 128, name: "HubWork" },
+  { id: 129, name: "ProjectionThreadsSnooze" },
+  { id: 130, name: "PullRequestAutoFix" },
 ];
 
 const entriesBlockPattern = /export const migrationEntries\s*=\s*\[([\s\S]*?)\]\s*as const;/u;

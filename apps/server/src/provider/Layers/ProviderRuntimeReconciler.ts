@@ -95,6 +95,7 @@ const make = (options?: ProviderRuntimeReconcilerLiveOptions) =>
       current !== null &&
       current.status === next.status &&
       current.providerName === next.providerName &&
+      current.providerInstanceId === next.providerInstanceId &&
       current.runtimeMode === next.runtimeMode &&
       current.activeTurnId === next.activeTurnId &&
       current.lastError === next.lastError;
@@ -121,6 +122,13 @@ const make = (options?: ProviderRuntimeReconcilerLiveOptions) =>
           plan.action === "settle-terminal-projection"
             ? plan.terminalSession.providerName
             : plan.provider,
+        providerInstanceId:
+          plan.action === "settle-terminal-projection"
+            ? plan.terminalSession.providerInstanceId
+            : (input.binding?.providerInstanceId ??
+              thread.session?.providerInstanceId ??
+              thread.modelSelection.instanceId ??
+              thread.modelSelection.provider),
         runtimeMode:
           plan.action === "settle-terminal-projection"
             ? plan.terminalSession.runtimeMode

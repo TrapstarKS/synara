@@ -82,6 +82,10 @@ export class ComposerImageIntakeQueue {
         job.onError(cause instanceof Error ? cause.message : "Synara could not prepare image.");
       })
       .finally(() => {
+        if (this.#isStale(generation)) {
+          finishOperation();
+          return;
+        }
         this.#setPendingCount(Math.max(0, this.#pendingCount - job.files.length));
         finishOperation();
       });
@@ -97,11 +101,16 @@ export class ComposerImageIntakeQueue {
     }
   }
 
+  activate(): void {
+    this.#disposed = false;
+  }
+
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#generation += 1;
-    this.#listeners.clear();
+    this.#tail = Promise.resolve();
+    this.#setPendingCount(0);
   }
 
   #isStale(generation: number): boolean {
@@ -122,7 +131,12 @@ export function useComposerImageIntake(input: {
   readonly onError: (error: string | null) => void;
 }) {
   const queue = useMemo(() => new ComposerImageIntakeQueue(), [input.threadId]);
-  useEffect(() => () => queue.dispose(), [queue]);
+  useEffect(() => {
+    // StrictMode replays effect cleanup/setup with the same memoized queue.
+    // Reactivate intake while keeping preparations from the previous lifetime stale.
+    queue.activate();
+    return () => queue.dispose();
+  }, [queue]);
   const pendingCount = useSyncExternalStore(
     queue.subscribe,
     queue.pendingCount,

@@ -2,9 +2,37 @@ import { Schema } from "effect";
 import { CodexProfileId, IsoDateTime, TrimmedString } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model";
 import { ModelSelection, ProviderKind, ThreadEnvironmentMode } from "./orchestration";
+import { ProviderInstanceConfigMap, ProviderInstanceId } from "./providerInstance";
 
 const StringSetting = TrimmedString.check(Schema.isMaxLength(4096));
 const CustomModels = Schema.Array(Schema.String.check(Schema.isMaxLength(256))).pipe(
+  Schema.withDecodingDefault(() => []),
+);
+export const DEFAULT_CODEX_ACCOUNT_ID = "default";
+
+// How long an idle side chat stays usable before the server expires it.
+export const SidechatExpiry = Schema.Literals(["1h", "24h", "never"]);
+export type SidechatExpiry = typeof SidechatExpiry.Type;
+
+export const SourceControlWritingStyle = Schema.Literals(["repository", "conventional", "custom"]);
+export type SourceControlWritingStyle = typeof SourceControlWritingStyle.Type;
+export const MAX_SOURCE_CONTROL_CUSTOM_INSTRUCTIONS_LENGTH = 4096;
+export const SourceControlCustomInstructions = Schema.String.check(
+  Schema.isMaxLength(MAX_SOURCE_CONTROL_CUSTOM_INSTRUCTIONS_LENGTH),
+);
+
+export const CodexAccountId = TrimmedString.check(Schema.isMaxLength(64));
+export type CodexAccountId = typeof CodexAccountId.Type;
+
+export const CodexAccountConfig = Schema.Struct({
+  id: CodexAccountId,
+  label: StringSetting.pipe(Schema.withDecodingDefault(() => "")),
+  homePath: StringSetting.pipe(Schema.withDecodingDefault(() => "")),
+  shadowHomePath: StringSetting.pipe(Schema.withDecodingDefault(() => "")),
+});
+export type CodexAccountConfig = typeof CodexAccountConfig.Type;
+
+const CodexAccountConfigs = Schema.Array(CodexAccountConfig).pipe(
   Schema.withDecodingDefault(() => []),
 );
 
@@ -31,12 +59,17 @@ export const CodexServerProviderSettings = Schema.Struct({
   proxyBinaryPath: StringSetting.pipe(Schema.withDecodingDefault(() => "claude-code-proxy")),
   profiles: CodexProfiles,
   defaultProfileId: Schema.NullOr(CodexProfileId).pipe(Schema.withDecodingDefault(() => null)),
+  accounts: CodexAccountConfigs,
+  selectedAccountId: CodexAccountId.pipe(
+    Schema.withDecodingDefault(() => DEFAULT_CODEX_ACCOUNT_ID),
+  ),
 });
 export type CodexServerProviderSettings = typeof CodexServerProviderSettings.Type;
 
 export const ClaudeServerProviderSettings = Schema.Struct({
   ...ProviderSettingsBase,
   binaryPath: StringSetting.pipe(Schema.withDecodingDefault(() => "claude")),
+  homePath: StringSetting.pipe(Schema.withDecodingDefault(() => "")),
   launchArgs: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     Schema.withDecodingDefault(() => ""),
   ),
@@ -137,10 +170,19 @@ export type SkillsServerSettings = typeof SkillsServerSettings.Type;
 
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
-  enableContinuousProviderHandoff: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   defaultThreadEnvMode: ThreadEnvironmentMode.pipe(Schema.withDecodingDefault(() => "local")),
   addProjectBaseDirectory: StringSetting.pipe(Schema.withDecodingDefault(() => "")),
+  // The GitHub inbox reads one repository per project (the preferred remote). When true it also
+  // reads the project's other GitHub remotes, such as the upstream of a fork.
+  githubInboxIncludeUpstreams: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  sidechatExpiry: SidechatExpiry.pipe(Schema.withDecodingDefault(() => "1h")),
+  sourceControlWritingStyle: SourceControlWritingStyle.pipe(
+    Schema.withDecodingDefault(() => "repository"),
+  ),
+  sourceControlCustomInstructions: SourceControlCustomInstructions.pipe(
+    Schema.withDecodingDefault(() => ""),
+  ),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(() => ({
       provider: "codex" as const,
@@ -160,6 +202,7 @@ export const ServerSettings = Schema.Struct({
     chatgpt: ChatGptServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     omp: OmpServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
+  providerInstances: ProviderInstanceConfigMap.pipe(Schema.withDecodingDefault(() => ({}))),
   skills: SkillsServerSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   // When the first-run welcome tour was completed or skipped. Server-backed so a
   // browser-storage reset does not replay setup on an already configured install.
@@ -180,6 +223,7 @@ export const DEFAULT_SERVER_SETTINGS_VIEW: ServerSettingsView = Schema.decodeSyn
 
 const ModelSelectionPatch = Schema.Struct({
   provider: Schema.optionalKey(ProviderKind),
+  instanceId: Schema.optionalKey(ProviderInstanceId),
   model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
   profileId: Schema.optionalKey(Schema.NullOr(CodexProfileId)),
   options: Schema.optionalKey(Schema.Unknown),
@@ -193,10 +237,13 @@ const ProviderSettingsBasePatch = {
 
 export const ServerSettingsPatch = Schema.Struct({
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
-  enableContinuousProviderHandoff: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvironmentMode),
   addProjectBaseDirectory: Schema.optionalKey(StringSetting),
+  githubInboxIncludeUpstreams: Schema.optionalKey(Schema.Boolean),
+  sidechatExpiry: Schema.optionalKey(SidechatExpiry),
+  sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyle),
+  sourceControlCustomInstructions: Schema.optionalKey(SourceControlCustomInstructions),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   providers: Schema.optionalKey(
     Schema.Struct({
@@ -207,11 +254,14 @@ export const ServerSettingsPatch = Schema.Struct({
           proxyBinaryPath: Schema.optionalKey(StringSetting),
           profiles: Schema.optionalKey(CodexProfiles),
           defaultProfileId: Schema.optionalKey(Schema.NullOr(CodexProfileId)),
+          accounts: Schema.optionalKey(CodexAccountConfigs),
+          selectedAccountId: Schema.optionalKey(CodexAccountId),
         }),
       ),
       claudeAgent: Schema.optionalKey(
         Schema.Struct({
           ...ProviderSettingsBasePatch,
+          homePath: Schema.optionalKey(StringSetting),
           launchArgs: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(4096))),
           enableArtifacts: Schema.optionalKey(Schema.Boolean),
           enableChrome: Schema.optionalKey(Schema.Boolean),
@@ -262,6 +312,7 @@ export const ServerSettingsPatch = Schema.Struct({
       ),
     }),
   ),
+  providerInstances: Schema.optionalKey(ProviderInstanceConfigMap),
   skills: Schema.optionalKey(
     Schema.Struct({
       disabled: Schema.optionalKey(Schema.Array(Schema.String.check(Schema.isMaxLength(256)))),

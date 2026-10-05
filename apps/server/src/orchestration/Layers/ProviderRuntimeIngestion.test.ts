@@ -9,6 +9,7 @@ import type {
   ModelSelection,
   OrchestrationReadModel,
   OrchestrationThread,
+  ProviderDriverKind,
   ProviderKind,
   ProviderRuntimeEvent,
   ProviderSession,
@@ -61,6 +62,7 @@ import { FakeComputerBackend } from "../../computer/FakeComputerBackend.ts";
 import { ComputerService } from "../../computer/Services/ComputerService.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -74,7 +76,7 @@ const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
   readonly eventId: EventId;
-  readonly provider: ProviderKind;
+  readonly provider: ProviderDriverKind;
   readonly createdAt: string;
   readonly threadId: ThreadId;
   readonly turnId?: string | undefined;
@@ -104,6 +106,7 @@ function createProviderServiceHarness(options?: { readonly persistedStream?: boo
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
+    getPersistedSessionProfile: () => Effect.succeed(undefined),
     getCapabilities: (provider) =>
       Effect.succeed({
         sessionModelSwitch: "in-session",
@@ -413,6 +416,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(runtimeEventRepositoryLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);
@@ -3359,6 +3363,251 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(false);
     expect(thread.messages).toHaveLength(0);
   });
+
+  it("streams one coalesced Claude reasoning row and keeps its position when it completes", async () => {
+    const harness = await createHarness({ startIngestion: false });
+    const base = {
+      provider: "claudeAgent" as const,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-claude-reasoning"),
+      itemId: asItemId("claude-thought-1"),
+    };
+    const activityId = "provider-reasoning:thread-1:claude-thought-1";
+    const firstAt = "2026-10-03T10:00:00.000Z";
+    const appendDelta = (eventId: string, createdAt: string, delta: string) =>
+      Effect.runPromise(
+        harness.runtimeEventRepository.append({
+          ...base,
+          type: "content.delta",
+          eventId: asEventId(eventId),
+          createdAt,
+          payload: { streamKind: "reasoning_text", delta },
+        }),
+      );
+    const first = await appendDelta("claude-preview-1", firstAt, "While the worker runs, ");
+    await harness.startIngestion();
+    await harness.drain();
+    const live = await harness.readProjectedThread();
+    expect(live?.activities.find((activity) => activity.id === activityId)).toMatchObject({
+      createdAt: firstAt,
+      sequence: first.sequence,
+      payload: { status: "inProgress", detail: "While the worker runs," },
+    });
+    expect(live?.messages).toHaveLength(0);
+
+    await appendDelta("claude-preview-2", "2026-10-03T10:00:00.050Z", "I will ");
+    await appendDelta("claude-preview-3", "2026-10-03T10:00:00.300Z", "check the tests.");
+    await harness.drain();
+    const updates = Array.from(
+      await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0))),
+    ).filter(
+      (event) =>
+        event.type === "thread.activity-appended" && event.payload.activity.id === activityId,
+    );
+    expect(updates).toHaveLength(2);
+    expect(
+      (await harness.readProjectedThread())?.activities.find(
+        (activity) => activity.id === activityId,
+      )?.payload,
+    ).toMatchObject({
+      status: "inProgress",
+      detail: "While the worker runs, I will check the tests.",
+    });
+
+    await Effect.runPromise(
+      harness.runtimeEventRepository.append({
+        ...base,
+        type: "item.started",
+        eventId: asEventId("claude-next-tool"),
+        itemId: asItemId("claude-command"),
+        createdAt: "2026-10-03T10:00:00.350Z",
+        payload: {
+          itemType: "command_execution",
+          status: "inProgress",
+          title: "Run tests",
+          data: { command: "npm test" },
+        },
+      }),
+    );
+    await Effect.runPromise(
+      harness.runtimeEventRepository.append({
+        ...base,
+        type: "item.completed",
+        eventId: asEventId("claude-thought-complete"),
+        createdAt: "2026-10-03T10:00:00.400Z",
+        payload: {
+          itemType: "reasoning",
+          status: "completed",
+          detail: "While the worker runs, I will check the tests and their setup.",
+        },
+      }),
+    );
+    await harness.drain();
+    const settled = await harness.readProjectedThread();
+    const thoughts = settled?.activities.filter((activity) => activity.id === activityId);
+    expect(thoughts).toHaveLength(1);
+    expect(thoughts?.[0]).toMatchObject({
+      createdAt: firstAt,
+      sequence: first.sequence,
+      payload: {
+        status: "completed",
+        detail: "While the worker runs, I will check the tests and their setup.",
+      },
+    });
+    expect(settled?.activities.findIndex((activity) => activity.id === activityId)).toBeLessThan(
+      settled!.activities.findIndex((activity) => activity.kind === "tool.started"),
+    );
+    expect(settled?.messages).toHaveLength(0);
+  });
+
+  it.each([
+    { type: "turn.aborted", payload: { reason: "User interrupted" }, status: "failed" },
+    { type: "runtime.error", payload: { message: "Provider disconnected" }, status: "failed" },
+    { type: "session.exited", payload: { exitKind: "error" }, status: "failed" },
+    { type: "turn.completed", payload: { state: "completed" }, status: "completed" },
+  ] as const)("recovers accepted Claude reasoning and settles it on $type", async (terminal) => {
+    const harness = await createHarness({ startIngestion: false });
+    const base = {
+      provider: "claudeAgent" as const,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-claude-recovered"),
+      createdAt: "2026-10-03T10:01:00.000Z",
+    };
+    const persisted = await Effect.runPromise(
+      harness.runtimeEventRepository.append({
+        ...base,
+        type: "content.delta",
+        itemId: asItemId("recovered-thought"),
+        eventId: asEventId("claude-accepted-thought"),
+        payload: { streamKind: "reasoning_text", delta: "Checking the remaining cases." },
+      }),
+    );
+    await Effect.runPromise(
+      harness.runtimeEventRepository.advanceConsumerCursor({
+        consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
+        eventSequence: persisted.sequence,
+        updatedAt: base.createdAt,
+      }),
+    );
+    await harness.startIngestion();
+    await harness.drain();
+    expect((await harness.readProjectedThread())?.activities[0]?.payload).toMatchObject({
+      status: "inProgress",
+      detail: "Checking the remaining cases.",
+    });
+    await Effect.runPromise(
+      harness.runtimeEventRepository.append({
+        ...base,
+        type: terminal.type,
+        eventId: asEventId("claude-recovered-terminal"),
+        createdAt: "2026-10-03T10:01:01.000Z",
+        payload: terminal.payload,
+      } as ProviderRuntimeEvent),
+    );
+    await harness.drain();
+    // The turn is already settled when a queued provider completion arrives.
+    await Effect.runPromise(
+      harness.runtimeEventRepository.append({
+        ...base,
+        type: "item.completed",
+        eventId: asEventId("claude-late-reasoning-completion"),
+        itemId: asItemId("recovered-thought"),
+        createdAt: "2026-10-03T10:01:02.000Z",
+        payload: { itemType: "reasoning", status: "completed", detail: "Late completion" },
+      }),
+    );
+    await harness.drain();
+    // A still-later delta must not reopen the terminal row.
+    await Effect.runPromise(
+      harness.runtimeEventRepository.append({
+        ...base,
+        type: "content.delta",
+        eventId: asEventId("claude-late-reasoning-delta"),
+        itemId: asItemId("recovered-thought"),
+        createdAt: "2026-10-03T10:01:03.000Z",
+        payload: { streamKind: "reasoning_text", delta: "Late delta" },
+      }),
+    );
+    await harness.drain();
+    const thoughts = (await harness.readProjectedThread())?.activities.filter(
+      (activity) => activity.id === "provider-reasoning:thread-1:recovered-thought",
+    );
+    expect(thoughts).toHaveLength(1);
+    expect(thoughts?.[0]).toMatchObject({
+      createdAt: base.createdAt,
+      sequence: persisted.sequence,
+      payload: {
+        status: terminal.status,
+        detail:
+          terminal.status === "completed" ? "Late completion" : "Checking the remaining cases.",
+      },
+    });
+  });
+
+  it.each([0, 2_001])(
+    "preserves durable failed Claude reasoning with %s newer rows when ingestion receives a late completion",
+    async (newerRows) => {
+      const harness = await createHarness({ startIngestion: false });
+      const createdAt = "2026-10-03T10:02:00.000Z";
+      const activity = {
+        id: asEventId("provider-reasoning:thread-1:persisted-thought"),
+        tone: "tool" as const,
+        kind: "task.progress",
+        summary: "Reasoning trace",
+        payload: { status: "failed", detail: "Interrupted thought" },
+        turnId: asTurnId("persisted-turn"),
+        createdAt,
+        sequence: 1,
+      };
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.makeUnsafe("seed-settled-reasoning"),
+          threadId: asThreadId("thread-1"),
+          activity,
+          createdAt,
+        }),
+      );
+      const sql = await runtime!.runPromise(Effect.service(SqlClient.SqlClient));
+      if (newerRows > 0) {
+        await Effect.runPromise(sql`
+        WITH RECURSIVE newer(n) AS (
+          SELECT 1 UNION ALL SELECT n + 1 FROM newer WHERE n < ${newerRows}
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        )
+        SELECT 'newer-' || n, 'thread-1', 'persisted-turn', 'info', 'runtime.warning',
+          'Later activity', '{}', n + 1, '2026-10-03T10:02:01.000Z' FROM newer
+      `);
+        expect(
+          (await harness.readProjectedThread())?.activities.some((row) => row.id === activity.id),
+        ).toBe(false);
+      }
+      const readDurableThought = () =>
+        Effect.runPromise(sql`
+      SELECT payload_json, created_at, sequence FROM projection_thread_activities
+      WHERE activity_id = ${activity.id}
+    `);
+      const persisted = await readDurableThought();
+      expect(persisted).toHaveLength(1);
+      await Effect.runPromise(
+        harness.runtimeEventRepository.append({
+          type: "item.completed",
+          provider: "claudeAgent",
+          eventId: asEventId("late-persisted-thought-completion"),
+          threadId: asThreadId("thread-1"),
+          turnId: activity.turnId,
+          itemId: asItemId("persisted-thought"),
+          createdAt: "2026-10-03T10:02:01.000Z",
+          payload: { itemType: "reasoning", status: "completed", detail: "Late success" },
+        }),
+      );
+      await harness.startIngestion();
+      await harness.drain();
+      expect(await readDurableThought()).toEqual(persisted);
+    },
+  );
 
   it("projects only completed Codex reasoning with a readable summary", async () => {
     const harness = await createHarness();
@@ -7170,6 +7419,7 @@ describe("ProviderRuntimeIngestion", () => {
       // A tool's requested model does not replace an observed model, but the
       // worker definition's explicit effort must override the inherited Low.
       expect(spawned.modelSelection).toEqual({
+        instanceId: "claudeAgent",
         ...parentSelection,
         options: { ...parentSelection.options, effort: "high" },
       });
@@ -7192,10 +7442,12 @@ describe("ProviderRuntimeIngestion", () => {
         2000,
         childId,
       );
-      const expectedSelection =
-        observedModel === parentSelection.model
+      const expectedSelection = {
+        instanceId: "claudeAgent",
+        ...(observedModel === parentSelection.model
           ? { ...parentSelection, options: { ...parentSelection.options, effort: "high" } }
-          : { provider: "claudeAgent", model: observedModel, options: { effort: "high" } };
+          : { provider: "claudeAgent", model: observedModel, options: { effort: "high" } }),
+      };
       expect(observed.modelSelection).toEqual(expectedSelection);
 
       harness.emit({
@@ -7250,7 +7502,10 @@ describe("ProviderRuntimeIngestion", () => {
         ...expectedSelection,
         options: { ...expectedSelection.options, effort: "max" },
       });
-      expect((await harness.readProjectedThread())?.modelSelection).toEqual(parentSelection);
+      expect((await harness.readProjectedThread())?.modelSelection).toEqual({
+        instanceId: "claudeAgent",
+        ...parentSelection,
+      });
     },
   );
 
@@ -7285,8 +7540,11 @@ describe("ProviderRuntimeIngestion", () => {
       2000,
       childId,
     );
-    expect(child.modelSelection).toEqual(parentSelection);
-    expect((await harness.readProjectedThread(childId))?.modelSelection).toEqual(parentSelection);
+    expect(child.modelSelection).toEqual({ instanceId: "claudeAgent", ...parentSelection });
+    expect((await harness.readProjectedThread(childId))?.modelSelection).toEqual({
+      instanceId: "claudeAgent",
+      ...parentSelection,
+    });
   });
 
   it("preserves native Codex receiver effort and profile across partial updates", async () => {
@@ -7329,6 +7587,7 @@ describe("ProviderRuntimeIngestion", () => {
       childId,
     );
     expect(child.modelSelection).toEqual({
+      instanceId: "codex",
       provider: "codex",
       model: "gpt-5.6-luna",
       options: { reasoningEffort: "ultra" },
@@ -7454,7 +7713,7 @@ describe("ProviderRuntimeIngestion", () => {
       await harness.startIngestion();
       await harness.drain();
       const child = await harness.readProjectedThread(childId);
-      expect(child?.modelSelection).toEqual(laterSelection);
+      expect(child?.modelSelection).toEqual({ instanceId: "claudeAgent", ...laterSelection });
       expect(child?.activities.filter((activity) => activity.id === event.eventId)).toHaveLength(1);
     },
   );
@@ -7504,6 +7763,7 @@ describe("ProviderRuntimeIngestion", () => {
       childId,
     );
     expect(updatedChild.modelSelection).toEqual({
+      instanceId: "codex",
       provider: "codex",
       model: "gpt-5.6-luna",
       profileId,
@@ -7593,6 +7853,105 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(false);
   });
 
+  it("preserves the parent provider instance when a subagent model is specialized", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-thread-instance-model"),
+        threadId: asThreadId("thread-1"),
+        modelSelection: {
+          provider: "codex",
+          instanceId: "codex_work",
+          model: "gpt-5-codex",
+        },
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-instance-model"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: "codex_work",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-collab-instance-specialized"),
+      provider: "codex",
+      providerInstanceId: "codex_work",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("item-collab-instance"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        title: "Task",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            receiverThreadIds: ["child-provider-instance"],
+            receiverAgents: [
+              {
+                threadId: "child-provider-instance",
+                agentNickname: "Curie",
+                agentRole: "worker",
+                model: "gpt-5.1-codex",
+              },
+            ],
+          },
+        },
+      },
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-child-instance-turn-started"),
+      provider: "codex",
+      providerInstanceId: "codex_work",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-child-instance"),
+      parentTurnId: asTurnId("turn-parent"),
+      providerRefs: {
+        providerThreadId: "child-provider-instance",
+        providerParentThreadId: "parent-provider-1",
+        providerTurnId: "turn-child-instance",
+        parentProviderTurnId: "turn-parent",
+      },
+      payload: {},
+    });
+
+    const childThread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.parentThreadId === "thread-1" &&
+        entry.subagentNickname === "Curie" &&
+        entry.session?.activeTurnId === "turn-child-instance",
+      2000,
+      asThreadId("subagent:thread-1:child-provider-instance"),
+    );
+
+    expect(childThread.modelSelection).toEqual({
+      provider: "codex",
+      instanceId: "codex_work",
+      model: "gpt-5.1-codex",
+    });
+    expect(childThread.session?.providerInstanceId).toBe("codex_work");
+  });
+
   it("handles collab receiver and child provider refs on the same event without duplicate thread creation", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -7648,6 +8007,7 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(childThread.title).toBe("Noether [explorer]");
     expect(childThread.modelSelection).toEqual({
+      instanceId: "codex",
       provider: "codex",
       model: "gpt-5.6-luna",
       options: { reasoningEffort: "high" },
@@ -8408,5 +8768,165 @@ describe("ProviderRuntimeIngestion", () => {
     // (at most) pages; never one transaction per event.
     expect(acks.length).toBeLessThan(rows.length);
     expect(acks.length).toBeLessThanOrEqual(4);
+  });
+
+  it("maintains durable last-activity + in-flight tool rows for the worker monitor", async () => {
+    const harness = await createHarness();
+    const sql = await runtime!.runPromise(Effect.service(SqlClient.SqlClient));
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-liveness");
+    const sessionRow = () =>
+      runtime!.runPromise(
+        sql<{ readonly lastActivityAt: string | null; readonly lastProgressAt: string | null }>`
+          SELECT last_activity_at AS "lastActivityAt", last_progress_at AS "lastProgressAt"
+          FROM projection_thread_sessions
+          WHERE thread_id = ${threadId}
+        `,
+      );
+    const tools = () =>
+      runtime!.runPromise(
+        sql<{
+          readonly itemId: string;
+          readonly turnId: string | null;
+          readonly startedAt: string;
+        }>`
+          SELECT item_id AS "itemId", turn_id AS "turnId", started_at AS "startedAt"
+          FROM projection_thread_active_tools
+          WHERE thread_id = ${threadId}
+          ORDER BY started_at ASC
+        `,
+      );
+
+    // A tool starting is runtime activity — and a tracked in-flight tool.
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("live-tool-start"),
+      provider: "codex",
+      createdAt: "2026-09-10T00:10:00.000Z",
+      threadId,
+      turnId,
+      itemId: asItemId("tool-live-1"),
+      payload: { itemType: "command_execution", status: "inProgress", title: "vitest" },
+    });
+    await harness.drain();
+
+    let row = (await sessionRow())[0];
+    expect(row?.lastActivityAt).toBe("2026-09-10T00:10:00.000Z");
+    // A tool call starting IS real work.
+    expect(row?.lastProgressAt).toBe("2026-09-10T00:10:00.000Z");
+    let inFlight = await tools();
+    expect(inFlight.map((entry) => entry.itemId)).toEqual(["tool-live-1"]);
+    expect(inFlight[0]?.turnId).toBe(turnId);
+
+    // A later delta moves lastActivityAt; the tool stays in flight.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("live-delta"),
+      provider: "codex",
+      createdAt: "2026-09-10T00:14:00.000Z",
+      threadId,
+      turnId,
+      itemId: asItemId("msg-live"),
+      payload: { streamKind: "assistant_text", delta: "still running" },
+    });
+    await harness.drain();
+    row = (await sessionRow())[0];
+    expect(row?.lastActivityAt).toBe("2026-09-10T00:14:00.000Z");
+    expect(row?.lastProgressAt).toBe("2026-09-10T00:14:00.000Z");
+    inFlight = await tools();
+    expect(inFlight.length).toBe(1);
+
+    // The stamp never regresses: an out-of-order earlier event keeps the max.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("live-delta-old"),
+      provider: "codex",
+      createdAt: "2026-09-10T00:11:00.000Z",
+      threadId,
+      turnId,
+      itemId: asItemId("msg-live"),
+      payload: { streamKind: "assistant_text", delta: "late" },
+    });
+    await harness.drain();
+    row = (await sessionRow())[0];
+    expect(row?.lastActivityAt).toBe("2026-09-10T00:14:00.000Z");
+    expect(row?.lastProgressAt).toBe("2026-09-10T00:14:00.000Z");
+
+    // Tool completion clears the in-flight row (and counts as activity).
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("live-tool-done"),
+      provider: "codex",
+      createdAt: "2026-09-10T00:20:00.000Z",
+      threadId,
+      turnId,
+      itemId: asItemId("tool-live-1"),
+      payload: { itemType: "command_execution", status: "completed", title: "vitest" },
+    });
+    await harness.drain();
+    inFlight = await tools();
+    expect(inFlight.length).toBe(0);
+    row = (await sessionRow())[0];
+    expect(row?.lastActivityAt).toBe("2026-09-10T00:20:00.000Z");
+    expect(row?.lastProgressAt).toBe("2026-09-10T00:20:00.000Z");
+
+    // A user-message item — e.g. the recovery steer echoing back — moves
+    // lastActivityAt but is NOT real progress.
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("live-echo"),
+      provider: "codex",
+      createdAt: "2026-09-10T00:25:00.000Z",
+      threadId,
+      turnId,
+      itemId: asItemId("echo-msg"),
+      payload: { itemType: "user_message", status: "completed", title: "steer echo" },
+    });
+    await harness.drain();
+    row = (await sessionRow())[0];
+    expect(row?.lastActivityAt).toBe("2026-09-10T00:25:00.000Z");
+    expect(row?.lastProgressAt).toBe("2026-09-10T00:20:00.000Z");
+
+    // Real output after the echo stamps progress again.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("live-progress"),
+      provider: "codex",
+      createdAt: "2026-09-10T00:26:00.000Z",
+      threadId,
+      turnId,
+      itemId: asItemId("msg-progress"),
+      payload: { streamKind: "assistant_text", delta: "back to work" },
+    });
+    await harness.drain();
+    row = (await sessionRow())[0];
+    expect(row?.lastActivityAt).toBe("2026-09-10T00:26:00.000Z");
+    expect(row?.lastProgressAt).toBe("2026-09-10T00:26:00.000Z");
+
+    // session.exited prunes the flush throttle: the next event inside the
+    // ~15s window still stamps — without the prune it would be suppressed.
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("live-exited"),
+      provider: "codex",
+      createdAt: "2026-09-10T00:27:00.000Z",
+      threadId,
+      turnId,
+      payload: { exitKind: "graceful" },
+    });
+    await harness.drain();
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("live-after-exit"),
+      provider: "codex",
+      createdAt: "2026-09-10T00:27:05.000Z",
+      threadId,
+      turnId,
+      itemId: asItemId("msg-after-exit"),
+      payload: { streamKind: "assistant_text", delta: "post-exit" },
+    });
+    await harness.drain();
+    row = (await sessionRow())[0];
+    expect(row?.lastActivityAt).toBe("2026-09-10T00:27:05.000Z");
   });
 });

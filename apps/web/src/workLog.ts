@@ -4,6 +4,7 @@ import {
   COMPUTER_CONTROL_DENIED_ACTIVITY_KIND,
   COMPUTER_SETUP_REQUIRED_ACTIVITY_KIND,
   isToolLifecycleItemType,
+  type ModelSelection,
   STUDIO_OUTPUTS_ACTIVITY_KIND,
   type OrchestrationLatestTurnState,
   type OrchestrationThreadActivity,
@@ -26,6 +27,7 @@ import {
   summarizeToolRawOutput,
 } from "@synara/shared/toolOutputSummary";
 import { pluralize, stripTerminalControlSequences } from "@synara/shared/text";
+import { suppressCoordinatorCheckinMessages } from "@synara/shared/coordinatorCheckin";
 import { PROVIDER_DESCRIPTORS } from "@synara/shared/providerMetadata";
 import {
   deriveReadableToolTitle,
@@ -58,6 +60,24 @@ export type WorkLogRequestKind = ApprovalRequestKind;
 const CHECKPOINT_REVERT_FAILED_ACTIVITY_KIND = "checkpoint.revert.failed";
 export const PROVIDER_CONTEXT_LIFECYCLE_ACTIVITY_KIND = "provider.context.changed";
 const SESSION_CONTEXT_RECAP_PREVIEW_MAX_CHARS = 600;
+// Mirror the same-thread Hand off activities in ProviderCommandReactor.ts.
+export const PROVIDER_HANDOFF_ACTIVITY_KIND = "provider.handoff";
+export const PROVIDER_HANDOFF_FAILED_ACTIVITY_KIND = "provider.handoff.failed";
+
+export interface ProviderHandoffInfo {
+  status: "completed" | "failed";
+  sourceProvider: ProviderKind;
+  sourceModel: string;
+  targetProvider: ProviderKind;
+  targetModel: string;
+  /** Full selections (effort, fast mode); rebuilt from provider + model when absent. */
+  sourceModelSelection: ModelSelection;
+  targetModelSelection: ModelSelection;
+  /** Prior-transcript context the target receives with its first turn. */
+  contextText: string | null;
+  /** Why the target could not start; only set on failure. */
+  failureDetail: string | null;
+}
 
 export type ProviderContextLifecycleReason =
   | "conversation-rebuilt"
@@ -123,11 +143,19 @@ export interface WorkLogEntry {
   subagentAction?: WorkLogSubagentAction;
   automation?: WorkLogAutomation;
   synaraThreadCreation?: WorkLogSynaraThreadCreation;
+  // Deterministic coordinator-monitor rows (worker settled / stuck /
+  // batch roll-up) render as compact centered pills in the coordinator
+  // conversation, each carrying a link into the reported thread.
+  synaraWorkerNotice?: WorkLogSynaraWorkerNotice;
+  // A task the agent moved to the background finished. Its completion wakes the
+  // agent into a new turn, so the row also marks where that new response starts.
+  backgroundTaskCompletion?: WorkLogBackgroundTaskCompletion;
   // Computer-control denial rows render as an actionable card (enable control
   // and retry) instead of a plain error line; carry just what that card needs.
   computerControlDenied?: WorkLogComputerControlDenied;
   computerSetupRequired?: WorkLogComputerSetupRequired;
   providerContextLifecycle?: ProviderContextLifecycleInfo;
+  providerHandoff?: ProviderHandoffInfo;
   // Source activity kind, kept so the timeline can pick a kind-specific icon
   // (e.g. user-input.requested -> question glyph) instead of the generic
   // tone fallback. Same rationale as `toolName` below.
@@ -188,6 +216,31 @@ export interface WorkLogSynaraThreadCreation {
   requestedCount: number;
   createdCount: number;
   threads: ReadonlyArray<WorkLogSynaraCreatedThread>;
+}
+
+export interface WorkLogSynaraWorkerNoticeThread {
+  threadId: string;
+  title: string;
+  outcome: string | null;
+  result: string | null;
+  pr: string | null;
+  /** Owning group project — the needs-you actions resolve against it. */
+  projectId: string | null;
+}
+
+export interface WorkLogBackgroundTaskCompletion {
+  taskId: string;
+  taskType: string | null;
+  description: string | null;
+}
+
+export interface WorkLogSynaraWorkerNotice {
+  kind: "settled" | "stuck" | "needs-you" | "rollup";
+  marker: string | null;
+  phrase: string | null;
+  threads: ReadonlyArray<WorkLogSynaraWorkerNoticeThread>;
+  /** Synara-native action ids on a needs-you card (retry / stop / open). */
+  actions?: ReadonlyArray<"retry" | "stop" | "open">;
 }
 
 export interface WorkLogSubagent {
@@ -350,6 +403,7 @@ export function deriveWorkLogEntries(
     )
     .filter((activity) => !isQuietTurnLifecycleActivity(activity))
     .filter((activity) => activity.kind !== "provider.session.boundary")
+    .filter((activity) => !isQuietApprovalResolutionActivity(activity))
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
     .filter(
       (activity) =>
@@ -367,7 +421,7 @@ export function deriveWorkLogEntries(
   // GitHub icon, user-input rows -> question / submit glyphs). Stripping
   // `toolName` here previously made those icon checks dead code, leaving the
   // generic wrench.
-  return reconcileSettledLiveActivities(
+  const derived = reconcileSettledLiveActivities(
     linkBackgroundTaskRows(collapseDerivedWorkLogEntries(entries), ordered),
     ordered,
     latestTurnId,
@@ -385,6 +439,65 @@ export function deriveWorkLogEntries(
         ...entry
       }) => entry,
     );
+  const completions = deriveBackgroundTaskCompletionEntries(ordered, latestTurnId, visibleTurnIds);
+  return completions.length > 0 ? [...derived, ...completions] : derived;
+}
+
+// Completions of tasks a visible "Moved to background" notice announced. They
+// carry no turn id (they land between turns), so they bypass the turn filter
+// once the notice that launched them is visible.
+function deriveBackgroundTaskCompletionEntries(
+  ordered: ReadonlyArray<OrchestrationThreadActivity>,
+  latestTurnId: TurnId | undefined,
+  visibleTurnIds: ReadonlySet<TurnId | string> | undefined,
+): WorkLogEntry[] {
+  const backgroundTasks = new Map<
+    string,
+    { taskType: string | null; description: string | null }
+  >();
+  const completions: WorkLogEntry[] = [];
+  for (const activity of ordered) {
+    const payload = asRecord(activity.payload);
+    if (
+      activity.kind === "runtime.warning" &&
+      payload?.nativeEventType === "background_tasks_changed"
+    ) {
+      if (!shouldKeepActivityForWorkLog(activity, latestTurnId, visibleTurnIds)) continue;
+      const tasks = asRecord(payload.data)?.tasks;
+      if (!Array.isArray(tasks)) continue;
+      for (const task of tasks) {
+        const record = asRecord(task);
+        if (typeof record?.task_id !== "string") continue;
+        backgroundTasks.set(record.task_id, {
+          taskType: typeof record.task_type === "string" ? record.task_type : null,
+          description: typeof record.description === "string" ? record.description : null,
+        });
+      }
+      continue;
+    }
+    if (activity.kind !== "task.completed" || typeof payload?.taskId !== "string") continue;
+    const task = backgroundTasks.get(payload.taskId);
+    if (!task) continue;
+    backgroundTasks.delete(payload.taskId);
+    const noun = task.taskType === "local_agent" ? "Subagent" : "Background task";
+    const outcome =
+      payload.status === "failed"
+        ? "failed"
+        : payload.status === "stopped"
+          ? "stopped"
+          : "finished";
+    completions.push({
+      id: activity.id,
+      createdAt: activity.createdAt,
+      ...(activity.sequence !== undefined ? { sequence: activity.sequence } : {}),
+      // Status first: a trailing "finished" is trimmed as a tool status word.
+      label: task.description ? `${noun} ${outcome}: ${task.description}` : `${noun} ${outcome}`,
+      tone: payload.status === "failed" ? "error" : "info",
+      activityKind: activity.kind,
+      backgroundTaskCompletion: { taskId: payload.taskId, ...task },
+    });
+  }
+  return completions;
 }
 
 function shouldKeepActivityForWorkLog(
@@ -394,9 +507,23 @@ function shouldKeepActivityForWorkLog(
 ): boolean {
   // Context lifecycle evidence must survive message visibility filters. It is
   // the durable explanation for why a turn may behave differently after reload.
-  if (activity.kind === PROVIDER_CONTEXT_LIFECYCLE_ACTIVITY_KIND) {
+  if (
+    activity.kind === PROVIDER_CONTEXT_LIFECYCLE_ACTIVITY_KIND ||
+    activity.kind === PROVIDER_HANDOFF_ACTIVITY_KIND ||
+    activity.kind === PROVIDER_HANDOFF_FAILED_ACTIVITY_KIND
+  ) {
     return true;
   }
+
+  if (
+    activity.kind === "pull-request.auto-fix.paused" ||
+    activity.kind === "pull-request.auto-fix.stopped"
+  )
+    return true;
+
+  // Authentication can start or finish outside a turn. Keep its latest state
+  // visible even when the transcript has turn-scoped assistant messages.
+  if (activity.kind === "auth.status") return true;
 
   // Thread-level compaction progress has no provider turn id but should stay visible.
   if (activity.kind === "context-compaction" && activity.turnId === null) {
@@ -426,6 +553,18 @@ function shouldKeepActivityForWorkLog(
     return true;
   }
 
+  // Coordinator monitor rows are posted server-side with no turn id; a
+  // coordinator conversation is all turns, so the turn filter would hide every
+  // settle/stuck/roll-up pill.
+  if (
+    activity.kind === "synara.worker.settled" ||
+    activity.kind === "synara.worker.stuck" ||
+    activity.kind === "synara.worker.needs-you" ||
+    activity.kind === "synara.workers.settled"
+  ) {
+    return true;
+  }
+
   // An empty set means the transcript has no turn-stamped assistant messages
   // (e.g. providers that never supply turn ids); fall back to the legacy
   // latest-turn filter instead of hiding the whole work log.
@@ -442,6 +581,21 @@ function isQuietTurnLifecycleActivity(activity: OrchestrationThreadActivity): bo
   }
   // Provider lifecycle rows close internal state; assistant/result text is rendered from messages.
   return activity.tone !== "error";
+}
+
+function isQuietApprovalResolutionActivity(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "approval.resolved" || activity.tone === "error") {
+    return false;
+  }
+  // Keep refusals, cancellations and broader grants visible. Only accepted
+  // routine requests are noise; Computer/Device consent remains part of the log,
+  // including clipboard consent, which has no task scope.
+  const payload = asRecord(activity.payload);
+  return (
+    payload?.decision === "accept" &&
+    payload.approvalScope === undefined &&
+    computerToolName(extractToolName(payload)) === null
+  );
 }
 
 function isUninformativeCommandStartEntry(entry: DerivedWorkLogEntry): boolean {
@@ -536,6 +690,71 @@ function extractWorkLogSynaraThreadCreation(
   return { operationId, requestedCount, createdCount, threads };
 }
 
+function extractWorkLogSynaraWorkerNotice(
+  payload: Record<string, unknown> | null,
+  activityKind: OrchestrationThreadActivity["kind"],
+): WorkLogSynaraWorkerNotice | null {
+  if (!payload || payload.source !== "worker_monitor") {
+    return null;
+  }
+  const parseThreads = (values: unknown): WorkLogSynaraWorkerNoticeThread[] => {
+    if (!Array.isArray(values)) {
+      return [];
+    }
+    return values.flatMap((value): WorkLogSynaraWorkerNoticeThread[] => {
+      const thread = asRecord(value);
+      const threadId = asTrimmedString(thread?.threadId);
+      const title = asTrimmedString(thread?.title);
+      if (!threadId || !title) {
+        return [];
+      }
+      return [
+        {
+          threadId,
+          title,
+          outcome: asTrimmedString(thread?.outcome) ?? null,
+          result: asTrimmedString(thread?.result) ?? null,
+          pr: asTrimmedString(thread?.pr) ?? null,
+          projectId: asTrimmedString(thread?.projectId) ?? null,
+        },
+      ];
+    });
+  };
+  if (activityKind === "synara.workers.settled") {
+    const threads = parseThreads(payload.threads);
+    return threads.length > 0 ? { kind: "rollup", marker: null, phrase: null, threads } : null;
+  }
+  if (
+    activityKind === "synara.worker.settled" ||
+    activityKind === "synara.worker.stuck" ||
+    activityKind === "synara.worker.needs-you"
+  ) {
+    const threads = parseThreads([payload.thread]);
+    if (threads.length === 0) {
+      return null;
+    }
+    const actions = Array.isArray(payload.actions)
+      ? payload.actions.flatMap(
+          (action): Array<"retry" | "stop" | "open"> =>
+            action === "retry" || action === "stop" || action === "open" ? [action] : [],
+        )
+      : undefined;
+    return {
+      kind:
+        activityKind === "synara.worker.needs-you"
+          ? "needs-you"
+          : activityKind === "synara.worker.stuck"
+            ? "stuck"
+            : "settled",
+      marker: asTrimmedString(payload.marker) ?? null,
+      phrase: asTrimmedString(payload.phrase) ?? null,
+      threads,
+      ...(actions ? { actions } : {}),
+    };
+  }
+  return null;
+}
+
 export interface TaskListTaskSnapshot {
   task: string;
   status: "pending" | "inProgress" | "completed";
@@ -581,6 +800,53 @@ function isProviderContextLifecycleReason(value: unknown): value is ProviderCont
     value === "native-history-unavailable" ||
     value === "native-resume-failed"
   );
+}
+
+function asProviderKind(value: unknown): ProviderKind | undefined {
+  return PROVIDER_DESCRIPTORS.find((descriptor) => descriptor.kind === value)?.kind;
+}
+
+function asHandoffModelSelection(
+  value: unknown,
+  fallback: { provider: ProviderKind; model: string },
+): ModelSelection {
+  if (value && typeof value === "object") {
+    const candidate = value as { provider?: unknown; model?: unknown };
+    if (candidate.provider === fallback.provider && candidate.model === fallback.model) {
+      return value as ModelSelection;
+    }
+  }
+  return fallback as ModelSelection;
+}
+
+function extractProviderHandoffInfo(
+  payload: Record<string, unknown> | null,
+  status: ProviderHandoffInfo["status"],
+): ProviderHandoffInfo | null {
+  const sourceProvider = asProviderKind(payload?.sourceProvider);
+  const targetProvider = asProviderKind(payload?.targetProvider);
+  const sourceModel = asTrimmedString(payload?.sourceModel);
+  const targetModel = asTrimmedString(payload?.targetModel);
+  if (!sourceProvider || !targetProvider || !sourceModel || !targetModel) {
+    return null;
+  }
+  return {
+    status,
+    sourceProvider,
+    sourceModel,
+    targetProvider,
+    targetModel,
+    sourceModelSelection: asHandoffModelSelection(payload?.sourceModelSelection, {
+      provider: sourceProvider,
+      model: sourceModel,
+    }),
+    targetModelSelection: asHandoffModelSelection(payload?.targetModelSelection, {
+      provider: targetProvider,
+      model: targetModel,
+    }),
+    contextText: asTrimmedString(payload?.contextText),
+    failureDetail: asTrimmedString(payload?.detail),
+  };
 }
 
 function extractProviderContextLifecycleInfo(
@@ -629,7 +895,16 @@ function extractProviderContextLifecycleInfo(
   };
 }
 
+// Store activities are immutable. Reuse their pure normalization when a live
+// update replaces the containing array; turn filtering and settlement still run
+// for each derivation with the current thread context.
+const derivedWorkLogEntryCache = new WeakMap<OrchestrationThreadActivity, DerivedWorkLogEntry>();
+
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
+  const cached = derivedWorkLogEntryCache.get(activity);
+  if (cached) {
+    return cached;
+  }
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
@@ -686,6 +961,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (runtimeWarningMessage) {
     entry.detail = runtimeWarningMessage;
     entry.runtimeWarningMessage = runtimeWarningMessage;
+  }
+  if (activity.kind === "auth.status") {
+    entry.collapseKey = `auth:${asTrimmedString(payload?.provider) ?? "provider"}`;
   }
   if (activity.kind === "turn.tasks.updated") {
     const tasks = parseTaskListTasks(payload);
@@ -756,6 +1034,17 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       entry.synaraThreadCreation = synaraThreadCreation;
     }
   }
+  if (
+    activity.kind === "synara.worker.settled" ||
+    activity.kind === "synara.worker.stuck" ||
+    activity.kind === "synara.worker.needs-you" ||
+    activity.kind === "synara.workers.settled"
+  ) {
+    const notice = extractWorkLogSynaraWorkerNotice(payload, activity.kind);
+    if (notice) {
+      entry.synaraWorkerNotice = notice;
+    }
+  }
   if (activity.kind === COMPUTER_SETUP_REQUIRED_ACTIVITY_KIND) {
     const buildSignature = asComputerBuildSignature(payload?.buildSignature);
     const bundleId = asTrimmedString(payload?.bundleId);
@@ -772,6 +1061,18 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     const providerContextLifecycle = extractProviderContextLifecycleInfo(payload);
     if (providerContextLifecycle) {
       entry.providerContextLifecycle = providerContextLifecycle;
+    }
+  }
+  if (
+    activity.kind === PROVIDER_HANDOFF_ACTIVITY_KIND ||
+    activity.kind === PROVIDER_HANDOFF_FAILED_ACTIVITY_KIND
+  ) {
+    const providerHandoff = extractProviderHandoffInfo(
+      payload,
+      activity.kind === PROVIDER_HANDOFF_ACTIVITY_KIND ? "completed" : "failed",
+    );
+    if (providerHandoff) {
+      entry.providerHandoff = providerHandoff;
     }
   }
   const computerToolDescription = deriveComputerToolDescription({
@@ -840,6 +1141,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (collapseCommand) {
     entry.collapseCommand = collapseCommand;
   }
+  derivedWorkLogEntryCache.set(activity, entry);
   return entry;
 }
 
@@ -1096,7 +1398,8 @@ function collapseDerivedWorkLogEntries(
   // turn: each update replaces the row's content while the row itself stays
   // anchored at the first update's position, so the transcript shows a single
   // progressing checklist row instead of one "Tasks updated" row per snapshot.
-  const taskListIndexByKey = new Map<string, number>();
+  // Authentication uses the same replacement rule for its latest provider state.
+  const snapshotIndexByKey = new Map<string, number>();
   for (const entry of entries) {
     const runtimeReconciliationKey = entry.collapseKey?.startsWith("provider-runtime-reconcile:")
       ? entry.collapseKey
@@ -1107,14 +1410,17 @@ function collapseDerivedWorkLogEntries(
       }
       seenRuntimeReconciliationKeys.add(runtimeReconciliationKey);
     }
-    const taskListKey = entry.collapseKey?.startsWith("taskList:") ? entry.collapseKey : undefined;
-    if (taskListKey !== undefined) {
-      const existingIndex = taskListIndexByKey.get(taskListKey);
+    const snapshotKey =
+      entry.collapseKey?.startsWith("taskList:") || entry.collapseKey?.startsWith("auth:")
+        ? entry.collapseKey
+        : undefined;
+    if (snapshotKey !== undefined) {
+      const existingIndex = snapshotIndexByKey.get(snapshotKey);
       if (existingIndex !== undefined) {
-        collapsed[existingIndex] = mergeTaskListEntries(collapsed[existingIndex]!, entry);
+        collapsed[existingIndex] = mergeSnapshotEntries(collapsed[existingIndex]!, entry);
         continue;
       }
-      taskListIndexByKey.set(taskListKey, collapsed.length);
+      snapshotIndexByKey.set(snapshotKey, collapsed.length);
       collapsed.push(entry);
       continue;
     }
@@ -1203,14 +1509,14 @@ function mergeRuntimeWarningEntries(
   };
 }
 
-// A later task-list snapshot supersedes the earlier one wholesale (providers
-// resend the full checklist), so keep the newest content while preserving the
+// Authentication and task-list snapshots supersede earlier content wholesale. Task providers
+// resend the full checklist, so keep the newest content while preserving the
 // first row's id and createdAt: the id keeps React rows stable across updates
 // and the createdAt keeps the row anchored where the checklist first appeared.
 // A snapshot without readable tasks (explicit clear, or an unreadable payload)
 // carries no progress copy, so it must not overwrite a progressed row with the
 // generic "Tasks updated" label — keep the previous row's content instead.
-function mergeTaskListEntries(
+function mergeSnapshotEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): DerivedWorkLogEntry {
@@ -2851,11 +3157,29 @@ export function deriveTimelineEntries(
   messages: ChatMessage[],
   proposedPlans: ProposedPlan[],
   workEntries: WorkLogEntry[],
+  options?: { readonly suppressCoordinatorCheckins?: boolean },
 ): TimelineEntry[] {
+  // Coordinator check-ins (automation-dispatched heartbeat/wake turns) never
+  // render: the automation prompt row, its work/plan rows bound to the check-in
+  // turn, and the reply when it is a silent "nothing to report". A non-silent
+  // reply stays as an ordinary coordinator message.
+  const checkinSuppression = options?.suppressCoordinatorCheckins
+    ? suppressCoordinatorCheckinMessages(messages)
+    : null;
+  const visibleMessages = checkinSuppression ? checkinSuppression.messages : messages;
+  const checkinTurnIds = checkinSuppression?.checkinTurnIds;
+  const visibleProposedPlans = checkinTurnIds
+    ? proposedPlans.filter((plan) => plan.turnId == null || !checkinTurnIds.has(plan.turnId))
+    : proposedPlans;
+  const visibleWorkEntries = checkinTurnIds
+    ? workEntries.filter((entry) => entry.turnId == null || !checkinTurnIds.has(entry.turnId))
+    : workEntries;
   const proposedPlanTurnIds = new Set(
-    proposedPlans.flatMap((proposedPlan) => (proposedPlan.turnId ? [proposedPlan.turnId] : [])),
+    visibleProposedPlans.flatMap((proposedPlan) =>
+      proposedPlan.turnId ? [proposedPlan.turnId] : [],
+    ),
   );
-  const messageRows: TimelineEntry[] = messages.flatMap((message): TimelineEntry[] => {
+  const messageRows: TimelineEntry[] = visibleMessages.flatMap((message): TimelineEntry[] => {
     const displayMessage =
       message.role === "assistant" && message.turnId && proposedPlanTurnIds.has(message.turnId)
         ? { ...message, text: stripProposedPlanBlocksFromText(message.text) }
@@ -2899,13 +3223,13 @@ export function deriveTimelineEntries(
       },
     ];
   });
-  const proposedPlanRows: TimelineEntry[] = proposedPlans.map((proposedPlan) => ({
+  const proposedPlanRows: TimelineEntry[] = visibleProposedPlans.map((proposedPlan) => ({
     id: proposedPlan.id,
     kind: "proposed-plan",
     createdAt: proposedPlan.createdAt,
     proposedPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => ({
+  const workRows: TimelineEntry[] = visibleWorkEntries.map((entry) => ({
     id: entry.id,
     kind: "work",
     createdAt: entry.createdAt,
@@ -2918,13 +3242,13 @@ export function deriveTimelineEntries(
   const userStarts: string[] = [];
   const messageOrder = new Map<string, number>();
   const turnOrder = new Map<string, number>();
-  const messagesOrdered = messages.every(
+  const messagesOrdered = visibleMessages.every(
     (message, index) =>
-      index === 0 || compareMessagesByCausalOrder(messages[index - 1]!, message) <= 0,
+      index === 0 || compareMessagesByCausalOrder(visibleMessages[index - 1]!, message) <= 0,
   );
   const orderedMessages = messagesOrdered
-    ? messages
-    : messages.toSorted(compareMessagesByCausalOrder);
+    ? visibleMessages
+    : visibleMessages.toSorted(compareMessagesByCausalOrder);
   for (const message of orderedMessages) {
     // Effective dispatch semantics are recorded before an emulated steer waits
     // for interruption/promotion. Fall back to turn binding for events written

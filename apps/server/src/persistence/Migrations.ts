@@ -139,6 +139,28 @@ import Migration0120 from "./Migrations/120_CoordinatorQuestions.ts";
 import Migration0121 from "./Migrations/121_BackfillClaudeNativeSubagentEffort.ts";
 import Migration0122 from "./Migrations/122_QueuedSteerReplacementTurns.ts";
 import Migration0123 from "./Migrations/123_ProjectionThreadsGoalBlockStreak.ts";
+import ProjectAgentMigration from "./Migrations/109_ProjectAgent.ts";
+import GroupsMigration from "./Migrations/110_Groups.ts";
+import GroupLibraryHostingMigration from "./Migrations/111_GroupLibraryHosting.ts";
+import CoordinatorAppearanceMigration from "./Migrations/112_CoordinatorAppearance.ts";
+import ProjectAgentWakeCursorMigration from "./Migrations/113_ProjectAgentWakeCursor.ts";
+import ProjectAgentLifecycleMigration from "./Migrations/114_ProjectAgentLifecycle.ts";
+import ProjectAgentManagedWorkersMigration from "./Migrations/115_ProjectAgentManagedWorkers.ts";
+import ProjectAgentWorkerRecoveryMigration from "./Migrations/116_ProjectAgentWorkerRecovery.ts";
+import WorkerMonitoringLivenessMigration from "./Migrations/117_WorkerMonitoringLiveness.ts";
+import ProjectionThreadSessionProviderInstanceMigration from "./Migrations/118_ProjectionThreadSessionProviderInstance.ts";
+import ProviderSessionRuntimeInstanceIdMigration from "./Migrations/119_ProviderSessionRuntimeInstanceId.ts";
+import ProfileStatsDeletedProviderInstancesMigration from "./Migrations/120_ProfileStatsDeletedProviderInstances.ts";
+import ClearAutomationDefinitionProviderOptionsMigration from "./Migrations/121_ClearAutomationDefinitionProviderOptions.ts";
+import ClearAutomationRunProviderOptionsMigration from "./Migrations/122_ClearAutomationRunProviderOptions.ts";
+import ScrubOrchestrationEventProviderOptionsMigration from "./Migrations/123_ScrubOrchestrationEventProviderOptions.ts";
+import ProjectionTurnsPendingMessageIndexMigration from "./Migrations/124_ProjectionTurnsPendingMessageIndex.ts";
+import TodosMigration from "./Migrations/125_Todos.ts";
+import ProjectionThreadsSidechatContextMigration from "./Migrations/126_ProjectionThreadsSidechatContext.ts";
+import ProjectImportHistoryMigration from "./Migrations/127_ProjectImportHistory.ts";
+import HubWorkMigration from "./Migrations/128_HubWork.ts";
+import ProjectionThreadsSnoozeMigration from "./Migrations/129_ProjectionThreadsSnooze.ts";
+import PullRequestAutoFixMigration from "./Migrations/130_PullRequestAutoFix.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -278,6 +300,37 @@ export const migrationEntries = [
   [121, "BackfillClaudeNativeSubagentEffort", Migration0121],
   [122, "QueuedSteerReplacementTurns", Migration0122],
   [123, "ProjectionThreadsGoalBlockStreak", Migration0123],
+  // Upstream v1.0.0 migrations, appended after the fork lineage (files keep upstream numbering).
+  [124, "ProjectAgent", ProjectAgentMigration],
+  [125, "Groups", GroupsMigration],
+  [126, "GroupLibraryHosting", GroupLibraryHostingMigration],
+  [127, "CoordinatorAppearance", CoordinatorAppearanceMigration],
+  [128, "ProjectAgentWakeCursor", ProjectAgentWakeCursorMigration],
+  [129, "ProjectAgentLifecycle", ProjectAgentLifecycleMigration],
+  [130, "ProjectAgentManagedWorkers", ProjectAgentManagedWorkersMigration],
+  [131, "ProjectAgentWorkerRecovery", ProjectAgentWorkerRecoveryMigration],
+  [132, "WorkerMonitoringLiveness", WorkerMonitoringLivenessMigration],
+  [
+    133,
+    "ProjectionThreadSessionProviderInstance",
+    ProjectionThreadSessionProviderInstanceMigration,
+  ],
+  [134, "ProviderSessionRuntimeInstanceId", ProviderSessionRuntimeInstanceIdMigration],
+  [135, "ProfileStatsDeletedProviderInstances", ProfileStatsDeletedProviderInstancesMigration],
+  [
+    136,
+    "ClearAutomationDefinitionProviderOptions",
+    ClearAutomationDefinitionProviderOptionsMigration,
+  ],
+  [137, "ClearAutomationRunProviderOptions", ClearAutomationRunProviderOptionsMigration],
+  [138, "ScrubOrchestrationEventProviderOptions", ScrubOrchestrationEventProviderOptionsMigration],
+  [139, "ProjectionTurnsPendingMessageIndex", ProjectionTurnsPendingMessageIndexMigration],
+  [140, "Todos", TodosMigration],
+  [141, "ProjectionThreadsSidechatContext", ProjectionThreadsSidechatContextMigration],
+  [142, "ProjectImportHistory", ProjectImportHistoryMigration],
+  [143, "HubWork", HubWorkMigration],
+  [144, "ProjectionThreadsSnooze", ProjectionThreadsSnoozeMigration],
+  [145, "PullRequestAutoFix", PullRequestAutoFixMigration],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

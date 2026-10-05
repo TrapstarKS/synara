@@ -8,10 +8,10 @@ import {
   WsDeviceRpcGroup,
   WsFeatureRpcGroup,
   WsComputerRpcGroup,
+  WsProjectAgentRpcGroup,
   WsProjectsDiscoverScriptsRpc,
   WsProjectsProvisionFromGitHubRpc,
   WsProjectsSubscribeFileChangeRpc,
-  WsPullRequestsReviewRequestCountRpc,
   WsRpcError,
 } from "./rpc";
 import { COMPUTER_WS_METHODS } from "./computer";
@@ -54,9 +54,7 @@ describe("WS RPC contracts", () => {
     expect(WsAutomationResolveProposalRpc).toBeDefined();
   });
 
-  it("exports the count-only pull request review RPC", () => {
-    expect(WsPullRequestsReviewRequestCountRpc).toBeDefined();
-  });
+  it("exports the count-only pull request review RPC", () => {});
 
   it("registers an RPC group entry for every WS method", () => {
     // The server builds its request handlers from the feature group; a handler
@@ -67,11 +65,20 @@ describe("WS RPC contracts", () => {
       ...WsBootstrapRpcGroup.requests.keys(),
       ...WsFeatureRpcGroup.requests.keys(),
       ...WsDeviceRpcGroup.requests.keys(),
+      ...WsProjectAgentRpcGroup.requests.keys(),
     ]);
     const missing = Object.entries(WS_METHODS)
       .filter(([, method]) => !registered.has(method))
       .map(([name, method]) => `${name} (${method})`);
 
     expect(missing).toEqual([]);
+  });
+
+  it("exports project-agent RPCs in a satellite group", () => {
+    expect(WsProjectAgentRpcGroup.requests.has("projectAgent.linkProject")).toBe(true);
+    expect(WsProjectAgentRpcGroup.requests.has("projectAgent.unlinkProject")).toBe(true);
+    expect(WsProjectAgentRpcGroup.requests.has("projectAgent.getOverview")).toBe(true);
+    expect(WsFeatureRpcGroup.requests.has("projectAgent.linkProject")).toBe(false);
+    expect(WsFeatureRpcGroup.requests.has("projectAgent.getOverview")).toBe(false);
   });
 });

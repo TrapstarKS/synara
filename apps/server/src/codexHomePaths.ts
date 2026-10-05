@@ -7,35 +7,80 @@
 // Layer: Server utility (no IO; safe to import from anywhere)
 // Exports: overlay constants, base/overlay home resolvers, write-home + allowlist helpers.
 
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { CodexProfileId } from "@synara/contracts";
 
+import { expandProviderAccountHomePath } from "./providerAccountHomePath.ts";
+
 export const SYNARA_CODEX_HOME_OVERLAY_DIR = "codex-home-overlay";
+export const SYNARA_CODEX_HOME_ACCOUNT_OVERLAYS_DIR = "accounts";
 
 export interface CodexHomePathsInput {
   readonly env?: NodeJS.ProcessEnv;
   readonly homePath?: string;
   readonly profileId?: CodexProfileId;
+  readonly shadowHomePath?: string;
+  readonly accountId?: string;
 }
 
 export function resolveBaseCodexHomePath(
   env: NodeJS.ProcessEnv,
   explicitHomePath?: string,
 ): string {
-  return explicitHomePath?.trim() || env.CODEX_HOME?.trim() || path.join(homedir(), ".codex");
+  return expandProviderAccountHomePath(
+    explicitHomePath?.trim() || env.CODEX_HOME?.trim() || path.join(homedir(), ".codex"),
+  );
 }
 
 export function resolveSynaraCodexHomeOverlayPath(
   env: NodeJS.ProcessEnv,
   sourceHomePath: string,
-  profileId?: CodexProfileId,
+  accountSegment?: string,
 ): string {
+  const overlayHome = path.join(
+    synaraCodexOverlayRoot(env, sourceHomePath),
+    SYNARA_CODEX_HOME_OVERLAY_DIR,
+  );
+  return accountSegment
+    ? path.join(overlayHome, SYNARA_CODEX_HOME_ACCOUNT_OVERLAYS_DIR, accountSegment)
+    : overlayHome;
+}
+
+function synaraCodexOverlayRoot(env: NodeJS.ProcessEnv, sourceHomePath: string): string {
   const runtimeHome = env.SYNARA_HOME?.trim();
-  const overlayRoot = runtimeHome || path.join(path.dirname(sourceHomePath), ".synara", "runtime");
-  return profileId
-    ? path.join(overlayRoot, "codex-home-overlays", profileId)
-    : path.join(overlayRoot, SYNARA_CODEX_HOME_OVERLAY_DIR);
+  return runtimeHome || path.join(path.dirname(sourceHomePath), ".synara", "runtime");
+}
+
+/** Overlay used by earlier fork releases for a Synara-managed Codex profile. */
+export function resolveLegacyCodexProfileOverlayPath(
+  env: NodeJS.ProcessEnv,
+  sourceHomePath: string,
+  profileId: CodexProfileId,
+): string {
+  return path.join(synaraCodexOverlayRoot(env, sourceHomePath), "codex-home-overlays", profileId);
+}
+
+export function resolveCodexHomeOverlayAccountSegment(
+  input: Pick<CodexHomePathsInput, "accountId" | "homePath" | "shadowHomePath">,
+): string | undefined {
+  const accountId = input.accountId?.trim();
+  const shadowHomePath = input.shadowHomePath?.trim();
+  if ((!accountId || accountId === "default") && !shadowHomePath) {
+    return undefined;
+  }
+
+  const label = (accountId || "shadow").replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 32) || "codex";
+  const digest = createHash("sha256")
+    .update(accountId ?? "")
+    .update("\0")
+    .update(input.homePath ?? "")
+    .update("\0")
+    .update(shadowHomePath ?? "")
+    .digest("hex")
+    .slice(0, 12);
+  return `${label}-${digest}`;
 }
 
 /**
@@ -61,8 +106,29 @@ export function resolveCodexHomeAllowlistCandidates(
 ): readonly string[] {
   const env = input.env ?? process.env;
   const source = resolveBaseCodexHomePath(env, input.homePath);
-  const overlay = resolveSynaraCodexHomeOverlayPath(env, source, input.profileId);
+  const shadow = input.shadowHomePath
+    ? resolveBaseCodexHomePath(env, input.shadowHomePath)
+    : undefined;
+  const accountSegment = resolveCodexHomeOverlayAccountSegment({
+    homePath: source,
+    ...(input.accountId ? { accountId: input.accountId } : {}),
+    ...(shadow ? { shadowHomePath: shadow } : {}),
+  });
+  const overlay = input.profileId
+    ? resolveLegacyCodexProfileOverlayPath(env, source, input.profileId)
+    : resolveSynaraCodexHomeOverlayPath(env, source, accountSegment);
+  const legacyOverlay = resolveSynaraCodexHomeOverlayPath(env, source);
   const sourceResolved = path.resolve(source);
   const overlayResolved = path.resolve(overlay);
-  return sourceResolved === overlayResolved ? [source] : [source, overlay];
+  const candidates = sourceResolved === overlayResolved ? [source] : [source, overlay];
+  if (
+    path.resolve(legacyOverlay) !== overlayResolved &&
+    !candidates.some((candidate) => path.resolve(candidate) === path.resolve(legacyOverlay))
+  ) {
+    candidates.push(legacyOverlay);
+  }
+  if (shadow && !candidates.some((candidate) => path.resolve(candidate) === path.resolve(shadow))) {
+    candidates.push(shadow);
+  }
+  return candidates;
 }

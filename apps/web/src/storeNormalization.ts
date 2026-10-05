@@ -25,8 +25,13 @@ import { deriveThreadSummaryMetadata } from "@synara/shared/threadSummary";
 
 import { isStalePendingRequestFailureDetail } from "./lib/pendingInteraction";
 import { toAttachmentPreviewUrl } from "./lib/wsHttpUrl";
-import { hasLiveTurnTailWork } from "./session-logic";
+import {
+  countOutstandingBackgroundWork,
+  derivePendingBackgroundWork,
+  hasLiveTurnTailWork,
+} from "./session-logic";
 import { getRememberedProjectUiState, projectCwdKey } from "./storePersistence";
+import { resolveInitialLastVisitedAt } from "./threadVisitedPersistence";
 import type {
   ChatAttachment,
   ChatMessage,
@@ -161,6 +166,8 @@ export function threadShellsEqual(left: ThreadShell | undefined, right: ThreadSh
     left.createdAt === right.createdAt &&
     (left.archivedAt ?? null) === (right.archivedAt ?? null) &&
     (left.settledAt ?? null) === (right.settledAt ?? null) &&
+    (left.snoozedUntil ?? null) === (right.snoozedUntil ?? null) &&
+    (left.snoozeReminderAt ?? null) === (right.snoozeReminderAt ?? null) &&
     left.updatedAt === right.updatedAt &&
     (left.isPinned ?? false) === (right.isPinned ?? false) &&
     left.envMode === right.envMode &&
@@ -179,12 +186,16 @@ export function threadShellsEqual(left: ThreadShell | undefined, right: ThreadSh
     (left.subagentRole ?? null) === (right.subagentRole ?? null) &&
     (left.forkSourceThreadId ?? null) === (right.forkSourceThreadId ?? null) &&
     (left.sidechatSourceThreadId ?? null) === (right.sidechatSourceThreadId ?? null) &&
+    // The context never changes after creation; its URL identifies the item.
+    (left.sidechatContext?.url ?? null) === (right.sidechatContext?.url ?? null) &&
     (left.sidechatLastActivityAt ?? null) === (right.sidechatLastActivityAt ?? null) &&
     (left.sidechatExpiredAt ?? null) === (right.sidechatExpiredAt ?? null) &&
     deepEqualJson(left.lastKnownPr ?? null, right.lastKnownPr ?? null) &&
     (left.handoff ?? null) === (right.handoff ?? null) &&
+    (left.isProjectImport ?? false) === (right.isProjectImport ?? false) &&
     deepEqualJson(left.claudeCacheReview ?? null, right.claudeCacheReview ?? null) &&
     left.claudeCacheReviewSequence === right.claudeCacheReviewSequence &&
+    left.snoozeSequence === right.snoozeSequence &&
     deepEqualJson(left.pinnedMessages ?? null, right.pinnedMessages ?? null) &&
     (left.notes ?? "") === (right.notes ?? "") &&
     (left.goal ?? "") === (right.goal ?? "") &&
@@ -379,6 +390,8 @@ export function normalizeProject(
   const folderName = basenameOfPath(incoming.workspaceRoot) ?? incoming.title;
   const localName =
     previous?.localName ?? rememberedUiState.projectNameForCwd(workspaceRootKey) ?? null;
+  const appearance =
+    previous?.appearance ?? rememberedUiState.projectAppearanceForCwd(workspaceRootKey) ?? null;
   const defaultModelSelection =
     incoming.defaultModelSelection === null
       ? null
@@ -414,6 +427,7 @@ export function normalizeProject(
     previous.remoteName === incoming.title &&
     previous.folderName === folderName &&
     previous.localName === localName &&
+    (previous.appearance ?? null) === appearance &&
     previous.cwd === incoming.workspaceRoot &&
     previous.defaultModelSelection === defaultModelSelection &&
     previous.expanded === expanded &&
@@ -433,6 +447,7 @@ export function normalizeProject(
     remoteName: incoming.title,
     folderName,
     localName,
+    appearance,
     cwd: incoming.workspaceRoot,
     defaultModelSelection,
     expanded,
@@ -900,6 +915,9 @@ function readModelSessionFromThreadSession(
     threadId: previousThread?.id ?? incomingSession?.threadId ?? ThreadId.makeUnsafe("unknown"),
     status: previousSession.orchestrationStatus,
     providerName: previousSession.provider,
+    ...(previousSession.providerInstanceId !== undefined
+      ? { providerInstanceId: previousSession.providerInstanceId }
+      : {}),
     runtimeMode: previousThread?.runtimeMode ?? incomingSession?.runtimeMode ?? "full-access",
     activeTurnId: previousSession.activeTurnId ?? null,
     lastError: previousSession.lastError ?? null,
@@ -933,6 +951,11 @@ function mergeReadModelSessionWithLiveHotPath(
     return {
       ...nextSession,
       providerName: incomingSession.providerName,
+      ...(incomingSession.providerInstanceId !== undefined
+        ? { providerInstanceId: incomingSession.providerInstanceId }
+        : previousSession.providerInstanceId !== undefined
+          ? { providerInstanceId: previousSession.providerInstanceId }
+          : {}),
       runtimeMode: incomingSession.runtimeMode,
       activeTurnId: previousSession.activeTurnId ?? incomingSession.activeTurnId,
       lastError: previousSession.lastError ?? incomingSession.lastError,
@@ -1080,11 +1103,21 @@ export function mergeReadModelThreadDetailWithLiveHotPath(
       : snapshotSequence < (previousThread.claudeCacheReviewSequence ?? 0))
       ? previousThread.claudeCacheReview
       : incoming.claudeCacheReview;
+  const preserveSnooze =
+    snapshotSequence === undefined
+      ? incoming.updatedAt < (previousThread.updatedAt ?? previousThread.createdAt)
+      : snapshotSequence < (previousThread.snoozeSequence ?? 0);
+  const snoozedUntil = preserveSnooze ? previousThread.snoozedUntil : incoming.snoozedUntil;
+  const snoozeReminderAt = preserveSnooze
+    ? previousThread.snoozeReminderAt
+    : incoming.snoozeReminderAt;
   if (
     messages === incoming.messages &&
     session === incoming.session &&
     latestTurn === incoming.latestTurn &&
-    claudeCacheReview === incoming.claudeCacheReview
+    claudeCacheReview === incoming.claudeCacheReview &&
+    snoozedUntil === incoming.snoozedUntil &&
+    snoozeReminderAt === incoming.snoozeReminderAt
   ) {
     return incoming;
   }
@@ -1094,6 +1127,8 @@ export function mergeReadModelThreadDetailWithLiveHotPath(
     session,
     latestTurn,
     ...(claudeCacheReview !== undefined ? { claudeCacheReview } : {}),
+    ...(snoozedUntil !== undefined ? { snoozedUntil } : {}),
+    ...(snoozeReminderAt !== undefined ? { snoozeReminderAt } : {}),
   };
 }
 
@@ -1558,6 +1593,9 @@ export function normalizeThreadSession(
       : undefined;
   const nextSession = {
     provider: toLegacyProvider(incoming.providerName),
+    ...(incoming.providerInstanceId !== undefined
+      ? { providerInstanceId: incoming.providerInstanceId }
+      : {}),
     status: toLegacySessionStatus(incoming.status),
     orchestrationStatus: incoming.status,
     activeTurnId: incoming.activeTurnId ?? undefined,
@@ -1568,6 +1606,7 @@ export function normalizeThreadSession(
   if (
     previous &&
     previous.provider === nextSession.provider &&
+    previous.providerInstanceId === nextSession.providerInstanceId &&
     previous.status === nextSession.status &&
     previous.orchestrationStatus === nextSession.orchestrationStatus &&
     previous.activeTurnId === nextSession.activeTurnId &&
@@ -1623,6 +1662,8 @@ export function normalizeThreadFromReadModel(
   incoming: ReadModelThread,
   previous: Thread | undefined,
   snapshotSequence?: number,
+  /** `restoringSession`: see resolveInitialLastVisitedAt. */
+  options: { readonly restoringSession?: boolean } = {},
 ): Thread {
   const modelSelection = normalizeModelSelection(incoming.modelSelection, previous?.modelSelection);
   const session = normalizeThreadSession(incoming.session, previous?.session);
@@ -1633,6 +1674,18 @@ export function normalizeThreadFromReadModel(
     previous?.handoff && incoming.handoff && deepEqualJson(previous.handoff, incoming.handoff)
       ? previous.handoff
       : (incoming.handoff ?? null);
+  const preserveSnooze =
+    previous !== undefined &&
+    (snapshotSequence === undefined
+      ? incoming.updatedAt < (previous.updatedAt ?? previous.createdAt)
+      : snapshotSequence < (previous.snoozeSequence ?? 0));
+  const snoozedUntil = (preserveSnooze ? previous?.snoozedUntil : incoming.snoozedUntil) ?? null;
+  const snoozeReminderAt =
+    (preserveSnooze ? previous?.snoozeReminderAt : incoming.snoozeReminderAt) ?? null;
+  const snoozeSequence =
+    snapshotSequence === undefined
+      ? previous?.snoozeSequence
+      : Math.max(snapshotSequence, previous?.snoozeSequence ?? 0);
   const incomingClaudeCacheReview =
     snapshotSequence !== undefined && snapshotSequence < (previous?.claudeCacheReviewSequence ?? 0)
       ? previous?.claudeCacheReview
@@ -1684,7 +1737,7 @@ export function normalizeThreadFromReadModel(
         ? undefined
         : [...incomingPendingInteractions];
   const error = normalizeThreadErrorMessage(incoming.session?.lastError);
-  const lastVisitedAt = previous?.lastVisitedAt ?? incoming.updatedAt;
+  const lastVisitedAt = previous?.lastVisitedAt ?? resolveInitialLastVisitedAt(incoming, options);
   const resolvedLatestHumanMessageAt = incoming.latestHumanMessageAt;
   const resolvedLatestUserMessageAt =
     Object.hasOwn(incoming, "latestUserMessageAt") && incoming.latestUserMessageAt !== undefined
@@ -1740,6 +1793,9 @@ export function normalizeThreadFromReadModel(
     previous.createdAt === incoming.createdAt &&
     (previous.archivedAt ?? null) === (incoming.archivedAt ?? null) &&
     (previous.settledAt ?? null) === (incoming.settledAt ?? null) &&
+    (previous.snoozedUntil ?? null) === snoozedUntil &&
+    (previous.snoozeReminderAt ?? null) === snoozeReminderAt &&
+    previous.snoozeSequence === snoozeSequence &&
     previous.updatedAt === incoming.updatedAt &&
     (previous.isPinned ?? false) === (incoming.isPinned ?? false) &&
     previous.latestTurn === latestTurn &&
@@ -1766,10 +1822,13 @@ export function normalizeThreadFromReadModel(
     previous.hasActionableProposedPlan === resolvedHasActionableProposedPlan &&
     (previous.forkSourceThreadId ?? null) === (incoming.forkSourceThreadId ?? null) &&
     (previous.sidechatSourceThreadId ?? null) === (incoming.sidechatSourceThreadId ?? null) &&
+    // The context never changes after creation; its URL identifies the item.
+    (previous.sidechatContext?.url ?? null) === (incoming.sidechatContext?.url ?? null) &&
     (previous.sidechatLastActivityAt ?? null) === (incoming.sidechatLastActivityAt ?? null) &&
     (previous.sidechatExpiredAt ?? null) === (incoming.sidechatExpiredAt ?? null) &&
     deepEqualJson(previous.lastKnownPr ?? null, lastKnownPr) &&
     (previous.handoff ?? null) === handoff &&
+    (previous.isProjectImport ?? false) === (incoming.isProjectImport ?? false) &&
     (previous.claudeCacheReview ?? null) === claudeCacheReview &&
     previous.claudeCacheReviewSequence === claudeCacheReviewSequence &&
     previous.pinnedMessages === pinnedMessages &&
@@ -1800,6 +1859,9 @@ export function normalizeThreadFromReadModel(
     createdAt: incoming.createdAt,
     archivedAt: incoming.archivedAt ?? null,
     settledAt: incoming.settledAt ?? null,
+    snoozedUntil,
+    snoozeReminderAt,
+    ...(snoozeSequence !== undefined ? { snoozeSequence } : {}),
     updatedAt: incoming.updatedAt,
     isPinned: incoming.isPinned ?? false,
     latestTurn,
@@ -1822,10 +1884,12 @@ export function normalizeThreadFromReadModel(
     createBranchFlowCompleted: resolvedCreateBranchFlowCompleted,
     forkSourceThreadId: incoming.forkSourceThreadId ?? null,
     sidechatSourceThreadId: incoming.sidechatSourceThreadId ?? null,
+    sidechatContext: incoming.sidechatContext ?? null,
     sidechatLastActivityAt: incoming.sidechatLastActivityAt ?? null,
     sidechatExpiredAt: incoming.sidechatExpiredAt ?? null,
     lastKnownPr,
     handoff,
+    ...(incoming.isProjectImport ? { isProjectImport: true } : {}),
     claudeCacheReview,
     ...(claudeCacheReviewSequence !== undefined ? { claudeCacheReviewSequence } : {}),
     ...(pinnedMessages !== undefined ? { pinnedMessages } : {}),
@@ -1860,6 +1924,8 @@ export function normalizeThreadShellSnapshot(
   incoming: ShellSnapshotThread,
   previous: Thread | undefined,
   snapshotSequence?: number,
+  /** `restoringSession`: see resolveInitialLastVisitedAt. */
+  options: { readonly restoringSession?: boolean } = {},
 ): {
   shell: ThreadShell;
   session: ThreadSession | null;
@@ -1872,6 +1938,18 @@ export function normalizeThreadShellSnapshot(
     previous?.handoff && incoming.handoff && deepEqualJson(previous.handoff, incoming.handoff)
       ? previous.handoff
       : (incoming.handoff ?? null);
+  const preserveSnooze =
+    previous !== undefined &&
+    (snapshotSequence === undefined
+      ? incoming.updatedAt < (previous.updatedAt ?? previous.createdAt)
+      : snapshotSequence < (previous.snoozeSequence ?? 0));
+  const snoozedUntil = (preserveSnooze ? previous?.snoozedUntil : incoming.snoozedUntil) ?? null;
+  const snoozeReminderAt =
+    (preserveSnooze ? previous?.snoozeReminderAt : incoming.snoozeReminderAt) ?? null;
+  const snoozeSequence =
+    snapshotSequence === undefined
+      ? previous?.snoozeSequence
+      : Math.max(snapshotSequence, previous?.snoozeSequence ?? 0);
   const incomingClaudeCacheReview =
     snapshotSequence !== undefined && snapshotSequence < (previous?.claudeCacheReviewSequence ?? 0)
       ? previous?.claudeCacheReview
@@ -1892,7 +1970,7 @@ export function normalizeThreadShellSnapshot(
       ? previous.lastKnownPr
       : (incoming.lastKnownPr ?? null);
   const error = normalizeThreadErrorMessage(incoming.session?.lastError);
-  const lastVisitedAt = previous?.lastVisitedAt ?? incoming.updatedAt;
+  const lastVisitedAt = previous?.lastVisitedAt ?? resolveInitialLastVisitedAt(incoming, options);
   const nextWorktreePath = incoming.worktreePath;
   const nextWorkingDirectory = incoming.workingDirectory ?? null;
   const nextAssociatedWorktreePath = incoming.associatedWorktreePath ?? null;
@@ -1933,6 +2011,9 @@ export function normalizeThreadShellSnapshot(
     createdAt: incoming.createdAt,
     archivedAt: incoming.archivedAt ?? null,
     settledAt: incoming.settledAt ?? null,
+    snoozedUntil,
+    snoozeReminderAt,
+    ...(snoozeSequence !== undefined ? { snoozeSequence } : {}),
     updatedAt: incoming.updatedAt,
     isPinned: incoming.isPinned ?? false,
     envMode: incoming.envMode ?? "local",
@@ -1952,10 +2033,12 @@ export function normalizeThreadShellSnapshot(
     subagentRole: incoming.subagentRole ?? null,
     forkSourceThreadId: incoming.forkSourceThreadId ?? null,
     sidechatSourceThreadId: incoming.sidechatSourceThreadId ?? null,
+    sidechatContext: incoming.sidechatContext ?? null,
     sidechatLastActivityAt: incoming.sidechatLastActivityAt ?? null,
     sidechatExpiredAt: incoming.sidechatExpiredAt ?? null,
     lastKnownPr,
     handoff,
+    ...(incoming.isProjectImport ? { isProjectImport: true } : {}),
     claudeCacheReview,
     ...(claudeCacheReviewSequence !== undefined ? { claudeCacheReviewSequence } : {}),
     // The sidebar shell snapshot/event does not carry detail-only annotations, so keep those
@@ -2103,6 +2186,7 @@ export function resolveThreadSidebarMetadata(
   | "hasPendingAsyncUserInput"
   | "hasActionableProposedPlan"
   | "hasLiveTailWork"
+  | "pendingBackgroundWorkCount"
 > {
   const needsDerivedMetadata =
     thread.latestUserMessageAt === undefined ||
@@ -2140,6 +2224,16 @@ export function resolveThreadSidebarMetadata(
         activities: thread.activities,
         session: thread.session,
       }),
+    ),
+    // Thread-wide, so the sidebar keeps showing background work after a
+    // finished subagent wakes the agent into a newer turn.
+    pendingBackgroundWorkCount: Math.max(
+      derivePendingBackgroundWork({
+        activities: thread.activities,
+        latestTurn: thread.latestTurn,
+        session: thread.session,
+      })?.count ?? 0,
+      countOutstandingBackgroundWork({ activities: thread.activities, session: thread.session }),
     ),
   };
 }

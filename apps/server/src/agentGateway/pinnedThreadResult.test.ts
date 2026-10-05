@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ServerSettingsService } from "../serverSettings";
 import {
   CommandId,
   EventId,
@@ -581,6 +582,7 @@ const queuedLayer = it.layer(
     Layer.provideMerge(
       ServerConfig.layerTest(process.cwd(), { prefix: "synara-pinned-queue-test-" }),
     ),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
     Layer.provideMerge(NodeServices.layer),
   ),
 );

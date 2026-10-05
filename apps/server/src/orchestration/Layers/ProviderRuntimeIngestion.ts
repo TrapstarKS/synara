@@ -39,7 +39,9 @@ import {
 } from "effect";
 import * as Semaphore from "effect/Semaphore";
 import { makeDrainableWorker, startDrainableWorkerProducers } from "@synara/shared/DrainableWorker";
+import { isGroupContainerKind } from "@synara/shared/projectContainers";
 import { providerSupportsNativeTurnSteering } from "@synara/shared/providerMetadata";
+import { isProviderKind } from "@synara/shared/providerInstances";
 import {
   buildSubagentIdentityDirectory,
   collectSubagentProviderThreadIds,
@@ -62,6 +64,8 @@ import {
   classifyTerminalTurnApplicability,
   isStartedTurnApplicable,
 } from "../../provider/terminalTurnApplicability.ts";
+import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
+import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import {
@@ -72,6 +76,8 @@ import { ProjectionPendingInteractionRepositoryLive } from "../../persistence/La
 import { ProviderRuntimeEventRepositoryLive } from "../../persistence/Layers/ProviderRuntimeEvents.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { QueuedTurnPromotionRepositoryLive } from "../../persistence/Layers/QueuedTurnPromotions.ts";
+import { ProjectionThreadSessionRepository } from "../../persistence/Services/ProjectionThreadSessions.ts";
+import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/ProjectionThreadSessions.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { QueuedTurnPromotionRepository } from "../../persistence/Services/QueuedTurnPromotions.ts";
 import {
@@ -144,6 +150,46 @@ const BUFFERED_TOOL_OUTPUT_BY_KEY_TTL = Duration.minutes(60);
 const BUFFERED_REASONING_SUMMARY_BY_KEY_CACHE_CAPACITY = 2_048;
 const BUFFERED_REASONING_SUMMARY_BY_KEY_TTL = Duration.minutes(60);
 const PENDING_GENERATED_IMAGES_CACHE_CAPACITY = 512;
+
+// "Real progress" for the worker-monitoring silence ladder: only events that
+// produce work — agent-side items, tool lifecycle, turn boundaries, streamed
+// agent output. A user-message item (the recovery steer itself echoes back
+// as one) or an unknown stream kind does not count, so a nudge's own echo
+// cannot reset the quiet window and re-trigger the ladder forever.
+const WORKER_PROGRESS_ITEM_TYPES = new Set<string>([
+  "assistant_message",
+  "reasoning",
+  "plan",
+  "command_execution",
+  "file_change",
+  "mcp_tool_call",
+  "dynamic_tool_call",
+  "collab_agent_tool_call",
+  "web_search",
+  "image_view",
+  "image_generation",
+  "review_entered",
+  "review_exited",
+  "context_compaction",
+  "error",
+]);
+
+function isWorkerProgressRuntimeEvent(event: ProviderRuntimeEvent): boolean {
+  switch (event.type) {
+    case "turn.started":
+    case "turn.completed":
+    case "turn.aborted":
+      return true;
+    case "item.started":
+    case "item.updated":
+    case "item.completed":
+      return WORKER_PROGRESS_ITEM_TYPES.has(event.payload.itemType);
+    case "content.delta":
+      return event.payload.streamKind !== "unknown";
+    default:
+      return false;
+  }
+}
 // Hot-path cache only. Turn settlement also reads durable activity records, so
 // TTL expiry or a server restart cannot discard the transcript reference.
 const PENDING_GENERATED_IMAGES_TTL = Duration.minutes(60);
@@ -167,6 +213,7 @@ const MAX_BUFFERED_TOOL_OUTPUT_CHARS = 24_000;
 const LIVE_TOOL_OUTPUT_ACTIVITY_STEP_CHARS = 1_024;
 const MAX_BUFFERED_REASONING_SUMMARY_CHARS = 8_000;
 const MAX_BUFFERED_REASONING_SUMMARY_PARTS = 24;
+const REASONING_PREVIEW_INTERVAL_MS = 250;
 const BUFFERED_TEXT_TRUNCATION_MARKER = "... [truncated]";
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.SYNARA_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -211,6 +258,9 @@ type BufferedToolOutput = {
 type BufferedReasoningSummary = {
   readonly parts: ReadonlyMap<number, string>;
   readonly sourceEvent: Extract<ProviderRuntimeEvent, { readonly type: "content.delta" }>;
+  readonly createdAt: string;
+  readonly sequence: number | undefined;
+  readonly lastPreviewAt?: number;
 };
 type AssistantDeliveryModeBindingState = {
   readonly pendingModesByThreadId: ReadonlyMap<ThreadId, ReadonlyArray<AssistantDeliveryMode>>;
@@ -246,6 +296,27 @@ function threadDetailFromShell(shell: OrchestrationThreadShell): OrchestrationTh
     activities: [],
     checkpoints: [],
   };
+}
+
+function readModelSelectionProviderInstanceId(
+  modelSelection:
+    | OrchestrationThread["modelSelection"]
+    | OrchestrationThreadShell["modelSelection"],
+): string | undefined {
+  return "instanceId" in modelSelection ? modelSelection.instanceId : undefined;
+}
+
+// A subagent runs on its parent's provider instance, so a specialized child
+// selection must keep the parent's instance rather than the provider default.
+function withParentInstanceId(
+  parentSelection: ModelSelection,
+  selection: ModelSelection | undefined,
+): ModelSelection | undefined {
+  const instanceId = readModelSelectionProviderInstanceId(parentSelection);
+  if (!selection || instanceId === undefined || selection.provider !== parentSelection.provider) {
+    return selection;
+  }
+  return { ...selection, instanceId } as ModelSelection;
 }
 
 /**
@@ -381,13 +452,19 @@ function reasoningSummaryBufferKey(
   event: ProviderRuntimeEvent,
   threadId = event.threadId,
 ): string | null {
-  if ((event.provider !== "codex" && event.provider !== "antigravity") || !event.itemId) {
+  if (
+    (event.provider !== "codex" &&
+      event.provider !== "antigravity" &&
+      event.provider !== "claudeAgent") ||
+    !event.itemId
+  ) {
     return null;
   }
   if (
     event.type === "content.delta" &&
     (event.payload.streamKind === "reasoning_summary_text" ||
-      (event.provider === "antigravity" && event.payload.streamKind === "reasoning_text"))
+      ((event.provider === "antigravity" || event.provider === "claudeAgent") &&
+        event.payload.streamKind === "reasoning_text"))
   ) {
     return [threadId, event.turnId ?? "no-turn", event.itemId].join(":");
   }
@@ -421,7 +498,9 @@ function withBufferedReasoningSummary(
 ): ProviderRuntimeEvent {
   if (
     event.type !== "item.completed" ||
-    (event.provider !== "codex" && event.provider !== "antigravity") ||
+    (event.provider !== "codex" &&
+      event.provider !== "antigravity" &&
+      event.provider !== "claudeAgent") ||
     event.payload.itemType !== "reasoning" ||
     readableReasoningDetail(event.payload.detail)
   ) {
@@ -693,10 +772,15 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const computerService = yield* Effect.serviceOption(ComputerService);
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
+  const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
   const pendingInteractions = yield* ProjectionPendingInteractionRepository;
   const runtimeEvents = yield* ProviderRuntimeEventRepository;
   const commandReceipts = yield* OrchestrationCommandReceiptRepository;
   const queuedTurnPromotions = yield* QueuedTurnPromotionRepository;
+  // Throttle map for the durable last-runtime-activity timestamp: one row
+  // write per thread per ~15s of observed activity instead of per event.
+  const lastActivityFlushByThreadRef = yield* Ref.make(new Map<string, number>());
   const outstandingTurnIdsByThreadRef = yield* Ref.make<ReadonlyMap<ThreadId, ReadonlySet<TurnId>>>(
     new Map(),
   );
@@ -905,6 +989,16 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_REASONING_SUMMARY_BY_KEY_TTL,
     lookup: () => Effect.succeed(undefined),
   });
+  // Keep row identity after the text buffer is consumed. On a cache miss the
+  // durable activity restores ordering and terminal state across recovery.
+  const claudeReasoningActivityById = yield* Cache.make<
+    string,
+    OrchestrationThreadActivity | undefined
+  >({
+    capacity: BUFFERED_REASONING_SUMMARY_BY_KEY_CACHE_CAPACITY,
+    timeToLive: BUFFERED_REASONING_SUMMARY_BY_KEY_TTL,
+    lookup: () => Effect.succeed(undefined),
+  });
   // Display paths of generated images completed during a still-running turn, keyed by
   // providerTurnKey. Flushed into the turn's terminal assistant message when the turn
   // settles, so the visible final row owns the image instead of collapsed narration.
@@ -960,6 +1054,49 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     activity: OrchestrationThreadActivity,
   ) {
+    const isClaudeReasoning =
+      event.provider === "claudeAgent" &&
+      (event.type === "item.updated" || event.type === "item.completed") &&
+      event.payload.itemType === "reasoning";
+    if (isClaudeReasoning) {
+      const cached = Option.getOrUndefined(
+        yield* Cache.getOption(claudeReasoningActivityById, activity.id),
+      );
+      const durable = cached
+        ? undefined
+        : Option.getOrUndefined(
+            yield* projectionThreadActivityRepository.getById({
+              threadId,
+              activityId: activity.id,
+            }),
+          );
+      const previous: OrchestrationThreadActivity | undefined =
+        cached ??
+        (durable
+          ? {
+              id: durable.activityId,
+              createdAt: durable.createdAt,
+              tone: durable.tone,
+              kind: durable.kind,
+              summary: durable.summary,
+              payload: durable.payload as OrchestrationThreadActivity["payload"],
+              turnId: durable.turnId,
+              ...(durable.sequence !== undefined ? { sequence: durable.sequence } : {}),
+            }
+          : undefined);
+      if (previous) {
+        yield* Cache.set(claudeReasoningActivityById, activity.id, previous);
+        // Interruption/failure is final; a delayed delta must not reopen a
+        // completed block either. Completed snapshots may refine its detail.
+        if (
+          asObject(previous.payload)?.status === "failed" ||
+          (asObject(previous.payload)?.status === "completed" &&
+            asObject(activity.payload)?.status !== "completed")
+        )
+          return;
+        activity = { ...activity, createdAt: previous.createdAt, sequence: previous.sequence };
+      }
+    }
     const key = providerActivityUpdateDedupeKey(event, threadId, activity);
     const fingerprint = key ? providerActivityUpdateFingerprint(activity) : undefined;
     if (key && fingerprint) {
@@ -980,6 +1117,9 @@ const make = Effect.gen(function* () {
       activity,
       createdAt: activity.createdAt,
     });
+    if (isClaudeReasoning) {
+      yield* Cache.set(claudeReasoningActivityById, activity.id, activity);
+    }
     if (key && fingerprint) {
       yield* Cache.set(latestActivityUpdateFingerprintByKey, key, fingerprint);
     }
@@ -1052,6 +1192,9 @@ const make = Effect.gen(function* () {
   const supportsLiveTurnDiffPatch = Effect.fnUntraced(function* (
     provider: ProviderRuntimeEvent["provider"],
   ) {
+    if (!isProviderKind(provider)) {
+      return false;
+    }
     const capabilities = yield* providerService
       .getCapabilities(provider)
       .pipe(Effect.catch(() => Effect.succeed(null)));
@@ -1179,6 +1322,7 @@ const make = Effect.gen(function* () {
   const appendBufferedReasoningSummary = (
     key: string,
     event: Extract<ProviderRuntimeEvent, { readonly type: "content.delta" }>,
+    sequence: number | undefined,
   ) =>
     Cache.getOption(bufferedReasoningSummaryByKey, key).pipe(
       Effect.flatMap((existingEntry) => {
@@ -1204,14 +1348,44 @@ const make = Effect.gen(function* () {
         }
         parts.set(summaryIndex, appendCappedBufferedText(existingPart, delta, partLimit));
         return Cache.set(bufferedReasoningSummaryByKey, key, {
+          ...existingSummary,
           parts,
           sourceEvent: event,
+          createdAt: existingSummary?.createdAt ?? event.createdAt,
+          sequence: existingSummary?.sequence ?? sequence,
         });
       }),
     );
 
   const takeBufferedReasoningSummary = (key: string) =>
     takeCached(bufferedReasoningSummaryByKey, key).pipe(Effect.map(Option.getOrUndefined));
+
+  // Publish one stable row while Claude thinks, without a projection write for every token.
+  // Event time keeps the same coalescing behavior when the runtime journal is replayed.
+  const publishReasoningPreview = Effect.fnUntraced(function* (key: string, threadId: ThreadId) {
+    const summary = Option.getOrUndefined(
+      yield* Cache.getOption(bufferedReasoningSummaryByKey, key),
+    );
+    if (!summary || summary.sourceEvent.provider !== "claudeAgent") return;
+    const previewAt = Date.parse(summary.sourceEvent.createdAt);
+    if (
+      summary.lastPreviewAt !== undefined &&
+      previewAt - summary.lastPreviewAt < REASONING_PREVIEW_INTERVAL_MS
+    )
+      return;
+    const detail = joinedBufferedReasoningSummary(summary);
+    if (!detail) return;
+    const event: ProviderRuntimeEvent = {
+      ...summary.sourceEvent,
+      type: "item.updated",
+      createdAt: summary.createdAt,
+      payload: { itemType: "reasoning", status: "inProgress", detail },
+    };
+    for (const activity of projectProviderRuntimeActivities(event, summary.sequence)) {
+      yield* dispatchActivityUpdate(event, threadId, activity);
+    }
+    yield* Cache.set(bufferedReasoningSummaryByKey, key, { ...summary, lastPreviewAt: previewAt });
+  });
 
   const settleBufferedReasoningSummaries = (
     threadId: ThreadId,
@@ -1244,6 +1418,9 @@ const make = Effect.gen(function* () {
                   ),
                   threadId,
                   type: "item.completed",
+                  ...(summary.sourceEvent.provider === "claudeAgent"
+                    ? { createdAt: summary.createdAt }
+                    : {}),
                   payload: {
                     itemType: "reasoning",
                     status,
@@ -1252,7 +1429,10 @@ const make = Effect.gen(function* () {
                   },
                 };
                 return Effect.forEach(
-                  projectProviderRuntimeActivities(completionEvent),
+                  projectProviderRuntimeActivities(
+                    completionEvent,
+                    summary.sourceEvent.provider === "claudeAgent" ? summary.sequence : undefined,
+                  ),
                   (activity) => dispatchActivityUpdate(completionEvent, threadId, activity),
                 ).pipe(Effect.asVoid);
               }),
@@ -1687,7 +1867,7 @@ const make = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       const project = yield* getProjectShell(input.thread);
-      if (!project || project.kind !== "studio") {
+      if (!project || !isGroupContainerKind(project.kind)) {
         return null;
       }
       const workspaceRoot = resolveThreadWorkspaceCwd({
@@ -2005,62 +2185,66 @@ const make = Effect.gen(function* () {
           // Model hints cannot replace an observed child model, but their explicit
           // worker effort still describes the child. Later model-only snapshots
           // must keep that effort instead of restoring the parent's selection.
-          const resolvedModelSelection = ((): ModelSelection | undefined => {
-            if (!identity) return undefined;
-            const parentSelection = parentThread.modelSelection;
-            const previousSelection = Option.getOrUndefined(existingThread)?.modelSelection;
-            const observedModel = identity.modelIsRequestedHint ? undefined : identity.model;
-            const model = observedModel ?? previousSelection?.model ?? parentSelection.model;
-            // Only matching models can reuse model-specific options/capabilities.
-            const matchingSelection =
-              previousSelection?.provider === parentSelection.provider &&
-              previousSelection.model === model
-                ? previousSelection
-                : parentSelection.model === model
-                  ? parentSelection
-                  : undefined;
-            if (parentSelection.provider === "codex") {
-              const reasoningEffort =
-                identity.effort ??
-                (previousSelection?.provider === "codex"
-                  ? previousSelection.options?.reasoningEffort
-                  : undefined);
-              if (!observedModel && !reasoningEffort) return undefined;
-              const matching =
-                matchingSelection?.provider === "codex" ? matchingSelection : undefined;
-              return inheritCodexProfile({
-                target: {
+          const resolvedModelSelection = withParentInstanceId(
+            parentThread.modelSelection,
+            ((): ModelSelection | undefined => {
+              if (!identity) return undefined;
+              const parentSelection = parentThread.modelSelection;
+              const previousSelection = Option.getOrUndefined(existingThread)?.modelSelection;
+              const observedModel = identity.modelIsRequestedHint ? undefined : identity.model;
+              const model = observedModel ?? previousSelection?.model ?? parentSelection.model;
+              // Only matching models can reuse model-specific options/capabilities.
+              const matchingSelection =
+                previousSelection?.provider === parentSelection.provider &&
+                previousSelection.model === model
+                  ? previousSelection
+                  : parentSelection.model === model
+                    ? parentSelection
+                    : undefined;
+              if (parentSelection.provider === "codex") {
+                const reasoningEffort =
+                  identity.effort ??
+                  (previousSelection?.provider === "codex"
+                    ? previousSelection.options?.reasoningEffort
+                    : undefined);
+                if (!observedModel && !reasoningEffort) return undefined;
+                const matching =
+                  matchingSelection?.provider === "codex" ? matchingSelection : undefined;
+                return inheritCodexProfile({
+                  target: {
+                    ...matching,
+                    provider: "codex",
+                    model,
+                    ...(reasoningEffort
+                      ? { options: { ...matching?.options, reasoningEffort } }
+                      : {}),
+                  },
+                  parentModelSelection: parentSelection,
+                });
+              }
+              if (parentSelection.provider === "claudeAgent") {
+                const effort =
+                  CLAUDE_CODE_EFFORT_OPTIONS.find((value) => value === identity.effort) ??
+                  (previousSelection?.provider === "claudeAgent"
+                    ? previousSelection.options?.effort
+                    : undefined);
+                if (!observedModel && !effort) return undefined;
+                const matching =
+                  matchingSelection?.provider === "claudeAgent" ? matchingSelection : undefined;
+                return {
                   ...matching,
-                  provider: "codex",
+                  provider: "claudeAgent",
                   model,
-                  ...(reasoningEffort
-                    ? { options: { ...matching?.options, reasoningEffort } }
-                    : {}),
-                },
-                parentModelSelection: parentSelection,
-              });
-            }
-            if (parentSelection.provider === "claudeAgent") {
-              const effort =
-                CLAUDE_CODE_EFFORT_OPTIONS.find((value) => value === identity.effort) ??
-                (previousSelection?.provider === "claudeAgent"
-                  ? previousSelection.options?.effort
-                  : undefined);
-              if (!observedModel && !effort) return undefined;
-              const matching =
-                matchingSelection?.provider === "claudeAgent" ? matchingSelection : undefined;
-              return {
-                ...matching,
-                provider: "claudeAgent",
-                model,
-                ...(effort ? { options: { ...matching?.options, effort } } : {}),
-              };
-            }
-            if (!observedModel) return undefined;
-            return (
-              matchingSelection ?? ({ provider: parentSelection.provider, model } as ModelSelection)
-            );
-          })();
+                  ...(effort ? { options: { ...matching?.options, effort } } : {}),
+                };
+              }
+              if (!observedModel) return undefined;
+              return (
+                matchingSelection ??
+                ({ provider: parentSelection.provider, model } as ModelSelection)
+              );
+            })(),
+          );
 
           if (Option.isNone(existingThread)) {
             // The read above hides soft-deleted threads, but `thread.create` is
@@ -2276,6 +2460,27 @@ const make = Effect.gen(function* () {
         return;
       }
       const thread = targetThreadResolution.thread;
+
+      // Durable last-activity signal (worker-monitoring silence is measured
+      // from this, not from session lifecycle rows): every runtime event of
+      // ANY kind counts — tool lifecycle, streamed output, messages,
+      // approval/input requests. Throttled to one row write per thread per
+      // ~15s of activity; the first event on a thread always flushes.
+      const LAST_ACTIVITY_FLUSH_INTERVAL_MS = 15_000;
+      const activityAtMs = Date.parse(now);
+      const flushMap = yield* Ref.get(lastActivityFlushByThreadRef);
+      const lastFlush = flushMap.get(thread.id);
+      if (lastFlush === undefined || activityAtMs - lastFlush >= LAST_ACTIVITY_FLUSH_INTERVAL_MS) {
+        flushMap.set(thread.id, activityAtMs);
+        yield* projectionThreadSessionRepository
+          .touchLastActivity({
+            threadId: thread.id,
+            activityAt: now,
+            isProgress: isWorkerProgressRuntimeEvent(event),
+          })
+          .pipe(Effect.catchCause(() => Effect.void));
+      }
+
       if (isRowMakingProviderRuntimeEvent(event)) {
         for (const state of segmentStateByThreadId.get(thread.id)?.values() ?? []) {
           if (state.hasText) {
@@ -2303,6 +2508,57 @@ const make = Effect.gen(function* () {
         terminalApplicability?.resolvedTurnId !== undefined
           ? TurnId.makeUnsafe(terminalApplicability.resolvedTurnId)
           : rawEventTurnId;
+
+      // In-flight tool tracking: a started-but-unfinished tool call counts as
+      // activity for the whole duration it runs (a 12-minute test suite must
+      // never look silent). INSERT OR IGNORE / DELETE keeps it replay-safe.
+      if (
+        event.type === "item.started" &&
+        event.itemId !== undefined &&
+        isToolLifecycleItemType(event.payload.itemType)
+      ) {
+        yield* projectionThreadSessionRepository
+          .markToolStarted({
+            threadId: thread.id,
+            itemId: event.itemId,
+            turnId: rawEventTurnId ?? null,
+            startedAt: now,
+            startedEventId: event.eventId,
+          })
+          .pipe(Effect.catchCause(() => Effect.void));
+      }
+      if (
+        event.type === "item.completed" &&
+        event.itemId !== undefined &&
+        isToolLifecycleItemType(event.payload.itemType)
+      ) {
+        yield* projectionThreadSessionRepository
+          .markToolFinished({
+            threadId: thread.id,
+            itemId: event.itemId,
+          })
+          .pipe(Effect.catchCause(() => Effect.void));
+      }
+      if (event.type === "turn.started" && eventTurnId) {
+        yield* projectionThreadSessionRepository
+          .clearActiveTools({
+            threadId: thread.id,
+            exceptTurnId: eventTurnId,
+          })
+          .pipe(Effect.catchCause(() => Effect.void));
+      }
+      if (isTerminalTurnEvent || event.type === "session.exited") {
+        yield* projectionThreadSessionRepository
+          .clearActiveTools({
+            threadId: thread.id,
+          })
+          .pipe(Effect.catchCause(() => Effect.void));
+      }
+      if (event.type === "session.exited") {
+        // The runtime is gone — stop tracking the thread's flush throttle so
+        // the map doesn't accumulate entries for closed threads.
+        flushMap.delete(thread.id);
+      }
 
       const shouldApplyThreadLifecycle =
         event.type === "turn.started"
@@ -2463,6 +2719,10 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status,
               providerName: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ??
+                thread.session?.providerInstanceId ??
+                readModelSelectionProviderInstanceId(thread.modelSelection),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
@@ -2687,14 +2947,9 @@ const make = Effect.gen(function* () {
       }
 
       const reasoningSummaryKey = reasoningSummaryBufferKey(event, thread.id);
-      if (
-        reasoningSummaryKey &&
-        event.type === "content.delta" &&
-        (event.payload.streamKind === "reasoning_summary_text" ||
-          (event.provider === "antigravity" && event.payload.streamKind === "reasoning_text")) &&
-        event.payload.delta.length > 0
-      ) {
-        yield* appendBufferedReasoningSummary(reasoningSummaryKey, event);
+      if (reasoningSummaryKey && event.type === "content.delta" && event.payload.delta.length > 0) {
+        yield* appendBufferedReasoningSummary(reasoningSummaryKey, event, runtimeSequence);
+        yield* publishReasoningPreview(reasoningSummaryKey, thread.id);
       }
 
       const assistantDelta =
@@ -3025,6 +3280,10 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: "error",
               providerName: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ??
+                thread.session?.providerInstanceId ??
+                readModelSelectionProviderInstanceId(thread.modelSelection),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
@@ -3146,11 +3405,17 @@ const make = Effect.gen(function* () {
         }
       }
 
+      const completedReasoning =
+        event.type === "item.completed" && reasoningSummaryKey
+          ? yield* takeBufferedReasoningSummary(reasoningSummaryKey)
+          : undefined;
       const activityEvent =
         event.type === "item.completed" && reasoningSummaryKey
           ? withBufferedReasoningSummary(
-              event,
-              yield* takeBufferedReasoningSummary(reasoningSummaryKey),
+              event.provider === "claudeAgent" && completedReasoning
+                ? { ...event, createdAt: completedReasoning.createdAt }
+                : event,
+              completedReasoning,
             )
           : event.type === "item.completed" && toolOutputKey
             ? withBufferedToolOutputData(event, yield* takeBufferedToolOutput(toolOutputKey))
@@ -3161,7 +3426,12 @@ const make = Effect.gen(function* () {
         yield* Cache.invalidate(liveToolOutputProjectedLengthByKey, toolOutputKey);
       }
       yield* Effect.forEach(
-        projectProviderRuntimeActivities(activityEvent, runtimeSequence),
+        projectProviderRuntimeActivities(
+          activityEvent,
+          event.provider === "claudeAgent"
+            ? (completedReasoning?.sequence ?? runtimeSequence)
+            : runtimeSequence,
+        ),
         (activity) => dispatchActivityUpdate(activityEvent, thread.id, activity),
       );
 
@@ -3762,9 +4032,11 @@ export const ProviderRuntimeIngestionLive = Layer.effect(
   Layer.provide(
     Layer.mergeAll(
       ProjectionTurnRepositoryLive,
+      ProjectionThreadActivityRepositoryLive,
       ProjectionPendingInteractionRepositoryLive,
       ProviderRuntimeEventRepositoryLive,
       OrchestrationCommandReceiptRepositoryLive,
+      ProjectionThreadSessionRepositoryLive,
     ),
   ),
 );

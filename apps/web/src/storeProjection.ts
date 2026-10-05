@@ -88,6 +88,8 @@ function toThreadShell(thread: Thread): ThreadShell {
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt ?? null,
     settledAt: thread.settledAt ?? null,
+    snoozedUntil: thread.snoozedUntil ?? null,
+    snoozeReminderAt: thread.snoozeReminderAt ?? null,
     updatedAt: thread.updatedAt,
     isPinned: thread.isPinned ?? false,
     envMode: thread.envMode,
@@ -107,11 +109,14 @@ function toThreadShell(thread: Thread): ThreadShell {
     subagentRole: thread.subagentRole ?? null,
     forkSourceThreadId: thread.forkSourceThreadId ?? null,
     sidechatSourceThreadId: thread.sidechatSourceThreadId ?? null,
+    sidechatContext: thread.sidechatContext ?? null,
     sidechatLastActivityAt: thread.sidechatLastActivityAt ?? null,
     sidechatExpiredAt: thread.sidechatExpiredAt ?? null,
     lastKnownPr: thread.lastKnownPr ?? null,
     handoff: thread.handoff ?? null,
+    ...(thread.isProjectImport ? { isProjectImport: true } : {}),
     claudeCacheReview: thread.claudeCacheReview ?? null,
+    ...(thread.snoozeSequence !== undefined ? { snoozeSequence: thread.snoozeSequence } : {}),
     ...(thread.claudeCacheReviewSequence !== undefined
       ? { claudeCacheReviewSequence: thread.claudeCacheReviewSequence }
       : {}),
@@ -351,6 +356,8 @@ function sidebarThreadSummariesEqual(
     left.createdAt === right.createdAt &&
     (left.archivedAt ?? null) === (right.archivedAt ?? null) &&
     (left.settledAt ?? null) === (right.settledAt ?? null) &&
+    (left.snoozedUntil ?? null) === (right.snoozedUntil ?? null) &&
+    (left.snoozeReminderAt ?? null) === (right.snoozeReminderAt ?? null) &&
     left.updatedAt === right.updatedAt &&
     (left.isPinned ?? false) === (right.isPinned ?? false) &&
     left.latestTurn === right.latestTurn &&
@@ -367,8 +374,11 @@ function sidebarThreadSummariesEqual(
     left.hasPendingAsyncUserInput === right.hasPendingAsyncUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
     left.hasLiveTailWork === right.hasLiveTailWork &&
+    left.pendingBackgroundWorkCount === right.pendingBackgroundWorkCount &&
     (left.forkSourceThreadId ?? null) === (right.forkSourceThreadId ?? null) &&
     (left.sidechatSourceThreadId ?? null) === (right.sidechatSourceThreadId ?? null) &&
+    // The context never changes after creation; its URL identifies the item.
+    (left.sidechatContext?.url ?? null) === (right.sidechatContext?.url ?? null) &&
     (left.sidechatLastActivityAt ?? null) === (right.sidechatLastActivityAt ?? null) &&
     (left.sidechatExpiredAt ?? null) === (right.sidechatExpiredAt ?? null) &&
     deepEqualJson(left.lastKnownPr ?? null, right.lastKnownPr ?? null) &&
@@ -398,6 +408,8 @@ function buildSidebarThreadSummary(
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt ?? null,
     settledAt: thread.settledAt ?? null,
+    snoozedUntil: thread.snoozedUntil ?? null,
+    snoozeReminderAt: thread.snoozeReminderAt ?? null,
     updatedAt: thread.updatedAt,
     isPinned: thread.isPinned ?? false,
     latestTurn: thread.latestTurn,
@@ -414,8 +426,10 @@ function buildSidebarThreadSummary(
     hasPendingAsyncUserInput: metadata.hasPendingAsyncUserInput ?? false,
     hasActionableProposedPlan: metadata.hasActionableProposedPlan,
     hasLiveTailWork: metadata.hasLiveTailWork,
+    pendingBackgroundWorkCount: metadata.pendingBackgroundWorkCount,
     forkSourceThreadId: thread.forkSourceThreadId ?? null,
     sidechatSourceThreadId: thread.sidechatSourceThreadId ?? null,
+    sidechatContext: thread.sidechatContext ?? null,
     sidechatLastActivityAt: thread.sidechatLastActivityAt ?? null,
     sidechatExpiredAt: thread.sidechatExpiredAt ?? null,
     lastKnownPr: thread.lastKnownPr ?? null,
@@ -614,9 +628,14 @@ function rebuildThreadShellRecords(
     const next = normalizeThreadShellSnapshot(
       thread,
       previousThread,
-      thread.claudeCacheReview != null || previousThread?.claudeCacheReviewSequence !== undefined
+      thread.claudeCacheReview != null ||
+        previousThread?.claudeCacheReviewSequence !== undefined ||
+        thread.snoozedUntil != null ||
+        thread.snoozeReminderAt != null ||
+        previousThread?.snoozeSequence !== undefined
         ? snapshotSequence
         : undefined,
+      { restoringSession: true },
     );
     const threadId = next.shell.id;
 
@@ -1382,7 +1401,9 @@ function syncServerThreadDetailWithOptions(
     commitThreadProjection(
       writeThreadState(
         state,
-        normalizeThreadFromReadModel(nextThreadDetail, previousThread, options?.snapshotSequence),
+        normalizeThreadFromReadModel(nextThreadDetail, previousThread, options?.snapshotSequence, {
+          restoringSession: !state.threadsHydrated,
+        }),
         previousThread,
       ),
       thread.id,
@@ -1447,6 +1468,7 @@ export function applyShellEvent(state: AppState, event: OrchestrationShellStream
           event.thread,
           getThreadFromState(state, event.thread.id),
           event.sequence,
+          { restoringSession: !state.threadsHydrated },
         ),
       );
       return commitThreadProjection(nextState, event.thread.id);
@@ -1498,9 +1520,14 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
       return normalizeThreadFromReadModel(
         thread,
         existing,
-        thread.claudeCacheReview != null || existing?.claudeCacheReviewSequence !== undefined
+        thread.claudeCacheReview != null ||
+          existing?.claudeCacheReviewSequence !== undefined ||
+          thread.snoozedUntil != null ||
+          thread.snoozeReminderAt != null ||
+          existing?.snoozeSequence !== undefined
           ? readModel.snapshotSequence
           : undefined,
+        { restoringSession: true },
       );
     });
   const nextThreadIds = new Set(nextThreads.map((thread) => thread.id));

@@ -17,7 +17,7 @@
     },
     "apps/desktop": {
       "name": "@synara/desktop",
-      "version": "0.9.30",
+      "version": "1.0.1",
       "dependencies": {
         "betterwright": "2.7.3",
         "effect": "catalog:",
@@ -76,7 +76,7 @@
     },
     "apps/server": {
       "name": "@synara/cli",
-      "version": "0.9.30",
+      "version": "1.0.1",
       "bin": {
         "synara": "dist/index.mjs",
         "synara-restore-migration-backup": "dist/restoreMigrationBackup.mjs",
@@ -96,8 +96,7 @@
         "effect": "catalog:",
         "node-pty": "^1.1.0",
         "open": "^10.1.0",
-        "smol-toml": "^1.6.1",
-        "tree-kill": "^1.2.2",
+        "smol-toml": "^1.7.0",
         "ws": "^8.21.0",
         "yaml": "^2.8.3",
         "zod": "4.3.6",
@@ -119,7 +118,7 @@
     },
     "apps/web": {
       "name": "@synara/web",
-      "version": "0.9.30",
+      "version": "1.0.1",
       "dependencies": {
         "@base-ui/react": "^1.5.0",
         "@dnd-kit/core": "^6.3.1",
@@ -190,7 +189,7 @@
     },
     "packages/contracts": {
       "name": "@synara/contracts",
-      "version": "0.9.30",
+      "version": "1.0.1",
       "dependencies": {
         "effect": "catalog:",
       },
@@ -3174,7 +3173,7 @@
 
     "smart-buffer": ["smart-buffer@4.2.0", "", {}, "sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg=="],
 
-    "smol-toml": ["smol-toml@1.8.0", "", {}, "sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ=="],
+    "smol-toml": ["smol-toml@1.7.0", "", {}, "sha512-aqVvWoyO21L23mb+drl4RmMXbf6N7FdHjAhTRA9ZBL7apWBgfWC16KjrASI+1p9GAroljyMHj6fK67i0UiTNvQ=="],
 
     "socks": ["socks@2.8.9", "", { "dependencies": { "ip-address": "^10.1.1", "smart-buffer": "^4.2.0" } }, "sha512-LJhUYUvItdQ0LkJTmPeaEObWXAqFyfmP85x0tch/ez9cahmhlBBLbIqDFnvBnUJGagb0JbIQrkBs1wJ+yRYpEw=="],
 

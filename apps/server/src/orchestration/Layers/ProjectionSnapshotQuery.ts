@@ -19,6 +19,7 @@ import {
   OrchestrationThreadPullRequest,
   PendingClaudeCacheReview,
   ThreadPinnedMessages,
+  ThreadSidechatContext,
   ThreadGoalAchievements,
   ProjectScript,
   ProjectId,
@@ -39,6 +40,7 @@ import {
   type OrchestrationThreadActivity,
   ThreadHandoff,
   ModelSelection,
+  type ServerSettings,
 } from "@synara/contracts";
 import { Effect, Layer, Option, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -72,6 +74,7 @@ import {
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   ProjectionSnapshotQuery,
   type ProjectionFullThreadDiffContext,
@@ -110,6 +113,7 @@ const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     hasPendingAsyncUserInput: Schema.Number,
+    isProjectImport: Schema.Number,
     createBranchFlowCompleted: Schema.Number,
     isPinned: Schema.Number,
     handoff: Schema.NullOr(Schema.fromJsonString(ThreadHandoff)),
@@ -117,6 +121,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
       Schema.NullOr(Schema.fromJsonString(PendingClaudeCacheReview)),
     ),
     lastKnownPr: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadPullRequest)),
+    sidechatContext: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadSidechatContext))),
     pinnedMessages: Schema.NullOr(Schema.fromJsonString(ThreadPinnedMessages)),
     goalAchievements: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(ThreadGoalAchievements)),
@@ -133,6 +138,7 @@ const {
 const ProjectionThreadShellDbRowSchema = Schema.Struct(ProjectionThreadShellFields).mapFields(
   Struct.assign({
     hasPendingAsyncUserInput: Schema.Number,
+    isProjectImport: Schema.Number,
     createBranchFlowCompleted: Schema.Number,
     isPinned: Schema.Number,
     handoff: Schema.NullOr(Schema.fromJsonString(ThreadHandoff)),
@@ -140,6 +146,7 @@ const ProjectionThreadShellDbRowSchema = Schema.Struct(ProjectionThreadShellFiel
       Schema.NullOr(Schema.fromJsonString(PendingClaudeCacheReview)),
     ),
     lastKnownPr: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadPullRequest)),
+    sidechatContext: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadSidechatContext))),
     modelSelection: ModelSelectionJsonUnknown,
   }),
 );
@@ -201,6 +208,9 @@ const WorkspaceRootLookupInput = Schema.Struct({
 });
 const ProjectIdLookupInput = Schema.Struct({
   projectId: ProjectId,
+});
+const ProjectIdsLookupInput = Schema.Struct({
+  projectIds: Schema.Array(ProjectId),
 });
 const SpaceIdLookupInput = Schema.Struct({
   spaceId: SpaceId,
@@ -277,27 +287,30 @@ type ProjectionStateDbRow = Schema.Schema.Type<typeof ProjectionStateDbRowSchema
 
 function decodeProjectionProjectRow(
   row: ProjectionProjectDbRowRaw,
+  settings?: ServerSettings,
 ): Effect.Effect<ProjectionProjectDbRow, Schema.SchemaError> {
   if (row.defaultModelSelection === null) {
     return Effect.succeed({ ...row, defaultModelSelection: null });
   }
-  return decodeModelSelection(normalizePersistedModelSelection(row.defaultModelSelection)).pipe(
-    Effect.map((defaultModelSelection) => ({ ...row, defaultModelSelection })),
-  );
+  return decodeModelSelection(
+    normalizePersistedModelSelection(row.defaultModelSelection, settings),
+  ).pipe(Effect.map((defaultModelSelection) => ({ ...row, defaultModelSelection })));
 }
 
 function decodeProjectionThreadRow(
   row: ProjectionThreadDbRowRaw,
+  settings?: ServerSettings,
 ): Effect.Effect<ProjectionThreadDbRow, Schema.SchemaError> {
-  return decodeModelSelection(normalizePersistedModelSelection(row.modelSelection)).pipe(
+  return decodeModelSelection(normalizePersistedModelSelection(row.modelSelection, settings)).pipe(
     Effect.map((modelSelection) => ({ ...row, modelSelection })),
   );
 }
 
 function decodeProjectionThreadShellRow(
   row: ProjectionThreadShellDbRowRaw,
+  settings?: ServerSettings,
 ): Effect.Effect<ProjectionThreadShellDbRow, Schema.SchemaError> {
-  return decodeModelSelection(normalizePersistedModelSelection(row.modelSelection)).pipe(
+  return decodeModelSelection(normalizePersistedModelSelection(row.modelSelection, settings)).pipe(
     Effect.map((modelSelection) => ({ ...row, modelSelection })),
   );
 }
@@ -305,8 +318,9 @@ function decodeProjectionThreadShellRow(
 function decodeProjectionProjectRows(
   rows: ReadonlyArray<ProjectionProjectDbRowRaw>,
   operation: string,
+  settings?: ServerSettings,
 ): Effect.Effect<ReadonlyArray<ProjectionProjectDbRow>, ProjectionRepositoryError> {
-  return Effect.forEach(rows, decodeProjectionProjectRow).pipe(
+  return Effect.forEach(rows, (row) => decodeProjectionProjectRow(row, settings)).pipe(
     Effect.mapError(toPersistenceDecodeError(operation)),
   );
 }
@@ -314,8 +328,9 @@ function decodeProjectionProjectRows(
 function decodeProjectionThreadRows(
   rows: ReadonlyArray<ProjectionThreadDbRowRaw>,
   operation: string,
+  settings?: ServerSettings,
 ): Effect.Effect<ReadonlyArray<ProjectionThreadDbRow>, ProjectionRepositoryError> {
-  return Effect.forEach(rows, decodeProjectionThreadRow).pipe(
+  return Effect.forEach(rows, (row) => decodeProjectionThreadRow(row, settings)).pipe(
     Effect.mapError(toPersistenceDecodeError(operation)),
   );
 }
@@ -323,8 +338,9 @@ function decodeProjectionThreadRows(
 function decodeProjectionThreadShellRows(
   rows: ReadonlyArray<ProjectionThreadShellDbRowRaw>,
   operation: string,
+  settings?: ServerSettings,
 ): Effect.Effect<ReadonlyArray<ProjectionThreadShellDbRow>, ProjectionRepositoryError> {
-  return Effect.forEach(rows, decodeProjectionThreadShellRow).pipe(
+  return Effect.forEach(rows, (row) => decodeProjectionThreadShellRow(row, settings)).pipe(
     Effect.mapError(toPersistenceDecodeError(operation)),
   );
 }
@@ -332,11 +348,12 @@ function decodeProjectionThreadShellRows(
 function decodeProjectionProjectOption(
   option: Option.Option<ProjectionProjectDbRowRaw>,
   operation: string,
+  settings?: ServerSettings,
 ): Effect.Effect<Option.Option<ProjectionProjectDbRow>, ProjectionRepositoryError> {
   if (Option.isNone(option)) {
     return Effect.succeed(Option.none());
   }
-  return decodeProjectionProjectRow(option.value).pipe(
+  return decodeProjectionProjectRow(option.value, settings).pipe(
     Effect.map(Option.some),
     Effect.mapError(toPersistenceDecodeError(operation)),
   );
@@ -345,11 +362,12 @@ function decodeProjectionProjectOption(
 function decodeProjectionThreadOption(
   option: Option.Option<ProjectionThreadDbRowRaw>,
   operation: string,
+  settings?: ServerSettings,
 ): Effect.Effect<Option.Option<ProjectionThreadDbRow>, ProjectionRepositoryError> {
   if (Option.isNone(option)) {
     return Effect.succeed(Option.none());
   }
-  return decodeProjectionThreadRow(option.value).pipe(
+  return decodeProjectionThreadRow(option.value, settings).pipe(
     Effect.map(Option.some),
     Effect.mapError(toPersistenceDecodeError(operation)),
   );
@@ -450,9 +468,12 @@ function toProjectedSession(row: ProjectionThreadSessionDbRow): OrchestrationSes
     threadId: row.threadId,
     status: row.status,
     providerName: row.providerName,
+    ...(row.providerInstanceId ? { providerInstanceId: row.providerInstanceId } : {}),
     runtimeMode: row.runtimeMode,
     activeTurnId: row.activeTurnId,
     lastError: row.lastError,
+    lastActivityAt: row.lastActivityAt,
+    lastProgressAt: row.lastProgressAt,
     updatedAt: row.updatedAt,
   };
 }
@@ -694,6 +715,7 @@ function toProjectedThreadShellFromStoredSummary(input: {
     subagentRole: threadRow.subagentRole ?? null,
     forkSourceThreadId: threadRow.forkSourceThreadId ?? null,
     sidechatSourceThreadId: threadRow.sidechatSourceThreadId ?? null,
+    sidechatContext: threadRow.sidechatContext ?? null,
     sidechatLastActivityAt: threadRow.sidechatLastActivityAt ?? null,
     sidechatExpiredAt: threadRow.sidechatExpiredAt ?? null,
     lastKnownPr: threadRow.lastKnownPr,
@@ -708,7 +730,10 @@ function toProjectedThreadShellFromStoredSummary(input: {
     updatedAt: threadRow.updatedAt,
     archivedAt: threadRow.archivedAt ?? null,
     settledAt: threadRow.settledAt ?? null,
+    snoozedUntil: threadRow.snoozedUntil ?? null,
+    snoozeReminderAt: threadRow.snoozeReminderAt ?? null,
     handoff: threadRow.handoff,
+    ...(threadRow.isProjectImport > 0 ? { isProjectImport: true } : {}),
     ...(threadRow.claudeCacheReview != null
       ? { claudeCacheReview: threadRow.claudeCacheReview }
       : {}),
@@ -760,6 +785,7 @@ function toProjectedThread(input: {
     subagentRole: threadRow.subagentRole ?? null,
     forkSourceThreadId: threadRow.forkSourceThreadId,
     sidechatSourceThreadId: threadRow.sidechatSourceThreadId ?? null,
+    sidechatContext: threadRow.sidechatContext ?? null,
     sidechatLastActivityAt: threadRow.sidechatLastActivityAt ?? null,
     sidechatExpiredAt: threadRow.sidechatExpiredAt ?? null,
     lastKnownPr: threadRow.lastKnownPr,
@@ -768,8 +794,11 @@ function toProjectedThread(input: {
     updatedAt: threadRow.updatedAt,
     archivedAt: threadRow.archivedAt ?? null,
     settledAt: threadRow.settledAt ?? null,
+    snoozedUntil: threadRow.snoozedUntil ?? null,
+    snoozeReminderAt: threadRow.snoozeReminderAt ?? null,
     deletedAt: threadRow.deletedAt,
     handoff: threadRow.handoff,
+    ...(threadRow.isProjectImport > 0 ? { isProjectImport: true } : {}),
     ...(threadRow.claudeCacheReview != null
       ? { claudeCacheReview: threadRow.claudeCacheReview }
       : {}),
@@ -848,6 +877,52 @@ function computeSnapshotSequence(
 
 const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const serverSettings = yield* ServerSettingsService;
+
+  const readSettingsForModelSelectionDecode = (operation: string) =>
+    serverSettings.getSettings.pipe(
+      Effect.mapError(toPersistenceSqlError(`${operation}:getSettings`)),
+    );
+
+  const decodeProjectionProjectRowsForCurrentSettings = (
+    rows: ReadonlyArray<ProjectionProjectDbRowRaw>,
+    operation: string,
+  ) =>
+    readSettingsForModelSelectionDecode(operation).pipe(
+      Effect.flatMap((settings) => decodeProjectionProjectRows(rows, operation, settings)),
+    );
+
+  const decodeProjectionThreadRowsForCurrentSettings = (
+    rows: ReadonlyArray<ProjectionThreadDbRowRaw>,
+    operation: string,
+  ) =>
+    readSettingsForModelSelectionDecode(operation).pipe(
+      Effect.flatMap((settings) => decodeProjectionThreadRows(rows, operation, settings)),
+    );
+
+  const decodeProjectionThreadShellRowsForCurrentSettings = (
+    rows: ReadonlyArray<ProjectionThreadShellDbRowRaw>,
+    operation: string,
+  ) =>
+    readSettingsForModelSelectionDecode(operation).pipe(
+      Effect.flatMap((settings) => decodeProjectionThreadShellRows(rows, operation, settings)),
+    );
+
+  const decodeProjectionProjectOptionForCurrentSettings = (
+    option: Option.Option<ProjectionProjectDbRowRaw>,
+    operation: string,
+  ) =>
+    readSettingsForModelSelectionDecode(operation).pipe(
+      Effect.flatMap((settings) => decodeProjectionProjectOption(option, operation, settings)),
+    );
+
+  const decodeProjectionThreadOptionForCurrentSettings = (
+    option: Option.Option<ProjectionThreadDbRowRaw>,
+    operation: string,
+  ) =>
+    readSettingsForModelSelectionDecode(operation).pipe(
+      Effect.flatMap((settings) => decodeProjectionThreadOption(option, operation, settings)),
+    );
 
   // Soft-deleted rows can remain while their purge is fenced or deferred. `getSnapshot` is
   // the only reader that hydrates message/activity bodies for the whole database at once,
@@ -900,6 +975,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const projectImportProvenance = sql`EXISTS (
+    SELECT 1 FROM project_import_origins
+    WHERE project_import_origins.thread_id = projection_threads.thread_id
+      AND project_import_origins.status = 'completed'
+  )`;
+
   const listThreadRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionThreadDbRowSchema,
@@ -940,11 +1021,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           subagent_role AS "subagentRole",
           fork_source_thread_id AS "forkSourceThreadId",
           sidechat_source_thread_id AS "sidechatSourceThreadId",
+          sidechat_context_json AS "sidechatContext",
           sidechat_last_activity_at AS "sidechatLastActivityAt",
           sidechat_expired_at AS "sidechatExpiredAt",
           last_known_pr_json AS "lastKnownPr",
           latest_turn_id AS "latestTurnId",
           handoff_json AS "handoff",
+          ${projectImportProvenance} AS "isProjectImport",
           claude_cache_review_json AS "claudeCacheReview",
           latest_user_message_at AS "latestUserMessageAt",
           latest_human_message_at AS "latestHumanMessageAt",
@@ -962,6 +1045,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
           settled_at AS "settledAt",
+          snoozed_until AS "snoozedUntil",
+          snooze_reminder_at AS "snoozeReminderAt",
           deleted_at AS "deletedAt"
         FROM projection_threads
         ORDER BY created_at ASC, thread_id ASC
@@ -1000,11 +1085,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           subagent_role AS "subagentRole",
           fork_source_thread_id AS "forkSourceThreadId",
           sidechat_source_thread_id AS "sidechatSourceThreadId",
+          sidechat_context_json AS "sidechatContext",
           sidechat_last_activity_at AS "sidechatLastActivityAt",
           sidechat_expired_at AS "sidechatExpiredAt",
           last_known_pr_json AS "lastKnownPr",
           latest_turn_id AS "latestTurnId",
           handoff_json AS "handoff",
+          ${projectImportProvenance} AS "isProjectImport",
           claude_cache_review_json AS "claudeCacheReview",
           goal,
           goal_started_at AS "goalStartedAt",
@@ -1027,6 +1114,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
           settled_at AS "settledAt",
+          snoozed_until AS "snoozedUntil",
+          snooze_reminder_at AS "snoozeReminderAt",
           deleted_at AS "deletedAt"
         FROM projection_threads
         ORDER BY created_at ASC, thread_id ASC
@@ -1475,11 +1564,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           status,
           provider_name AS "providerName",
+          provider_instance_id AS "providerInstanceId",
           provider_session_id AS "providerSessionId",
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
+          last_activity_at AS "lastActivityAt",
+          last_progress_at AS "lastProgressAt",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -1679,6 +1771,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listProjectRowsByIds = SqlSchema.findAll({
+    Request: ProjectIdsLookupInput,
+    Result: ProjectionProjectLookupRowSchema,
+    execute: ({ projectIds }) =>
+      sql`
+        SELECT
+          project_id AS "projectId",
+          kind,
+          title,
+          workspace_root AS "workspaceRoot",
+          default_model_selection_json AS "defaultModelSelection",
+          scripts_json AS "scripts",
+          is_pinned AS "isPinned",
+          space_id AS "spaceId",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          deleted_at AS "deletedAt"
+        FROM projection_projects
+        WHERE deleted_at IS NULL
+          AND project_id IN ${sql.in(projectIds)}
+      `,
+  });
+
   // Deliberately NOT filtered by `deleted_at`. Every other thread lookup here
   // hides soft-deleted rows, but `thread.create` is decided against the
   // tombstone-inclusive command read model: a thread id stays bound to its
@@ -1737,11 +1852,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           subagent_role AS "subagentRole",
           fork_source_thread_id AS "forkSourceThreadId",
           sidechat_source_thread_id AS "sidechatSourceThreadId",
+          sidechat_context_json AS "sidechatContext",
           sidechat_last_activity_at AS "sidechatLastActivityAt",
           sidechat_expired_at AS "sidechatExpiredAt",
           last_known_pr_json AS "lastKnownPr",
           latest_turn_id AS "latestTurnId",
           handoff_json AS "handoff",
+          ${projectImportProvenance} AS "isProjectImport",
           claude_cache_review_json AS "claudeCacheReview",
           latest_user_message_at AS "latestUserMessageAt",
           latest_human_message_at AS "latestHumanMessageAt",
@@ -1759,6 +1876,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
           settled_at AS "settledAt",
+          snoozed_until AS "snoozedUntil",
+          snooze_reminder_at AS "snoozeReminderAt",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE thread_id = ${threadId}
@@ -1807,11 +1926,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           subagent_role AS "subagentRole",
           fork_source_thread_id AS "forkSourceThreadId",
           sidechat_source_thread_id AS "sidechatSourceThreadId",
+          sidechat_context_json AS "sidechatContext",
           sidechat_last_activity_at AS "sidechatLastActivityAt",
           sidechat_expired_at AS "sidechatExpiredAt",
           last_known_pr_json AS "lastKnownPr",
           latest_turn_id AS "latestTurnId",
           handoff_json AS "handoff",
+          ${projectImportProvenance} AS "isProjectImport",
           claude_cache_review_json AS "claudeCacheReview",
           latest_user_message_at AS "latestUserMessageAt",
           latest_human_message_at AS "latestHumanMessageAt",
@@ -1829,6 +1950,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
           settled_at AS "settledAt",
+          snoozed_until AS "snoozedUntil",
+          snooze_reminder_at AS "snoozeReminderAt",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE ${threadId} LIKE ('subagent:' || thread_id || ':%')
@@ -2166,21 +2289,32 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           subagent_role AS "subagentRole",
           fork_source_thread_id AS "forkSourceThreadId",
           sidechat_source_thread_id AS "sidechatSourceThreadId",
+          sidechat_context_json AS "sidechatContext",
           sidechat_last_activity_at AS "sidechatLastActivityAt",
           sidechat_expired_at AS "sidechatExpiredAt",
           last_known_pr_json AS "lastKnownPr",
           latest_turn_id AS "latestTurnId",
           handoff_json AS "handoff",
+          ${projectImportProvenance} AS "isProjectImport",
           claude_cache_review_json AS "claudeCacheReview",
           latest_user_message_at AS "latestUserMessageAt",
           latest_human_message_at AS "latestHumanMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          EXISTS (
+            SELECT 1 FROM projection_thread_messages AS pending
+              INDEXED BY idx_projection_messages_pending_async_input
+            WHERE pending.thread_id = projection_threads.thread_id
+              AND pending.role = 'assistant' AND pending.async_user_input_json IS NOT NULL
+              AND json_extract(pending.async_user_input_json, '$.response') IS NULL
+          ) AS "hasPendingAsyncUserInput",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
           settled_at AS "settledAt",
+          snoozed_until AS "snoozedUntil",
+          snooze_reminder_at AS "snoozeReminderAt",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE thread_id IN ${sql.in(threadIds)}
@@ -2198,11 +2332,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           status,
           provider_name AS "providerName",
+          provider_instance_id AS "providerInstanceId",
           provider_session_id AS "providerSessionId",
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
+          last_activity_at AS "lastActivityAt",
+          last_progress_at AS "lastProgressAt",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id IN ${sql.in(threadIds)}
@@ -2252,11 +2389,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           status,
           provider_name AS "providerName",
+          provider_instance_id AS "providerInstanceId",
           provider_session_id AS "providerSessionId",
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
+          last_activity_at AS "lastActivityAt",
+          last_progress_at AS "lastProgressAt",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -2459,7 +2599,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
               Effect.flatMap((rows) =>
-                decodeProjectionProjectRows(
+                decodeProjectionProjectRowsForCurrentSettings(
                   rows,
                   "ProjectionSnapshotQuery.getSnapshot:listProjects:decodeModelSelections",
                 ),
@@ -2473,7 +2613,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
               Effect.flatMap((rows) =>
-                decodeProjectionThreadRows(
+                decodeProjectionThreadRowsForCurrentSettings(
                   rows,
                   "ProjectionSnapshotQuery.getSnapshot:listThreads:decodeModelSelections",
                 ),
@@ -2637,7 +2777,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
               Effect.flatMap((rows) =>
-                decodeProjectionProjectRows(
+                decodeProjectionProjectRowsForCurrentSettings(
                   rows,
                   "ProjectionSnapshotQuery.getCommandReadModel:listProjects:decodeModelSelections",
                 ),
@@ -2651,7 +2791,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
               Effect.flatMap((rows) =>
-                decodeProjectionThreadRows(
+                decodeProjectionThreadRowsForCurrentSettings(
                   rows,
                   "ProjectionSnapshotQuery.getCommandReadModel:listThreads:decodeModelSelections",
                 ),
@@ -2773,7 +2913,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   ),
                 ),
                 Effect.flatMap((rows) =>
-                  decodeProjectionProjectRows(
+                  decodeProjectionProjectRowsForCurrentSettings(
                     rows,
                     "ProjectionSnapshotQuery.getShellSnapshot:listProjects:decodeModelSelections",
                   ),
@@ -2787,7 +2927,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   ),
                 ),
                 Effect.flatMap((rows) =>
-                  decodeProjectionThreadShellRows(
+                  decodeProjectionThreadShellRowsForCurrentSettings(
                     rows,
                     "ProjectionSnapshotQuery.getShellSnapshot:listThreads:decodeModelSelections",
                   ),
@@ -2956,7 +3096,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ),
         ),
         Effect.flatMap((option) =>
-          decodeProjectionProjectOption(
+          decodeProjectionProjectOptionForCurrentSettings(
             option,
             "ProjectionSnapshotQuery.getActiveProjectByWorkspaceRoot:decodeModelSelection",
           ),
@@ -2990,13 +3130,36 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       ),
       Effect.flatMap((option) =>
-        decodeProjectionProjectOption(
+        decodeProjectionProjectOptionForCurrentSettings(
           option,
           "ProjectionSnapshotQuery.getProjectShellById:decodeModelSelection",
         ),
       ),
       Effect.map((option) => Option.map(option, (row) => toProjectedProjectShell(row))),
     );
+
+  const getProjectShellsByIds: ProjectionSnapshotQueryShape["getProjectShellsByIds"] = (
+    projectIds,
+  ) => {
+    if (projectIds.length === 0) {
+      return Effect.succeed([]);
+    }
+    return listProjectRowsByIds({ projectIds: [...projectIds] }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getProjectShellsByIds:query",
+          "ProjectionSnapshotQuery.getProjectShellsByIds:decodeRow",
+        ),
+      ),
+      Effect.flatMap((rows) =>
+        decodeProjectionProjectRows(
+          rows,
+          "ProjectionSnapshotQuery.getProjectShellsByIds:decodeModelSelection",
+        ),
+      ),
+      Effect.map((rows) => rows.map(toProjectedProjectShell)),
+    );
+  };
 
   const getSpaceShellById: ProjectionSnapshotQueryShape["getSpaceShellById"] = (spaceId) =>
     getSpaceRowById({ spaceId }).pipe(
@@ -3155,7 +3318,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ),
         ),
         Effect.flatMap((option) =>
-          decodeProjectionThreadOption(option, `${tracePrefix}:getThread:decodeModelSelection`),
+          decodeProjectionThreadOptionForCurrentSettings(
+            option,
+            `${tracePrefix}:getThread:decodeModelSelection`,
+          ),
         ),
       );
       if (Option.isNone(threadRow)) {
@@ -3216,7 +3382,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
               Effect.flatMap((rows) =>
-                decodeProjectionThreadRows(
+                decodeProjectionThreadRowsForCurrentSettings(
                   rows,
                   `${tracePrefix}:listThreads:decodeModelSelections`,
                 ),
@@ -3289,7 +3455,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
               Effect.flatMap((option) =>
-                decodeProjectionThreadOption(
+                decodeProjectionThreadOptionForCurrentSettings(
                   option,
                   "ProjectionSnapshotQuery.findSyntheticSubagentParentThread:getThread:decodeModelSelection",
                 ),
@@ -3335,7 +3501,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ),
         ),
         Effect.flatMap((option) =>
-          decodeProjectionThreadOption(
+          decodeProjectionThreadOptionForCurrentSettings(
             option,
             `${options.tracePrefix}:getThread:decodeModelSelection`,
           ),
@@ -3471,7 +3637,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
             Effect.flatMap((option) =>
-              decodeProjectionThreadOption(option, `${tracePrefix}:getThread:decodeModelSelection`),
+              decodeProjectionThreadOptionForCurrentSettings(
+                option,
+                `${tracePrefix}:getThread:decodeModelSelection`,
+              ),
             ),
           );
           if (Option.isNone(threadRow)) {
@@ -3615,6 +3784,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     listManagedWorktreeThreads,
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
+    getProjectShellsByIds,
     getSpaceShellById,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,

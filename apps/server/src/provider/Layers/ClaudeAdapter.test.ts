@@ -25,7 +25,7 @@ import {
 } from "@synara/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import { assessClaudeCache } from "@synara/shared/claudeCache";
-import { Deferred, Effect, Exit, Fiber, Layer, Queue, Random, Stream } from "effect";
+import { Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Random, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, beforeEach, vi } from "vitest";
 
@@ -39,13 +39,19 @@ import { ServerConfig } from "../../config.ts";
 import { MINIMUM_CLAUDE_AUTO_MODE_CLI_VERSION } from "../claudeCliVersion.ts";
 import { claudeCacheForModel } from "../claudeCacheObservation.ts";
 import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
+import {
+  makeProviderModelDiscoveryCache,
+  providerModelDiscoveryCacheKey,
+} from "../providerModelDiscoveryCache.ts";
 import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import {
   buildEmbeddedClaudeSystemPromptAppend,
+  claudeHomeEnvironment,
   makeClaudeAdapterLive as makeClaudeAdapterLiveBase,
   type ClaudeAdapterLiveOptions,
   type ClaudeOwnedProcess,
 } from "./ClaudeAdapter.ts";
+import { claudeIsolatedHomePath } from "../claudeEnvironment.ts";
 
 vi.mock("effect", async (importOriginal) => {
   const actual = await importOriginal<typeof import("effect")>();
@@ -738,6 +744,126 @@ describe("Claude Synara harness policy", () => {
 });
 
 describe("ClaudeAdapterLive", () => {
+  it.effect("passes provider instance environment to temporary command discovery", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      if (!adapter.listCommands) {
+        assert.fail("Expected ClaudeAdapter to expose command discovery");
+      }
+      yield* adapter.listCommands({
+        provider: "claudeAgent",
+        cwd: "/tmp/claude-work",
+        homePath: "/tmp/claude-home-work",
+        environment: { ANTHROPIC_AUTH_TOKEN: "work-token" },
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.env?.ANTHROPIC_AUTH_TOKEN, "work-token");
+      assert.equal(createInput?.options.env?.HOME, "/tmp/claude-home-work");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps command discovery caches and homes isolated by provider instance id", () => {
+    const harness = makeMultiQueryHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      if (!adapter.listCommands) {
+        assert.fail("Expected ClaudeAdapter to expose command discovery");
+      }
+      const sharedInput = {
+        provider: "claudeAgent" as const,
+        cwd: "/tmp/claude-work",
+        environment: { ANTHROPIC_AUTH_TOKEN: "shared-token" },
+      };
+      yield* adapter.listCommands({ ...sharedInput, instanceId: "claude_work_a" });
+      yield* adapter.listCommands({ ...sharedInput, instanceId: "claude_work_b" });
+
+      assert.equal(harness.createInputs.length, 2);
+      assert.equal(
+        harness.createInputs[0]?.options.env?.HOME,
+        claudeIsolatedHomePath({
+          isolationRootDir: "/tmp/userdata",
+          providerInstanceId: "claude_work_a",
+        }),
+      );
+      assert.equal(
+        harness.createInputs[1]?.options.env?.HOME,
+        claudeIsolatedHomePath({
+          isolationRootDir: "/tmp/userdata",
+          providerInstanceId: "claude_work_b",
+        }),
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("starts an environment-only runtime in its Synara-scoped home", () => {
+    const harness = makeHarness();
+    return Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env.CLAUDE_CONFIG_DIR;
+        process.env.CLAUDE_CONFIG_DIR = "/tmp/default-claude-config";
+        return previous;
+      }),
+      () =>
+        Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            providerInstanceId: "claude_work",
+            modelSelection: {
+              provider: "claudeAgent",
+              instanceId: "claude_work",
+              model: "claude-sonnet-4-5",
+            },
+            providerOptions: {
+              claudeAgent: {
+                environment: { ANTHROPIC_AUTH_TOKEN: "work-token" },
+              },
+            },
+            runtimeMode: "full-access",
+          });
+
+          const queryEnv = harness.getLastCreateQueryInput()?.options.env;
+          assert.equal(
+            queryEnv?.HOME,
+            claudeIsolatedHomePath({
+              isolationRootDir: "/tmp/userdata",
+              providerInstanceId: "claude_work",
+            }),
+          );
+          assert.equal(queryEnv?.CLAUDE_CONFIG_DIR, undefined);
+          assert.equal(queryEnv?.ANTHROPIC_AUTH_TOKEN, "work-token");
+        }),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+          else process.env.CLAUDE_CONFIG_DIR = previous;
+        }),
+    ).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it("sets Windows profile variables for configured Claude homes", () => {
+    assert.deepEqual(claudeHomeEnvironment("C:\\Users\\work\\.claude-work", "win32"), {
+      HOME: "C:\\Users\\work\\.claude-work",
+      USERPROFILE: "C:\\Users\\work\\.claude-work",
+      APPDATA: "C:\\Users\\work\\.claude-work\\AppData\\Roaming",
+      LOCALAPPDATA: "C:\\Users\\work\\.claude-work\\AppData\\Local",
+      HOMEDRIVE: "C:",
+      HOMEPATH: "\\Users\\work\\.claude-work",
+    });
+  });
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -863,6 +989,126 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.permissionMode, "auto");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "pre-approves Synara group tools for an opted-in coordinator session while Bash still asks",
+    () => {
+      const gateway = makeGatewayCredentialsHarness();
+      const harness = makeMultiQueryHarness({ gatewayCredentials: gateway.credentials });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+          autoApproveSynaraTools: true,
+        });
+
+        const canUseTool = harness.createInputs[0]?.options.canUseTool;
+        if (!canUseTool) {
+          return assert.fail("Expected a canUseTool hook on the query options.");
+        }
+
+        for (const [index, toolName] of [
+          "mcp__synara__synara_create_thread",
+          "synara_project_link_repository",
+        ].entries()) {
+          const result = (yield* Effect.promise(() =>
+            canUseTool(
+              toolName,
+              {},
+              {
+                signal: new AbortController().signal,
+                toolUseID: `tool-use-synara-${index}`,
+                requestId: `request-synara-${index}`,
+              },
+            ),
+          )) as PermissionResult;
+          assert.equal(result.behavior, "allow");
+        }
+
+        const bashPermission = canUseTool(
+          "Bash",
+          { command: "pwd" },
+          {
+            signal: new AbortController().signal,
+            toolUseID: "tool-use-bash-1",
+            requestId: "request-bash-1",
+          },
+        );
+        const requested = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) => event.type === "request.opened",
+        ).pipe(Stream.runHead);
+        if (requested._tag !== "Some" || requested.value.type !== "request.opened") {
+          return assert.fail("Bash must still open an approval request.");
+        }
+        if (!requested.value.requestId) {
+          return assert.fail("The approval request must carry a request id.");
+        }
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(requested.value.requestId),
+          "decline",
+        );
+        yield* Stream.runHead(adapter.streamEvents);
+        const bashResult = (yield* Effect.promise(() => bashPermission)) as PermissionResult;
+        assert.equal(bashResult.behavior, "deny");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("keeps Synara group tools on the approval path when the session did not opt in", () => {
+    const gateway = makeGatewayCredentialsHarness();
+    const harness = makeMultiQueryHarness({ gatewayCredentials: gateway.credentials });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+      });
+
+      const canUseTool = harness.createInputs[0]?.options.canUseTool;
+      if (!canUseTool) {
+        return assert.fail("Expected a canUseTool hook on the query options.");
+      }
+
+      const pending = canUseTool(
+        "mcp__synara__synara_create_thread",
+        {},
+        {
+          signal: new AbortController().signal,
+          toolUseID: "tool-use-synara-no-opt-in",
+          requestId: "request-synara-no-opt-in",
+        },
+      );
+      const requested = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "request.opened",
+      ).pipe(Stream.runHead);
+      if (requested._tag !== "Some" || requested.value.type !== "request.opened") {
+        return assert.fail("A non-opted-in session must still ask for gateway tools.");
+      }
+      if (!requested.value.requestId) {
+        return assert.fail("The approval request must carry a request id.");
+      }
+      yield* adapter.respondToRequest(
+        THREAD_ID,
+        ApprovalRequestId.makeUnsafe(requested.value.requestId),
+        "decline",
+      );
+      yield* Stream.runHead(adapter.streamEvents);
+      const result = (yield* Effect.promise(() => pending)) as PermissionResult;
+      assert.equal(result.behavior, "deny");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1981,7 +2227,8 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 11).pipe(
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -2001,17 +2248,113 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit({
         type: "stream_event",
         session_id: "sdk-session-tool-streams",
+        uuid: "thinking-message-start",
+        parent_tool_use_id: null,
+        event: { type: "message_start", message: { id: "thinking-message" } },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "thinking-block-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 2,
+          content_block: { type: "thinking", thinking: "First ", signature: "never-display" },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
         uuid: "stream-thinking",
         parent_tool_use_id: null,
         event: {
           type: "content_block_delta",
-          index: 0,
+          index: 2,
           delta: {
             type: "thinking_delta",
             thinking: "Let",
           },
         },
       } as unknown as SDKMessage);
+
+      for (let snapshot = 0; snapshot < 2; snapshot += 1) {
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-tool-streams",
+          uuid: `thinking-snapshot-${snapshot}`,
+          parent_tool_use_id: null,
+          message: {
+            id: "thinking-message",
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "First Let us check", signature: "never-display" },
+            ],
+          },
+        } as unknown as SDKMessage);
+      }
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "thinking-stop",
+        parent_tool_use_id: null,
+        event: { type: "content_block_stop", index: 2 },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "second-message-start",
+        parent_tool_use_id: null,
+        event: { type: "message_start", message: { id: "second-message" } },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "second-thinking",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 2,
+          delta: { type: "thinking_delta", thinking: "Next" },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "second-thinking-stop",
+        parent_tool_use_id: null,
+        event: { type: "content_block_stop", index: 2 },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-tool-streams",
+        uuid: "second-thinking-snapshot",
+        parent_tool_use_id: null,
+        message: {
+          id: "second-message",
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "Next revised", signature: "never-display" }],
+        },
+      } as unknown as SDKMessage);
+      for (const uuid of ["snapshot-only", "snapshot-only-repeat"]) {
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-tool-streams",
+          uuid,
+          parent_tool_use_id: null,
+          message: {
+            id: "snapshot-only-message",
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "Snapshot only", signature: "never-display" },
+              { type: "redacted_thinking", data: "never-display" },
+            ],
+          },
+        } as unknown as SDKMessage);
+      }
 
       harness.query.emit({
         type: "stream_event",
@@ -2091,7 +2434,19 @@ describe("ClaudeAdapterLive", () => {
           "session.state.changed",
           "turn.started",
           "thread.started",
+          "item.started",
           "content.delta",
+          "content.delta",
+          "content.delta",
+          "item.completed",
+          "item.started",
+          "content.delta",
+          "item.completed",
+          "content.delta",
+          "item.completed",
+          "item.started",
+          "content.delta",
+          "item.completed",
           "item.started",
           "item.updated",
           "item.updated",
@@ -2105,11 +2460,33 @@ describe("ClaudeAdapterLive", () => {
       );
       assert.equal(reasoningDelta?.type, "content.delta");
       if (reasoningDelta?.type === "content.delta") {
-        assert.equal(reasoningDelta.payload.delta, "Let");
+        assert.equal(reasoningDelta.payload.delta, "First ");
         assert.equal(String(reasoningDelta.turnId), String(turn.turnId));
       }
 
-      const toolStarted = runtimeEvents.find((event) => event.type === "item.started");
+      const reasoningStarted = runtimeEvents.find(
+        (event) => event.type === "item.started" && event.payload.itemType === "reasoning",
+      );
+      const reasoningCompleted = runtimeEvents.find(
+        (event) => event.type === "item.completed" && event.payload.itemType === "reasoning",
+      );
+      assert.equal(reasoningDelta?.itemId, reasoningStarted?.itemId);
+      assert.equal(reasoningCompleted?.itemId, reasoningStarted?.itemId);
+      if (reasoningCompleted?.type === "item.completed") {
+        assert.equal(reasoningCompleted.payload.detail, "First Let us check");
+      }
+      const completedReasoning = runtimeEvents.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+          event.type === "item.completed" && event.payload.itemType === "reasoning",
+      );
+      assert.deepEqual(
+        completedReasoning.map((event) => event.payload.detail),
+        ["First Let us check", "Next", "Next revised", "Snapshot only"],
+      );
+      assert.equal(new Set(completedReasoning.map((event) => event.itemId)).size, 3);
+      const toolStarted = runtimeEvents.find(
+        (event) => event.type === "item.started" && event.payload.itemType === "dynamic_tool_call",
+      );
       assert.equal(toolStarted?.type, "item.started");
       if (toolStarted?.type === "item.started") {
         assert.equal(toolStarted.payload.itemType, "dynamic_tool_call");
@@ -5204,11 +5581,33 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
 
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
+      const noticed = yield* Deferred.make<void>();
+      const observed: ProviderRuntimeEvent[] = [];
+      const exited = yield* adapter.streamEvents.pipe(
+        Stream.tap((event) => {
+          observed.push(event);
+          return event.type === "runtime.warning"
+            ? Deferred.succeed(noticed, undefined)
+            : Effect.void;
+        }),
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
       yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: "claudeAgent",
         runtimeMode: "full-access",
       });
+
+      query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "retired-agent", task_type: "local_agent", description: "Working" }],
+        session_id: "sdk-session-retired",
+        uuid: "retired-agent-backgrounded",
+      } as unknown as SDKMessage);
+      yield* Deferred.await(noticed);
 
       const stopping = yield* adapter.stopSession(THREAD_ID).pipe(Effect.forkChild);
       yield* Effect.yieldNow;
@@ -5217,10 +5616,20 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
       assert.equal(query.closeCalls, 1);
       assert.equal(teardownCalls, 1);
       assert.equal((yield* adapter.listSessions()).length, 1);
+      assert.deepEqual(
+        observed.filter((event) => event.type === "task.completed"),
+        [],
+      );
 
       proveExit?.();
       yield* Fiber.join(stopping);
+      yield* Fiber.join(exited);
       assert.equal((yield* adapter.listSessions()).length, 0);
+      const completions = observed.filter((event) => event.type === "task.completed");
+      assert.equal(completions.length, 1);
+      assert.equal(completions[0]?.threadId, THREAD_ID);
+      assert.equal(String(completions[0]?.payload.taskId), "retired-agent");
+      assert.equal(completions[0]?.payload.status, "stopped");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(layer),
@@ -5629,13 +6038,61 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
       );
       assert.equal(query.closeCalls, 1);
       assert.equal(createQueryCalls, 1);
+    }).pipe(Effect.provide(layer));
+  });
 
-      const cached = yield* listModels({
+  it.effect("refreshes Claude models while an older session remains active", () => {
+    const queries: FakeClaudeQuery[] = [];
+    const layer = makeClaudeAdapterLive({
+      createQuery: () => {
+        const query = new FakeClaudeQuery();
+        setSupportedModels(query, [
+          {
+            value: "sonnet",
+            resolvedModel: queries.length < 2 ? "claude-sonnet-5" : "claude-sonnet-5-5",
+            displayName: "Sonnet",
+            description: "Sonnet model",
+          },
+        ]);
+        queries.push(query);
+        return query;
+      },
+    }).pipe(
+      Layer.provideMerge(ServerConfig.layerTest("/tmp/claude-adapter-test", "/tmp")),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    let now = 0;
+    const cache = makeProviderModelDiscoveryCache({ now: () => now, freshTtlMs: 1_000 });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
         provider: "claudeAgent",
-        cwd: "/tmp/project",
+        runtimeMode: "approval-required",
       });
-      assert.equal(cached.cached, true);
-      assert.equal(createQueryCalls, 1);
+      const input = { provider: "claudeAgent" as const, cwd: "/tmp/project" };
+      const key = providerModelDiscoveryCacheKey(input);
+      const discover = Effect.suspend(() => adapter.listModels!(input));
+
+      const first = yield* cache.lookup(key, discover);
+      assert.equal(first.models[0]?.resolvedModel, "claude-sonnet-5");
+      const fresh = yield* cache.lookup(key, discover);
+      assert.equal(fresh.cached, true);
+
+      now = 2_000;
+      const stale = yield* cache.lookup(key, discover);
+      assert.equal(stale.models[0]?.resolvedModel, "claude-sonnet-5");
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const refreshed = await Effect.runPromise(cache.lookup(key, discover));
+          assert.equal(refreshed.models[0]?.resolvedModel, "claude-sonnet-5-5");
+        }),
+      );
+      assert.equal(yield* adapter.hasSession(THREAD_ID), true);
+      assert.equal(queries[0]?.closeCalls, 0);
+      assert.equal(queries[1]?.closeCalls, 1);
+      assert.equal(queries[2]?.closeCalls, 1);
     }).pipe(Effect.provide(layer));
   });
 
@@ -5747,6 +6204,20 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           } as unknown as SDKMessage);
         }
 
+        for (const attempt of [1, 2]) {
+          harness.query.emit({
+            type: "system",
+            subtype: "api_retry",
+            attempt,
+            max_retries: 3,
+            retry_delay_ms: 1500,
+            error_status: 503,
+            error: "overloaded",
+            session_id: "sdk-session-retry",
+            uuid: `retry-${attempt}`,
+          } as SDKMessage);
+        }
+
         // Two distinct unknown subtypes, each emitted twice — each must surface
         // exactly one warning (per-kind de-dup), so two warnings in total.
         for (const subtype of ["future_unknown_subtype", "another_unknown_subtype"]) {
@@ -5776,7 +6247,11 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           event.type === "runtime.warning" ? [event.payload.message] : [],
         );
 
-        assert.equal(warningMessages.length, 2);
+        assert.equal(warningMessages.length, 4);
+        assert.deepEqual(
+          warningMessages.filter((message) => message.includes("Request retry")),
+          ["Request retry 1/3 in 2s (HTTP 503).", "Request retry 2/3 in 2s (HTTP 503)."],
+        );
         assert.equal(
           warningMessages.some((message) => message.includes("thinking_tokens")),
           false,
@@ -8568,6 +9043,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         runtimeMode: "full-access",
         modelSelection: {
           provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-opus-4-8",
         },
       });
@@ -8576,6 +9052,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         input: "hello",
         modelSelection: {
           provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-opus-4-8",
         },
         attachments: [],
@@ -8635,6 +9112,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         runtimeMode: "full-access",
         modelSelection: {
           provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
         },
       });
@@ -8644,6 +9122,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         input: "hello",
         modelSelection: {
           provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
         },
         attachments: [],
@@ -8691,6 +9170,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         input: "continue",
         modelSelection: {
           provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
         },
         attachments: [],
@@ -8717,6 +9197,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         runtimeMode: "full-access",
         modelSelection: {
           provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
           options: { autoCompactWindow: "1m" },
         },
@@ -8746,6 +9227,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         runtimeMode: "full-access",
         modelSelection: {
           provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
           options: { autoCompactWindow: "1m" },
         },
@@ -8764,6 +9246,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         input: "continue after resume",
         modelSelection: {
           provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
           options: { autoCompactWindow: "1m" },
         },
@@ -8784,7 +9267,11 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
         threadId: THREAD_ID,
         provider: "claudeAgent",
         runtimeMode: "full-access",
-        modelSelection: { provider: "claudeAgent", model: "claude-opus-4-8" },
+        modelSelection: {
+          provider: "claudeAgent",
+          instanceId: "claudeAgent",
+          model: "claude-opus-4-8",
+        },
       });
       const firstQuery = harness.queries[0];
       assert.ok(firstQuery);
@@ -8796,6 +9283,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           runtimeMode: "full-access",
           modelSelection: {
             provider: "claudeAgent",
+            instanceId: "claudeAgent",
             model: "claude-opus-4-8",
             options: { effort: "max" },
           },
@@ -8879,7 +9367,7 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
 
   it.effect("closes an uninstalled Claude query when post-spawn setup fails", () => {
     const query = new FakeClaudeQuery();
-    (query as unknown as { supportedModels: () => Promise<[]> }).supportedModels = () => {
+    (query as unknown as { supportedAgents: () => Promise<[]> }).supportedAgents = () => {
       throw new Error("simulated post-spawn setup failure");
     };
     const layer = makeClaudeAdapterLive({ createQuery: () => query }).pipe(
@@ -11572,6 +12060,47 @@ describe("ClaudeAdapterLive forkThread", () => {
     );
   });
 
+  it.effect(
+    "falls back for stopped account-scoped sessions instead of using the default store",
+    () => {
+      let forkCalls = 0;
+      const layer = makeForkLayer(async () => {
+        forkCalls += 1;
+        return { sessionId: "unexpected" };
+      });
+
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const result = yield* adapter.forkThread!({
+          sourceThreadId: THREAD_ID,
+          threadId: RESUME_THREAD_ID,
+          runtimeMode: "full-access",
+          modelSelection: {
+            provider: "claudeAgent",
+            instanceId: "work",
+            model: "claude-opus-4-8",
+          },
+          providerOptions: {
+            claudeAgent: { homePath: "/tmp/claude-work" },
+          },
+          sourceResumeCursor: {
+            threadId: String(THREAD_ID),
+            resume: SOURCE_SESSION_ID,
+          },
+        }).pipe(Effect.result);
+
+        assert.equal(forkCalls, 0);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure" && result.failure instanceof ProviderAdapterValidationError) {
+          assert.include(result.failure.issue, "default SDK store");
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(layer),
+      );
+    },
+  );
+
   it.effect("maps a native fork failure to a session/fork request error", () => {
     const layer = makeForkLayer(async () => {
       throw new Error("session file missing");
@@ -12068,6 +12597,308 @@ describe("Claude explicit native compaction", () => {
     );
   });
 
+  for (const discoveryOutcome of [
+    "ready",
+    "stop",
+    "cancel",
+    "cancel-before-discovery",
+    "direct-cancel-before-discovery",
+    "steer-cancel-before-discovery",
+    "cancel-after-discovery",
+    "cancel-during-progress",
+    "cancel-with-followup",
+    "cancel-with-followup-stop",
+    "interrupt-publication",
+  ] as const) {
+    it.effect(
+      discoveryOutcome === "stop"
+        ? "does not dispatch compaction after a session stops during command discovery"
+        : discoveryOutcome === "cancel"
+          ? "cancels only compaction discovery and allows a retry in the same session"
+          : discoveryOutcome === "steer-cancel-before-discovery"
+            ? "honors steered compaction cancellation before adapter preparation registers"
+            : discoveryOutcome === "direct-cancel-before-discovery"
+              ? "honors direct compaction cancellation before adapter preparation registers"
+              : discoveryOutcome === "cancel-before-discovery"
+                ? "honors cancellation supplied before compaction discovery starts"
+                : discoveryOutcome === "cancel-after-discovery"
+                  ? "cancels compaction before enqueue while turn-start publication is delayed"
+                  : discoveryOutcome === "cancel-during-progress"
+                    ? "cancels compaction while its progress publication is stalled"
+                    : discoveryOutcome === "cancel-with-followup"
+                      ? "delivers the follow-up after cancelled compaction publication drains"
+                      : discoveryOutcome === "cancel-with-followup-stop"
+                        ? "cancels the follow-up publication wait when its session stops"
+                        : discoveryOutcome === "interrupt-publication"
+                          ? "settles a reserved compaction when its dispatch fiber is interrupted"
+                          : "waits for cold Claude initialization before native compaction",
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const discovery = yield* Deferred.make<ReturnType<typeof fakeSlashCommand>[]>();
+          const publicationEntered = yield* Deferred.make<void>();
+          const publicationReleased = yield* Deferred.make<void>();
+          const delayedPublication =
+            discoveryOutcome === "cancel-after-discovery" ||
+            discoveryOutcome === "cancel-during-progress" ||
+            discoveryOutcome === "cancel-with-followup" ||
+            discoveryOutcome === "cancel-with-followup-stop" ||
+            discoveryOutcome === "interrupt-publication";
+          if (delayedPublication) {
+            const offer = Queue.offer;
+            const publication = vi.spyOn(Queue, "offer").mockImplementation((queue, event) => {
+              const offered = offer(queue, event);
+              if (
+                typeof event === "object" &&
+                event !== null &&
+                "type" in event &&
+                event.type ===
+                  (discoveryOutcome === "cancel-during-progress" ||
+                  discoveryOutcome === "cancel-with-followup" ||
+                  discoveryOutcome === "cancel-with-followup-stop"
+                    ? "item.updated"
+                    : "turn.started")
+              ) {
+                return Deferred.succeed(publicationEntered, undefined).pipe(
+                  Effect.andThen(Deferred.await(publicationReleased)),
+                  Effect.andThen(offered),
+                );
+              }
+              return offered;
+            });
+            yield* Effect.addFinalizer(() => Effect.sync(() => publication.mockRestore()));
+          }
+          vi.spyOn(harness.query, "supportedCommands").mockImplementation(() =>
+            Effect.runPromise(Deferred.await(discovery)),
+          );
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            resumeCursor: { resume: nativeSessionId },
+          });
+          const cancellationTerminal = delayedPublication
+            ? yield* adapter.streamEvents.pipe(
+                Stream.filter(
+                  (event) => event.type === "turn.completed" && event.turnId === compactionTurnId,
+                ),
+                Stream.take(1),
+                Stream.runHead,
+                Effect.forkChild,
+              )
+            : undefined;
+          const cancellation = yield* Deferred.make<void>();
+          const cancelledBeforeDiscovery =
+            discoveryOutcome === "cancel-before-discovery" ||
+            discoveryOutcome === "direct-cancel-before-discovery" ||
+            discoveryOutcome === "steer-cancel-before-discovery";
+          if (cancelledBeforeDiscovery) {
+            yield* Deferred.succeed(cancellation, undefined);
+          }
+          const input = {
+            threadId: THREAD_ID,
+            turnId: compactionTurnId,
+            cancellation,
+          };
+          const operation = yield* (
+            discoveryOutcome === "steer-cancel-before-discovery"
+              ? adapter.steerTurn!(
+                  {
+                    threadId: THREAD_ID,
+                    input: "/compact Preserve project decisions",
+                    attachments: [],
+                  },
+                  { claudeCompactionCancellation: cancellation },
+                )
+              : discoveryOutcome === "direct-cancel-before-discovery"
+                ? adapter.sendTurn(
+                    {
+                      threadId: THREAD_ID,
+                      input: "/compact Preserve project decisions",
+                      attachments: [],
+                    },
+                    { claudeCompactionCancellation: cancellation },
+                  )
+                : adapter.startClaudeCompaction!(input)
+          ).pipe(Effect.result, Effect.forkChild);
+          yield* TestClock.adjust("2 seconds");
+          if (discoveryOutcome !== "ready") {
+            if (delayedPublication) {
+              yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
+              yield* Deferred.await(publicationEntered);
+            }
+            if (discoveryOutcome === "stop") {
+              yield* adapter.stopSession(THREAD_ID);
+            } else if (discoveryOutcome === "interrupt-publication") {
+              yield* Fiber.interrupt(operation);
+            } else if (!cancelledBeforeDiscovery) {
+              yield* adapter.cancelClaudeCompactionDiscovery?.(THREAD_ID) ?? Effect.void;
+            }
+            const stoppedOperation = yield* (
+              discoveryOutcome === "interrupt-publication"
+                ? Fiber.await(operation).pipe(Effect.asVoid)
+                : Fiber.join(operation).pipe(Effect.asVoid)
+            ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+            yield* TestClock.adjust("1 second");
+            const stoppedResult = yield* Fiber.join(stoppedOperation);
+            if (delayedPublication && Option.isSome(stoppedResult)) {
+              const pendingRetry = yield* adapter.startClaudeCompaction!({
+                threadId: THREAD_ID,
+                turnId: compactionTurnId,
+              }).pipe(Effect.result);
+              assert.equal(pendingRetry._tag, "Failure");
+            }
+            const followup =
+              discoveryOutcome === "cancel-with-followup" ||
+              discoveryOutcome === "cancel-with-followup-stop"
+                ? yield* adapter
+                    .sendTurn({
+                      threadId: THREAD_ID,
+                      input: "Continue the active task",
+                      attachments: [],
+                    })
+                    .pipe(Effect.result, Effect.forkChild)
+                : undefined;
+            yield* TestClock.adjust(10);
+            const settledBeforePublication = followup?.pollUnsafe();
+            if (discoveryOutcome === "cancel-with-followup-stop") {
+              yield* adapter.stopSession(THREAD_ID);
+              const stoppedFollowup = yield* Fiber.join(followup!);
+              assert.equal(stoppedFollowup._tag, "Failure");
+              assert.lengthOf(yield* adapter.listSessions(), 0);
+            }
+            yield* Deferred.succeed(publicationReleased, undefined);
+            yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
+            assert.isTrue(Option.isSome(stoppedResult), "Compaction must settle without discovery");
+            if (followup) {
+              const result = yield* Fiber.join(followup);
+              assert.isUndefined(settledBeforePublication);
+              if (discoveryOutcome === "cancel-with-followup-stop") return;
+              assert.equal(result._tag, "Success");
+              assert.equal((yield* Fiber.join(operation))._tag, "Failure");
+              if (cancellationTerminal) yield* Fiber.join(cancellationTerminal);
+              const prompt = yield* Effect.promise(() =>
+                harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+              );
+              assert.deepEqual(prompt.value?.message.content, [
+                { type: "text", text: "Continue the active task" },
+              ]);
+              return;
+            }
+          } else {
+            yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
+          }
+          const result =
+            discoveryOutcome === "interrupt-publication" ? undefined : yield* Fiber.join(operation);
+          if (discoveryOutcome === "interrupt-publication") {
+            assert.isTrue(Exit.isFailure(yield* Fiber.await(operation)));
+            assert.isUndefined((yield* adapter.listSessions())[0]?.activeTurnId);
+          }
+          if (cancellationTerminal) {
+            const terminal = yield* Fiber.join(cancellationTerminal);
+            assert.isTrue(Option.isSome(terminal));
+            assert.deepInclude(Option.getOrUndefined(terminal), {
+              type: "turn.completed",
+              turnId: compactionTurnId,
+            });
+            if (Option.isSome(terminal) && terminal.value.type === "turn.completed") {
+              assert.deepInclude(terminal.value.payload, {
+                state: "interrupted",
+                contextCompacted: false,
+              });
+            }
+          }
+          if (discoveryOutcome !== "ready") {
+            if (result) assert.equal(result._tag, "Failure");
+            if (result?._tag === "Failure") {
+              assert.include(
+                providerValidationIssue(result.failure),
+                discoveryOutcome === "stop" ? "session changed" : "cancelled",
+              );
+            }
+            if (discoveryOutcome === "stop") {
+              assert.lengthOf(yield* adapter.listSessions(), 0);
+              return;
+            }
+            const [session] = yield* adapter.listSessions();
+            assert.equal(
+              (session?.resumeCursor as { resume?: string } | undefined)?.resume,
+              nativeSessionId,
+            );
+            assert.isUndefined(session?.activeTurnId);
+            const retry = yield* adapter.startClaudeCompaction!({
+              threadId: THREAD_ID,
+              turnId: compactionTurnId,
+            });
+            assert.equal(retry.turnId, compactionTurnId);
+          }
+          if (discoveryOutcome === "ready") {
+            assert.isDefined(result);
+            assert.equal(
+              result!._tag,
+              "Success",
+              result!._tag === "Failure" ? providerValidationIssue(result!.failure) : undefined,
+            );
+            if (result!._tag === "Success") assert.equal(result!.success.turnId, compactionTurnId);
+          }
+          const prompt = yield* Effect.promise(() =>
+            harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+          );
+          assert.deepEqual(prompt.value?.message.content, [{ type: "text", text: "/compact" }]);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+  }
+
+  it.effect("dispatches compaction using the first command discovery result", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        resumeCursor: { resume: nativeSessionId },
+      });
+      const repeatedLookup = yield* Deferred.make<ReturnType<typeof fakeSlashCommand>[]>();
+      vi.spyOn(harness.query, "supportedCommands")
+        .mockResolvedValueOnce([fakeSlashCommand("compact")])
+        .mockImplementation(() => Effect.runPromise(Deferred.await(repeatedLookup)));
+      const progress = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "item.updated" && event.payload.itemType === "context_compaction",
+        ),
+        Stream.take(1),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const operation = yield* adapter.startClaudeCompaction!({
+        threadId: THREAD_ID,
+        turnId: compactionTurnId,
+      }).pipe(Effect.forkChild);
+      yield* Fiber.join(progress);
+      const bounded = yield* Fiber.join(operation).pipe(
+        Effect.timeoutOption("1 second"),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("1 second");
+      const result = yield* Fiber.join(bounded);
+      yield* Deferred.succeed(repeatedLookup, [fakeSlashCommand("compact")]);
+      yield* Fiber.join(operation);
+      assert.isTrue(Option.isSome(result), "Validated compaction must not wait on a second lookup");
+      const prompt = yield* Effect.promise(() =>
+        harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+      );
+      assert.deepEqual(prompt.value?.message.content, [{ type: "text", text: "/compact" }]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("bounds native command discovery without queueing a prompt", () => {
     const harness = makeHarness();
     harness.query.supportedCommandsNeverResolves = true;
@@ -12078,8 +12909,11 @@ describe("Claude explicit native compaction", () => {
         threadId: THREAD_ID,
         turnId: compactionTurnId,
       }).pipe(Effect.result, Effect.forkChild);
-      yield* TestClock.adjust("1 second");
-      assert.equal((yield* Fiber.join(operation))._tag, "Failure");
+      yield* TestClock.adjust("5 seconds");
+      const result = yield* Fiber.join(operation);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure")
+        assert.include(providerValidationIssue(result.failure), "command discovery timed out");
       assert.isUndefined((yield* adapter.listSessions())[0]?.activeTurnId);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -12087,44 +12921,82 @@ describe("Claude explicit native compaction", () => {
     );
   });
 
-  it.effect("preserves the selected model and permission mode while compacting", () => {
-    const harness = makeHarness();
-    harness.query.supportedCommandList = [
-      { name: "compact", description: "Compact context", argumentHint: "" },
-    ];
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        runtimeMode: "full-access",
-        resumeCursor: { resume: nativeSessionId },
-      });
-      const completed = yield* adapter.streamEvents.pipe(
-        Stream.filter((event) => event.type === "turn.completed"),
-        Stream.take(1),
-        Stream.runCollect,
-        Effect.forkChild,
+  for (const entryPoint of ["cache-review", "direct", "steer"] as const) {
+    it.effect(`preserves established settings during ${entryPoint} compaction`, () => {
+      const harness = makeHarness();
+      harness.query.supportedCommandList = [
+        { name: "compact", description: "Compact context", argumentHint: "" },
+      ];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          resumeCursor: { resume: nativeSessionId },
+          modelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
+        });
+        const completed = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "Plan",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        const prompts = harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]();
+        yield* Effect.promise(() => prompts.next());
+        emitSuccessResult(harness.query, nativeSessionId, "planned", {});
+        yield* Fiber.join(completed);
+        const permissionsBefore = [...harness.query.setPermissionModeCalls];
+        const settingsBefore = [...harness.query.applyFlagSettingsCalls];
+        const modelsBefore = [...harness.query.setModelCalls];
+        const setModel = vi
+          .spyOn(harness.query, "setModel")
+          .mockRejectedValue(new Error("Native compaction must preserve the model"));
+        const applySettings = vi
+          .spyOn(harness.query, "applyFlagSettings")
+          .mockRejectedValue(new Error("Native compaction must preserve settings"));
+        const input = {
+          threadId: THREAD_ID,
+          input: "/compact Keep the active task",
+          attachments: [],
+          modelSelection: {
+            provider: "claudeAgent" as const,
+            model: "claude-sonnet-4-6",
+            options: { thinking: true, effort: "max" as const, autoCompactWindow: "200k" },
+          },
+        };
+        const result = yield* (
+          entryPoint === "cache-review"
+            ? adapter.startClaudeCompaction!({ threadId: THREAD_ID, turnId: compactionTurnId })
+            : entryPoint === "direct"
+              ? adapter.sendTurn(input)
+              : adapter.steerTurn!(input)
+        ).pipe(Effect.result);
+        assert.equal(result._tag, "Success");
+        assert.equal(setModel.mock.calls.length, 0);
+        assert.equal(applySettings.mock.calls.length, 0);
+        const prompt = yield* Effect.promise(() => prompts.next());
+        assert.deepEqual(prompt.value?.message.content, [
+          {
+            type: "text",
+            text: entryPoint === "cache-review" ? "/compact" : "/compact Keep the active task",
+          },
+        ]);
+        assert.equal(harness.query.setModelCalls.length, modelsBefore.length);
+        assert.deepEqual(harness.query.setPermissionModeCalls, permissionsBefore);
+        assert.deepEqual(harness.query.applyFlagSettingsCalls, settingsBefore);
+        assert.deepEqual(harness.query.setModelCalls, modelsBefore);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
       );
-      yield* adapter.sendTurn({
-        threadId: THREAD_ID,
-        input: "Plan",
-        attachments: [],
-        interactionMode: "plan",
-      });
-      emitSuccessResult(harness.query, nativeSessionId, "planned", {});
-      yield* Fiber.join(completed);
-      const permissionsBefore = [...harness.query.setPermissionModeCalls];
-      const settingsBefore = [...harness.query.applyFlagSettingsCalls];
-      const modelsBefore = [...harness.query.setModelCalls];
-      yield* adapter.startClaudeCompaction!({ threadId: THREAD_ID, turnId: compactionTurnId });
-      assert.deepEqual(harness.query.setPermissionModeCalls, permissionsBefore);
-      assert.deepEqual(harness.query.applyFlagSettingsCalls, settingsBefore);
-      assert.deepEqual(harness.query.setModelCalls, modelsBefore);
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
+    });
+  }
 
   it.effect(
     "rejects attachments on native compaction before creating a turn or reading files",
@@ -12361,6 +13233,81 @@ describe("Claude cache preflight", () => {
     state: "likely-warm" as const,
     source: "request-usage" as const,
   };
+
+  for (const timing of ["early", "late"] as const) {
+    for (const response of ["newer", "same"] as const) {
+      it.effect(`reconciles ${timing} native warmth with the ${response} saved response`, () => {
+        let hookResult: Promise<unknown> | undefined;
+        const reportWarmCache = (options: ClaudeQueryOptions) =>
+          options.hooks!.SessionStart![0]!.hooks[0]!(
+            {
+              hook_event_name: "SessionStart",
+              session_id: nativeSessionId,
+              source: "resume",
+              context_tokens: 120_000,
+              seconds_since_last_response: 0,
+              prompt_cache_likely_expired: false,
+              transcript_path: "/tmp/fixture.jsonl",
+              cwd: "/tmp",
+            },
+            undefined,
+            { signal: new AbortController().signal },
+          );
+        const harness = makeMultiQueryHarness({
+          onCreate: (options) => {
+            if (timing === "early") hookResult = reportWarmCache(options);
+          },
+        });
+        return Effect.gen(function* () {
+          yield* TestClock.adjust("2 hours");
+          const adapter = yield* ClaudeAdapter;
+          const lastResponseAt =
+            response === "same" ? "1970-01-01T02:00:00.000Z" : resumedObservation.lastResponseAt;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            resumeCursor: {
+              resume: nativeSessionId,
+              claudeCache: {
+                ...resumedObservation,
+                observedAt: lastResponseAt,
+                lastResponseAt,
+                cacheReferenceAt: resumedObservation.observedAt,
+                state: "likely-expired",
+              },
+            },
+          });
+          if (timing === "late") {
+            hookResult = reportWarmCache(harness.createInputs[0]!.options);
+          }
+          yield* Effect.promise(() => hookResult!);
+          const observation = yield* adapter.getClaudeCacheObservation!(THREAD_ID);
+          assert.equal(observation?.contextTokens, 120_000);
+          assert.equal(
+            assessClaudeCache(observation, Date.parse(observation!.observedAt) + 1000)
+              .requiresConfirmation,
+            response === "same",
+          );
+          const cursor = (yield* adapter.listSessions())[0]!.resumeCursor;
+          yield* adapter.stopSession(THREAD_ID);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            resumeCursor: cursor,
+          });
+          const restored = yield* adapter.getClaudeCacheObservation!(THREAD_ID);
+          assert.equal(
+            assessClaudeCache(restored, Date.parse(restored!.observedAt) + 1000)
+              .requiresConfirmation,
+            response === "same",
+          );
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      });
+    }
+  }
 
   for (const timing of ["early", "late"] as const) {
     for (const model of [undefined, "claude-opus-4-6"]) {

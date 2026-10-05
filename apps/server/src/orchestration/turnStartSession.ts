@@ -1,15 +1,20 @@
-import type { OrchestrationSession, RuntimeMode, ThreadId } from "@synara/contracts";
+import type {
+  OrchestrationSession,
+  ProviderInstanceId,
+  RuntimeMode,
+  ThreadId,
+} from "@synara/contracts";
 
 export { deriveTurnStartModelSelection } from "@synara/shared/model";
 
-// Sidechats import source transcript as `fork-import` rows for provider context.
+// Sidechats and handoffs import source transcript rows for provider context.
 // Those imports must not freeze the first-turn provider the way native history does.
 export function countNativeTurnStartMessages(
   messages: ReadonlyArray<{ readonly source?: string | null }>,
 ): number {
   let count = 0;
   for (const message of messages) {
-    if ((message.source ?? "native") !== "fork-import") {
+    if (message.source !== "fork-import" && message.source !== "handoff-import") {
       count += 1;
     }
   }
@@ -28,8 +33,14 @@ export function canAdoptFirstTurnProvider(input: {
 
 export function deriveTurnStartSession(input: {
   readonly threadId: ThreadId;
-  readonly currentSession: OrchestrationSession | null;
+  readonly currentSession:
+    | OrchestrationSession
+    | (Omit<OrchestrationSession, "providerInstanceId"> & {
+        readonly providerInstanceId: ProviderInstanceId | null;
+      })
+    | null;
   readonly providerName: OrchestrationSession["providerName"];
+  readonly providerInstanceId?: ProviderInstanceId;
   readonly requestedRuntimeMode: RuntimeMode;
   readonly requestedAt: string;
   /**
@@ -48,11 +59,18 @@ export function deriveTurnStartSession(input: {
     input.currentSession?.providerName != null && input.sessionProviderEstablished !== false
       ? input.currentSession.providerName
       : undefined;
+  const sessionProviderInstanceId =
+    input.currentSession?.providerInstanceId != null && input.sessionProviderEstablished !== false
+      ? input.currentSession.providerInstanceId
+      : input.providerInstanceId;
 
   return {
     threadId: input.threadId,
     status: "starting",
     providerName: sessionProviderName ?? input.providerName,
+    ...(sessionProviderInstanceId !== undefined
+      ? { providerInstanceId: sessionProviderInstanceId }
+      : {}),
     runtimeMode: input.currentSession?.runtimeMode ?? input.requestedRuntimeMode,
     activeTurnId: null,
     lastError: null,

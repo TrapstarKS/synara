@@ -14,6 +14,7 @@ import { getDefaultModel, normalizeModelSlug } from "@synara/shared/model";
 import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
 import type { StateCreator } from "zustand";
+import { hasActiveComposerSend } from "./lib/composerSendOwnership";
 
 import {
   normalizePullRequestContext,
@@ -65,9 +66,11 @@ import {
 import {
   COMPOSER_PROVIDER_KINDS,
   makeModelSelection,
+  modelSelectionStorageKey,
   normalizeModelSelection,
   normalizeProviderKind,
   normalizeProviderModelOptions,
+  providerInstanceModelSelectionKey,
   reconcileProviderScopedModelSelection,
   stripNonStickyModelOptions,
 } from "./composerDraftModels";
@@ -108,6 +111,8 @@ function removeDraftThreadIfUnmapped(input: {
 } {
   if (
     !input.threadId ||
+    hasActiveComposerSend(input.threadId) ||
+    input.draftThreadsByThreadId[input.threadId]?.promotedTo !== undefined ||
     Object.values(input.projectDraftThreadIdByProjectId).includes(input.threadId)
   ) {
     return {
@@ -467,17 +472,24 @@ export const createComposerDraftStoreState =
       });
     },
     finalizePromotedDraftThread: (threadId) => {
-      const draftThread = get().draftThreadsByThreadId[threadId];
-      if (!draftThread?.promotedTo) {
-        return;
-      }
-      // Promotion removes the scratch content, but the same server thread
-      // keeps its explicit Computer choice for subsequent turns.
-      get().clearDraftThread(threadId, {
-        preserveComputerControl: draftThread.promotedTo === threadId,
+      set((state) => {
+        if (!state.draftThreadsByThreadId[threadId]?.promotedTo) {
+          return state;
+        }
+        // The send owner clears captured content. A server acknowledgement only
+        // retires the local registration; the composer may already have newer edits.
+        const { [threadId]: _removedDraftThread, ...draftThreadsByThreadId } =
+          state.draftThreadsByThreadId;
+        return {
+          draftThreadsByThreadId,
+          projectDraftThreadIdByProjectId: removeProjectDraftMappingsForThread(
+            state.projectDraftThreadIdByProjectId,
+            threadId,
+          ),
+        };
       });
     },
-    clearDraftThread: (threadId, options) => {
+    clearDraftThread: (threadId) => {
       if (threadId.length === 0) {
         return;
       }
@@ -502,22 +514,8 @@ export const createComposerDraftStoreState =
           state.draftThreadsByThreadId;
         const { [threadId]: _removedComposerDraft, ...restDraftsByThreadId } =
           state.draftsByThreadId;
-        const computerControl = options?.preserveComputerControl
-          ? _removedComposerDraft?.enableComputerControl
-          : undefined;
         return {
-          draftsByThreadId:
-            computerControl === undefined
-              ? restDraftsByThreadId
-              : {
-                  ...restDraftsByThreadId,
-                  [threadId]: {
-                    ...createEmptyThreadDraft(),
-                    enableComputerControl: computerControl,
-                    computerControlMode: _removedComposerDraft?.computerControlMode,
-                    computerControlGeneration: _removedComposerDraft?.computerControlGeneration,
-                  },
-                },
+          draftsByThreadId: restDraftsByThreadId,
           draftThreadsByThreadId: restDraftThreadsByThreadId,
           projectDraftThreadIdByProjectId: nextProjectDraftThreadIdByProjectId,
         };
@@ -530,18 +528,18 @@ export const createComposerDraftStoreState =
         if (!normalized) {
           return state;
         }
-        const nextMap: Partial<Record<ProviderKind, ModelSelection>> = {
+        const nextMap = {
           ...state.stickyModelSelectionByProvider,
-          [normalized.provider]: normalized,
+          [modelSelectionStorageKey(normalized)]: normalized,
         };
         if (Equal.equals(state.stickyModelSelectionByProvider, nextMap)) {
-          return state.stickyActiveProvider === normalized.provider
+          return state.stickyActiveProvider === modelSelectionStorageKey(normalized)
             ? state
-            : { stickyActiveProvider: normalized.provider };
+            : { stickyActiveProvider: modelSelectionStorageKey(normalized) };
         }
         return {
           stickyModelSelectionByProvider: nextMap,
-          stickyActiveProvider: normalized.provider,
+          stickyActiveProvider: modelSelectionStorageKey(normalized),
         };
       });
     },
@@ -558,11 +556,11 @@ export const createComposerDraftStoreState =
         const existing = state.draftsByThreadId[threadId];
         const base = existing ?? createEmptyThreadDraft();
         const nextMap = { ...base.modelSelectionByProvider };
-        for (const [provider, selection] of Object.entries(stickyMap)) {
+        for (const selection of Object.values(stickyMap)) {
           if (selection) {
-            const current = nextMap[provider as ProviderKind];
-            nextMap[provider as ProviderKind] =
-              current && current.model !== selection.model ? current : selection;
+            const key = modelSelectionStorageKey(selection);
+            const current = nextMap[key];
+            nextMap[key] = current && current.model !== selection.model ? current : selection;
           }
         }
         if (
@@ -836,10 +834,13 @@ export const createComposerDraftStoreState =
         const base = existing ?? createEmptyThreadDraft();
         const nextMap = { ...base.modelSelectionByProvider };
         if (normalized) {
-          const current = nextMap[normalized.provider];
-          nextMap[normalized.provider] = reconcileProviderScopedModelSelection(normalized, current);
+          const selectionKey = modelSelectionStorageKey(normalized);
+          const current = nextMap[selectionKey];
+          nextMap[selectionKey] = reconcileProviderScopedModelSelection(normalized, current);
         }
-        const nextActiveProvider = normalized?.provider ?? base.activeProvider;
+        const nextActiveProvider = normalized
+          ? modelSelectionStorageKey(normalized)
+          : base.activeProvider;
         if (
           Equal.equals(base.modelSelectionByProvider, nextMap) &&
           base.activeProvider === nextActiveProvider
@@ -860,11 +861,69 @@ export const createComposerDraftStoreState =
         return { draftsByThreadId: nextDraftsByThreadId };
       });
     },
+    seedModelSelection: (threadId, modelSelection) => {
+      if (threadId.length === 0) {
+        return;
+      }
+      const normalized = normalizeModelSelection(modelSelection);
+      if (normalized === null) {
+        return;
+      }
+      set((state) => {
+        const existing = state.draftsByThreadId[threadId];
+        const base = existing ?? createEmptyThreadDraft();
+        const nextMap = { ...base.modelSelectionByProvider };
+        const current = nextMap[normalized.provider];
+        nextMap[normalized.provider] = reconcileProviderScopedModelSelection(normalized, current);
+        if (Equal.equals(base.modelSelectionByProvider, nextMap)) {
+          return state;
+        }
+        const nextDraft: ComposerThreadDraftState = {
+          ...base,
+          modelSelectionByProvider: nextMap,
+        };
+        const nextDraftsByThreadId = { ...state.draftsByThreadId };
+        if (shouldRemoveDraft(nextDraft)) {
+          delete nextDraftsByThreadId[threadId];
+        } else {
+          nextDraftsByThreadId[threadId] = nextDraft;
+        }
+        return { draftsByThreadId: nextDraftsByThreadId };
+      });
+    },
     setModelSelectionAndSticky: (threadId, modelSelection) => {
       get().setModelSelection(threadId, modelSelection);
       const correctedSelection =
-        get().draftsByThreadId[threadId]?.modelSelectionByProvider[modelSelection.provider];
+        get().draftsByThreadId[threadId]?.modelSelectionByProvider[
+          modelSelectionStorageKey(modelSelection)
+        ];
       get().setStickyModelSelection(correctedSelection ?? modelSelection);
+    },
+    setProviderOptionsForDispatch: (threadId, providerOptions) => {
+      if (threadId.length === 0) {
+        return;
+      }
+      set((state) => {
+        const existing = state.draftsByThreadId[threadId];
+        if (!existing && providerOptions == null) {
+          return state;
+        }
+        const base = existing ?? createEmptyThreadDraft();
+        if (Equal.equals(base.providerOptionsForDispatch, providerOptions ?? undefined)) {
+          return state;
+        }
+        const nextDraft: ComposerThreadDraftState = {
+          ...base,
+          providerOptionsForDispatch: providerOptions ?? undefined,
+        };
+        const nextDraftsByThreadId = { ...state.draftsByThreadId };
+        if (shouldRemoveDraft(nextDraft)) {
+          delete nextDraftsByThreadId[threadId];
+        } else {
+          nextDraftsByThreadId[threadId] = nextDraft;
+        }
+        return { draftsByThreadId: nextDraftsByThreadId };
+      });
     },
     setModelOptions: (threadId, modelOptions) => {
       if (threadId.length === 0) {
@@ -882,27 +941,30 @@ export const createComposerDraftStoreState =
           // Only touch providers explicitly present in the input
           if (!normalizedOpts || !(provider in normalizedOpts)) continue;
           const opts = normalizedOpts[provider];
-          const current = nextMap[provider];
+          const selectionKey = providerInstanceModelSelectionKey(provider);
+          const current = nextMap[selectionKey];
           if (opts) {
             const model = current?.model ?? getDefaultModel(provider);
             if (!model) continue;
-            nextMap[provider] = withPreservedCodexProfile(
+            nextMap[selectionKey] = withPreservedCodexProfile(
               makeModelSelection(
                 provider,
                 model,
                 opts,
                 current?.provider === "claudeAgent" ? current.supportsAutoMode : undefined,
+                current?.instanceId,
               ),
               current,
             );
           } else if (current?.options) {
             // Remove options but keep the selection
-            nextMap[provider] = withPreservedCodexProfile(
+            nextMap[selectionKey] = withPreservedCodexProfile(
               buildModelSelection(
                 provider,
                 current.model,
                 undefined,
                 current.provider === "claudeAgent" ? current.supportsAutoMode : undefined,
+                { instanceId: current.instanceId },
               ),
               current,
             );
@@ -948,13 +1010,17 @@ export const createComposerDraftStoreState =
 
         // Update the map entry for this provider
         const nextMap = { ...base.modelSelectionByProvider };
-        const currentForProvider = nextMap[normalizedProvider];
+        const selectionKey = providerInstanceModelSelectionKey(
+          normalizedProvider,
+          options?.instanceId,
+        );
+        const currentForProvider = nextMap[selectionKey];
         if (providerOpts) {
           const nextModel = currentForProvider?.model ?? fallbackModel;
           if (!nextModel) {
             return state;
           }
-          nextMap[normalizedProvider] = withPreservedCodexProfile(
+          nextMap[selectionKey] = withPreservedCodexProfile(
             makeModelSelection(
               normalizedProvider,
               nextModel,
@@ -962,11 +1028,12 @@ export const createComposerDraftStoreState =
               currentForProvider?.provider === "claudeAgent"
                 ? currentForProvider.supportsAutoMode
                 : undefined,
+              currentForProvider?.instanceId ?? options?.instanceId,
             ),
             currentForProvider,
           );
         } else if (currentForProvider?.options) {
-          nextMap[normalizedProvider] = withPreservedCodexProfile(
+          nextMap[selectionKey] = withPreservedCodexProfile(
             buildModelSelection(
               normalizedProvider,
               currentForProvider.model,
@@ -974,6 +1041,7 @@ export const createComposerDraftStoreState =
               currentForProvider.provider === "claudeAgent"
                 ? currentForProvider.supportsAutoMode
                 : undefined,
+              { instanceId: currentForProvider.instanceId },
             ),
             currentForProvider,
           );
@@ -985,36 +1053,46 @@ export const createComposerDraftStoreState =
         if (options?.persistSticky === true) {
           nextStickyMap = { ...state.stickyModelSelectionByProvider };
           const stickyBase =
-            nextStickyMap[normalizedProvider] ??
-            base.modelSelectionByProvider[normalizedProvider] ??
-            (fallbackModel ? makeModelSelection(normalizedProvider, fallbackModel) : null);
+            nextStickyMap[selectionKey] ??
+            base.modelSelectionByProvider[selectionKey] ??
+            (fallbackModel
+              ? makeModelSelection(
+                  normalizedProvider,
+                  fallbackModel,
+                  undefined,
+                  undefined,
+                  options?.instanceId,
+                )
+              : null);
           if (!stickyBase) {
             return state;
           }
           if (providerOpts) {
-            nextStickyMap[normalizedProvider] = stripNonStickyModelOptions(
+            nextStickyMap[selectionKey] = stripNonStickyModelOptions(
               withPreservedCodexProfile(
                 makeModelSelection(
                   normalizedProvider,
                   stickyBase.model,
                   providerOpts,
                   stickyBase.provider === "claudeAgent" ? stickyBase.supportsAutoMode : undefined,
+                  stickyBase.instanceId ?? options?.instanceId,
                 ),
                 stickyBase,
               ),
             );
           } else if (stickyBase.options) {
-            nextStickyMap[normalizedProvider] = withPreservedCodexProfile(
+            nextStickyMap[selectionKey] = withPreservedCodexProfile(
               buildModelSelection(
                 normalizedProvider,
                 stickyBase.model,
                 undefined,
                 stickyBase.provider === "claudeAgent" ? stickyBase.supportsAutoMode : undefined,
+                { instanceId: stickyBase.instanceId },
               ),
               stickyBase,
             );
           }
-          nextStickyActiveProvider = base.activeProvider ?? normalizedProvider;
+          nextStickyActiveProvider = base.activeProvider ?? selectionKey;
         }
 
         if (

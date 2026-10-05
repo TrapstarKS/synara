@@ -6,7 +6,11 @@
 // a fetcher that redeems a refresh token itself must persist the rotated pair back to the
 // CLI's credential store, because providers rotate single-use refresh tokens.
 
-import type { ProviderKind, ServerProviderUsageSnapshot } from "@synara/contracts";
+import type {
+  ProviderInstanceId,
+  ProviderKind,
+  ServerProviderUsageSnapshot,
+} from "@synara/contracts";
 
 export interface ProviderUsageContext {
   /** Resolved user home directory (ServerConfig.homeDir). */
@@ -25,8 +29,15 @@ export interface ProviderUsageContext {
   readonly scopeKey?: string;
   /** Prevent managed Codex profiles from falling through to global files/keychain. */
   readonly codexManagedProfile?: boolean;
-  /** Codex archive home; may differ from the credential source because Synara uses overlays. */
+  /** Stable account route; omitted by legacy provider-only callers. */
+  readonly instanceId?: ProviderInstanceId;
+  /** Explicit account boundary: credential readers must not fall back to ambient accounts. */
+  readonly isolateCredentials?: boolean;
+  /** Selected Codex archive root; extra accounts omit archive totals rather than mix identities. */
   readonly localUsageHomePath?: string;
+  readonly skipLocalUsage?: boolean;
+  /** Existing reset redemption RPC targets only the default launch context. */
+  readonly disableResetCredits?: boolean;
 }
 
 export interface ProviderUsageFetcher {

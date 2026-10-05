@@ -13,6 +13,7 @@ import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 import DurableProviderCommandDeliveryMigration from "./Migrations/064_DurableProviderCommandDelivery.ts";
 import ProjectionThreadsGatewayProvenanceMigration from "./Migrations/071_ProjectionThreadsGatewayProvenance.ts";
 import ProjectPullRequestPinsMigration from "./Migrations/069_ProjectPullRequestPins.ts";
+import PullRequestAutoFixMigration from "./Migrations/130_PullRequestAutoFix.ts";
 import SpacesMigration from "./Migrations/079_Spaces.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
@@ -25,6 +26,16 @@ const trackerRows = (sql: SqlClient.SqlClient) =>
 const projectionThreadsColumnNames = (sql: SqlClient.SqlClient) =>
   sql<{ readonly name: string }>`
     SELECT name FROM pragma_table_info('projection_threads')
+  `.pipe(Effect.map((rows) => rows.map((row) => row.name)));
+
+const tableColumnNames = (sql: SqlClient.SqlClient, tableName: string) =>
+  sql<{ readonly name: string }>`
+    SELECT name FROM pragma_table_info(${tableName})
+  `.pipe(Effect.map((rows) => rows.map((row) => row.name)));
+
+const tableIndexNames = (sql: SqlClient.SqlClient, tableName: string) =>
+  sql<{ readonly name: string }>`
+    SELECT name FROM pragma_index_list(${tableName})
   `.pipe(Effect.map((rows) => rows.map((row) => row.name)));
 
 layer("reconcileMigrationLineage", (it) => {
@@ -155,6 +166,336 @@ layer("reconcileMigrationLineage", (it) => {
       const rowsAfter = yield* trackerRows(sql);
       assert.deepStrictEqual(rowsAfter, rowsBefore);
     }),
+  );
+
+  it.effect("continues when provider instance columns were partially migrated", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* runMigrations({ toMigrationInclusive: 132 });
+      const now = new Date().toISOString();
+      yield* sql`
+        ALTER TABLE projection_thread_sessions
+        ADD COLUMN provider_instance_id TEXT
+      `;
+      yield* sql`
+        ALTER TABLE provider_session_runtime
+        ADD COLUMN provider_instance_id TEXT
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          env_mode,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-codex-work',
+          'project-provider-instance',
+          'Work Account Thread',
+          ${JSON.stringify({ instanceId: "codex_work", model: "gpt-5.4" })},
+          'full-access',
+          'default',
+          'local',
+          ${now},
+          ${now},
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_sessions (
+          thread_id,
+          status,
+          provider_name,
+          provider_instance_id,
+          runtime_mode,
+          active_turn_id,
+          last_error,
+          updated_at
+        )
+        VALUES
+          (
+            'thread-codex-work',
+            'running',
+            'codex',
+            NULL,
+            'full-access',
+            NULL,
+            NULL,
+            ${now}
+          ),
+          (
+            'thread-no-model-selection',
+            'running',
+            'codex',
+            NULL,
+            'full-access',
+            NULL,
+            NULL,
+            ${now}
+          )
+      `;
+      yield* sql`
+        INSERT INTO provider_session_runtime (
+          thread_id,
+          provider_name,
+          provider_instance_id,
+          adapter_key,
+          runtime_mode,
+          status,
+          last_seen_at,
+          resume_cursor_json,
+          runtime_payload_json
+        )
+        VALUES
+          (
+            'thread-codex-work',
+            'codex',
+            NULL,
+            'codex',
+            'full-access',
+            'running',
+            ${now},
+            NULL,
+            ${JSON.stringify({ modelSelection: { instanceId: "codex_bound", model: "gpt-5.4" } })}
+          ),
+          (
+            'runtime-codex-work',
+            'codex',
+            NULL,
+            'codex',
+            'full-access',
+            'running',
+            ${now},
+            NULL,
+            ${JSON.stringify({ modelSelection: { instanceId: "codex_work", model: "gpt-5.4" } })}
+          ),
+          (
+            'runtime-no-instance',
+            'codex',
+            NULL,
+            'codex',
+            'full-access',
+            'running',
+            ${now},
+            NULL,
+            ${JSON.stringify({})}
+          )
+      `;
+
+      const executed = yield* runMigrations({ toMigrationInclusive: 134 });
+      assert.deepStrictEqual(
+        executed.map(([id]) => id),
+        [133, 134],
+      );
+
+      const projectionSessionColumns = yield* tableColumnNames(sql, "projection_thread_sessions");
+      const runtimeColumns = yield* tableColumnNames(sql, "provider_session_runtime");
+      assert.include(projectionSessionColumns, "provider_instance_id");
+      assert.include(runtimeColumns, "provider_instance_id");
+
+      const projectionSessionIndexes = yield* tableIndexNames(sql, "projection_thread_sessions");
+      const runtimeIndexes = yield* tableIndexNames(sql, "provider_session_runtime");
+      assert.include(projectionSessionIndexes, "idx_projection_thread_sessions_provider_instance");
+      assert.include(runtimeIndexes, "idx_provider_session_runtime_provider_instance");
+
+      const projectionRows = yield* sql<{
+        readonly threadId: string;
+        readonly providerInstanceId: string | null;
+      }>`
+        SELECT
+          thread_id AS "threadId",
+          provider_instance_id AS "providerInstanceId"
+        FROM projection_thread_sessions
+        WHERE thread_id IN ('thread-codex-work', 'thread-no-model-selection')
+        ORDER BY thread_id ASC
+      `;
+      assert.deepStrictEqual(projectionRows, [
+        { threadId: "thread-codex-work", providerInstanceId: "codex_bound" },
+        { threadId: "thread-no-model-selection", providerInstanceId: "codex" },
+      ]);
+
+      const runtimeRows = yield* sql<{
+        readonly threadId: string;
+        readonly providerInstanceId: string | null;
+      }>`
+        SELECT
+          thread_id AS "threadId",
+          provider_instance_id AS "providerInstanceId"
+        FROM provider_session_runtime
+        WHERE thread_id IN ('runtime-codex-work', 'runtime-no-instance', 'thread-codex-work')
+        ORDER BY thread_id ASC
+      `;
+      assert.deepStrictEqual(runtimeRows, [
+        { threadId: "runtime-codex-work", providerInstanceId: "codex_work" },
+        { threadId: "runtime-no-instance", providerInstanceId: "codex" },
+        { threadId: "thread-codex-work", providerInstanceId: "codex_bound" },
+      ]);
+    }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
+  );
+
+  it.effect("backfills provider instances without parsing malformed legacy JSON", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const now = new Date().toISOString();
+
+      yield* runMigrations({ toMigrationInclusive: 132 });
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          env_mode,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES
+          (
+            'thread-malformed-runtime',
+            'project-provider-instance',
+            'Malformed Legacy Runtime',
+            'not-json',
+            'full-access',
+            'default',
+            'local',
+            ${now},
+            ${now},
+            NULL
+          ),
+          (
+            'thread-invalid-instance',
+            'project-provider-instance',
+            'Invalid Legacy Instance',
+            ${JSON.stringify({ instanceId: "invalid instance!", model: "gpt-5.4" })},
+            'full-access',
+            'default',
+            'local',
+            ${now},
+            ${now},
+            NULL
+          )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_sessions (
+          thread_id,
+          status,
+          provider_name,
+          runtime_mode,
+          active_turn_id,
+          last_error,
+          updated_at
+        )
+        VALUES
+          (
+            'thread-malformed-runtime',
+            'stopped',
+            'codex',
+            'full-access',
+            NULL,
+            NULL,
+            ${now}
+          ),
+          (
+            'thread-invalid-instance',
+            'stopped',
+            'codex',
+            'full-access',
+            NULL,
+            NULL,
+            ${now}
+          )
+      `;
+      yield* sql`
+        INSERT INTO provider_session_runtime (
+          thread_id,
+          provider_name,
+          adapter_key,
+          runtime_mode,
+          status,
+          last_seen_at,
+          resume_cursor_json,
+          runtime_payload_json
+        )
+        VALUES
+          (
+            'thread-malformed-runtime',
+            'codex',
+            'codex',
+            'full-access',
+            'stopped',
+            ${now},
+            NULL,
+            'not-json'
+          ),
+          (
+            'thread-invalid-instance',
+            'codex',
+            'codex',
+            'full-access',
+            'stopped',
+            ${now},
+            NULL,
+            ${JSON.stringify({
+              providerInstanceId: "also invalid!",
+              modelSelection: { instanceId: "invalid instance!", model: "gpt-5.4" },
+            })}
+          )
+      `;
+
+      yield* runMigrations({ toMigrationInclusive: 134 });
+
+      const [projectionSession] = yield* sql<{
+        readonly providerInstanceId: string | null;
+      }>`
+        SELECT provider_instance_id AS "providerInstanceId"
+        FROM projection_thread_sessions
+        WHERE thread_id = 'thread-malformed-runtime'
+      `;
+      const [runtime] = yield* sql<{
+        readonly providerInstanceId: string | null;
+        readonly runtimePayloadJson: string | null;
+      }>`
+        SELECT
+          provider_instance_id AS "providerInstanceId",
+          runtime_payload_json AS "runtimePayloadJson"
+        FROM provider_session_runtime
+        WHERE thread_id = 'thread-malformed-runtime'
+      `;
+
+      assert.deepStrictEqual(projectionSession, { providerInstanceId: "codex" });
+      assert.deepStrictEqual(runtime, {
+        providerInstanceId: "codex",
+        runtimePayloadJson: "not-json",
+      });
+
+      const [invalidProjectionSession] = yield* sql<{
+        readonly providerInstanceId: string | null;
+      }>`
+        SELECT provider_instance_id AS "providerInstanceId"
+        FROM projection_thread_sessions
+        WHERE thread_id = 'thread-invalid-instance'
+      `;
+      const [invalidRuntime] = yield* sql<{
+        readonly providerInstanceId: string | null;
+      }>`
+        SELECT provider_instance_id AS "providerInstanceId"
+        FROM provider_session_runtime
+        WHERE thread_id = 'thread-invalid-instance'
+      `;
+
+      assert.deepStrictEqual(invalidProjectionSession, { providerInstanceId: "codex" });
+      assert.deepStrictEqual(invalidRuntime, { providerInstanceId: "codex" });
+    }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
   );
 });
 
@@ -326,6 +667,28 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
         [123, "ProjectionThreadsGoalBlockStreak"],
+        [124, "ProjectAgent"],
+        [125, "Groups"],
+        [126, "GroupLibraryHosting"],
+        [127, "CoordinatorAppearance"],
+        [128, "ProjectAgentWakeCursor"],
+        [129, "ProjectAgentLifecycle"],
+        [130, "ProjectAgentManagedWorkers"],
+        [131, "ProjectAgentWorkerRecovery"],
+        [132, "WorkerMonitoringLiveness"],
+        [133, "ProjectionThreadSessionProviderInstance"],
+        [134, "ProviderSessionRuntimeInstanceId"],
+        [135, "ProfileStatsDeletedProviderInstances"],
+        [136, "ClearAutomationDefinitionProviderOptions"],
+        [137, "ClearAutomationRunProviderOptions"],
+        [138, "ScrubOrchestrationEventProviderOptions"],
+        [139, "ProjectionTurnsPendingMessageIndex"],
+        [140, "Todos"],
+        [141, "ProjectionThreadsSidechatContext"],
+        [142, "ProjectImportHistory"],
+        [143, "HubWork"],
+        [144, "ProjectionThreadsSnooze"],
+        [145, "PullRequestAutoFix"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -401,8 +764,69 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 121, name: "BackfillClaudeNativeSubagentEffort" },
           { migration_id: 122, name: "QueuedSteerReplacementTurns" },
           { migration_id: 123, name: "ProjectionThreadsGoalBlockStreak" },
+          { migration_id: 124, name: "ProjectAgent" },
+          { migration_id: 125, name: "Groups" },
+          { migration_id: 126, name: "GroupLibraryHosting" },
+          { migration_id: 127, name: "CoordinatorAppearance" },
+          { migration_id: 128, name: "ProjectAgentWakeCursor" },
+          { migration_id: 129, name: "ProjectAgentLifecycle" },
+          { migration_id: 130, name: "ProjectAgentManagedWorkers" },
+          { migration_id: 131, name: "ProjectAgentWorkerRecovery" },
+          { migration_id: 132, name: "WorkerMonitoringLiveness" },
+          { migration_id: 133, name: "ProjectionThreadSessionProviderInstance" },
+          { migration_id: 134, name: "ProviderSessionRuntimeInstanceId" },
+          { migration_id: 135, name: "ProfileStatsDeletedProviderInstances" },
+          { migration_id: 136, name: "ClearAutomationDefinitionProviderOptions" },
+          { migration_id: 137, name: "ClearAutomationRunProviderOptions" },
+          { migration_id: 138, name: "ScrubOrchestrationEventProviderOptions" },
+          { migration_id: 139, name: "ProjectionTurnsPendingMessageIndex" },
+          { migration_id: 140, name: "Todos" },
+          { migration_id: 141, name: "ProjectionThreadsSidechatContext" },
+          { migration_id: 142, name: "ProjectImportHistory" },
+          { migration_id: 143, name: "HubWork" },
+          { migration_id: 144, name: "ProjectionThreadsSnooze" },
+          { migration_id: 145, name: "PullRequestAutoFix" },
         ],
       );
+      const groupConfigColumns = yield* sql<{ readonly name: string }>`
+        SELECT name FROM pragma_table_info('project_agent_configs')
+      `;
+      assert.include(
+        groupConfigColumns.map((row) => row.name),
+        "goal",
+      );
+      assert.include(
+        groupConfigColumns.map((row) => row.name),
+        "icon",
+      );
+      assert.include(
+        groupConfigColumns.map((row) => row.name),
+        "auto_memory_enabled",
+      );
+      assert.include(
+        groupConfigColumns.map((row) => row.name),
+        "library_path",
+      );
+      assert.include(
+        groupConfigColumns.map((row) => row.name),
+        "library_remote_url",
+      );
+      assert.include(
+        groupConfigColumns.map((row) => row.name),
+        "library_push_on_change",
+      );
+      assert.include(
+        groupConfigColumns.map((row) => row.name),
+        "coordinator_icon",
+      );
+      assert.include(
+        groupConfigColumns.map((row) => row.name),
+        "coordinator_color",
+      );
+      const linkedTables = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_agent_linked_projects'
+      `;
+      assert.equal(linkedTables.length, 1);
       const preserved = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_consumer_state
       `;
@@ -517,6 +941,28 @@ agentGatewayRetentionLegacyLayer(
           [121, "BackfillClaudeNativeSubagentEffort"],
           [122, "QueuedSteerReplacementTurns"],
           [123, "ProjectionThreadsGoalBlockStreak"],
+          [124, "ProjectAgent"],
+          [125, "Groups"],
+          [126, "GroupLibraryHosting"],
+          [127, "CoordinatorAppearance"],
+          [128, "ProjectAgentWakeCursor"],
+          [129, "ProjectAgentLifecycle"],
+          [130, "ProjectAgentManagedWorkers"],
+          [131, "ProjectAgentWorkerRecovery"],
+          [132, "WorkerMonitoringLiveness"],
+          [133, "ProjectionThreadSessionProviderInstance"],
+          [134, "ProviderSessionRuntimeInstanceId"],
+          [135, "ProfileStatsDeletedProviderInstances"],
+          [136, "ClearAutomationDefinitionProviderOptions"],
+          [137, "ClearAutomationRunProviderOptions"],
+          [138, "ScrubOrchestrationEventProviderOptions"],
+          [139, "ProjectionTurnsPendingMessageIndex"],
+          [140, "Todos"],
+          [141, "ProjectionThreadsSidechatContext"],
+          [142, "ProjectImportHistory"],
+          [143, "HubWork"],
+          [144, "ProjectionThreadsSnooze"],
+          [145, "PullRequestAutoFix"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -635,6 +1081,28 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
         [123, "ProjectionThreadsGoalBlockStreak"],
+        [124, "ProjectAgent"],
+        [125, "Groups"],
+        [126, "GroupLibraryHosting"],
+        [127, "CoordinatorAppearance"],
+        [128, "ProjectAgentWakeCursor"],
+        [129, "ProjectAgentLifecycle"],
+        [130, "ProjectAgentManagedWorkers"],
+        [131, "ProjectAgentWorkerRecovery"],
+        [132, "WorkerMonitoringLiveness"],
+        [133, "ProjectionThreadSessionProviderInstance"],
+        [134, "ProviderSessionRuntimeInstanceId"],
+        [135, "ProfileStatsDeletedProviderInstances"],
+        [136, "ClearAutomationDefinitionProviderOptions"],
+        [137, "ClearAutomationRunProviderOptions"],
+        [138, "ScrubOrchestrationEventProviderOptions"],
+        [139, "ProjectionTurnsPendingMessageIndex"],
+        [140, "Todos"],
+        [141, "ProjectionThreadsSidechatContext"],
+        [142, "ProjectImportHistory"],
+        [143, "HubWork"],
+        [144, "ProjectionThreadsSnooze"],
+        [145, "PullRequestAutoFix"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -694,6 +1162,28 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [121, "BackfillClaudeNativeSubagentEffort"],
           [122, "QueuedSteerReplacementTurns"],
           [123, "ProjectionThreadsGoalBlockStreak"],
+          [124, "ProjectAgent"],
+          [125, "Groups"],
+          [126, "GroupLibraryHosting"],
+          [127, "CoordinatorAppearance"],
+          [128, "ProjectAgentWakeCursor"],
+          [129, "ProjectAgentLifecycle"],
+          [130, "ProjectAgentManagedWorkers"],
+          [131, "ProjectAgentWorkerRecovery"],
+          [132, "WorkerMonitoringLiveness"],
+          [133, "ProjectionThreadSessionProviderInstance"],
+          [134, "ProviderSessionRuntimeInstanceId"],
+          [135, "ProfileStatsDeletedProviderInstances"],
+          [136, "ClearAutomationDefinitionProviderOptions"],
+          [137, "ClearAutomationRunProviderOptions"],
+          [138, "ScrubOrchestrationEventProviderOptions"],
+          [139, "ProjectionTurnsPendingMessageIndex"],
+          [140, "Todos"],
+          [141, "ProjectionThreadsSidechatContext"],
+          [142, "ProjectImportHistory"],
+          [143, "HubWork"],
+          [144, "ProjectionThreadsSnooze"],
+          [145, "PullRequestAutoFix"],
         ],
       );
 
@@ -807,6 +1297,28 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
         [123, "ProjectionThreadsGoalBlockStreak"],
+        [124, "ProjectAgent"],
+        [125, "Groups"],
+        [126, "GroupLibraryHosting"],
+        [127, "CoordinatorAppearance"],
+        [128, "ProjectAgentWakeCursor"],
+        [129, "ProjectAgentLifecycle"],
+        [130, "ProjectAgentManagedWorkers"],
+        [131, "ProjectAgentWorkerRecovery"],
+        [132, "WorkerMonitoringLiveness"],
+        [133, "ProjectionThreadSessionProviderInstance"],
+        [134, "ProviderSessionRuntimeInstanceId"],
+        [135, "ProfileStatsDeletedProviderInstances"],
+        [136, "ClearAutomationDefinitionProviderOptions"],
+        [137, "ClearAutomationRunProviderOptions"],
+        [138, "ScrubOrchestrationEventProviderOptions"],
+        [139, "ProjectionTurnsPendingMessageIndex"],
+        [140, "Todos"],
+        [141, "ProjectionThreadsSidechatContext"],
+        [142, "ProjectImportHistory"],
+        [143, "HubWork"],
+        [144, "ProjectionThreadsSnooze"],
+        [145, "PullRequestAutoFix"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -862,6 +1374,28 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [121, "BackfillClaudeNativeSubagentEffort"],
           [122, "QueuedSteerReplacementTurns"],
           [123, "ProjectionThreadsGoalBlockStreak"],
+          [124, "ProjectAgent"],
+          [125, "Groups"],
+          [126, "GroupLibraryHosting"],
+          [127, "CoordinatorAppearance"],
+          [128, "ProjectAgentWakeCursor"],
+          [129, "ProjectAgentLifecycle"],
+          [130, "ProjectAgentManagedWorkers"],
+          [131, "ProjectAgentWorkerRecovery"],
+          [132, "WorkerMonitoringLiveness"],
+          [133, "ProjectionThreadSessionProviderInstance"],
+          [134, "ProviderSessionRuntimeInstanceId"],
+          [135, "ProfileStatsDeletedProviderInstances"],
+          [136, "ClearAutomationDefinitionProviderOptions"],
+          [137, "ClearAutomationRunProviderOptions"],
+          [138, "ScrubOrchestrationEventProviderOptions"],
+          [139, "ProjectionTurnsPendingMessageIndex"],
+          [140, "Todos"],
+          [141, "ProjectionThreadsSidechatContext"],
+          [142, "ProjectImportHistory"],
+          [143, "HubWork"],
+          [144, "ProjectionThreadsSnooze"],
+          [145, "PullRequestAutoFix"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -1055,6 +1589,7 @@ mindMigrationLayer("Mind migration", (it) => {
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
         [123, "ProjectionThreadsGoalBlockStreak"],
+        ...migrationEntries.filter(([id]) => id > 123).map(([id, name]) => [id, name] as const),
       ]);
 
       yield* sql`INSERT INTO mind_memories (id, project_id, text, type, text_hash, peak_weight, created_at, last_accessed_at) VALUES ('m1', 'p1', 'delete me', 'semantic', 'hash', 0.6, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`;
@@ -1109,6 +1644,7 @@ mindRuntimeIntegrityLayer("Mind runtime integrity migration", (it) => {
           [121, "BackfillClaudeNativeSubagentEffort"],
           [122, "QueuedSteerReplacementTurns"],
           [123, "ProjectionThreadsGoalBlockStreak"],
+          ...migrationEntries.filter(([id]) => id > 123).map(([id, name]) => [id, name] as const),
         ]);
         const rows = yield* sql<{
           readonly id: string;
@@ -1201,6 +1737,7 @@ mindTextRevisionsLayer("Mind text revisions migration", (it) => {
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
         [123, "ProjectionThreadsGoalBlockStreak"],
+        ...migrationEntries.filter(([id]) => id > 123).map(([id, name]) => [id, name] as const),
       ]);
 
       const columns = yield* sql<{ readonly name: string }>`
@@ -1256,6 +1793,7 @@ mindProfileLayer("Mind profiles migration", (it) => {
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
         [123, "ProjectionThreadsGoalBlockStreak"],
+        ...migrationEntries.filter(([id]) => id > 123).map(([id, name]) => [id, name] as const),
       ]);
 
       // Profiles are decoupled from the projection: deleting the project row
@@ -1326,6 +1864,7 @@ mindDecouplingLayer("Mind projection decoupling migration", (it) => {
         [121, "BackfillClaudeNativeSubagentEffort"],
         [122, "QueuedSteerReplacementTurns"],
         [123, "ProjectionThreadsGoalBlockStreak"],
+        ...migrationEntries.filter(([id]) => id > 123).map(([id, name]) => [id, name] as const),
       ]);
 
       const profileFks = yield* sql<{ readonly referenced: string }>`
@@ -1509,5 +2048,49 @@ divergedBeyondAliasLayer("tracker that diverges beyond a known alias", (it) => {
         migrationEntries.map(([id, name]) => [id, name]),
       );
     }),
+  );
+});
+
+layer("Auto-fix migration replay", (it) => {
+  it.effect(
+    "adds the optional alias to an existing Auto-fix table and preserves its watch on replay",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TABLE IF EXISTS pull_request_auto_fix`;
+        yield* sql`CREATE TABLE pull_request_auto_fix (
+      thread_id TEXT NOT NULL, pull_request_url TEXT NOT NULL, status TEXT NOT NULL,
+      pause_reason TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_handled_head_sha TEXT,
+      updated_at TEXT NOT NULL, PRIMARY KEY (thread_id, pull_request_url)
+    )`;
+        yield* sql`INSERT INTO pull_request_auto_fix (thread_id, pull_request_url, status, attempts, last_handled_head_sha, updated_at)
+      VALUES ('chat', 'https://github.com/o/r/pull/1', 'watching', 1, 'original-head', '2026-10-03T10:00:00.000Z')`;
+        yield* PullRequestAutoFixMigration;
+        yield* PullRequestAutoFixMigration;
+        assert.include(
+          yield* tableColumnNames(sql, "pull_request_auto_fix"),
+          "requested_pull_request_url",
+        );
+        assert.include(
+          yield* tableIndexNames(sql, "pull_request_auto_fix"),
+          "pull_request_auto_fix_active_owner",
+        );
+        const rows = yield* sql<{
+          thread_id: string;
+          status: string;
+          attempts: number;
+          last_handled_head_sha: string;
+          requested_pull_request_url: string | null;
+        }>`SELECT thread_id, status, attempts, last_handled_head_sha, requested_pull_request_url FROM pull_request_auto_fix`;
+        assert.deepStrictEqual(rows, [
+          {
+            thread_id: "chat",
+            status: "watching",
+            attempts: 1,
+            last_handled_head_sha: "original-head",
+            requested_pull_request_url: null,
+          },
+        ]);
+      }),
   );
 });

@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect";
 
 import { AgentGatewayCredentialsWithSecretsLive } from "../agentGateway/Layers/AgentGatewayCredentials";
+import { ServerSecretStoreLive } from "../auth/Layers/ServerSecretStore";
 import { ServerConfig } from "../config";
 import {
   makeProviderServerPasswordResolver,
@@ -8,7 +9,6 @@ import {
   ProviderCredentialsLive,
 } from "../providerCredentials";
 import { ServerSettingsService } from "../serverSettings";
-import { ProviderValidationError } from "./Errors";
 import { makeChatGptAdapterLive } from "./Layers/ChatGptAdapter";
 import { makeClaudeAdapterLive } from "./Layers/ClaudeAdapter";
 import { makeCodexAdapterLive } from "./Layers/CodexAdapter";
@@ -23,10 +23,11 @@ import { makePiAdapterLive } from "./Layers/PiAdapter";
 import { makeOmpAdapterLive } from "./Layers/OmpAdapter";
 import { ProviderAdapterRegistryLive } from "./Layers/ProviderAdapterRegistry";
 import { ProviderDiscoveryServiceLive } from "./Layers/ProviderDiscoveryService";
+import { ProviderHealthLive } from "./Layers/ProviderHealth";
 import { makeDurableProviderServiceLive } from "./Layers/ProviderService";
 import {
   ChatGptConnectorLive,
-  type ChatGptConnectorLayer,
+  type ProvidedChatGptConnectorLayer,
 } from "./chatgptConnector/Layers/ChatGptConnector";
 import {
   ChatGptExternalBrowserLive,
@@ -45,7 +46,7 @@ export function makeServerProviderLayer(
      * once so the provider adapter and provider health observe one instance
      * (one decrypted secret, one tunnel process).
      */
-    readonly chatGptConnectorLayer?: ChatGptConnectorLayer;
+    readonly chatGptConnectorLayer?: ProvidedChatGptConnectorLayer;
     /** Shared default-browser bridge used by the ChatGPT adapter and login RPC. */
     readonly chatGptExternalBrowserLayer?: ChatGptExternalBrowserLayer;
   } = {},
@@ -105,10 +106,10 @@ export function makeServerProviderLayer(
     const piAdapterLayer = makePiAdapterLive(
       nativeEventLogger ? { nativeEventLogger } : undefined,
     ).pipe(Layer.provide(agentGatewayCredentialsLayer));
-    const fallbackChatGptConnectorLayer: ChatGptConnectorLayer = ChatGptConnectorLive.pipe(
+    const fallbackChatGptConnectorLayer: ProvidedChatGptConnectorLayer = ChatGptConnectorLive.pipe(
       Layer.provide(Layer.orDie(ProviderCredentialsLive)),
     );
-    const chatGptConnectorLayer: ChatGptConnectorLayer =
+    const chatGptConnectorLayer: ProvidedChatGptConnectorLayer =
       options.chatGptConnectorLayer ?? fallbackChatGptConnectorLayer;
     const chatGptExternalBrowserLayer: ChatGptExternalBrowserLayer =
       options.chatGptExternalBrowserLayer ??
@@ -141,28 +142,22 @@ export function makeServerProviderLayer(
       Layer.provide(chatGptAdapterLayer),
       Layer.provide(ompAdapterLayer),
       Layer.provideMerge(providerSessionDirectoryLayer),
+      Layer.provide(Layer.succeed(ServerSettingsService, serverSettings)),
     );
     const providerServiceLayer = makeDurableProviderServiceLive({
       ...(canonicalEventLogger ? { canonicalEventLogger } : {}),
-      providerIsEnabled: (provider) =>
-        serverSettings.getSettings.pipe(
-          Effect.map((settings) => settings.providers[provider].enabled),
-          Effect.mapError(
-            (cause) =>
-              new ProviderValidationError({
-                operation: "ProviderService.startSession",
-                issue: "Failed to read provider enablement settings.",
-                cause,
-              }),
-          ),
-        ),
     }).pipe(
       Layer.provide(adapterRegistryLayer),
       Layer.provide(providerSessionDirectoryLayer),
       Layer.provide(ProviderRuntimeEventRepositoryLive),
+      // Provider sessions resolve persisted provider-instance settings before launch.
+      Layer.provide(Layer.succeed(ServerSettingsService, serverSettings)),
+      Layer.provide(ServerSecretStoreLive),
     );
     const providerDiscoveryLayer = ProviderDiscoveryServiceLive.pipe(
       Layer.provide(adapterRegistryLayer),
+      Layer.provide(ProviderHealthLive),
+      Layer.provide(Layer.succeed(ServerSettingsService, serverSettings)),
     );
     return Layer.mergeAll(
       providerServiceLayer,

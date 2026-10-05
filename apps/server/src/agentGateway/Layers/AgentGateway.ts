@@ -1,3 +1,4 @@
+import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
 /**
  * AgentGatewayLive - Synara app-control MCP tool surface.
  *
@@ -26,6 +27,7 @@ import {
   SynaraSendMessageInput,
   MessageId,
   THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
+  ProjectId,
   THREAD_GOAL_MAX_CHARS,
   ThreadId,
   TurnId,
@@ -33,7 +35,7 @@ import {
   type ComputerPermission,
   type ComputerSetupRequiredPayload,
   type ModelSelection,
-  type ProjectId,
+  type OrchestrationCommand,
   type ProviderApprovalDecision,
   type ProviderKind,
   type RuntimeMode,
@@ -43,6 +45,7 @@ import {
 import { PROVIDER_USAGE_PROVIDERS } from "@synara/shared/providerUsage";
 import { runtimeModeEscalatesPrivilege } from "@synara/shared/runtimeMode";
 import { Effect, Layer, Option, Schema } from "effect";
+import { isProviderKind } from "@synara/shared/providerInstances";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { GitManager } from "../../git/Services/GitManager.ts";
@@ -52,6 +55,7 @@ import { OrchestrationEngineService } from "../../orchestration/Services/Orchest
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { AutomationService } from "../../automation/Services/AutomationService.ts";
 import { buildAutomationProposalActivity } from "../../automation/proposalActivity.ts";
+import { ProjectAgentService } from "../../projectAgent/Services/ProjectAgentService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationEventDeliveryRepository } from "../../persistence/Services/OrchestrationEventDeliveries.ts";
@@ -100,6 +104,16 @@ import { makeCoordinatorQuestions } from "../coordinatorQuestions.ts";
 import { makeThreadCoordination } from "../threadCoordination.ts";
 import { recoverInterruptedAgentGatewayOperations } from "../startupRecovery.ts";
 import { makeCreateThreadsHandler } from "../creationCoordinator.ts";
+import { makeHubWorkGateway } from "../hubWorkGateway";
+import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts";
+import { QueuedTurnPromotionRepository } from "../../persistence/Services/QueuedTurnPromotions";
+import { HubWorkRepository } from "../../persistence/Services/HubWorkRepository";
+import { ProjectAgentRepository } from "../../persistence/Services/ProjectAgentRepository";
+import { ManagedAttachmentRepository } from "../../persistence/Services/ManagedAttachments";
+import { resolveHubWorkSource, renderHubWorkPrompt } from "../hubWorkSource";
+import { cloneDelegatedAttachments } from "../delegatedAttachments";
+import { LOCAL_LOOPBACK_ATTACHMENT_PRINCIPAL } from "../../managedAttachmentPrincipal";
+
 import { makeAgentGatewayAutomationTools } from "../automationTools.ts";
 import { makeAgentGatewayMemoryTools } from "../memoryTools.ts";
 import { makeAgentGatewayBrowserTools } from "../browserTools.ts";
@@ -119,9 +133,12 @@ import { computerApprovalGate } from "../../computer/ComputerApprovalGate.ts";
 import { makeComputerForegroundConsent } from "../computerForegroundConsent.ts";
 import { BrowserAutomationHost } from "../../browserAutomation/Services/BrowserAutomationHost.ts";
 import { makeBrowserAutomationHost } from "../../browserAutomation/Layers/BrowserAutomationHost.ts";
+import { makeProjectAgentTools } from "../projectAgentTools.ts";
+import { isServerGroupsEnabled } from "../../projectAgent/groupsBetaGate.ts";
 import { makeThreadReadTools } from "../threadReadTools.ts";
 import { makeThreadDiagnosticTools } from "../threadDiagnosticTools.ts";
 import { makeAgentGatewayUsageTools } from "../usageTools.ts";
+import { makeAgentGatewayKanbanTools } from "../kanbanTools.ts";
 import { pruneProjectedArchivedManagedWorktrees } from "../../managedWorktrees.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 
@@ -168,6 +185,7 @@ export const makeAgentGateway = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const automationService = yield* AutomationService;
   const mindService = yield* MindService;
+  const projectAgentService = yield* ProjectAgentService;
   const git = yield* GitCore;
   const gitManager = yield* GitManager;
   const providerDiscovery = yield* ProviderDiscoveryService;
@@ -195,9 +213,12 @@ export const makeAgentGateway = Effect.gen(function* () {
       serverSettings.getSettings,
       providerHealth.getStatuses,
     ]);
-    const statusByProvider = new Map<ProviderKind, ServerProviderStatus>(
-      statuses.map((status) => [status.provider, status]),
-    );
+    const statusByProvider = new Map<ProviderKind, ServerProviderStatus>();
+    for (const status of statuses) {
+      if (isProviderKind(status.driver)) {
+        statusByProvider.set(status.driver, status);
+      }
+    }
     return new Map<ProviderKind, AgentGatewayProviderAvailability>(
       PROVIDER_KINDS.map((provider) => {
         const status = statusByProvider.get(provider);
@@ -359,7 +380,11 @@ export const makeAgentGateway = Effect.gen(function* () {
   // that runs with more privileges than the user granted the caller itself —
   // otherwise an approval-required or worktree-isolated agent escalates by proxy.
   const assertCallerMayDriveThread = (
-    caller: { readonly runtimeMode: RuntimeMode; readonly envMode?: string | null | undefined },
+    caller: {
+      readonly id: string;
+      readonly runtimeMode: RuntimeMode;
+      readonly envMode?: string | null | undefined;
+    },
     target: {
       readonly id: string;
       readonly runtimeMode: RuntimeMode;
@@ -381,6 +406,12 @@ export const makeAgentGateway = Effect.gen(function* () {
           ),
         );
       }
+      yield* projectAgentService
+        .assertCallerMayDriveManagedThread({
+          callerThreadId: ThreadId.makeUnsafe(caller.id),
+          targetThreadId: ThreadId.makeUnsafe(target.id),
+        })
+        .pipe(Effect.mapError((error) => new ToolInputError(error.message)));
     });
 
   const readTools = makeThreadReadTools({
@@ -425,7 +456,90 @@ export const makeAgentGateway = Effect.gen(function* () {
     requireThreadShell,
     awaitedDispatch,
     announceWait: awaitRegistration.announceRegistration,
+    authorizeManagedGoalCreation: (input) =>
+      projectAgentService
+        .authorizeManagedGoalCreation(input)
+        .pipe(Effect.mapError((error) => new ToolInputError(error.message))),
+    recordManagedWorkerThreads: (input) =>
+      projectAgentService
+        .recordManagedWorkerThreads(input)
+        .pipe(Effect.mapError((error) => new ToolInputError(error.message))),
+    assertCreateTargetProject: (input) =>
+      projectAgentService
+        .assertCallerMayCreateThreadInProject({
+          callerThreadId: ThreadId.makeUnsafe(input.callerThreadId),
+          targetProjectId: input.targetProjectId,
+        })
+        .pipe(Effect.mapError((error) => new ToolInputError(error.message))),
   });
+
+  const hubRepository = Option.getOrUndefined(yield* Effect.serviceOption(HubWorkRepository));
+  const projectRepository = Option.getOrUndefined(
+    yield* Effect.serviceOption(ProjectAgentRepository),
+  );
+  const attachmentRepository = Option.getOrUndefined(
+    yield* Effect.serviceOption(ManagedAttachmentRepository),
+  );
+  const queuedTurnPromotions = Option.getOrUndefined(
+    yield* Effect.serviceOption(QueuedTurnPromotionRepository),
+  );
+  const commandReceipts = Option.getOrUndefined(
+    yield* Effect.serviceOption(OrchestrationCommandReceiptRepository),
+  );
+  const hubMessages = Option.getOrUndefined(
+    yield* Effect.serviceOption(ProjectionThreadMessageRepository),
+  );
+  const hubGateway =
+    hubRepository && projectRepository && attachmentRepository
+      ? makeHubWorkGateway({
+          repository: hubRepository,
+          creationOperations: operationRepository,
+          ...(hubMessages ? { messages: hubMessages } : {}),
+          projectAgentRepository: projectRepository,
+          projectAgentService,
+          snapshotQuery,
+          projectionTurns,
+          git,
+          ...(commandReceipts ? { commandReceipts } : {}),
+          ...(queuedTurnPromotions ? { queuedTurnPromotions } : {}),
+          attachments: attachmentRepository,
+          serverConfig,
+          createThreads: runCreateThreads,
+        })
+      : null;
+  if (hubGateway && isServerGroupsEnabled()) {
+    yield* hubGateway.recover;
+    yield* Effect.forkScoped(
+      Effect.forever(
+        hubGateway.tick.pipe(
+          Effect.catch((error) => Effect.logWarning("hub work scan failed", { error })),
+          Effect.andThen(Effect.sleep(1000)),
+        ),
+      ),
+    );
+  }
+  const createWithHubQueue = (
+    input: Parameters<typeof runCreateThreads>[0],
+    context: ToolContext,
+  ) =>
+    Effect.gen(function* () {
+      const hubResult = hubGateway ? yield* hubGateway.submit(input, context) : null;
+      if (hubResult) return hubResult;
+      return yield* runCreateThreads(input, {
+        kind: "provider-session",
+        callerThreadId: context.callerThreadId,
+        callerTurnId: context.callerTurnId,
+        assertAuthority: context.assertCallerTurnActive,
+        prepareWait: () => awaitRegistration.prepareRegistration(context),
+      });
+    });
+  const contextMessageIdsSchema = {
+    type: "array",
+    maxItems: 16,
+    items: { type: "string" },
+    description:
+      "IDs of original human messages in this coordinator conversation. Omit only when delegating the current human turn. Synara forwards their canonical text and attachments.",
+  };
 
   const createThreads: ToolEntry = {
     requiredCapability: "thread:write",
@@ -433,7 +547,7 @@ export const makeAgentGateway = Effect.gen(function* () {
     definition: {
       name: "synara_create_threads",
       description:
-        "Create an exact batch of 1–20 standalone Synara threads. Worktree threads start on a Synara-managed temporary branch pinned at baseRef (or the selected checkout's HEAD) and copy local checkout changes plus .worktreeinclude files when the ref is that checkout's HEAD; on the first turn Synara may rename the branch after the prompt and publish it. Validation/preflight failures create nothing and may be corrected with the same requestId; durable retries replay the exact operation.",
+        "Create an exact batch of 1–20 standalone Synara threads. Hub coordinators instead submit durable workItems to the Hub queue: accepted does not mean started, and workerThreadId is available after admission. Worktree threads start on a Synara-managed temporary branch pinned at baseRef (or the selected checkout's HEAD) and copy local checkout changes plus .worktreeinclude files when the ref is that checkout's HEAD; on the first turn Synara may rename the branch after the prompt and publish it. Validation/preflight failures create nothing and may be corrected with the same requestId; durable retries replay the exact operation. Each created thread's result includes a ready-to-use link (`thread://<threadId>`); when you mention a thread in a message to the user, write it as a markdown link like [title](thread://<threadId>).",
       inputSchema: {
         type: "object",
         properties: {
@@ -463,6 +577,7 @@ export const makeAgentGateway = Effect.gen(function* () {
                   description:
                     "Passively return the initial run result to this creating thread. Does not wake the creator; goal runs are unsupported.",
                 },
+                contextMessageIds: contextMessageIdsSchema,
                 prompt: { type: "string" },
                 title: { type: "string" },
                 target: {
@@ -496,14 +611,7 @@ export const makeAgentGateway = Effect.gen(function* () {
         openWorldHint: true,
       },
     },
-    handler: (args, context) =>
-      runCreateThreads(decodeCreateThreadsInput(args), {
-        kind: "provider-session",
-        callerThreadId: context.callerThreadId,
-        callerTurnId: context.callerTurnId,
-        assertAuthority: context.assertCallerTurnActive,
-        prepareWait: () => awaitRegistration.prepareRegistration(context),
-      }),
+    handler: (args, context) => createWithHubQueue(decodeCreateThreadsInput(args), context),
   };
 
   const createThread: ToolEntry = {
@@ -512,7 +620,7 @@ export const makeAgentGateway = Effect.gen(function* () {
     definition: {
       name: "synara_create_thread",
       description:
-        "Create exactly one standalone Synara thread. Worktree threads start on a Synara-managed temporary branch pinned at baseRef; on the first turn Synara may rename the branch after the prompt and publish it. For two or more threads use one synara_create_threads call instead.",
+        "Create exactly one standalone Synara thread. Hub coordinators receive a durable workItems entry that can remain queued until a worker slot is available. Worktree threads start on a Synara-managed temporary branch pinned at baseRef; on the first turn Synara may rename the branch after the prompt and publish it. For two or more threads use one synara_create_threads call instead. The result includes a ready-to-use link (`thread://<threadId>`); when you mention the thread in a message to the user, write it as a markdown link like [title](thread://<threadId>).",
       inputSchema: {
         type: "object",
         properties: {
@@ -527,6 +635,7 @@ export const makeAgentGateway = Effect.gen(function* () {
             description:
               "Passively return the initial run result to this creating thread. Does not wake the creator; goal runs are unsupported.",
           },
+          contextMessageIds: contextMessageIdsSchema,
           prompt: { type: "string" },
           title: { type: "string" },
           target: {
@@ -593,6 +702,7 @@ export const makeAgentGateway = Effect.gen(function* () {
         };
         for (const key of [
           "title",
+          "contextMessageIds",
           "projectId",
           "environment",
           "baseRef",
@@ -605,23 +715,19 @@ export const makeAgentGateway = Effect.gen(function* () {
           const value = args[key];
           if (value !== undefined) spec[key] = value;
         }
-        return runCreateThreads(
+        return createWithHubQueue(
           decodeCreateThreadsInput({
             requestId: readStringArg(args, "requestId", { required: true }),
             threads: [spec],
           }),
-          {
-            kind: "provider-session",
-            callerThreadId: context.callerThreadId,
-            callerTurnId: context.callerTurnId,
-            assertAuthority: context.assertCallerTurnActive,
-            prepareWait: () => awaitRegistration.prepareRegistration(context),
-          },
+          context,
         ).pipe(
           Effect.map((result) => {
             if (result.isError) return result;
             const content = result.content[0];
-            const batch = JSON.parse(content?.type === "text" ? content.text : "{}") as {
+            const parsed = JSON.parse(content?.type === "text" ? content.text : "{}");
+            if (parsed.workItems) return result;
+            const batch = parsed as {
               operationId?: string;
               requestId?: string;
               instruction?: string;
@@ -644,12 +750,13 @@ export const makeAgentGateway = Effect.gen(function* () {
     definition: {
       name: "synara_send_message",
       description:
-        'Send a Synara follow-up message to an existing thread. mode "queue" (default) waits for the current turn; "steer" redirects a running turn where the provider supports it (otherwise it is queued).',
+        'Send a Synara follow-up message to an existing thread. mode "queue" (default) waits for the current turn. "steer" uses native steering when available; otherwise it queues the follow-up first and interrupts the running turn. With no live turn, it starts normally. Use "queue" for ordinary follow-ups.',
       inputSchema: {
         type: "object",
         properties: {
           threadId: { type: "string", description: "Target thread." },
           message: { type: "string", description: "Message text." },
+          contextMessageIds: contextMessageIdsSchema,
           mode: { type: "string", enum: ["queue", "steer"], description: "Dispatch mode." },
           awaitResult: {
             type: "boolean",
@@ -705,25 +812,137 @@ export const makeAgentGateway = Effect.gen(function* () {
         // provider state (authoritative, unlike this projection snapshot) and
         // already downgrades steers whose turn is not actually live.
         const dispatchMode: TurnDispatchMode = modeArg;
-        const suffix = randomUUID();
-        yield* orchestrationEngine
-          .dispatch({
-            type: "thread.turn.start",
-            commandId: CommandId.makeUnsafe(`agent:${suffix}:send`),
-            threadId: target.id,
-            message: {
-              messageId: MessageId.makeUnsafe(`agent:${suffix}:message`),
-              role: "user",
-              text: message,
-              attachments: [],
-            },
-            dispatchMode,
-            dispatchOrigin: "agent",
-            runtimeMode: target.runtimeMode,
-            interactionMode: target.interactionMode,
-            createdAt: isoNow(),
-          })
-          .pipe(Effect.mapError((error) => new ToolInputError(errorText(error))));
+        const principal = isServerGroupsEnabled()
+          ? yield* projectAgentService.resolvePrincipalForThread(caller.id)
+          : null;
+        const sourceMessages =
+          principal?.kind === "coordinator" && hubGateway
+            ? yield* resolveHubWorkSource({
+                snapshotQuery,
+                projectionTurns,
+                callerThreadId: caller.id,
+                callerTurnId: context.callerTurnId,
+                ...(args.contextMessageIds !== undefined
+                  ? {
+                      contextMessageIds: yield* Effect.try({
+                        try: () => {
+                          if (
+                            !Array.isArray(args.contextMessageIds) ||
+                            args.contextMessageIds.some((id) => typeof id !== "string")
+                          )
+                            throw new ToolInputError(
+                              "contextMessageIds must be an array of message IDs.",
+                            );
+                          return args.contextMessageIds as string[];
+                        },
+                        catch: (error) => new ToolInputError(errorText(error)),
+                      }),
+                    }
+                  : {}),
+              })
+            : [];
+        const suffix = sourceMessages.length
+          ? stableGatewayDigest(
+              { sourceMessages, targetThreadId: target.id, message, dispatchMode },
+              40,
+            )
+          : randomUUID();
+        const messageId = MessageId.makeUnsafe(`agent:${suffix}:message`);
+        if (sourceMessages.length) {
+          const targetDetail = yield* snapshotQuery.getThreadDetailById(target.id);
+          if (
+            Option.isSome(targetDetail) &&
+            targetDetail.value.messages.some((entry) => entry.id === messageId)
+          ) {
+            return mcpToolResultJson({
+              threadId: target.id,
+              dispatched: dispatchMode,
+              replayed: true,
+            });
+          }
+        }
+        const attachments =
+          sourceMessages.length && attachmentRepository
+            ? yield* cloneDelegatedAttachments({
+                sourceMessages,
+                targetThreadId: target.id,
+                targetMessageId: messageId,
+                dispatchKey: suffix,
+                attachmentsDir: serverConfig.attachmentsDir,
+                repository: attachmentRepository,
+                principal: LOCAL_LOOPBACK_ATTACHMENT_PRINCIPAL,
+              })
+            : [];
+        yield* context.assertCallerTurnActive();
+        yield* assertCallerMayDriveThread(
+          yield* requireThreadShell(context.callerThreadId),
+          yield* requireThreadShell(threadId),
+        );
+        const followupCommandId = CommandId.makeUnsafe(`agent:${suffix}:send`);
+        const admission =
+          sourceMessages.length && hubGateway
+            ? yield* hubGateway.service.admitFollowup({
+                threadId: target.id,
+                commandId: followupCommandId,
+                messageId,
+              })
+            : null;
+        const command = {
+          type: "thread.turn.start",
+          commandId: followupCommandId,
+          threadId: target.id,
+          message: {
+            messageId,
+            role: "user",
+            text: sourceMessages.length
+              ? renderHubWorkPrompt({ brief: message, sourceMessages })
+              : message,
+            attachments,
+          },
+          dispatchMode,
+          dispatchOrigin: "agent",
+          runtimeMode: target.runtimeMode,
+          interactionMode: target.interactionMode,
+          // A durable worker admission pins replay time. Source timestamps describe
+          // quoted history, not when this new target turn was requested.
+          createdAt: admission?.admittedAt ?? isoNow(),
+        } satisfies OrchestrationCommand;
+        yield* orchestrationEngine.dispatch(command).pipe(
+          Effect.catchTag("OrchestrationCommandIdentityCollisionError", (error) =>
+            Effect.gen(function* () {
+              if (admission || !sourceMessages.length || !commandReceipts)
+                return yield* Effect.fail(error);
+              const receipt = yield* commandReceipts.getByCommandId({
+                commandId: followupCommandId,
+              });
+              if (
+                Option.isNone(receipt) ||
+                receipt.value.status !== "accepted" ||
+                receipt.value.aggregateKind !== "thread" ||
+                receipt.value.aggregateId !== target.id
+              ) {
+                return yield* Effect.fail(error);
+              }
+              // An identical send may have committed after our snapshot read. Reuse
+              // its durable time; the engine still validates the full command identity.
+              return yield* orchestrationEngine.dispatch({
+                ...command,
+                createdAt: receipt.value.acceptedAt,
+              });
+            }),
+          ),
+          Effect.tapError(() =>
+            admission && hubGateway
+              ? hubGateway.service.releaseFailedFollowup({
+                  workItemId: admission.id,
+                  commandId: followupCommandId,
+                  admittedAt: admission.admittedAt,
+                  expectedRevision: admission.revision,
+                })
+              : Effect.void,
+          ),
+          Effect.mapError((error) => new ToolInputError(errorText(error))),
+        );
         return mcpToolResultJson({ threadId: target.id, dispatched: dispatchMode });
       }).pipe(
         Effect.catch((error) =>
@@ -1133,6 +1352,9 @@ export const makeAgentGateway = Effect.gen(function* () {
     resolveWorkspaceRoot,
   });
   const mcpTools = providerService ? makeAgentGatewayMcpTools({ providerService }) : [];
+  const projectAgentTools = makeProjectAgentTools({
+    projectAgent: projectAgentService,
+  });
 
   // One denial activity per (thread, turn, tool): agents typically retry the denied
   // tool several times in a row, and repeated cards would bury the chat — but a
@@ -1468,6 +1690,118 @@ export const makeAgentGateway = Effect.gen(function* () {
         })
       : [];
 
+  const kanbanTools = makeAgentGatewayKanbanTools({
+    snapshotQuery,
+    workspacePaths: {
+      homeDir: serverConfig.homeDir,
+      chatWorkspaceRoot: serverConfig.chatWorkspaceRoot,
+    },
+    helpers: {
+      // Move-card re-reads and live-checks the target shell itself, so the
+      // plain loader is correct for every column.
+      requireThreadShell,
+      assertCallerMayDriveThread,
+      runCreateThreads,
+      startTurn: ({ threadId, message, dispatchMode, runtimeMode, interactionMode }) => {
+        const suffix = randomUUID();
+        return orchestrationEngine
+          .dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.makeUnsafe(`agent:${suffix}:kanban-move`),
+            threadId: ThreadId.makeUnsafe(threadId),
+            message: {
+              messageId: MessageId.makeUnsafe(`agent:${suffix}:message`),
+              role: "user",
+              text: message,
+              attachments: [],
+            },
+            dispatchMode,
+            dispatchOrigin: "agent",
+            runtimeMode,
+            interactionMode,
+            createdAt: isoNow(),
+          })
+          .pipe(Effect.mapError((error) => new ToolInputError(errorText(error))));
+      },
+      interruptTurn: ({ threadId }) => {
+        const suffix = randomUUID();
+        return orchestrationEngine
+          .dispatch({
+            type: "thread.turn.interrupt",
+            commandId: CommandId.makeUnsafe(`agent:${suffix}:kanban-interrupt`),
+            threadId: ThreadId.makeUnsafe(threadId),
+            createdAt: isoNow(),
+          })
+          .pipe(
+            Effect.map((eventSequence) => ({ sequence: eventSequence.sequence })),
+            Effect.mapError((error) => new ToolInputError(errorText(error))),
+          );
+      },
+      // Draft creation mirrors the creation saga's thread.create dispatch but
+      // starts no turn, so the thread lands in the Draft column. No worktree
+      // setup runs: drafts are local threads until a move dispatches them.
+      createDraftThread: ({
+        title,
+        projectId,
+        modelSelection,
+        runtimeMode,
+        interactionMode,
+        sourceThreadId,
+        sourceTurnId,
+      }) => {
+        const threadId = ThreadId.makeUnsafe(randomUUID());
+        return orchestrationEngine
+          .dispatch({
+            type: "thread.create",
+            commandId: CommandId.makeUnsafe(`agent:${randomUUID()}:kanban-draft`),
+            threadId,
+            projectId: ProjectId.makeUnsafe(projectId),
+            title,
+            modelSelection,
+            runtimeMode,
+            interactionMode,
+            envMode: "local",
+            branch: null,
+            worktreePath: null,
+            creationSource: "synara_mcp",
+            sourceThreadId: ThreadId.makeUnsafe(sourceThreadId),
+            ...(sourceTurnId !== null ? { sourceTurnId: TurnId.makeUnsafe(sourceTurnId) } : {}),
+            createdAt: isoNow(),
+          })
+          .pipe(
+            Effect.map(() => ({ threadId: String(threadId) })),
+            Effect.mapError((error) => new ToolInputError(errorText(error))),
+          );
+      },
+      // Card metadata patch for the update/goal tools — mirrors setThreadTitle.
+      updateThreadMeta: ({ threadId, title, notes, goal }) =>
+        orchestrationEngine
+          .dispatch({
+            type: "thread.meta.update",
+            commandId: CommandId.makeUnsafe(`agent:${randomUUID()}:kanban-update`),
+            threadId: ThreadId.makeUnsafe(threadId),
+            ...(title !== undefined ? { title } : {}),
+            ...(notes !== undefined ? { notes } : {}),
+            ...(goal !== undefined ? { goal } : {}),
+          })
+          .pipe(
+            Effect.asVoid,
+            Effect.mapError((error) => new ToolInputError(errorText(error))),
+          ),
+      deleteThread: ({ threadId }) =>
+        orchestrationEngine
+          .dispatch({
+            type: "thread.delete",
+            commandId: CommandId.makeUnsafe(`agent:${randomUUID()}:kanban-delete`),
+            threadId: ThreadId.makeUnsafe(threadId),
+          })
+          .pipe(
+            Effect.asVoid,
+            Effect.mapError((error) => new ToolInputError(errorText(error))),
+          ),
+    },
+  });
+
   const tools: ReadonlyArray<ToolEntry> = [
     ...readTools,
     ...diagnosticTools,
@@ -1486,6 +1820,7 @@ export const makeAgentGateway = Effect.gen(function* () {
     ...memoryTools,
     ...browserTools,
     ...mcpTools,
+    ...kanbanTools,
     ...(deviceService?.supported === true
       ? makeAgentGatewayDeviceTools({
           manager: deviceService.manager,
@@ -1504,6 +1839,8 @@ export const makeAgentGateway = Effect.gen(function* () {
         })
       : []),
     ...computerBrowserTools,
+    // Group tools are Beta-only: Stable does not offer them to agents at all.
+    ...(isServerGroupsEnabled() ? [...projectAgentTools, ...(hubGateway?.tools ?? [])] : []),
   ];
 
   // The computer family by name, read off the unfiltered catalog above: a

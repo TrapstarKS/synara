@@ -21,7 +21,6 @@ import {
   type ErrorComponentProps,
   useNavigate,
   useParams,
-  useRouterState,
 } from "@tanstack/react-router";
 import {
   Suspense,
@@ -46,6 +45,7 @@ import { BetaWelcomeDialog } from "../components/BetaWelcomeDialog";
 import { useOnboarding } from "../onboarding/useOnboarding";
 import { ProjectImportAnnouncementDialog } from "../projectImport/ProjectImportAnnouncementDialog";
 import { useProjectImportDialogStore } from "../projectImport/projectImportDialogStore";
+import { FeatureTourDialog } from "../components/FeatureTourDialog";
 import { SafariAccessOnboarding } from "../components/SafariAccessOnboarding";
 import { QueuedComposerDrainCoordinator } from "../components/QueuedComposerDrainCoordinator";
 import { FeedbackDialog } from "../components/FeedbackDialog";
@@ -80,7 +80,7 @@ import {
 } from "../composerDraftStore";
 import { useStore } from "../store";
 import { EMPTY_THREAD_IDS } from "../storeState";
-import { createAllThreadsSelector } from "../storeSelectors";
+import { createAllThreadsSelector, createThreadSelector } from "../storeSelectors";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { terminalActivityFromEvent } from "../terminalActivity";
 import {
@@ -131,7 +131,9 @@ import { coalesceOrchestrationUiEvents } from "../orchestrationEventCoalescing";
 import { isThreadDetailVerifiedInSync } from "../threadDetailCatchupPolicy";
 import { useAppDensity } from "../hooks/useAppDensity";
 import { useChatWidth } from "../hooks/useChatWidth";
+import { useCommittedPathname } from "../hooks/useCommittedPathname";
 import { useDesktopAppIcon } from "../hooks/useDesktopAppIcon";
+import { useDesktopMenuShortcuts } from "../hooks/useDesktopMenuShortcuts";
 import { useAppTypography } from "../hooks/useAppTypography";
 import { usePreloadRouteChunks } from "../hooks/usePreloadRouteChunks";
 import { useSyncDesktopTopBarTrafficLightGutterZoom } from "../hooks/useDesktopTopBarGutter";
@@ -153,7 +155,10 @@ import {
 import { useProviderStatusRefresh } from "../hooks/useProviderStatusRefresh";
 import { resolveSplitViewThreadIds, selectSplitView, useSplitViewStore } from "../splitViewStore";
 import { useRightDockStore } from "../rightDockStore";
-import { resolveVisibleDockSidechatThreadIds } from "../rightDockStore.logic";
+import {
+  GITHUB_INBOX_DOCK_HOST_ID,
+  resolveVisibleDockSidechatThreadIds,
+} from "../rightDockStore.logic";
 import { arraysShallowEqual } from "../storeNormalization";
 import { providerModelDiscoveryInvalidationFingerprint } from "../lib/providerDiscoveryInvalidation";
 import {
@@ -175,6 +180,7 @@ import {
   PROVIDER_UPDATE_REFRESH_INTERVAL_MS,
   withProviderUpdateTimeout,
 } from "../providerUpdates";
+import { isProviderKind } from "../providerOrdering";
 import {
   getGitInvalidationThreadIdForEvent,
   getProjectFileInvalidationThreadIdForEvent,
@@ -184,6 +190,7 @@ import {
   shouldInvalidateProviderQueriesForEvent,
 } from "./-rootEventInvalidation";
 import { createDesktopProjectRecoveryAttemptGate } from "./-desktopProjectRecoveryAttempt";
+import { isSidechatThread } from "@synara/shared/sidechatThread";
 
 const SHELL_SNAPSHOT_BOOTSTRAP_FALLBACK_DELAY_MS = 1_500;
 const THREAD_DETAIL_CATCHUP_INTERVAL_MS = 1_500;
@@ -209,6 +216,14 @@ const PENDING_SHELL_EVENT_BUFFER_LIMIT = 1_024;
 const PENDING_THREAD_EVENT_BUFFER_LIMIT = 512;
 const IMMEDIATE_ASSISTANT_FLUSH_ID_LIMIT = 512;
 const seenProviderUpdateNotificationKeys = new Set<string>();
+
+function providerStatusDisplayName(provider: ServerProviderStatus): string {
+  if (provider.displayName?.trim()) {
+    return provider.displayName;
+  }
+  const driver = provider.driver ?? provider.provider;
+  return isProviderKind(driver) ? PROVIDER_DISPLAY_NAMES[driver] : driver;
+}
 
 type ProviderUpdateToastId = ReturnType<typeof toastManager.add>;
 type ActiveProviderUpdateToast =
@@ -341,7 +356,9 @@ function RootRouteView() {
           <TaskCompletionNotifications />
           <QueuedComposerDrainCoordinator />
           <SafariAccessOnboarding>
-            <AppSnapWelcomeDialog />
+            <AppSnapWelcomeDialog>
+              <FeatureTourDialog />
+            </AppSnapWelcomeDialog>
             <BetaWelcomeDialog />
           </SafariAccessOnboarding>
           <GlobalOnboardingDialog />
@@ -529,7 +546,7 @@ async function runProviderUpdateAll(params: {
       title: "Updating providers...",
       description:
         providers.length === 1
-          ? `Updating ${PROVIDER_DISPLAY_NAMES[providers[0]!.provider]}.`
+          ? `Updating ${providerStatusDisplayName(providers[0]!)}.`
           : `Updating ${providers.length} providers.`,
       timeout: 0,
     });
@@ -547,7 +564,7 @@ async function runProviderUpdateAll(params: {
     title: "Updating providers...",
     description:
       providers.length === 1
-        ? `Updating ${PROVIDER_DISPLAY_NAMES[providers[0]!.provider]}.`
+        ? `Updating ${providerStatusDisplayName(providers[0]!)}.`
         : `Updating ${providers.length} providers.`,
     actionProps: undefined,
     data: { onClose: dismissProgressToast },
@@ -560,11 +577,26 @@ async function runProviderUpdateAll(params: {
     const api = ensureNativeApi();
     for (const provider of providers) {
       try {
+        const driver = provider.driver ?? provider.provider;
+        if (!isProviderKind(driver)) {
+          failures.push({
+            provider,
+            reason: "This provider driver cannot be updated by this Synara build.",
+          });
+          continue;
+        }
         const result = await withProviderUpdateTimeout({
-          provider: provider.provider,
-          request: api.server.updateProvider({ provider: provider.provider }),
+          provider: driver,
+          request: api.server.updateProvider({
+            provider: driver,
+            ...(provider.instanceId ? { instanceId: provider.instanceId } : {}),
+          }),
         });
-        const refreshed = result.providers.find((entry) => entry.provider === provider.provider);
+        const refreshed = result.providers.find(
+          (entry) =>
+            (entry.driver ?? entry.provider) === driver &&
+            (entry.instanceId ?? entry.provider) === (provider.instanceId ?? provider.provider),
+        );
         const updateState = refreshed?.updateState;
         if (updateState?.status === "failed" || updateState?.status === "unchanged") {
           failures.push({
@@ -621,7 +653,7 @@ async function runProviderUpdateAll(params: {
       ),
     );
     const failureLines = failures
-      .map(({ provider, reason }) => `${PROVIDER_DISPLAY_NAMES[provider.provider]}: ${reason}`)
+      .map(({ provider, reason }) => `${providerStatusDisplayName(provider)}: ${reason}`)
       .join("\n");
     toastManager.update(toastId, {
       type: "error",
@@ -647,7 +679,7 @@ async function runProviderUpdateAll(params: {
     type: "success",
     title:
       providers.length === 1
-        ? `${PROVIDER_DISPLAY_NAMES[providers[0]!.provider]} updated`
+        ? `${providerStatusDisplayName(providers[0]!)} updated`
         : `${providers.length} providers updated`,
     description: "New sessions will use the refreshed provider tools.",
     data: { onClose: dismissProgressToast },
@@ -720,7 +752,7 @@ function ProviderUpdateNotifications({
 
     const firstProvider = outdatedProviders[0]!;
     const additionalCount = outdatedProviders.length - 1;
-    const providerName = PROVIDER_DISPLAY_NAMES[firstProvider.provider];
+    const providerName = providerStatusDisplayName(firstProvider);
     const title =
       outdatedProviders.length === 1
         ? `${providerName} update available`
@@ -775,6 +807,7 @@ function GlobalShortcutsDialog() {
   const [open, setOpen] = useState(false);
   const { focusedThreadId, activeProject } = useFocusedChatContext();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  useDesktopMenuShortcuts(serverConfigQuery.data?.keybindings);
   const keybindings = serverConfigQuery.data?.keybindings ?? [];
   const platform = getNavigatorPlatform();
   const activeThreadTerminalState = useTerminalStateStore((state) =>
@@ -822,8 +855,13 @@ function GlobalShortcutsDialog() {
 }
 
 function GlobalFeedbackDialog() {
-  const { activeProject, activeThread } = useFocusedChatContext();
+  const { activeProject, focusedThreadId } = useFocusedChatContext();
   const isOpen = useFeedbackDialogStore((state) => state.isOpen);
+  // The report describes the live thread, transcript counts included; only follow it while
+  // the dialog is open so a closed dialog does not re-render for every streamed token.
+  const activeThread = useStore(
+    useMemo(() => createThreadSelector(isOpen ? focusedThreadId : null), [focusedThreadId, isOpen]),
+  );
   const requestedContext = useFeedbackDialogStore((state) => state.context);
   const setOpen = useFeedbackDialogStore((state) => state.setOpen);
   const context: FeedbackThreadContext = requestedContext ?? {
@@ -1197,7 +1235,7 @@ function EventRouter() {
   const serverThreadIds = useStore((store) => store.threadIds ?? EMPTY_THREAD_IDS);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathname = useCommittedPathname();
   const routeThreadId = useParams({
     strict: false,
     select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),
@@ -1218,17 +1256,21 @@ function EventRouter() {
   // Right-dock sidechat panes render a full ChatView for their embedded thread,
   // so they need a detail lease exactly like split-view panes: without one the
   // sidechat's snapshot never syncs and its transcript stays on the loading state.
+  // The Inbox route (`/pull-requests`) hosts a thread-less dock for standalone side chats.
   const dockStateByThreadId = useRightDockStore((store) => store.dockStateByThreadId);
+  const isGitHubInboxRoute = pathname === "/pull-requests" || pathname === "/pull-requests/";
   const visibleThreadIds = useMemo(
     () => [
       ...hostThreadIds,
       ...resolveVisibleDockSidechatThreadIds({
         dockRendered: routeSearch.view !== "editor",
         dockStateByThreadId,
-        hostThreadIds,
+        hostThreadIds: isGitHubInboxRoute
+          ? [...hostThreadIds, GITHUB_INBOX_DOCK_HOST_ID]
+          : hostThreadIds,
       }),
     ],
-    [dockStateByThreadId, hostThreadIds, routeSearch.view],
+    [dockStateByThreadId, hostThreadIds, isGitHubInboxRoute, routeSearch.view],
   );
   const retainedThreadIds = useRetainedThreadDetailIds();
   const serverThreadIdSet = useMemo(() => new Set(serverThreadIds), [serverThreadIds]);
@@ -1237,7 +1279,7 @@ function EventRouter() {
     () =>
       new Set(
         serverThreadIds.filter((threadId) =>
-          Boolean(sidebarThreadSummaryById[threadId]?.sidechatSourceThreadId),
+          isSidechatThread(sidebarThreadSummaryById[threadId] ?? {}),
         ),
       ),
     [serverThreadIds, sidebarThreadSummaryById],
@@ -2376,6 +2418,7 @@ function EventRouter() {
           homeDir: payload.homeDir,
           chatWorkspaceRoot: payload.chatWorkspaceRoot,
           studioWorkspaceRoot: payload.studioWorkspaceRoot,
+          groupsWorkspaceRoot: payload.groupsWorkspaceRoot,
         });
         await ensureScopedSubscriptions();
         if (disposed) {
@@ -2465,6 +2508,9 @@ function EventRouter() {
         });
         void queryClient.invalidateQueries({
           queryKey: ["provider-discovery", "models", "cursor"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["provider-discovery", "models", "claudeAgent"],
         });
         void queryClient.invalidateQueries({
           queryKey: providerDiscoveryQueryKeys.agentsForProvider("opencode"),

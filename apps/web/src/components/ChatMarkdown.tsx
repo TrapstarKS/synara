@@ -13,7 +13,7 @@ import {
   TriangleAlertIcon,
   type LucideIcon,
 } from "~/lib/icons";
-import type { ProviderMentionReference } from "@synara/contracts";
+import { ThreadId, type ProviderMentionReference } from "@synara/contracts";
 import { isLocalAbsolutePath, isWindowsAbsolutePath } from "@synara/shared/path";
 import { encodeFilePathForUrl, markdownFilePathHref } from "@synara/shared/fileUrls";
 import "katex/dist/katex.min.css";
@@ -35,6 +35,7 @@ import React, {
   useRef,
   useState,
   type ReactNode,
+  type SyntheticEvent,
 } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
@@ -52,6 +53,11 @@ import { isLocalImageMarkdownSrc } from "../lib/localImageUrls";
 import { repairMarkdownTableDelimiters } from "../lib/markdownTableRepair";
 import { showFileReferenceContextMenu } from "../lib/fileReferenceContextMenu";
 import { createLocalFileClipboardSource } from "../lib/desktopClipboard";
+import {
+  ChatLinkActionsContext,
+  resolveGitHubItemClickOpener,
+  showLinkContextMenu,
+} from "../lib/linkContextMenu";
 import { useTheme } from "../hooks/useTheme";
 import { useSmoothStreamedText } from "../hooks/useSmoothStreamedText";
 import { useThrottledStreamingValue } from "../hooks/useThrottledStreamingValue";
@@ -136,7 +142,9 @@ interface ChatMarkdownProps {
   isStreaming?: boolean;
   className?: string | undefined;
   style?: CSSProperties | undefined;
-  onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
+  onImageExpand?:
+    | ((preview: ExpandedImagePreview, sourceImage?: HTMLImageElement) => void)
+    | undefined;
   /** Case-insensitive substring to wrap while in-thread find is open. */
   findQuery?: string | undefined;
   /** Active occurrence in this markdown body; other hits stay dimmer. */
@@ -150,6 +158,7 @@ interface ChatMarkdownProps {
   variant?: "assistant" | "user";
   /** Mention metadata for chip icon resolution; only used by the user variant. */
   mentionReferences?: ReadonlyArray<ProviderMentionReference> | undefined;
+  onOpenThread?: ((threadId: ThreadId) => void) | undefined;
   /** Terminal selections rendered as inline chips inside user-message markdown. */
   terminalContexts?: ReadonlyArray<ParsedTerminalContextEntry> | undefined;
   /**
@@ -243,8 +252,21 @@ function restoreLiteralDollarPlaceholders(value: string): string {
     .replaceAll(encodeURIComponent(LITERAL_DOLLAR_PLACEHOLDER), "$");
 }
 
+// synara://thread/<target> links carry an id or title that may be
+// %-encoded; a malformed sequence keeps the raw target instead of throwing.
+function decodeSynaraThreadLinkTarget(target: string): string {
+  try {
+    return decodeURIComponent(target).trim();
+  } catch {
+    return target.trim();
+  }
+}
+
 function markdownUrlTransform(href: string, key: string): string {
   const restoredHref = restoreLiteralDollarPlaceholders(href);
+  if (restoredHref.startsWith("thread://") || restoredHref.startsWith("synara://thread/")) {
+    return restoredHref;
+  }
   // Drive letters look like URI schemes to the default sanitizer. Image paths
   // are consumed by our authenticated local-file route, never by a browser URL.
   if (key === "src" && isLocalImageMarkdownSrc(restoredHref)) return restoredHref;
@@ -1081,6 +1103,7 @@ function UncachedShikiCodeBlock({
 }
 
 interface MarkdownRenderContextValue {
+  isInsideLink: boolean;
   cwd: ChatMarkdownProps["cwd"];
   knownAbsoluteFilePaths: string[] | undefined;
   diffThemeName: DiffThemeName;
@@ -1088,6 +1111,7 @@ interface MarkdownRenderContextValue {
   isUserVariant: boolean;
   mentionReferences: ChatMarkdownProps["mentionReferences"];
   onImageExpand: ChatMarkdownProps["onImageExpand"];
+  onOpenThread: ChatMarkdownProps["onOpenThread"];
   onTaskToggle: ChatMarkdownProps["onTaskToggle"];
   resolvedTheme: ReturnType<typeof useTheme>["resolvedTheme"];
   terminalContexts: ChatMarkdownProps["terminalContexts"];
@@ -1122,8 +1146,20 @@ const MARKDOWN_COMPONENTS: Components = {
     );
   },
   a: function MarkdownLink({ node, href, children, ...props }) {
-    const { isUserVariant, cwd, knownAbsoluteFilePaths, resolvedTheme, sourceText } =
-      useContext(MarkdownRenderContext)!;
+    const context = useContext(MarkdownRenderContext)!;
+    const { isUserVariant, cwd, knownAbsoluteFilePaths, resolvedTheme, sourceText, onOpenThread } =
+      context;
+    const linkedContext = useMemo(
+      () => ({ ...context, onImageExpand: undefined, isInsideLink: true }),
+      [context],
+    );
+    // Linked images belong to the link, not to the fullscreen gallery.
+    const linkedChildren = (
+      <MarkdownRenderContext.Provider value={linkedContext}>
+        {children}
+      </MarkdownRenderContext.Provider>
+    );
+    const linkActions = useContext(ChatLinkActionsContext);
     const start = node?.position?.start.offset;
     const end = node?.position?.end.offset;
     const legacyPath =
@@ -1136,6 +1172,22 @@ const MARKDOWN_COMPONENTS: Components = {
         : href
           ? restoreLiteralDollarPlaceholders(href)
           : href;
+    const threadHref = restoredHref?.startsWith("thread://")
+      ? restoredHref.slice("thread://".length)
+      : restoredHref?.startsWith("synara://thread/")
+        ? decodeSynaraThreadLinkTarget(restoredHref.slice("synara://thread/".length))
+        : null;
+    if (threadHref && onOpenThread) {
+      return (
+        <button
+          type="button"
+          className="inline p-0 text-inherit underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70"
+          onClick={() => onOpenThread(ThreadId.makeUnsafe(threadHref))}
+        >
+          {linkedChildren}
+        </button>
+      );
+    }
     const isExternalHttp = isExternalHttpHref(restoredHref);
     if (isUserVariant && isExternalHttp) {
       // GFM autolinks a pasted URL before the chips plugin can see it; when the
@@ -1162,11 +1214,33 @@ const MARKDOWN_COMPONENTS: Components = {
           target="_blank"
           rel="noopener noreferrer"
           className={isExternalHttp ? MARKDOWN_EXTERNAL_LINK_CLASS_NAME : props.className}
+          {...(isExternalHttp
+            ? {
+                // A plain click on a pull request or issue follows the user's setting (in
+                // the app by default); cmd/ctrl-click keeps the default external open.
+                onClick: (event: React.MouseEvent) => {
+                  if (event.metaKey || event.ctrlKey) return;
+                  const openGitHubItem = resolveGitHubItemClickOpener(restoredHref, linkActions);
+                  if (!openGitHubItem) return;
+                  event.preventDefault();
+                  openGitHubItem(restoredHref);
+                },
+                onContextMenu: (event: React.MouseEvent) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void showLinkContextMenu({
+                    url: restoredHref,
+                    position: { x: event.clientX, y: event.clientY },
+                    actions: linkActions,
+                  });
+                },
+              }
+            : {})}
         >
           {isExternalHttp ? (
             <LinkChipIcon url={restoredHref} className={MARKDOWN_EXTERNAL_LINK_ICON_CLASS_NAME} />
           ) : null}
-          {children}
+          {linkedChildren}
         </a>
       );
     }
@@ -1175,7 +1249,7 @@ const MARKDOWN_COMPONENTS: Components = {
       <OpenableFileChip
         targetPath={targetPath}
         theme={resolvedTheme}
-        label={children}
+        label={linkedChildren}
         {...(restoredHref
           ? { href: rewriteMarkdownFileUriHref(restoredHref) ?? restoredHref }
           : {})}
@@ -1259,7 +1333,7 @@ const MARKDOWN_COMPONENTS: Components = {
     );
   },
   img: function MarkdownImage({ node, src, alt: altProp, ...props }) {
-    const { cwd, onImageExpand, sourceText } = useContext(MarkdownRenderContext)!;
+    const { cwd, onImageExpand, sourceText, isInsideLink } = useContext(MarkdownRenderContext)!;
     const alt = altProp ?? "";
     const start = node?.position?.start.offset;
     const end = node?.position?.end.offset;
@@ -1278,10 +1352,35 @@ const MARKDOWN_COMPONENTS: Components = {
           alt={alt}
           cwd={cwd}
           onImageExpand={onImageExpand}
+          isLinked={isInsideLink}
         />
       );
     }
-    return <img {...props} src={restoredSrc} alt={alt} loading="lazy" />;
+    if (!onImageExpand || !restoredSrc) {
+      return <img {...props} src={restoredSrc} alt={alt} loading="lazy" />;
+    }
+    const expandImage = (event: SyntheticEvent<HTMLImageElement>) => {
+      event.preventDefault();
+      onImageExpand(
+        { images: [{ src: restoredSrc, name: alt || "Image" }], index: 0 },
+        event.currentTarget,
+      );
+    };
+    return (
+      <img
+        {...props}
+        src={restoredSrc}
+        alt={alt}
+        loading="lazy"
+        role="button"
+        tabIndex={0}
+        data-expandable-image=""
+        onClick={expandImage}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") expandImage(event);
+        }}
+      />
+    );
   },
   li: function MarkdownListItem({ node, children, ...props }) {
     // Task items carry their source line down to the checkbox via context.
@@ -1369,6 +1468,7 @@ function ChatMarkdown({
   variant: variantProp,
   mentionReferences,
   terminalContexts,
+  onOpenThread,
 }: ChatMarkdownProps) {
   // Defaults applied with ?? in the body, not in the destructuring: default
   // values in parameter destructuring make React Compiler 1.0.0 bail on the
@@ -1446,6 +1546,7 @@ function ChatMarkdown({
   }, [findActiveRange, findQuery, renderedText]);
   const renderContext = useMemo<MarkdownRenderContextValue>(
     () => ({
+      isInsideLink: false,
       cwd,
       knownAbsoluteFilePaths,
       diffThemeName,
@@ -1453,6 +1554,7 @@ function ChatMarkdown({
       isUserVariant,
       mentionReferences,
       onImageExpand,
+      onOpenThread,
       onTaskToggle,
       resolvedTheme,
       terminalContexts,
@@ -1466,6 +1568,7 @@ function ChatMarkdown({
       isUserVariant,
       mentionReferences,
       onImageExpand,
+      onOpenThread,
       onTaskToggle,
       resolvedTheme,
       terminalContexts,

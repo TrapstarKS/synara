@@ -54,6 +54,7 @@ interface ChatTurnFollowUpsInput {
   sendInFlightRef: RefObject<boolean>;
   setThreadError: (targetThreadId: ThreadId | null, error: string | null) => void;
   setTailAnchor: Dispatch<SetStateAction<{ threadId: ThreadId; messageId: MessageId } | null>>;
+  anchorSentMessagesToTop: boolean;
   activeProposedPlan: LatestProposedPlanState | null;
   setQueuedSteerGate: Dispatch<SetStateAction<QueuedSteerGate | null>>;
   planSidebarDismissedForTurnRef: RefObject<string | null>;
@@ -109,6 +110,7 @@ export function useChatTurnFollowUps({
   sendInFlightRef,
   setThreadError,
   setTailAnchor,
+  anchorSentMessagesToTop,
   activeProposedPlan,
   setQueuedSteerGate,
   planSidebarDismissedForTurnRef,
@@ -195,8 +197,10 @@ export function useChatTurnFollowUps({
       },
     ]);
     armTranscriptAutoFollow(threadIdForSend, true);
-    tailAnchorScrollInFlightRef.current = true;
-    setTailAnchor({ threadId: threadIdForSend, messageId: messageIdForSend });
+    tailAnchorScrollInFlightRef.current = anchorSentMessagesToTop;
+    setTailAnchor(
+      anchorSentMessagesToTop ? { threadId: threadIdForSend, messageId: messageIdForSend } : null,
+    );
 
     // Nested function so the `try` body holds no value blocks — see the comment on
     // `deleteEmptyTerminalThread` above for why React Compiler requires this shape.
@@ -228,6 +232,9 @@ export function useChatTurnFollowUps({
       rememberCustomBinaryPathForDispatch({
         threadId: threadIdForSend,
         provider: planDispatchSettings.modelSelection.provider,
+        providerInstanceId:
+          planDispatchSettings.modelSelection.instanceId ??
+          planDispatchSettings.modelSelection.provider,
         providerOptions: planDispatchSettings.providerOptions,
       });
       await api.orchestration.dispatchCommand({
@@ -507,6 +514,9 @@ export function useChatTurnFollowUps({
         rememberCustomBinaryPathForDispatch({
           threadId: nextThreadId,
           provider: implementationDispatchSettings.modelSelection.provider,
+          providerInstanceId:
+            implementationDispatchSettings.modelSelection.instanceId ??
+            implementationDispatchSettings.modelSelection.provider,
           providerOptions: implementationDispatchSettings.providerOptions,
         });
         return api.orchestration.dispatchCommand({

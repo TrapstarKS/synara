@@ -19,6 +19,7 @@ import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
@@ -28,10 +29,60 @@ const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.makeUnsafe(value);
 
 const projectionSnapshotLayer = it.layer(
-  OrchestrationProjectionSnapshotQueryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+  OrchestrationProjectionSnapshotQueryLive.pipe(
+    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+  ),
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("identifies project imports from durable provenance in full and shell snapshots", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-10-04T10:00:00.000Z";
+      yield* sql`INSERT INTO projection_projects
+        (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('import-flag-project', 'Import flag', '/tmp/import-flag', '[]', ${now}, ${now})`;
+      for (const [id, status] of [
+        ["native-history-thread", null],
+        ["imported-history-thread", "completed"],
+        ["pending-history-thread", "pending"],
+      ] as const) {
+        const threadId = asThreadId(id);
+        yield* sql`INSERT INTO projection_threads
+          (thread_id, project_id, title, model_selection_json, created_at, updated_at)
+          VALUES (${threadId}, 'import-flag-project', ${id}, '{"provider":"codex","model":"gpt-5"}', ${now}, ${now})`;
+        if (status)
+          yield* sql`INSERT INTO project_import_origins
+          (source_key, provider, source_home, external_id, project_id, thread_id, status, created_at)
+          VALUES (${id}, 'codex', '/tmp/codex', ${id}, 'import-flag-project', ${threadId}, ${status}, ${now})`;
+        const snapshots = [
+          yield* query.getSnapshot(),
+          yield* query.getShellSnapshot(),
+          yield* query.getCommandReadModel(),
+        ];
+        const threads = [
+          ...snapshots.map((snapshot) => snapshot.threads.find((thread) => thread.id === threadId)),
+          Option.getOrUndefined(yield* query.getThreadDetailById(threadId)),
+          Option.getOrUndefined(yield* query.getThreadShellById(threadId)),
+        ];
+        for (const thread of threads) {
+          assert.isDefined(thread);
+          assert.strictEqual(thread?.isProjectImport ?? false, status === "completed");
+        }
+        if (status === "pending") {
+          yield* sql`UPDATE project_import_origins SET status = 'completed' WHERE thread_id = ${threadId}`;
+          const completed = yield* query.getShellSnapshot();
+          assert.strictEqual(
+            completed.threads.find((thread) => thread.id === threadId)?.isProjectImport,
+            true,
+          );
+        }
+      }
+    }),
+  );
+
   it.effect("rehydrates pending cache decisions in snapshots and thread detail after restart", () =>
     Effect.gen(function* () {
       const query = yield* ProjectionSnapshotQuery;
@@ -574,6 +625,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           workspaceRoot: "/tmp/project-1",
           defaultModelSelection: {
             provider: "codex",
+            instanceId: "codex",
             model: "gpt-5-codex",
           },
           scripts: [
@@ -598,6 +650,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           title: "Thread 1",
           modelSelection: {
             provider: "codex",
+            instanceId: "codex",
             model: "gpt-5-codex",
           },
           interactionMode: "default",
@@ -622,6 +675,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           subagentRole: null,
           forkSourceThreadId: null,
           sidechatSourceThreadId: null,
+          sidechatContext: null,
           sidechatLastActivityAt: null,
           sidechatExpiredAt: null,
           lastKnownPr: null,
@@ -651,6 +705,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           updatedAt: "2026-02-24T00:00:03.000Z",
           archivedAt: null,
           settledAt: null,
+          snoozedUntil: null,
+          snoozeReminderAt: null,
           deletedAt: null,
           handoff: null,
           messages: [
@@ -743,6 +799,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             providerName: "codex",
             runtimeMode: "approval-required",
             activeTurnId: asTurnId("turn-1"),
+            lastActivityAt: null,
+            lastProgressAt: null,
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
@@ -1631,11 +1689,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
 
       const expectedProjectSelection = {
         provider: "codex",
+        instanceId: "codex",
         model: "imported-project-model",
         options: { reasoningEffort: "medium" },
       } as const;
       const expectedThreadSelection = {
         provider: "codex",
+        instanceId: "codex",
         model: "gpt-5.5",
         profileId: CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853"),
         options: { reasoningEffort: "medium" },
@@ -2152,6 +2212,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           title: "Shell Thread",
           modelSelection: {
             provider: "codex",
+            instanceId: "codex",
             model: "gpt-5-codex",
           },
           interactionMode: "default",
@@ -2176,6 +2237,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           subagentRole: null,
           forkSourceThreadId: null,
           sidechatSourceThreadId: null,
+          sidechatContext: null,
           sidechatLastActivityAt: null,
           sidechatExpiredAt: null,
           lastKnownPr: null,
@@ -2202,6 +2264,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           updatedAt: "2026-03-03T00:00:03.000Z",
           archivedAt: null,
           settledAt: null,
+          snoozedUntil: null,
+          snoozeReminderAt: null,
           handoff: null,
           session: {
             threadId: ThreadId.makeUnsafe("thread-shell"),
@@ -2209,6 +2273,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             providerName: "codex",
             runtimeMode: "full-access",
             activeTurnId: null,
+            lastActivityAt: null,
+            lastProgressAt: null,
             lastError: null,
             updatedAt: "2026-03-03T00:00:04.000Z",
           },
@@ -2222,6 +2288,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (threadShell._tag === "Some") {
         assert.deepEqual(threadShell.value, shellSnapshot.threads[0]);
       }
+
+      // Regression: the batched session lookup must select provider_instance_id
+      // so threads with a session row decode (Hub work reconcile relies on it).
+      const shellsByIds = yield* snapshotQuery.getThreadShellsByIds([
+        ThreadId.makeUnsafe("thread-shell"),
+      ]);
+      assert.deepEqual(shellsByIds, shellSnapshot.threads);
     }),
   );
 

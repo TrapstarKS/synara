@@ -5,6 +5,7 @@ import { type AppSettings, AppSettingsSchema } from "~/appSettings";
 import {
   createProviderInstallResetPatch,
   isProviderInstallSettingsDirty,
+  providerInstanceLaunchConfigFor,
 } from "./ProvidersSettingsPanel";
 
 const defaults = AppSettingsSchema.makeUnsafe({});
@@ -75,6 +76,8 @@ describe("createProviderInstallResetPatch", () => {
         "claudeBinaryPath",
         "claudeEnableArtifacts",
         "claudeEnableChrome",
+        "claudeHomePath",
+        "codexAccounts",
         "codexBinaryPath",
         "codexHomePath",
         "cursorApiEndpoint",
@@ -90,9 +93,36 @@ describe("createProviderInstallResetPatch", () => {
         "openCodeServerUrl",
         "piAgentDir",
         "piBinaryPath",
+        "providerInstances",
+        "selectedCodexAccountId",
       ].sort(),
     );
     expect(patch.openCodeServerPassword).toBe("");
     expect(patch.chatGptOpenAiTunnelApiKey).toBe("");
+  });
+});
+
+describe("providerInstanceLaunchConfigFor", () => {
+  it("maps Pi-family agent directories to agentDir, not binaryPath", () => {
+    expect(
+      providerInstanceLaunchConfigFor("omp", {
+        ...defaults,
+        ompBinaryPath: "/usr/local/bin/omp",
+        ompAgentDir: "~/.omp-work/agent",
+      }),
+    ).toEqual({ binaryPath: "/usr/local/bin/omp", agentDir: "~/.omp-work/agent" });
+    expect(
+      providerInstanceLaunchConfigFor("pi", { ...defaults, piAgentDir: "~/.pi-work/agent" }),
+    ).toEqual({ agentDir: "~/.pi-work/agent" });
+  });
+
+  it("keeps the Claude binary path and leaves the provider-wide Artifacts setting out", () => {
+    expect(
+      providerInstanceLaunchConfigFor("claudeAgent", {
+        ...defaults,
+        claudeBinaryPath: "/opt/homebrew/bin/claude",
+        claudeEnableArtifacts: true,
+      }),
+    ).toEqual({ binaryPath: "/opt/homebrew/bin/claude" });
   });
 });

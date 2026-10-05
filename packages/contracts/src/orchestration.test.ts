@@ -48,36 +48,21 @@ const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrches
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadPullRequest = Schema.decodeUnknownEffect(OrchestrationThreadPullRequest);
+const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelection);
 
-it.effect("decodes continuous provider handoff commands and events", () =>
+it.effect("preserves account-scoped model selections through the JSON codec", () =>
   Effect.gen(function* () {
-    const command = yield* decodeClientOrchestrationCommand({
-      type: "thread.provider.handoff",
-      commandId: "cmd-provider-handoff",
-      threadId: "thread-1",
-      expectedSourceProvider: "claudeAgent",
-      targetModelSelection: { provider: "grok", model: "grok-code" },
-      createdAt: "2026-09-10T10:00:00.000Z",
-    });
-    assert.equal(command.type, "thread.provider.handoff");
+    const codec = Schema.toCodecJson(ModelSelection);
+    const selection = { provider: "codex", instanceId: "codex_work", model: "gpt-5.5" };
+    const wire = JSON.parse(JSON.stringify(Schema.encodeUnknownSync(codec)(selection)));
+    assert.deepStrictEqual(wire, selection);
+    const decoded = yield* Schema.decodeUnknownEffect(codec)(wire);
+    assert.deepStrictEqual(decoded, selection);
+  }),
+);
 
-    const completionInput = {
-      type: "thread.provider.handoff.complete",
-      commandId: "server:complete-provider-handoff",
-      threadId: "thread-1",
-      handoffCommandId: "cmd-provider-handoff",
-      handoffEventId: "event-provider-handoff",
-      sourceModelSelection: { provider: "claudeAgent", model: "claude-sonnet" },
-      targetModelSelection: { provider: "grok", model: "grok-code" },
-      createdAt: "2026-09-10T10:00:00.000Z",
-    };
-    const completion = yield* decodeOrchestrationCommand(completionInput);
-    assert.equal(completion.type, "thread.provider.handoff.complete");
-    assert.equal(
-      (yield* Effect.exit(decodeClientOrchestrationCommand(completionInput)))._tag,
-      "Failure",
-    );
-
+it.effect("decodes persisted continuous provider handoff events", () =>
+  Effect.gen(function* () {
     const event = yield* decodeOrchestrationEvent({
       sequence: 1,
       eventId: "event-provider-handoff",
@@ -215,6 +200,105 @@ it.effect("preserves thread activity payloads through the RPC JSON codec", () =>
   }),
 );
 
+it.effect("preserves provider instance ids when decoding model selections", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeModelSelection({
+      provider: "claudeAgent",
+      instanceId: "claude_work",
+      model: "claude-sonnet-4-6",
+    });
+
+    assert.deepStrictEqual(parsed, {
+      provider: "claudeAgent",
+      instanceId: "claude_work",
+      model: "claude-sonnet-4-6",
+    });
+  }),
+);
+
+it.effect("normalizes mixed legacy option payloads when decoding model selections", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeModelSelection({
+      provider: "claudeAgent",
+      model: "claude-sonnet-4-6",
+      options: {
+        effort: "max",
+        fastMode: true,
+        budget: 12,
+        nullish: null,
+        nested: { foo: 1 },
+      },
+    });
+
+    assert.deepStrictEqual(parsed, {
+      provider: "claudeAgent",
+      instanceId: "claudeAgent",
+      model: "claude-sonnet-4-6",
+      options: { effort: "max", fastMode: true },
+    });
+  }),
+);
+
+it.effect("decodes providerless instance-id model selections from instance-id payloads", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeModelSelection({
+      instanceId: "claude_work",
+      model: "claude-sonnet-4-6",
+    });
+
+    assert.deepStrictEqual(parsed, {
+      provider: "claudeAgent",
+      instanceId: "claude_work",
+      model: "claude-sonnet-4-6",
+    });
+  }),
+);
+
+it.effect("infers Claude for providerless opaque Sonnet instance selections", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeModelSelection({
+      instanceId: "work",
+      model: "sonnet-4",
+    });
+
+    assert.deepStrictEqual(parsed, {
+      provider: "claudeAgent",
+      instanceId: "work",
+      model: "sonnet-4",
+    });
+  }),
+);
+
+it.effect("infers OpenCode for providerless OpenCode model selections", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeModelSelection({
+      instanceId: "work",
+      model: "opencode/minimax-m2.5-free",
+    });
+
+    assert.deepStrictEqual(parsed, {
+      provider: "opencode",
+      instanceId: "work",
+      model: "opencode/minimax-m2.5-free",
+    });
+  }),
+);
+
+it.effect("decodes providerless Codex account selections from instance-id payloads", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeModelSelection({
+      instanceId: "codex_personal",
+      model: "gpt-5.4",
+    });
+
+    assert.deepStrictEqual(parsed, {
+      provider: "codex",
+      instanceId: "codex_personal",
+      model: "gpt-5.4",
+    });
+  }),
+);
+
 it.effect("preserves Pi model selections through the JSON codec", () =>
   Effect.gen(function* () {
     const codec = Schema.fromJsonString(ModelSelection);
@@ -227,12 +311,13 @@ it.effect("preserves Pi model selections through the JSON codec", () =>
 
     assert.deepStrictEqual(parsed, {
       provider: "pi",
+      instanceId: "pi",
       model: "openai/gpt-5.5",
     });
   }),
 );
 
-it.effect("drops legacy provider passwords from decoded provider options", () =>
+it.effect("preserves OpenCode runtime credentials in provider start options", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeProviderStartOptions({
       opencode: {
@@ -246,9 +331,9 @@ it.effect("drops legacy provider passwords from decoded provider options", () =>
       opencode: {
         binaryPath: "/custom/bin/opencode",
         serverUrl: "http://127.0.0.1:4096",
+        serverPassword: "legacy-opencode-secret",
       },
     });
-    assert.doesNotMatch(JSON.stringify(parsed), /serverPassword|legacy-.*-secret/);
   }),
 );
 
@@ -318,6 +403,7 @@ it.effect("trims branded ids and command string fields at decode boundaries", ()
     assert.strictEqual(parsed.workspaceRoot, "/tmp/workspace");
     assert.deepStrictEqual(parsed.defaultModelSelection, {
       provider: "codex",
+      instanceId: "codex",
       model: "gpt-5.2",
     });
   }),

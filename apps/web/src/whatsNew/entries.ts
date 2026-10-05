@@ -22,6 +22,30 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "1.0.1",
+    date: "Oct 5",
+    features: [
+      {
+        id: "upstream-1-0-0",
+        title: "Synara 1.0 foundations",
+        description:
+          "This build includes the official Synara 1.0.0 update: one terminal pane per chat, Inbox, multiple named provider accounts with per-account usage, provider sign-in from settings, and Oh My Pi.",
+      },
+      {
+        id: "same-thread-handoff",
+        title: "Switch providers in the same chat",
+        description:
+          "Provider handoff now keeps the conversation in the same thread and also switches between Codex profiles. The previous continuous-handoff setting was replaced by this flow.",
+      },
+      {
+        id: "usage-reserve-after-reset",
+        title: "Correct usage pace right after a reset",
+        description:
+          "A freshly reset weekly window with 100% left no longer reports a reserve; pace now compares usage with the real elapsed share of the window.",
+      },
+    ],
+  },
+  {
     version: "0.9.30",
     date: "Oct 5",
     features: [

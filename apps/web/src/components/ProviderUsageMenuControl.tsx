@@ -4,6 +4,7 @@
 import {
   PROVIDER_DISPLAY_NAMES,
   type CodexProfileId,
+  type ProviderInstanceId,
   type ProviderKind,
   type ServerCodexResetCredits,
   type ServerGetProviderUsageSnapshotResult,
@@ -88,6 +89,7 @@ function providerUsageEmptyMessage(
 export function useProviderUsageMenuModel(
   provider: ProviderKind,
   input: {
+    instanceId?: ProviderInstanceId | undefined;
     providerSnapshot?: ServerGetProviderUsageSnapshotResult | undefined;
     codexProfileId?: CodexProfileId | null | undefined;
   } = {},
@@ -96,6 +98,7 @@ export function useProviderUsageMenuModel(
   const threads = useStore(selectAccountRateLimitThreads);
   const usageSummary = useProviderUsageSummary({
     provider,
+    instanceId: input.instanceId,
     threads,
     codexHomePath: settings.codexHomePath || null,
     ...(input.codexProfileId !== undefined ? { codexProfileId: input.codexProfileId } : {}),

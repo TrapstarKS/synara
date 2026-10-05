@@ -81,14 +81,21 @@ export function deriveUsagePace(input: {
   }
 
   const usedPercent = clampPercent(100 - input.remainingPercent);
-  const elapsedFraction = Math.max(elapsedMs / durationMs, MIN_PROJECTION_ELAPSED_FRACTION);
+  const rawElapsedFraction = elapsedMs / durationMs;
+  // The floor only damps the run-out projection; the expected pace uses the real
+  // elapsed time, or a fresh window would claim the floor as reserve.
+  const elapsedFraction = Math.max(rawElapsedFraction, MIN_PROJECTION_ELAPSED_FRACTION);
 
-  const expectedUsedPercent = clampPercent(elapsedFraction * 100);
+  const expectedUsedPercent = clampPercent(rawElapsedFraction * 100);
   const expectedRemainingPercent = clampPercent(100 - expectedUsedPercent);
   const projectedUsedPercent = usedPercent === 0 ? 0 : usedPercent / elapsedFraction;
   const status = paceStatus(usedPercent, projectedUsedPercent);
   const deltaPercent = usedPercent - expectedUsedPercent;
-  const amountText = reserveOrDeficitText(deltaPercent);
+  // Too early in the window for a reserve to mean anything; a deficit still does.
+  const amountText =
+    rawElapsedFraction < MIN_PROJECTION_ELAPSED_FRACTION && deltaPercent <= 0
+      ? null
+      : reserveOrDeficitText(deltaPercent);
 
   let etaText = status === "behind" ? null : "Lasts until reset";
   if (status === "behind") {

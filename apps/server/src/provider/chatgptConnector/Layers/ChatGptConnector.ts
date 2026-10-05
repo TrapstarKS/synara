@@ -234,6 +234,13 @@ export type ChatGptConnectorLayer = Layer.Layer<
   FileSystem.FileSystem | Path.Path | ServerConfig | ServerSettingsService | ProviderCredentials
 >;
 
+/** The connector once its credential store is provided (the shared application instance). */
+export type ProvidedChatGptConnectorLayer = Layer.Layer<
+  ChatGptConnector,
+  never,
+  FileSystem.FileSystem | Path.Path | ServerConfig | ServerSettingsService
+>;
+
 export const ChatGptConnectorLive: ChatGptConnectorLayer = Layer.effect(
   ChatGptConnector,
   makeChatGptConnector,

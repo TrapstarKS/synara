@@ -29,7 +29,7 @@ export function resolveCodexProfileOptions(input: {
   settings: ServerSettings;
   secretsDir: string;
   modelSelection: ModelSelection | undefined;
-  providerOptions?: ProviderStartOptions;
+  providerOptions?: ProviderStartOptions | undefined;
 }): ProviderStartOptions {
   const profileId =
     input.modelSelection?.provider === "codex" ? input.modelSelection.profileId : undefined;
@@ -37,10 +37,16 @@ export function resolveCodexProfileOptions(input: {
   if (!findCodexProfile(input.settings, profileId)) {
     throw new Error(`Codex account '${profileId}' no longer exists.`);
   }
+  // A profile owns its home, so an account's shadow home or id must not override it.
+  const {
+    shadowHomePath: _shadowHomePath,
+    accountId: _accountId,
+    ...codexOptions
+  } = input.providerOptions?.codex ?? {};
   return {
     ...input.providerOptions,
     codex: {
-      ...input.providerOptions?.codex,
+      ...codexOptions,
       homePath: resolveManagedCodexProfileHome(input.secretsDir, profileId),
       profileId,
     },

@@ -341,6 +341,10 @@ function resolveWsRpc(tag: string, body?: unknown): unknown {
   if (tag === WS_METHODS.automationList) {
     return { definitions: [], runs: [] };
   }
+  // The sidebar reads to-dos on Beta hosts; the `{}` fallback would fail to decode.
+  if (tag === WS_METHODS.todoList) {
+    return { todos: [] };
+  }
   if (tag === WS_METHODS.gitListBranches) {
     return {
       isRepo: true,
@@ -415,6 +419,7 @@ const worker = setupWorker(
         method === WS_METHODS.subscribeOrchestrationDomainEvents ||
         method === WS_METHODS.subscribeProjectDevServerEvents ||
         method === WS_METHODS.subscribeAutomationEvents ||
+        method === WS_METHODS.subscribeTodoEvents ||
         // Left open like the rest: these are infinite subscriptions, and the
         // default below answers with an Exit, which a stream RPC reads as the
         // socket dying and answers with a full reconnect. That loops forever
@@ -648,6 +653,7 @@ describe("EventRouter scoped orchestration sync", () => {
       homeDir: null,
       chatWorkspaceRoot: null,
       studioWorkspaceRoot: null,
+      groupsWorkspaceRoot: null,
     });
     subscribeShellRequestCount = 0;
     subscribeThreadRequestCountById.clear();
@@ -666,6 +672,7 @@ describe("EventRouter scoped orchestration sync", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     document.body.innerHTML = "";
   });
 
@@ -1147,10 +1154,18 @@ describe("EventRouter scoped orchestration sync", () => {
         ],
       },
     };
+    // Advance the polling clock while browser rendering and transport timers stay real.
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     const mounted = await mountApp();
 
     try {
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 5_200));
+      await vi.waitFor(() =>
+        expect(
+          getThreadFromState(useStore.getState(), THREAD_ID)?.pendingInteractions?.[0],
+        ).toMatchObject({ requestId: "approval-response-uncertain", status: "uncertain" }),
+      );
+      // Cover the reconciliation deadline plus the polling interval's phase.
+      await vi.advanceTimersByTimeAsync(10_000);
       expect(getThreadDetailSnapshotRequestCount).toBe(0);
       expect(document.body.textContent).not.toContain("Approve this command?");
     } finally {
@@ -1505,10 +1520,13 @@ describe("EventRouter scoped orchestration sync", () => {
   });
 
   it("does not poll a converged terminal thread projection", async () => {
+    // Advance the polling clock while browser rendering and transport timers stay real.
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     const mounted = await mountApp();
 
     try {
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 5_200));
+      // Cover the reconciliation deadline plus the polling interval's phase.
+      await vi.advanceTimersByTimeAsync(10_000);
       expect(getThreadDetailSnapshotRequestCount).toBe(0);
     } finally {
       await mounted.cleanup();

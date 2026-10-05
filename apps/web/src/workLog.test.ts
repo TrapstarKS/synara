@@ -13,6 +13,175 @@ import { makeActivity } from "./storeTestFixtures";
 import { isComputerToolName } from "./lib/computerToolPresentation";
 
 describe("deriveWorkLogEntries", () => {
+  it("omits routine approval resolutions between tool lifecycle updates", () => {
+    const activities = [
+      makeActivity({
+        id: "command-start",
+        sequence: 1,
+        kind: "tool.started",
+        summary: "Running checks",
+        payload: {
+          itemType: "command_execution",
+          data: { toolCallId: "checks", command: "bun run lint" },
+        },
+      }),
+      ...Array.from({ length: 12 }, (_, index) =>
+        makeActivity({
+          id: `approval-${index}`,
+          sequence: index + 2,
+          kind: "approval.resolved",
+          summary: "Approval resolved",
+          tone: "approval",
+          payload: {
+            requestId: `req-${index}`,
+            requestType: "command_execution_approval",
+            decision: "accept",
+          },
+        }),
+      ),
+      makeActivity({
+        id: "command-completed",
+        sequence: 14,
+        kind: "tool.completed",
+        summary: "Checks passed",
+        payload: {
+          itemType: "command_execution",
+          data: { toolCallId: "checks", command: "bun run lint" },
+        },
+      }),
+    ];
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toMatchObject([
+      { id: "command-start", label: "Checks passed", activityKind: "tool.completed" },
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(deriveTimelineEntries([], [], entries)).toHaveLength(1);
+    expect(activities.filter((activity) => activity.kind === "approval.resolved")).toHaveLength(12);
+  });
+
+  it.each([
+    ["declined command", { decision: "decline" }],
+    ["cancelled command", { decision: "cancel" }],
+    ["session-wide grant", { decision: "acceptForSession" }],
+    ["unknown outcome", {}],
+    ["clipboard consent", { decision: "accept", toolName: "computer_read_clipboard" }],
+    [
+      "wrapped clipboard consent",
+      { decision: "accept", toolName: "mcp__synara__computer_read_clipboard" },
+    ],
+    ["scoped consent", { decision: "accept", approvalScope: "device-task" }],
+  ])("keeps the %s outcome visible", (_name, payload) => {
+    const activity = makeActivity({
+      id: "approval-outcome",
+      kind: "approval.resolved",
+      summary: "Approval resolved",
+      tone: "info",
+      payload: { requestId: "request-outcome", ...payload },
+    });
+    expect(deriveWorkLogEntries([activity], undefined).map((entry) => entry.id)).toEqual([
+      "approval-outcome",
+    ]);
+  });
+
+  it("keeps pending approvals, questions and errors alongside quiet resolutions", () => {
+    const activities = [
+      makeActivity({
+        id: "approval-pending",
+        sequence: 1,
+        kind: "approval.requested",
+        summary: "Command approval requested",
+        tone: "approval",
+        payload: { requestId: "req-pending", requestKind: "command", detail: "bun run lint" },
+      }),
+      makeActivity({
+        id: "question-pending",
+        sequence: 2,
+        kind: "user-input.requested",
+        summary: "User input requested",
+        payload: { requestId: "question-pending" },
+      }),
+      makeActivity({
+        id: "approval-quiet",
+        sequence: 3,
+        kind: "approval.resolved",
+        summary: "Approval resolved",
+        tone: "info",
+        payload: { requestId: "req-other", decision: "accept" },
+      }),
+      makeActivity({
+        id: "approval-error",
+        sequence: 4,
+        kind: "approval.resolved",
+        summary: "Approval failed",
+        tone: "error",
+      }),
+      makeActivity({
+        id: "turn-error",
+        sequence: 5,
+        kind: "turn.completed",
+        summary: "Turn failed",
+        tone: "error",
+      }),
+    ];
+    expect(deriveWorkLogEntries(activities, undefined).map((entry) => entry.id)).toEqual([
+      "approval-pending",
+      "question-pending",
+      "approval-error",
+      "turn-error",
+    ]);
+  });
+
+  it.each([false, true])(
+    "keeps the latest authentication state visible between turns (finished: %s)",
+    (finished) => {
+      const rows = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "auth-start",
+            sequence: 1,
+            tone: "info",
+            kind: "auth.status",
+            summary: "Claude authentication started",
+            payload: { provider: "claudeAgent" },
+          }),
+          makeActivity({
+            id: "auth-error",
+            sequence: 2,
+            kind: "auth.status",
+            summary: "Claude authentication needs attention.",
+            tone: "error",
+            payload: { provider: "claudeAgent", detail: "Check your Claude account in Settings." },
+          }),
+          ...(finished
+            ? [
+                makeActivity({
+                  id: "auth-finished",
+                  sequence: 3,
+                  tone: "info",
+                  kind: "auth.status",
+                  summary: "Claude authentication finished",
+                  payload: { provider: "claudeAgent" },
+                }),
+              ]
+            : []),
+        ],
+        TurnId.makeUnsafe("turn-1"),
+        { visibleTurnIds: new Set([TurnId.makeUnsafe("turn-1")]) },
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject(
+        finished
+          ? { label: "Claude authentication finished", tone: "info" }
+          : {
+              label: "Claude authentication needs attention.",
+              detail: "Check your Claude account in Settings.",
+              tone: "error",
+            },
+      );
+      if (finished) expect(rows[0]?.detail).toBeUndefined();
+    },
+  );
+
   it("strips terminal formatting from persisted provider activity details", () => {
     const [entry] = deriveWorkLogEntries(
       [
@@ -373,6 +542,59 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.liveActivity?.background).toBeUndefined();
   });
 
+  it("adds a visible row when a task moved to the background finishes", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "moved",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "runtime.warning",
+        summary: "Moved to background",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          message: "Server startup",
+          detail: "Server startup",
+          nativeEventType: "background_tasks_changed",
+          data: {
+            subtype: "background_tasks_changed",
+            tasks: [
+              { task_id: "agent-1", task_type: "local_agent", description: "Server startup" },
+            ],
+          },
+        },
+      }),
+      // A foreground command task finishing must not add a row.
+      makeActivity({
+        id: "bash-done",
+        createdAt: "2026-02-23T00:00:30.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        payload: { taskId: "bash-1", status: "completed" },
+      }),
+      makeActivity({
+        id: "agent-done",
+        createdAt: "2026-02-23T00:01:00.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        payload: { taskId: "agent-1", status: "completed", detail: "Report" },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined, {
+      visibleTurnIds: new Set([TurnId.makeUnsafe("turn-1")]),
+    });
+    const completion = entries.find((entry) => entry.backgroundTaskCompletion);
+    expect(entries.map((entry) => entry.id)).toEqual(["moved", "agent-done"]);
+    expect(completion?.label).toBe("Subagent finished: Server startup");
+    expect(completion?.backgroundTaskCompletion).toEqual({
+      taskId: "agent-1",
+      taskType: "local_agent",
+      description: "Server startup",
+    });
+  });
+
   it("collapses task-list snapshots into one progressing row per turn", () => {
     const taskListActivity = (
       id: string,
@@ -642,6 +864,67 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.providerContextLifecycle?.recapPreview?.length).toBeLessThanOrEqual(600);
   });
 
+  it("derives same-thread handoff rows with source, target, and transferred context", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "provider-handoff",
+          kind: "provider.handoff",
+          summary: "Handed off from Codex (gpt-5.4) to Claude (claude-sonnet-4-6)",
+          tone: "info",
+          payload: {
+            sourceProvider: "codex",
+            sourceModel: "gpt-5.4",
+            targetProvider: "claudeAgent",
+            targetModel: "claude-sonnet-4-6",
+            contextText: "User:\nfix the flaky test",
+            contextCharacters: 24,
+          },
+        }),
+        makeActivity({
+          id: "provider-handoff-failed",
+          kind: "provider.handoff.failed",
+          summary: "Handoff to Claude (claude-sonnet-4-6) failed",
+          tone: "error",
+          payload: {
+            sourceProvider: "codex",
+            sourceModel: "gpt-5.4",
+            targetProvider: "claudeAgent",
+            targetModel: "claude-sonnet-4-6",
+            detail: "Claude could not start.",
+          },
+        }),
+      ],
+      TurnId.makeUnsafe("turn-visible"),
+      { visibleTurnIds: new Set([TurnId.makeUnsafe("turn-visible")]) },
+    );
+
+    expect(entries.map((entry) => entry.providerHandoff)).toEqual([
+      {
+        status: "completed",
+        sourceProvider: "codex",
+        sourceModel: "gpt-5.4",
+        targetProvider: "claudeAgent",
+        targetModel: "claude-sonnet-4-6",
+        sourceModelSelection: { provider: "codex", model: "gpt-5.4" },
+        targetModelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        contextText: "User:\nfix the flaky test",
+        failureDetail: null,
+      },
+      {
+        status: "failed",
+        sourceProvider: "codex",
+        sourceModel: "gpt-5.4",
+        targetProvider: "claudeAgent",
+        targetModel: "claude-sonnet-4-6",
+        sourceModelSelection: { provider: "codex", model: "gpt-5.4" },
+        targetModelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        contextText: null,
+        failureDetail: "Claude could not start.",
+      },
+    ]);
+  });
+
   it("keeps native-history loss visible when the provider sent no recap", () => {
     const [entry] = deriveWorkLogEntries(
       [
@@ -818,6 +1101,115 @@ describe("deriveWorkLogEntries", () => {
           model: "claude-sonnet-5",
           environment: "worktree",
           status: "task_dispatched",
+        },
+      ],
+    });
+  });
+
+  it("exposes deterministic worker monitor notices for coordinator rows", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      // Monitor rows are posted with no turn id and must survive the
+      // visible-turn filter a coordinator conversation always applies.
+      makeActivity({
+        id: "worker-settled",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        kind: "synara.worker.settled",
+        summary: "✓ Mars rocket research finished",
+        tone: "info",
+        payload: {
+          source: "worker_monitor",
+          eventType: "thread.turn-diff-completed",
+          marker: "✓",
+          phrase: "finished",
+          thread: {
+            threadId: "thread-mars",
+            title: "Mars rocket research",
+            outcome: "completed",
+          },
+        },
+      }),
+      makeActivity({
+        id: "worker-stuck",
+        createdAt: "2026-02-23T00:00:06.000Z",
+        kind: "synara.worker.stuck",
+        summary: "⚠ Quiet worker has not reported for over 10 minutes",
+        tone: "approval",
+        payload: {
+          source: "worker_monitor",
+          eventType: "worker.silent",
+          marker: "⚠",
+          phrase: "has not reported for over 10 minutes",
+          thread: { threadId: "thread-quiet", title: "Quiet worker", outcome: null },
+        },
+      }),
+      makeActivity({
+        id: "workers-rollup",
+        createdAt: "2026-02-23T00:00:07.000Z",
+        kind: "synara.workers.settled",
+        summary: "All 3 threads settled: A ✓, B ✓, C ⚠ needs approval",
+        tone: "approval",
+        payload: {
+          source: "worker_monitor",
+          batchId: "batch-1",
+          threads: [
+            { threadId: "thread-a", title: "A", outcome: "completed" },
+            { threadId: "thread-b", title: "B", outcome: "completed" },
+            { threadId: "thread-c", title: "C", outcome: "waiting-approval" },
+          ],
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-1"), {
+      visibleTurnIds: new Set(["turn-other"]),
+    });
+    const settled = entries.find((entry) => entry.id === "worker-settled");
+    expect(settled?.synaraWorkerNotice).toEqual({
+      kind: "settled",
+      marker: "✓",
+      phrase: "finished",
+      threads: [
+        {
+          threadId: "thread-mars",
+          title: "Mars rocket research",
+          outcome: "completed",
+          result: null,
+          pr: null,
+          projectId: null,
+        },
+      ],
+    });
+    const stuck = entries.find((entry) => entry.id === "worker-stuck");
+    expect(stuck?.synaraWorkerNotice?.kind).toBe("stuck");
+    const rollup = entries.find((entry) => entry.id === "workers-rollup");
+    expect(rollup?.synaraWorkerNotice).toEqual({
+      kind: "rollup",
+      marker: null,
+      phrase: null,
+      threads: [
+        {
+          threadId: "thread-a",
+          title: "A",
+          outcome: "completed",
+          result: null,
+          pr: null,
+          projectId: null,
+        },
+        {
+          threadId: "thread-b",
+          title: "B",
+          outcome: "completed",
+          result: null,
+          pr: null,
+          projectId: null,
+        },
+        {
+          threadId: "thread-c",
+          title: "C",
+          outcome: "waiting-approval",
+          result: null,
+          pr: null,
+          projectId: null,
         },
       ],
     });
@@ -3105,31 +3497,29 @@ describe("deriveWorkLogEntries", () => {
 
   it("settles orphaned activity from latest-turn state after a reconnect gap", () => {
     const turnId = TurnId.makeUnsafe("turn-with-reconnect-gap");
-    const entries = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "reconnected-command-start",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          kind: "tool.started",
-          summary: "Bash started",
-          turnId,
-          payload: {
-            itemType: "command_execution",
-            title: "Bash",
-            data: {
-              toolCallId: "reconnected-command",
-              command: "sleep 5",
-            },
-          },
-        }),
-      ],
-      turnId,
-      {
-        activeTurnId: null,
-        latestTurnState: "error",
-        latestTurnCompletedAt: "2026-02-23T00:00:04.000Z",
+    const payload = {
+      itemType: "command_execution",
+      title: "Bash",
+      data: {
+        toolCallId: "reconnected-command",
+        command: "sleep 5",
       },
-    );
+    };
+    const activity = makeActivity({
+      id: "reconnected-command-start",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "tool.started",
+      summary: "Bash started",
+      turnId,
+      payload,
+    });
+    const running = deriveWorkLogEntries([activity], turnId, { activeTurnId: turnId });
+    expect(running[0]?.toolStatus).toBe("running");
+    const entries = deriveWorkLogEntries([activity], turnId, {
+      activeTurnId: null,
+      latestTurnState: "error",
+      latestTurnCompletedAt: "2026-02-23T00:00:04.000Z",
+    });
 
     expect(entries[0]?.liveActivity).toMatchObject({
       state: "failed",
@@ -3137,6 +3527,17 @@ describe("deriveWorkLogEntries", () => {
       elapsedSeconds: 3,
     });
     expect(entries[0]?.toolStatus).toBe("failed");
+    // Reconciliation belongs to the current thread projection, not the retained
+    // activity: recovering the running projection must not keep a cached failure.
+    expect(deriveWorkLogEntries([activity], turnId, { activeTurnId: turnId })).toEqual(running);
+    // A replacement of the same event id carries fresh provider metadata.
+    const replacement = {
+      ...activity,
+      payload: { ...payload, detail: "Provider resumed the command" },
+    };
+    expect(deriveWorkLogEntries([replacement], turnId, { activeTurnId: turnId })[0]?.detail).toBe(
+      "Provider resumed the command",
+    );
   });
 
   it("advances retained elapsed time across metadata-only updates", () => {
@@ -4740,6 +5141,18 @@ describe("deriveWorkLogEntries context window handling", () => {
     expect(entries[0]?.label).toBe("Ran command");
   });
 
+  it.each(["pull-request.auto-fix.paused", "pull-request.auto-fix.stopped"])(
+    "keeps thread-level %s notices in a turn-filtered transcript",
+    (kind) => {
+      const entries = deriveWorkLogEntries(
+        [makeActivity({ id: kind, kind, summary: "Auto-fix CI needs attention" })],
+        TurnId.makeUnsafe("visible-turn"),
+        { visibleTurnIds: new Set([TurnId.makeUnsafe("visible-turn")]) },
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.label).toBe("Auto-fix CI needs attention");
+    },
+  );
   it("keeps thread-level compaction progress entries visible without a turn id", () => {
     const entries = deriveWorkLogEntries(
       [
@@ -4934,5 +5347,108 @@ describe("deriveWorkLogEntries Codex find regression", () => {
       itemType: "command_execution",
       toolCallId: "call_UmQKQmLCCrj9PF82rupLIFDO",
     });
+  });
+});
+
+describe("deriveTimelineEntries coordinator check-in suppression", () => {
+  const checkinTurnId = TurnId.makeUnsafe("turn-checkin-1");
+  const ordinaryTurnId = TurnId.makeUnsafe("turn-ordinary-1");
+  const messages: ChatMessage[] = [
+    {
+      id: MessageId.makeUnsafe("human-1"),
+      role: "user",
+      text: "Keep an eye on the workers",
+      createdAt: "2026-09-20T00:00:00Z",
+      streaming: false,
+    },
+    {
+      id: MessageId.makeUnsafe("checkin-prompt"),
+      role: "user",
+      text: "[automation] Hourly heartbeat",
+      dispatchOrigin: "automation",
+      turnId: checkinTurnId,
+      createdAt: "2026-09-20T01:00:00Z",
+      streaming: false,
+    },
+    {
+      id: MessageId.makeUnsafe("checkin-reply"),
+      role: "assistant",
+      text: "SILENT",
+      turnId: checkinTurnId,
+      createdAt: "2026-09-20T01:00:30Z",
+      streaming: false,
+    },
+    {
+      id: MessageId.makeUnsafe("ordinary-reply"),
+      role: "assistant",
+      text: "On it",
+      turnId: ordinaryTurnId,
+      createdAt: "2026-09-20T02:00:00Z",
+      streaming: false,
+    },
+  ];
+  const checkinTool = {
+    id: "checkin-tool",
+    turnId: checkinTurnId,
+    createdAt: "2026-09-20T01:00:10Z",
+    tone: "tool" as const,
+    label: "Read inbox",
+  };
+  const ordinaryTool = {
+    id: "ordinary-tool",
+    turnId: ordinaryTurnId,
+    createdAt: "2026-09-20T02:00:10Z",
+    tone: "tool" as const,
+    label: "Listed workers",
+  };
+  const checkinPlan = {
+    id: "checkin-plan",
+    turnId: checkinTurnId,
+    planMarkdown: "# Check-in plan",
+    implementedAt: null,
+    implementationThreadId: null,
+    createdAt: "2026-09-20T01:00:20Z",
+    updatedAt: "2026-09-20T01:00:20Z",
+  };
+
+  it("hides the whole silent check-in turn — prompt, reply, work and plan rows", () => {
+    const entries = deriveTimelineEntries(messages, [checkinPlan], [checkinTool, ordinaryTool], {
+      suppressCoordinatorCheckins: true,
+    });
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "human-1",
+      "ordinary-reply",
+      "ordinary-tool",
+    ]);
+  });
+
+  it("keeps a non-silent check-in reply as a bare coordinator message", () => {
+    const withReport: ChatMessage[] = messages.map((message) =>
+      message.id === MessageId.makeUnsafe("checkin-reply")
+        ? { ...message, text: "Worker beta failed — needs a look." }
+        : message,
+    );
+    const entries = deriveTimelineEntries(withReport, [checkinPlan], [checkinTool], {
+      suppressCoordinatorCheckins: true,
+    });
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "human-1",
+      "checkin-reply",
+      "ordinary-reply",
+    ]);
+  });
+
+  it("leaves every row alone without the suppression option", () => {
+    const entries = deriveTimelineEntries(messages, [checkinPlan], [checkinTool]);
+    expect(new Set(entries.map((entry) => entry.id))).toEqual(
+      new Set([
+        "human-1",
+        "checkin-prompt",
+        "checkin-reply",
+        "checkin-tool",
+        "checkin-plan",
+        "ordinary-reply",
+      ]),
+    );
   });
 });

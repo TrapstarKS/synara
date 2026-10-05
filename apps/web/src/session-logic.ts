@@ -403,6 +403,180 @@ function payloadString(payload: Record<string, unknown> | null, key: string): st
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+interface FoldedActiveTask {
+  taskType?: string | undefined;
+  isBackgrounded: boolean;
+}
+
+// Folds task.* activities into the set of still-running tasks. Pass a turnId to
+// scope task creation to that turn (terminal events always apply across turns).
+function foldActiveTasks(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  latestTurnId: TurnId | undefined,
+): Map<string, FoldedActiveTask> {
+  const ordered = orderedActivities(activities);
+  const activeTasks = new Map<string, FoldedActiveTask>();
+
+  for (const activity of ordered) {
+    if (
+      latestTurnId &&
+      activity.turnId &&
+      activity.turnId !== latestTurnId &&
+      activity.kind !== "task.completed" &&
+      activity.kind !== "task.updated"
+    ) {
+      continue;
+    }
+
+    if (
+      activity.kind !== "task.started" &&
+      activity.kind !== "task.progress" &&
+      activity.kind !== "task.updated" &&
+      activity.kind !== "task.completed"
+    ) {
+      continue;
+    }
+
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const taskId = payload && typeof payload.taskId === "string" ? payload.taskId : null;
+    if (!taskId) {
+      continue;
+    }
+
+    if (activity.kind === "task.completed") {
+      activeTasks.delete(taskId);
+      continue;
+    }
+
+    // Status patches can end a task (killed/completed/failed) without a
+    // task.completed notification following on the same turn.
+    if (activity.kind === "task.updated") {
+      const status = payload && typeof payload.status === "string" ? payload.status : undefined;
+      if (
+        status === "completed" ||
+        status === "failed" ||
+        status === "killed" ||
+        status === "paused"
+      ) {
+        activeTasks.delete(taskId);
+        continue;
+      }
+      const previous = activeTasks.get(taskId);
+      const isBackgrounded =
+        payload && typeof payload.isBackgrounded === "boolean"
+          ? payload.isBackgrounded
+          : (previous?.isBackgrounded ?? false);
+      const inTurn = !latestTurnId || !activity.turnId || activity.turnId === latestTurnId;
+      if (previous !== undefined || (isBackgrounded && inTurn)) {
+        activeTasks.set(taskId, { taskType: previous?.taskType, isBackgrounded });
+      }
+      continue;
+    }
+
+    const previous = activeTasks.get(taskId);
+    const taskType = payload && typeof payload.taskType === "string" ? payload.taskType : undefined;
+    activeTasks.set(taskId, {
+      taskType: taskType ?? previous?.taskType,
+      isBackgrounded: previous?.isBackgrounded ?? false,
+    });
+  }
+
+  return activeTasks;
+}
+
+/**
+ * Background tasks (task.updated with isBackgrounded) started by the latest
+ * turn that have not reached a terminal state. Used after the latest turn
+ * settles to keep the thread visibly "waiting on background work". Returns
+ * null without a latest turn or a live session: stale isBackgrounded rows from
+ * older turns or a dead session must not pin the thread forever.
+ */
+export function derivePendingBackgroundWork(input: {
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  latestTurn: Pick<OrchestrationLatestTurn, "turnId"> | null | undefined;
+  session: Pick<ThreadSession, "orchestrationStatus"> | null | undefined;
+}): { count: number; taskIds: string[] } | null {
+  const latestTurnId = input.latestTurn?.turnId;
+  if (!latestTurnId) {
+    return null;
+  }
+  const sessionStatus = input.session?.orchestrationStatus;
+  if (sessionStatus === undefined || sessionStatus === "stopped" || sessionStatus === "error") {
+    return null;
+  }
+  const taskIds = [...foldActiveTasks(input.activities, latestTurnId).entries()]
+    .filter(([, task]) => task.isBackgrounded)
+    .map(([taskId]) => taskId);
+  return taskIds.length > 0 ? { count: taskIds.length, taskIds } : null;
+}
+
+// Background tasks still running anywhere in the thread. Unlike
+// derivePendingBackgroundWork this is not scoped to the latest turn: once a
+// finished subagent wakes the agent into a new turn, the subagents launched by
+// the earlier turn are still outstanding. Claude announces backgrounded work
+// with a "Moved to background" notice, so both that notice and an
+// isBackgrounded patch count.
+export function deriveOutstandingBackgroundTaskIds(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): string[] {
+  const outstanding = new Set<string>();
+  for (const activity of orderedActivities(activities)) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    if (activity.kind === "runtime.warning") {
+      if (payload?.nativeEventType !== "background_tasks_changed") continue;
+      const data =
+        payload.data && typeof payload.data === "object"
+          ? (payload.data as Record<string, unknown>)
+          : null;
+      if (!Array.isArray(data?.tasks)) continue;
+      for (const task of data.tasks) {
+        const taskId =
+          task && typeof task === "object" ? (task as Record<string, unknown>).task_id : null;
+        if (typeof taskId === "string") outstanding.add(taskId);
+      }
+      continue;
+    }
+    const taskId = payload && typeof payload.taskId === "string" ? payload.taskId : null;
+    if (!taskId) continue;
+    if (activity.kind === "task.completed") {
+      outstanding.delete(taskId);
+    } else if (activity.kind === "task.updated") {
+      const status = typeof payload?.status === "string" ? payload.status : undefined;
+      if (
+        status === "completed" ||
+        status === "failed" ||
+        status === "killed" ||
+        status === "paused" ||
+        payload?.isBackgrounded === false
+      ) {
+        outstanding.delete(taskId);
+      } else if (payload?.isBackgrounded === true) {
+        outstanding.add(taskId);
+      }
+    }
+  }
+  return [...outstanding];
+}
+
+// Thread-wide count of background tasks still running while their session is
+// alive. A stopped or failed session cannot finish them, so they stop counting.
+export function countOutstandingBackgroundWork(input: {
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  session: Pick<ThreadSession, "orchestrationStatus"> | null | undefined;
+}): number {
+  const sessionStatus = input.session?.orchestrationStatus;
+  if (sessionStatus === undefined || sessionStatus === "stopped" || sessionStatus === "error") {
+    return 0;
+  }
+  return deriveOutstandingBackgroundTaskIds(input.activities).length;
+}
+
 // Keeps the UI "working" while the provider still has visible assistant text or
 // background-task updates to finish for the latest turn.
 export function hasLiveTurnTailWork(input: {

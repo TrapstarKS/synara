@@ -27,6 +27,14 @@ function parseRecord(json: string): JsonObject | undefined {
   }
 }
 
+// Projections written by later builds name the default provider instance,
+// while the historical event payloads omit it; both mean the same selection.
+function withoutDefaultInstance(selection: JsonObject): JsonObject {
+  if (selection.instanceId !== "claudeAgent") return selection;
+  const { instanceId: _instanceId, ...rest } = selection;
+  return rest;
+}
+
 function claudeSelection(value: unknown): JsonObject | undefined {
   const selection = record(value);
   if (
@@ -323,7 +331,10 @@ export default Effect.gen(function* () {
             if (
               !current ||
               !authoritative ||
-              !isDeepStrictEqual(current, authoritative) ||
+              !isDeepStrictEqual(
+                withoutDefaultInstance(current),
+                withoutDefaultInstance(authoritative),
+              ) ||
               previousEffort === candidate.effort ||
               (previousEffort !== undefined && previousEffort !== candidate.initialEffort)
             ) {

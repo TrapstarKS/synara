@@ -5,7 +5,7 @@ import { computerToolInstructions } from "./computerGuidance.ts";
 import { AUTOMATION_AUTHORING_GUIDANCE } from "./automationAuthoringGuidance.ts";
 
 /** Canonical, versioned host policy delivered to every supported provider. */
-export const SYNARA_HARNESS_POLICY_VERSION = "2026-10-01.1";
+export const SYNARA_HARNESS_POLICY_VERSION = "2026-10-05.1";
 export const SYNARA_HARNESS_POLICY_MARKER = `[Synara harness policy ${SYNARA_HARNESS_POLICY_VERSION}]`;
 
 export interface SynaraHarnessCapabilities {
@@ -37,7 +37,7 @@ export function renderSynaraHarnessPolicy(capabilities: SynaraHarnessCapabilitie
         "Use synara_capabilities to select canonical provider, model, and option values. Never guess a model slug or silently substitute a provider or model.",
         "Use synara_capabilities.targetConstruction: Codex options.reasoningEffort and Claude Agent options.effort are not interchangeable.",
         "Delegate with awaitResult:true; synara_await_threads waits for existing tasks. Use synara_ask_coordinator for blockers. Finish your current response to continue this thread automatically; synara_wait_for_threads only polls.",
-        "After an operationId, retries keep the same requestId and exact plan. Report terminal failures; no replacement threads without a new user request.",
+        "After an operationId, retry the same requestId and exact plan. Report failures; no replacement threads without a new user request. Hub retries are server-owned.",
         "Synara automations support heartbeat, standalone, and dedicated modes plus interval, once, daily, weekdays, weekly, and cron schedules. Existing everyMinutes heartbeat calls remain supported. Use fastInterval: true only when the user explicitly accepts a sub-minute bounded loop.",
         "Mode controls execution: heartbeat appends to an idle target thread; standalone opens a fresh thread per independent run; dedicated reuses one automation-owned thread so runs build on each other without writing into another thread.",
         "Prefer dedicated for ongoing observation or tracking: standalone runs cannot see prior runs beyond memory, while dedicated keeps one growing thread.",

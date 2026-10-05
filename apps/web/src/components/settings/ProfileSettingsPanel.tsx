@@ -298,7 +298,7 @@ function ProfileContent({
           <ul className="grid grid-cols-1 gap-x-12 gap-y-3 sm:grid-cols-2">
             {modelUsage.entries.map((entry) => (
               <ModelUsageRow
-                key={`${entry.provider}:${entry.model}`}
+                key={`${entry.instanceId}:${entry.model}`}
                 provider={entry.provider}
                 model={entry.model}
                 percent={entry.percent}

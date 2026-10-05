@@ -30,6 +30,68 @@ import {
   AutomationStreamEvent,
   AutomationUpdateInput,
 } from "./automation";
+import {
+  Todo,
+  TodoCreateInput,
+  TodoDeleteInput,
+  TodoListResult,
+  TodoStreamEvent,
+  TodoUpdateInput,
+} from "./todo";
+import {
+  ProjectAgentConfigureInput,
+  ProjectAgentLinkProjectInput,
+  ProjectAgentUnlinkProjectInput,
+  ProjectAgentExportDocumentsInput,
+  ProjectAgentExportDocumentsResult,
+  ProjectAgentGetOverviewInput,
+  ProjectAgentListSummariesInput,
+  ProjectAgentListSummariesResult,
+  ProjectAgentGoalControlInput,
+  ProjectAgentListActivityInput,
+  ProjectAgentListActivityResult,
+  ProjectAgentListDocumentsInput,
+  ProjectAgentListDocumentsResult,
+  ProjectAgentListTasksInput,
+  ProjectAgentListTasksResult,
+  ProjectAgentOverview,
+  ProjectAgentReadDocumentInput,
+  ProjectAgentReadDocumentResult,
+  ProjectAgentRefreshDigestInput,
+  ProjectAgentStartGoalInput,
+  ProjectAgentStreamEvent,
+  ProjectAgentSubscribeInput,
+  ProjectAgentUpdateGoalInput,
+  ProjectAgentUpdateTaskInput,
+  ProjectAgentWriteDocumentInput,
+  ProjectAgentCreateTaskInput,
+  ProjectAgentExcludeThreadInput,
+  ProjectAgentBackfillInput,
+  ProjectAgentDeleteGroupInput,
+  ProjectAgentDeleteGroupResult,
+  ProjectAgentGroupControlInput,
+  ProjectAgentListThreadIndexInput,
+  ProjectAgentListThreadIndexResult,
+  ProjectAgentListEvidenceInput,
+  ProjectAgentListEvidenceResult,
+  ProjectAgentLibraryDeleteInput,
+  ProjectAgentLibraryHistoryInput,
+  ProjectAgentLibraryHistoryResult,
+  ProjectAgentLibraryListInput,
+  ProjectAgentLibraryListResult,
+  ProjectAgentLibraryMkdirInput,
+  ProjectAgentLibraryMutationResult,
+  ProjectAgentLibraryRenameInput,
+  ProjectAgentLibraryRestoreInput,
+  ProjectAgentLibraryStatusInput,
+  ProjectAgentLibraryStatusResult,
+  ProjectAgentResolveWorkerInput,
+  ProjectAgentResolveWorkerResult,
+  ProjectDocumentRevision,
+  ProjectGoal,
+  ProjectTask,
+  ProjectThreadIndexEntry,
+} from "./projectAgent";
 import { OpenInEditorInput } from "./editor";
 import {
   ExternalMcpCreateIntegrationInput,
@@ -174,14 +236,24 @@ import {
   PullRequestDetail,
   PullRequestDetailInput,
   PullRequestDiffResult,
-  PullRequestReviewRequestCountInput,
-  PullRequestReviewRequestCountResult,
   PullRequestSetPinnedInput,
   PullRequestSetPinnedResult,
-  PullRequestsListInput,
-  PullRequestsListResult,
   PullRequestsUnavailableError,
 } from "./pullRequests";
+import {
+  PullRequestAutoFixGetInput,
+  PullRequestAutoFixListResult,
+  PullRequestAutoFixResult,
+  PullRequestAutoFixSetInput,
+} from "./pullRequestAutoFix";
+import {
+  GitHubInboxListInput,
+  GitHubInboxListResult,
+  GitHubIssueCommentInput,
+  GitHubIssueCommentResult,
+  GitHubIssueDetail,
+  GitHubIssueDetailInput,
+} from "./githubInbox";
 import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
@@ -289,6 +361,8 @@ import {
   ServerStopLocalServerResult,
   ServerUpdateSettingsInput,
   ServerUpdateSettingsResult,
+  ServerEditKeybindingsInput,
+  ServerEditKeybindingsResult,
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
   ServerVoicePrewarmInput,
@@ -312,6 +386,8 @@ import {
   StatsGetProfileStatsResult,
   StatsGetProfileTokenStatsInput,
   StatsGetProfileTokenStatsResult,
+  StatsGetRecapInput,
+  StatsGetRecapResult,
 } from "./stats";
 import {
   MindAffirmInput,
@@ -369,11 +445,29 @@ export const WsOrchestrationImportThreadRpc = Rpc.make(ORCHESTRATION_WS_METHODS.
   error: WsRpcError,
 });
 
+export const WsOrchestrationSettleTurnDispatchRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.settleTurnDispatch,
+  {
+    payload: OrchestrationRpcSchemas.settleTurnDispatch.input,
+    success: OrchestrationRpcSchemas.settleTurnDispatch.output,
+    error: WsRpcError,
+  },
+);
+
 export const WsListProjectImportsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.listProjectImports, {
   payload: OrchestrationRpcSchemas.listProjectImports.input,
   success: OrchestrationRpcSchemas.listProjectImports.output,
   error: WsRpcError,
 });
+
+export const WsLoadProjectImportHistoryRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.loadProjectImportHistory,
+  {
+    payload: OrchestrationRpcSchemas.loadProjectImportHistory.input,
+    success: OrchestrationRpcSchemas.loadProjectImportHistory.output,
+    error: WsRpcError,
+  },
+);
 
 export const WsImportProjectRpc = Rpc.make(ORCHESTRATION_WS_METHODS.importProject, {
   payload: OrchestrationRpcSchemas.importProject.input,
@@ -1064,20 +1158,23 @@ export const WsGitPreparePullRequestThreadRpc = Rpc.make(WS_METHODS.gitPreparePu
 
 const PullRequestsRpcError = Schema.Union([PullRequestsUnavailableError, WsRpcError]);
 
-export const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
-  payload: PullRequestsListInput,
-  success: PullRequestsListResult,
+export const WsGitHubInboxListRpc = Rpc.make(WS_METHODS.githubInboxList, {
+  payload: GitHubInboxListInput,
+  success: GitHubInboxListResult,
   error: PullRequestsRpcError,
 });
 
-export const WsPullRequestsReviewRequestCountRpc = Rpc.make(
-  WS_METHODS.pullRequestsReviewRequestCount,
-  {
-    payload: PullRequestReviewRequestCountInput,
-    success: PullRequestReviewRequestCountResult,
-    error: PullRequestsRpcError,
-  },
-);
+export const WsGitHubInboxIssueDetailRpc = Rpc.make(WS_METHODS.githubInboxIssueDetail, {
+  payload: GitHubIssueDetailInput,
+  success: GitHubIssueDetail,
+  error: PullRequestsRpcError,
+});
+
+export const WsGitHubInboxIssueCommentRpc = Rpc.make(WS_METHODS.githubInboxIssueComment, {
+  payload: GitHubIssueCommentInput,
+  success: GitHubIssueCommentResult,
+  error: PullRequestsRpcError,
+});
 
 export const WsPullRequestsDetailRpc = Rpc.make(WS_METHODS.pullRequestsDetail, {
   payload: PullRequestDetailInput,
@@ -1108,6 +1205,18 @@ export const WsPullRequestsCommentRpc = Rpc.make(WS_METHODS.pullRequestsComment,
 export const WsPullRequestsSetPinnedRpc = Rpc.make(WS_METHODS.pullRequestsSetPinned, {
   payload: PullRequestSetPinnedInput,
   success: PullRequestSetPinnedResult,
+  error: WsRpcError,
+});
+
+export const WsPullRequestsGetAutoFixRpc = Rpc.make(WS_METHODS.pullRequestsGetAutoFix, {
+  payload: PullRequestAutoFixGetInput,
+  success: PullRequestAutoFixListResult,
+  error: WsRpcError,
+});
+
+export const WsPullRequestsSetAutoFixRpc = Rpc.make(WS_METHODS.pullRequestsSetAutoFix, {
+  payload: PullRequestAutoFixSetInput,
+  success: PullRequestAutoFixResult,
   error: WsRpcError,
 });
 
@@ -1412,6 +1521,12 @@ export const WsStatsGetProfileTokenStatsRpc = Rpc.make(WS_METHODS.statsGetProfil
   error: WsRpcError,
 });
 
+export const WsStatsGetRecapRpc = Rpc.make(WS_METHODS.statsGetRecap, {
+  payload: StatsGetRecapInput,
+  success: StatsGetRecapResult,
+  error: WsRpcError,
+});
+
 export const WsServerGetDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetDiagnostics, {
   payload: Schema.Struct({}),
   success: ServerDiagnosticsResult,
@@ -1454,6 +1569,12 @@ export const WsServerGenerateAutomationIntentRpc = Rpc.make(
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
   payload: ServerUpsertKeybindingInput,
   success: ServerUpsertKeybindingResult,
+  error: WsRpcError,
+});
+
+export const WsServerEditKeybindingsRpc = Rpc.make(WS_METHODS.serverEditKeybindings, {
+  payload: ServerEditKeybindingsInput,
+  success: ServerEditKeybindingsResult,
   error: WsRpcError,
 });
 
@@ -1690,6 +1811,30 @@ export const WsMindForgetRpc = Rpc.make(WS_METHODS.mindForget, {
   error: WsRpcError,
 });
 
+export const WsTodoListRpc = Rpc.make(WS_METHODS.todoList, {
+  payload: Schema.Struct({}),
+  success: TodoListResult,
+  error: WsRpcError,
+});
+
+export const WsTodoCreateRpc = Rpc.make(WS_METHODS.todoCreate, {
+  payload: TodoCreateInput,
+  success: Todo,
+  error: WsRpcError,
+});
+
+export const WsTodoUpdateRpc = Rpc.make(WS_METHODS.todoUpdate, {
+  payload: TodoUpdateInput,
+  success: Todo,
+  error: WsRpcError,
+});
+
+export const WsTodoDeleteRpc = Rpc.make(WS_METHODS.todoDelete, {
+  payload: TodoDeleteInput,
+  success: Schema.Void,
+  error: WsRpcError,
+});
+
 export const WsMindSetPinnedRpc = Rpc.make(WS_METHODS.mindSetPinned, {
   payload: MindSetPinnedInput,
   success: MindMemory,
@@ -1725,6 +1870,210 @@ export const WsMindProfileSetRpc = Rpc.make(WS_METHODS.mindProfileSet, {
   success: MindProfile,
   error: WsRpcError,
 });
+export const WsSubscribeTodoEventsRpc = Rpc.make(WS_METHODS.subscribeTodoEvents, {
+  payload: Schema.Struct({}),
+  success: TodoStreamEvent,
+  error: WsRpcError,
+  stream: true,
+});
+
+export const WsProjectAgentGetOverviewRpc = Rpc.make(WS_METHODS.projectAgentGetOverview, {
+  payload: ProjectAgentGetOverviewInput,
+  success: ProjectAgentOverview,
+  error: WsRpcError,
+});
+export const WsProjectAgentListSummariesRpc = Rpc.make(WS_METHODS.projectAgentListSummaries, {
+  payload: ProjectAgentListSummariesInput,
+  success: ProjectAgentListSummariesResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentConfigureRpc = Rpc.make(WS_METHODS.projectAgentConfigure, {
+  payload: ProjectAgentConfigureInput,
+  success: ProjectAgentOverview,
+  error: WsRpcError,
+});
+export const WsProjectAgentLinkProjectRpc = Rpc.make(WS_METHODS.projectAgentLinkProject, {
+  payload: ProjectAgentLinkProjectInput,
+  success: ProjectAgentOverview,
+  error: WsRpcError,
+});
+export const WsProjectAgentUnlinkProjectRpc = Rpc.make(WS_METHODS.projectAgentUnlinkProject, {
+  payload: ProjectAgentUnlinkProjectInput,
+  success: ProjectAgentOverview,
+  error: WsRpcError,
+});
+export const WsProjectAgentPauseGroupRpc = Rpc.make(WS_METHODS.projectAgentPauseGroup, {
+  payload: ProjectAgentGroupControlInput,
+  success: ProjectAgentOverview,
+  error: WsRpcError,
+});
+export const WsProjectAgentResumeGroupRpc = Rpc.make(WS_METHODS.projectAgentResumeGroup, {
+  payload: ProjectAgentGroupControlInput,
+  success: ProjectAgentOverview,
+  error: WsRpcError,
+});
+export const WsProjectAgentArchiveGroupRpc = Rpc.make(WS_METHODS.projectAgentArchiveGroup, {
+  payload: ProjectAgentGroupControlInput,
+  success: ProjectAgentOverview,
+  error: WsRpcError,
+});
+export const WsProjectAgentUnarchiveGroupRpc = Rpc.make(WS_METHODS.projectAgentUnarchiveGroup, {
+  payload: ProjectAgentGroupControlInput,
+  success: ProjectAgentOverview,
+  error: WsRpcError,
+});
+export const WsProjectAgentRestartCoordinatorRpc = Rpc.make(
+  WS_METHODS.projectAgentRestartCoordinator,
+  {
+    payload: ProjectAgentGroupControlInput,
+    success: ProjectAgentOverview,
+    error: WsRpcError,
+  },
+);
+export const WsProjectAgentDeleteGroupRpc = Rpc.make(WS_METHODS.projectAgentDeleteGroup, {
+  payload: ProjectAgentDeleteGroupInput,
+  success: ProjectAgentDeleteGroupResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentStartGoalRpc = Rpc.make(WS_METHODS.projectAgentStartGoal, {
+  payload: ProjectAgentStartGoalInput,
+  success: ProjectGoal,
+  error: WsRpcError,
+});
+export const WsProjectAgentUpdateGoalRpc = Rpc.make(WS_METHODS.projectAgentUpdateGoal, {
+  payload: ProjectAgentUpdateGoalInput,
+  success: ProjectGoal,
+  error: WsRpcError,
+});
+export const WsProjectAgentPauseGoalRpc = Rpc.make(WS_METHODS.projectAgentPauseGoal, {
+  payload: ProjectAgentGoalControlInput,
+  success: ProjectGoal,
+  error: WsRpcError,
+});
+export const WsProjectAgentResumeGoalRpc = Rpc.make(WS_METHODS.projectAgentResumeGoal, {
+  payload: ProjectAgentGoalControlInput,
+  success: ProjectGoal,
+  error: WsRpcError,
+});
+export const WsProjectAgentStopGoalRpc = Rpc.make(WS_METHODS.projectAgentStopGoal, {
+  payload: ProjectAgentGoalControlInput,
+  success: ProjectGoal,
+  error: WsRpcError,
+});
+export const WsProjectAgentListTasksRpc = Rpc.make(WS_METHODS.projectAgentListTasks, {
+  payload: ProjectAgentListTasksInput,
+  success: ProjectAgentListTasksResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentUpdateTaskRpc = Rpc.make(WS_METHODS.projectAgentUpdateTask, {
+  payload: ProjectAgentUpdateTaskInput,
+  success: ProjectTask,
+  error: WsRpcError,
+});
+export const WsProjectAgentCreateTaskRpc = Rpc.make(WS_METHODS.projectAgentCreateTask, {
+  payload: ProjectAgentCreateTaskInput,
+  success: ProjectTask,
+  error: WsRpcError,
+});
+export const WsProjectAgentListEvidenceRpc = Rpc.make(WS_METHODS.projectAgentListEvidence, {
+  payload: ProjectAgentListEvidenceInput,
+  success: ProjectAgentListEvidenceResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentListThreadIndexRpc = Rpc.make(WS_METHODS.projectAgentListThreadIndex, {
+  payload: ProjectAgentListThreadIndexInput,
+  success: ProjectAgentListThreadIndexResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentExcludeThreadRpc = Rpc.make(WS_METHODS.projectAgentExcludeThread, {
+  payload: ProjectAgentExcludeThreadInput,
+  success: ProjectThreadIndexEntry,
+  error: WsRpcError,
+});
+export const WsProjectAgentBackfillSummariesRpc = Rpc.make(
+  WS_METHODS.projectAgentBackfillSummaries,
+  {
+    payload: ProjectAgentBackfillInput,
+    success: ProjectAgentOverview,
+    error: WsRpcError,
+  },
+);
+export const WsProjectAgentListActivityRpc = Rpc.make(WS_METHODS.projectAgentListActivity, {
+  payload: ProjectAgentListActivityInput,
+  success: ProjectAgentListActivityResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentListDocumentsRpc = Rpc.make(WS_METHODS.projectAgentListDocuments, {
+  payload: ProjectAgentListDocumentsInput,
+  success: ProjectAgentListDocumentsResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentReadDocumentRpc = Rpc.make(WS_METHODS.projectAgentReadDocument, {
+  payload: ProjectAgentReadDocumentInput,
+  success: ProjectAgentReadDocumentResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentWriteDocumentRpc = Rpc.make(WS_METHODS.projectAgentWriteDocument, {
+  payload: ProjectAgentWriteDocumentInput,
+  success: ProjectDocumentRevision,
+  error: WsRpcError,
+});
+export const WsProjectAgentExportDocumentsRpc = Rpc.make(WS_METHODS.projectAgentExportDocuments, {
+  payload: ProjectAgentExportDocumentsInput,
+  success: ProjectAgentExportDocumentsResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentRefreshDigestRpc = Rpc.make(WS_METHODS.projectAgentRefreshDigest, {
+  payload: ProjectAgentRefreshDigestInput,
+  success: ProjectAgentOverview,
+  error: WsRpcError,
+});
+export const WsProjectAgentLibraryListRpc = Rpc.make(WS_METHODS.projectAgentLibraryList, {
+  payload: ProjectAgentLibraryListInput,
+  success: ProjectAgentLibraryListResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentLibraryMkdirRpc = Rpc.make(WS_METHODS.projectAgentLibraryMkdir, {
+  payload: ProjectAgentLibraryMkdirInput,
+  success: ProjectAgentLibraryMutationResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentLibraryRenameRpc = Rpc.make(WS_METHODS.projectAgentLibraryRename, {
+  payload: ProjectAgentLibraryRenameInput,
+  success: ProjectAgentLibraryMutationResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentLibraryDeleteRpc = Rpc.make(WS_METHODS.projectAgentLibraryDelete, {
+  payload: ProjectAgentLibraryDeleteInput,
+  success: ProjectAgentLibraryMutationResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentLibraryHistoryRpc = Rpc.make(WS_METHODS.projectAgentLibraryHistory, {
+  payload: ProjectAgentLibraryHistoryInput,
+  success: ProjectAgentLibraryHistoryResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentLibraryRestoreRpc = Rpc.make(WS_METHODS.projectAgentLibraryRestore, {
+  payload: ProjectAgentLibraryRestoreInput,
+  success: ProjectAgentLibraryMutationResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentLibraryStatusRpc = Rpc.make(WS_METHODS.projectAgentLibraryStatus, {
+  payload: ProjectAgentLibraryStatusInput,
+  success: ProjectAgentLibraryStatusResult,
+  error: WsRpcError,
+});
+export const WsProjectAgentResolveWorkerRpc = Rpc.make(WS_METHODS.projectAgentResolveWorker, {
+  payload: ProjectAgentResolveWorkerInput,
+  success: ProjectAgentResolveWorkerResult,
+  error: WsRpcError,
+});
+export const WsSubscribeProjectAgentEventsRpc = Rpc.make(WS_METHODS.subscribeProjectAgentEvents, {
+  payload: ProjectAgentSubscribeInput,
+  success: ProjectAgentStreamEvent,
+  error: WsRpcError,
+  stream: true,
+});
 
 export const WsBootstrapRpcGroup = RpcGroup.make(WsBootstrapNegotiateRpc);
 
@@ -1751,9 +2100,11 @@ const WsOrchestrationFeatureRpcGroup = RpcGroup.make(
   WsCoordinationCancelWaitRpc,
   WsCoordinationAnswerQuestionRpc,
   WsOrchestrationDispatchCommandRpc,
+  WsOrchestrationSettleTurnDispatchRpc,
   WsOrchestrationImportThreadRpc,
   WsListProjectImportsRpc,
   WsImportProjectRpc,
+  WsLoadProjectImportHistoryRpc,
   WsOrchestrationRegenerateThreadTitleRpc,
   WsOrchestrationGetSnapshotRpc,
   WsOrchestrationGetShellSnapshotRpc,
@@ -1806,13 +2157,16 @@ const WsGitTerminalFeatureRpcGroup = RpcGroup.make(
   WsGitResolvePullRequestRpc,
   WsGitPullRequestSnapshotRpc,
   WsGitPreparePullRequestThreadRpc,
-  WsPullRequestsListRpc,
-  WsPullRequestsReviewRequestCountRpc,
+  WsGitHubInboxListRpc,
+  WsGitHubInboxIssueDetailRpc,
+  WsGitHubInboxIssueCommentRpc,
   WsPullRequestsDetailRpc,
   WsPullRequestsDiffRpc,
   WsPullRequestsActionRpc,
   WsPullRequestsCommentRpc,
   WsPullRequestsSetPinnedRpc,
+  WsPullRequestsGetAutoFixRpc,
+  WsPullRequestsSetAutoFixRpc,
   WsGitListBranchesRpc,
   WsGitListRecentCommitsRpc,
   WsGitCreateWorktreeRpc,
@@ -1862,6 +2216,7 @@ const WsServerProviderFeatureRpcGroup = RpcGroup.make(
   WsServerConsumeCodexResetCreditRpc,
   WsStatsGetProfileStatsRpc,
   WsStatsGetProfileTokenStatsRpc,
+  WsStatsGetRecapRpc,
   WsServerGetDiagnosticsRpc,
   WsServerReadThreadDiagnosticsRpc,
   WsServerPrewarmVoiceRpc,
@@ -1869,6 +2224,7 @@ const WsServerProviderFeatureRpcGroup = RpcGroup.make(
   WsServerGenerateThreadRecapRpc,
   WsServerGenerateAutomationIntentRpc,
   WsServerUpsertKeybindingRpc,
+  WsServerEditKeybindingsRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerProviderStatusesRpc,
@@ -1915,6 +2271,54 @@ const WsAutomationMindFeatureRpcGroup = RpcGroup.make(
   WsMindHistoryRpc,
   WsMindProfileGetRpc,
   WsMindProfileSetRpc,
+  WsTodoListRpc,
+  WsTodoCreateRpc,
+  WsTodoUpdateRpc,
+  WsTodoDeleteRpc,
+  WsSubscribeTodoEventsRpc,
+);
+
+// Project-agent RPCs live in a satellite group: folding them into
+// WsFeatureRpcGroup pushes its inferred type past the declaration emit limit.
+export const WsProjectAgentRpcGroup = RpcGroup.make(
+  WsProjectAgentGetOverviewRpc,
+  WsProjectAgentListSummariesRpc,
+  WsProjectAgentConfigureRpc,
+  WsProjectAgentLinkProjectRpc,
+  WsProjectAgentUnlinkProjectRpc,
+  WsProjectAgentPauseGroupRpc,
+  WsProjectAgentResumeGroupRpc,
+  WsProjectAgentArchiveGroupRpc,
+  WsProjectAgentUnarchiveGroupRpc,
+  WsProjectAgentRestartCoordinatorRpc,
+  WsProjectAgentDeleteGroupRpc,
+  WsProjectAgentStartGoalRpc,
+  WsProjectAgentUpdateGoalRpc,
+  WsProjectAgentPauseGoalRpc,
+  WsProjectAgentResumeGoalRpc,
+  WsProjectAgentStopGoalRpc,
+  WsProjectAgentListTasksRpc,
+  WsProjectAgentUpdateTaskRpc,
+  WsProjectAgentCreateTaskRpc,
+  WsProjectAgentListEvidenceRpc,
+  WsProjectAgentListThreadIndexRpc,
+  WsProjectAgentExcludeThreadRpc,
+  WsProjectAgentBackfillSummariesRpc,
+  WsProjectAgentListActivityRpc,
+  WsProjectAgentListDocumentsRpc,
+  WsProjectAgentReadDocumentRpc,
+  WsProjectAgentWriteDocumentRpc,
+  WsProjectAgentExportDocumentsRpc,
+  WsProjectAgentRefreshDigestRpc,
+  WsProjectAgentLibraryListRpc,
+  WsProjectAgentLibraryMkdirRpc,
+  WsProjectAgentLibraryRenameRpc,
+  WsProjectAgentLibraryDeleteRpc,
+  WsProjectAgentLibraryHistoryRpc,
+  WsProjectAgentLibraryRestoreRpc,
+  WsProjectAgentLibraryStatusRpc,
+  WsProjectAgentResolveWorkerRpc,
+  WsSubscribeProjectAgentEventsRpc,
 );
 
 type WsFeatureRpc =

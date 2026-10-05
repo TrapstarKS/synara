@@ -12,6 +12,8 @@ import { pendingRequestInstanceKey } from "@synara/shared/threadSummary";
 import type { Thread, ThreadSession } from "../types";
 import {
   derivePendingApprovals,
+  countOutstandingBackgroundWork,
+  derivePendingBackgroundWork,
   derivePendingUserInputs,
   deriveActiveBackgroundTasksState,
   hasLiveLatestTurn,
@@ -35,6 +37,31 @@ export interface ThreadAttentionCandidate {
   createdAt: string;
   requestKind?: "command" | "file-read" | "file-change" | "permissions" | "tool";
   summary?: string;
+}
+
+export interface SnoozeReminderCandidate {
+  threadId: Thread["id"];
+  title: string;
+  reminderAt: string;
+}
+
+/** Reminders deliberately include the initial snapshot so an overdue wakeup
+ * survives a closed app. Persisted receipts, rather than a lifecycle transition,
+ * determine whether the notification has already been shown. */
+export function collectSnoozeReminderCandidates(
+  threads: readonly Pick<
+    Thread,
+    "id" | "title" | "archivedAt" | "snoozedUntil" | "snoozeReminderAt"
+  >[],
+): SnoozeReminderCandidate[] {
+  return threads.flatMap((thread) =>
+    thread.archivedAt == null &&
+    thread.snoozedUntil == null &&
+    thread.snoozeReminderAt &&
+    Number.isFinite(Date.parse(thread.snoozeReminderAt))
+      ? [{ threadId: thread.id, title: thread.title, reminderAt: thread.snoozeReminderAt }]
+      : [],
+  );
 }
 
 interface TerminalNotificationThreadState {
@@ -534,12 +561,22 @@ function isCompletionNotificationSettled(thread: Thread | undefined): boolean {
 export function collectCompletedThreadCandidates(
   previousThreads: readonly Thread[],
   nextThreads: readonly Thread[],
+  options: {
+    /**
+     * Notify once the agent and every background subagent it launched have
+     * finished, instead of each time the agent or one of its subagents stops.
+     */
+    readonly waitForSubagents?: boolean;
+  } = {},
 ): CompletedThreadCandidate[] {
   const previousById = new Map(previousThreads.map((thread) => [thread.id, thread] as const));
   const candidates: CompletedThreadCandidate[] = [];
 
   for (const thread of nextThreads) {
-    if (isSubagentThread(thread)) {
+    if (thread.snoozedUntil != null) continue;
+    // A subagent's own thread finishing is a step of its parent's work, and
+    // its result reaches the parent thread anyway.
+    if (isSubagentThread(thread) || (options.waitForSubagents && thread.parentThreadId)) {
       continue;
     }
     const previousThread = previousById.get(thread.id);
@@ -561,6 +598,23 @@ export function collectCompletedThreadCandidates(
     if (!isCompletionNotificationSettled(thread)) {
       continue;
     }
+    // Background subagents can keep running after the turn settles; "Finished
+    // working." would be premature while tracked background tasks are live.
+    if (
+      (derivePendingBackgroundWork({
+        activities: thread.activities,
+        latestTurn: thread.latestTurn,
+        session: thread.session,
+      })?.count ?? 0) > 0
+    ) {
+      continue;
+    }
+    if (
+      options.waitForSubagents &&
+      countOutstandingBackgroundWork({ activities: thread.activities, session: thread.session }) > 0
+    ) {
+      continue;
+    }
     if (!previousThread.session && !previousThread.latestTurn?.completedAt) {
       continue;
     }
@@ -569,7 +623,17 @@ export function collectCompletedThreadCandidates(
     }
     if (
       previousThread.latestTurn?.turnId === thread.latestTurn?.turnId &&
-      isCompletionNotificationSettled(previousThread)
+      isCompletionNotificationSettled(previousThread) &&
+      // A held completion can be released by the final task or session settling
+      // without the parent entering another turn. Only dedupe a previously
+      // settled snapshot if it was already eligible for the alert.
+      !(
+        options.waitForSubagents &&
+        countOutstandingBackgroundWork({
+          activities: previousThread.activities,
+          session: previousThread.session,
+        }) > 0
+      )
     ) {
       continue;
     }
@@ -710,6 +774,7 @@ export function collectThreadAttentionCandidates(
   const candidates: ThreadAttentionCandidate[] = [];
 
   for (const thread of nextThreads) {
+    if (thread.snoozedUntil != null) continue;
     const previousThread = previousById.get(thread.id);
     if (!previousThread) {
       continue;

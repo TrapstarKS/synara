@@ -14,7 +14,7 @@ import { COMPOSER_STACKED_SURFACE_BORDER_CLASS_NAME } from "./composerPickerStyl
  *  z-index: the input shell paints later and keeps its top border visible across
  *  the seam. */
 export const COMPOSER_STACKED_PANEL_CHROME_CLASS_NAME = [
-  "chat-composer-stacked-top relative overflow-hidden border border-b-0",
+  "chat-composer-stacked-top squircle relative overflow-hidden border border-b-0",
   COMPOSER_STACKED_SURFACE_BORDER_CLASS_NAME,
 ].join(" ");
 
@@ -70,6 +70,10 @@ export const COMPOSER_STACKED_PANEL_BODY_PADDING_CLASS_NAME = "px-2.5 pb-1.5";
  */
 export const COMPOSER_STACKED_PANEL_SCROLL_REGION_CLASS_NAME =
   "max-h-56 overflow-y-auto overscroll-contain";
+
+/** Footer/meta row below stacked panel content (background agents). */
+export const COMPOSER_STACKED_PANEL_FOOTER_ROW_CLASS_NAME =
+  "flex items-center justify-between gap-2 px-2.5 py-1.5 text-ui-sm text-muted-foreground/70";
 
 /** Ghost icon button used in stacked panel header actions. */
 export const COMPOSER_STACKED_PANEL_ICON_BUTTON_CLASS_NAME =

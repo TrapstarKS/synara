@@ -4,6 +4,7 @@
 // Depends on: modelSelectionCompatibility.
 
 import { assert, it } from "@effect/vitest";
+import { DEFAULT_SERVER_SETTINGS } from "@synara/contracts";
 
 import { normalizePersistedModelSelection } from "./modelSelectionCompatibility.ts";
 
@@ -27,6 +28,46 @@ it("preserves the selected Codex profile in canonical persisted selections", () 
       model: "gpt-5.6-luna",
       profileId: "4ae646ed-62ad-4e45-965a-d11cd459a853",
       options: { reasoningEffort: "max" },
+    },
+  );
+});
+
+it("preserves explicit provider instance ids during compatibility normalization", () => {
+  assert.deepEqual(
+    normalizePersistedModelSelection({
+      provider: "claudeAgent",
+      instanceId: "work",
+      model: "claude-sonnet-4-6",
+    }),
+    {
+      provider: "claudeAgent",
+      instanceId: "work",
+      model: "claude-sonnet-4-6",
+    },
+  );
+});
+
+it("uses settings to resolve opaque provider instance ids", () => {
+  assert.deepEqual(
+    normalizePersistedModelSelection(
+      {
+        instanceId: "work",
+        model: "company-model",
+      },
+      {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          work: {
+            driver: "claudeAgent",
+            enabled: true,
+          },
+        },
+      },
+    ),
+    {
+      provider: "claudeAgent",
+      instanceId: "work",
+      model: "company-model",
     },
   );
 });
@@ -118,6 +159,7 @@ it("infers Pi from persisted instance labels", () => {
     }),
     {
       provider: "pi",
+      instanceId: "local-pi-runtime-instance",
       model: "openai/gpt-5.5",
     },
   );

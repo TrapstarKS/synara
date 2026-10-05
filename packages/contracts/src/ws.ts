@@ -5,7 +5,11 @@ import {
   ThreadCoordinationCancelWaitInput,
   ThreadCoordinationAnswerQuestionInput,
 } from "./threadCoordination";
-import { ImportProjectInput, ListProjectImportsInput } from "./projectImport";
+import {
+  LoadProjectImportHistoryInput,
+  ImportProjectInput,
+  ListProjectImportsInput,
+} from "./projectImport";
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
 import {
@@ -21,6 +25,42 @@ import {
   AutomationStreamEvent,
   AutomationUpdateInput,
 } from "./automation";
+import { TodoCreateInput, TodoDeleteInput, TodoStreamEvent, TodoUpdateInput } from "./todo";
+import {
+  ProjectAgentConfigureInput,
+  ProjectAgentLinkProjectInput,
+  ProjectAgentUnlinkProjectInput,
+  ProjectAgentExportDocumentsInput,
+  ProjectAgentGetOverviewInput,
+  ProjectAgentListSummariesInput,
+  ProjectAgentGoalControlInput,
+  ProjectAgentListActivityInput,
+  ProjectAgentListDocumentsInput,
+  ProjectAgentListTasksInput,
+  ProjectAgentReadDocumentInput,
+  ProjectAgentRefreshDigestInput,
+  ProjectAgentStartGoalInput,
+  ProjectAgentStreamEvent,
+  ProjectAgentSubscribeInput,
+  ProjectAgentUpdateGoalInput,
+  ProjectAgentUpdateTaskInput,
+  ProjectAgentWriteDocumentInput,
+  ProjectAgentCreateTaskInput,
+  ProjectAgentExcludeThreadInput,
+  ProjectAgentBackfillInput,
+  ProjectAgentListThreadIndexInput,
+  ProjectAgentListEvidenceInput,
+  ProjectAgentLibraryDeleteInput,
+  ProjectAgentLibraryHistoryInput,
+  ProjectAgentLibraryListInput,
+  ProjectAgentLibraryMkdirInput,
+  ProjectAgentLibraryRenameInput,
+  ProjectAgentLibraryRestoreInput,
+  ProjectAgentDeleteGroupInput,
+  ProjectAgentGroupControlInput,
+  ProjectAgentLibraryStatusInput,
+  ProjectAgentResolveWorkerInput,
+} from "./projectAgent";
 import {
   MindAffirmInput,
   MindForgetInput,
@@ -52,6 +92,7 @@ import {
   OrchestrationGetTurnDiffInput,
   OrchestrationReplayEventsInput,
   OrchestrationRegenerateThreadTitleInput,
+  OrchestrationSettleTurnDispatchInput,
 } from "./orchestration";
 import {
   GitActionProgressEvent,
@@ -144,6 +185,7 @@ import {
   ServerCodexAccountBridgeInput,
   ServerCodexAccountInput,
   ServerCodexAccountLoginInput,
+  ServerEditKeybindingsInput,
   ServerReadThreadDiagnosticsInput,
   ServerGenerateAutomationIntentInput,
   ServerGenerateThreadRecapInput,
@@ -159,7 +201,11 @@ import {
   ServerVoicePrewarmInput,
   ServerVoiceTranscriptionInput,
 } from "./server";
-import { StatsGetProfileStatsInput, StatsGetProfileTokenStatsInput } from "./stats";
+import {
+  StatsGetProfileStatsInput,
+  StatsGetProfileTokenStatsInput,
+  StatsGetRecapInput,
+} from "./stats";
 import {
   ProviderListCommandsInput,
   ProviderGetComposerCapabilitiesInput,
@@ -180,10 +226,14 @@ import {
   PullRequestActionInput,
   PullRequestCommentInput,
   PullRequestDetailInput,
-  PullRequestReviewRequestCountInput,
   PullRequestSetPinnedInput,
-  PullRequestsListInput,
 } from "./pullRequests";
+import { PullRequestAutoFixGetInput, PullRequestAutoFixSetInput } from "./pullRequestAutoFix";
+import {
+  GitHubInboxListInput,
+  GitHubIssueCommentInput,
+  GitHubIssueDetailInput,
+} from "./githubInbox";
 import {
   ExternalMcpCreateIntegrationInput,
   ExternalMcpRefreshPairingInput,
@@ -255,14 +305,17 @@ export const WS_METHODS = {
   gitPullRequestSnapshot: "git.pullRequestSnapshot",
   gitPreparePullRequestThread: "git.preparePullRequestThread",
 
-  // Global pull request methods
-  pullRequestsList: "pullRequests.list",
-  pullRequestsReviewRequestCount: "pullRequests.reviewRequestCount",
+  // GitHub inbox and global pull request methods
+  githubInboxList: "githubInbox.list",
+  githubInboxIssueDetail: "githubInbox.issueDetail",
+  githubInboxIssueComment: "githubInbox.issueComment",
   pullRequestsDetail: "pullRequests.detail",
   pullRequestsDiff: "pullRequests.diff",
   pullRequestsAction: "pullRequests.action",
   pullRequestsComment: "pullRequests.comment",
   pullRequestsSetPinned: "pullRequests.setPinned",
+  pullRequestsGetAutoFix: "pullRequests.getAutoFix",
+  pullRequestsSetAutoFix: "pullRequests.setAutoFix",
 
   // Terminal methods
   terminalOpen: "terminal.open",
@@ -297,6 +350,7 @@ export const WS_METHODS = {
   serverConsumeCodexResetCredit: "server.consumeCodexResetCredit",
   statsGetProfileStats: "stats.getProfileStats",
   statsGetProfileTokenStats: "stats.getProfileTokenStats",
+  statsGetRecap: "stats.getRecap",
   serverGetDiagnostics: "server.getDiagnostics",
   serverReadThreadDiagnostics: "server.readThreadDiagnostics",
   serverPrewarmVoice: "server.prewarmVoice",
@@ -304,6 +358,7 @@ export const WS_METHODS = {
   serverGenerateThreadRecap: "server.generateThreadRecap",
   serverGenerateAutomationIntent: "server.generateAutomationIntent",
   serverUpsertKeybinding: "server.upsertKeybinding",
+  serverEditKeybindings: "server.editKeybindings",
   subscribeServerLifecycle: "server.subscribeLifecycle",
   subscribeServerConfig: "server.subscribeConfig",
   subscribeServerProviderStatuses: "server.subscribeProviderStatuses",
@@ -357,17 +412,63 @@ export const WS_METHODS = {
   mindHistory: "mind.history",
   mindProfileGet: "mind.profileGet",
   mindProfileSet: "mind.profileSet",
+  // Todo methods (the Tasks view)
+  todoList: "todo.list",
+  todoCreate: "todo.create",
+  todoUpdate: "todo.update",
+  todoDelete: "todo.delete",
+  subscribeTodoEvents: "todo.subscribe",
+  projectAgentGetOverview: "projectAgent.getOverview",
+  projectAgentListSummaries: "projectAgent.listSummaries",
+  projectAgentConfigure: "projectAgent.configure",
+  projectAgentLinkProject: "projectAgent.linkProject",
+  projectAgentUnlinkProject: "projectAgent.unlinkProject",
+  projectAgentStartGoal: "projectAgent.startGoal",
+  projectAgentUpdateGoal: "projectAgent.updateGoal",
+  projectAgentPauseGoal: "projectAgent.pauseGoal",
+  projectAgentResumeGoal: "projectAgent.resumeGoal",
+  projectAgentStopGoal: "projectAgent.stopGoal",
+  projectAgentListTasks: "projectAgent.listTasks",
+  projectAgentUpdateTask: "projectAgent.updateTask",
+  projectAgentCreateTask: "projectAgent.createTask",
+  projectAgentListEvidence: "projectAgent.listEvidence",
+  projectAgentListThreadIndex: "projectAgent.listThreadIndex",
+  projectAgentExcludeThread: "projectAgent.excludeThread",
+  projectAgentBackfillSummaries: "projectAgent.backfillSummaries",
+  projectAgentListActivity: "projectAgent.listActivity",
+  projectAgentListDocuments: "projectAgent.listDocuments",
+  projectAgentReadDocument: "projectAgent.readDocument",
+  projectAgentWriteDocument: "projectAgent.writeDocument",
+  projectAgentExportDocuments: "projectAgent.exportDocuments",
+  projectAgentRefreshDigest: "projectAgent.refreshDigest",
+  projectAgentPauseGroup: "projectAgent.pause",
+  projectAgentResumeGroup: "projectAgent.resume",
+  projectAgentArchiveGroup: "projectAgent.archive",
+  projectAgentUnarchiveGroup: "projectAgent.unarchive",
+  projectAgentRestartCoordinator: "projectAgent.restartCoordinator",
+  projectAgentDeleteGroup: "projectAgent.delete",
+  projectAgentLibraryList: "projectAgent.library.list",
+  projectAgentLibraryMkdir: "projectAgent.library.mkdir",
+  projectAgentLibraryRename: "projectAgent.library.rename",
+  projectAgentLibraryDelete: "projectAgent.library.delete",
+  projectAgentLibraryHistory: "projectAgent.library.history",
+  projectAgentLibraryRestore: "projectAgent.library.restore",
+  projectAgentLibraryStatus: "projectAgent.library.status",
+  projectAgentResolveWorker: "projectAgent.resolveWorker",
+  subscribeProjectAgentEvents: "projectAgent.subscribe",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
 
 export const WS_CHANNELS = {
   automationEvent: "automation.event",
+  todoEvent: "todo.event",
   gitActionProgress: "git.actionProgress",
   gitWorktreeSetupProgress: "git.worktreeSetupProgress",
   projectProvisionProgress: "project.provisionProgress",
   terminalEvent: "terminal.event",
   projectDevServerEvent: "project.devServerEvent",
+  projectAgentEvent: "projectAgent.event",
   serverWelcome: "server.welcome",
   serverMaintenanceUpdated: "server.maintenanceUpdated",
   serverConfigUpdated: "server.configUpdated",
@@ -397,8 +498,10 @@ const WebSocketRequestBody = Schema.Union([
     Schema.Struct({ command: ClientOrchestrationCommand }),
   ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.importThread, OrchestrationImportThreadInput),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.settleTurnDispatch, OrchestrationSettleTurnDispatchInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.listProjectImports, ListProjectImportsInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.importProject, ImportProjectInput),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.loadProjectImportHistory, LoadProjectImportHistoryInput),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.regenerateThreadTitle,
     OrchestrationRegenerateThreadTitleInput,
@@ -508,13 +611,18 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.gitPreparePullRequestThread, GitPreparePullRequestThreadInput),
 
   // Global pull requests
-  tagRequestBody(WS_METHODS.pullRequestsList, PullRequestsListInput),
-  tagRequestBody(WS_METHODS.pullRequestsReviewRequestCount, PullRequestReviewRequestCountInput),
   tagRequestBody(WS_METHODS.pullRequestsDetail, PullRequestDetailInput),
   tagRequestBody(WS_METHODS.pullRequestsDiff, PullRequestDetailInput),
   tagRequestBody(WS_METHODS.pullRequestsAction, PullRequestActionInput),
   tagRequestBody(WS_METHODS.pullRequestsComment, PullRequestCommentInput),
   tagRequestBody(WS_METHODS.pullRequestsSetPinned, PullRequestSetPinnedInput),
+  tagRequestBody(WS_METHODS.pullRequestsGetAutoFix, PullRequestAutoFixGetInput),
+  tagRequestBody(WS_METHODS.pullRequestsSetAutoFix, PullRequestAutoFixSetInput),
+
+  // GitHub inbox (pull requests and issues)
+  tagRequestBody(WS_METHODS.githubInboxList, GitHubInboxListInput),
+  tagRequestBody(WS_METHODS.githubInboxIssueDetail, GitHubIssueDetailInput),
+  tagRequestBody(WS_METHODS.githubInboxIssueComment, GitHubIssueCommentInput),
 
   // Terminal methods
   tagRequestBody(WS_METHODS.terminalOpen, TerminalOpenInput),
@@ -549,6 +657,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverConsumeCodexResetCredit, ServerConsumeCodexResetCreditInput),
   tagRequestBody(WS_METHODS.statsGetProfileStats, StatsGetProfileStatsInput),
   tagRequestBody(WS_METHODS.statsGetProfileTokenStats, StatsGetProfileTokenStatsInput),
+  tagRequestBody(WS_METHODS.statsGetRecap, StatsGetRecapInput),
   tagRequestBody(WS_METHODS.serverGetDiagnostics, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverReadThreadDiagnostics, ServerReadThreadDiagnosticsInput),
   tagRequestBody(WS_METHODS.serverPrewarmVoice, ServerVoicePrewarmInput),
@@ -556,6 +665,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverGenerateThreadRecap, ServerGenerateThreadRecapInput),
   tagRequestBody(WS_METHODS.serverGenerateAutomationIntent, ServerGenerateAutomationIntentInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
+  tagRequestBody(WS_METHODS.serverEditKeybindings, ServerEditKeybindingsInput),
 
   // Provider discovery
   tagRequestBody(WS_METHODS.providerGetComposerCapabilities, ProviderGetComposerCapabilitiesInput),
@@ -601,6 +711,50 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.mindHistory, MindHistoryInput),
   tagRequestBody(WS_METHODS.mindProfileGet, MindProfileGetInput),
   tagRequestBody(WS_METHODS.mindProfileSet, MindProfileSetInput),
+  // Todo methods
+  tagRequestBody(WS_METHODS.todoList, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.todoCreate, TodoCreateInput),
+  tagRequestBody(WS_METHODS.todoUpdate, TodoUpdateInput),
+  tagRequestBody(WS_METHODS.todoDelete, TodoDeleteInput),
+  tagRequestBody(WS_METHODS.subscribeTodoEvents, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.projectAgentGetOverview, ProjectAgentGetOverviewInput),
+  tagRequestBody(WS_METHODS.projectAgentListSummaries, ProjectAgentListSummariesInput),
+  tagRequestBody(WS_METHODS.projectAgentConfigure, ProjectAgentConfigureInput),
+  tagRequestBody(WS_METHODS.projectAgentLinkProject, ProjectAgentLinkProjectInput),
+  tagRequestBody(WS_METHODS.projectAgentUnlinkProject, ProjectAgentUnlinkProjectInput),
+  tagRequestBody(WS_METHODS.projectAgentStartGoal, ProjectAgentStartGoalInput),
+  tagRequestBody(WS_METHODS.projectAgentUpdateGoal, ProjectAgentUpdateGoalInput),
+  tagRequestBody(WS_METHODS.projectAgentPauseGoal, ProjectAgentGoalControlInput),
+  tagRequestBody(WS_METHODS.projectAgentResumeGoal, ProjectAgentGoalControlInput),
+  tagRequestBody(WS_METHODS.projectAgentStopGoal, ProjectAgentGoalControlInput),
+  tagRequestBody(WS_METHODS.projectAgentListTasks, ProjectAgentListTasksInput),
+  tagRequestBody(WS_METHODS.projectAgentUpdateTask, ProjectAgentUpdateTaskInput),
+  tagRequestBody(WS_METHODS.projectAgentCreateTask, ProjectAgentCreateTaskInput),
+  tagRequestBody(WS_METHODS.projectAgentListEvidence, ProjectAgentListEvidenceInput),
+  tagRequestBody(WS_METHODS.projectAgentListThreadIndex, ProjectAgentListThreadIndexInput),
+  tagRequestBody(WS_METHODS.projectAgentExcludeThread, ProjectAgentExcludeThreadInput),
+  tagRequestBody(WS_METHODS.projectAgentBackfillSummaries, ProjectAgentBackfillInput),
+  tagRequestBody(WS_METHODS.projectAgentListActivity, ProjectAgentListActivityInput),
+  tagRequestBody(WS_METHODS.projectAgentListDocuments, ProjectAgentListDocumentsInput),
+  tagRequestBody(WS_METHODS.projectAgentReadDocument, ProjectAgentReadDocumentInput),
+  tagRequestBody(WS_METHODS.projectAgentWriteDocument, ProjectAgentWriteDocumentInput),
+  tagRequestBody(WS_METHODS.projectAgentExportDocuments, ProjectAgentExportDocumentsInput),
+  tagRequestBody(WS_METHODS.projectAgentRefreshDigest, ProjectAgentRefreshDigestInput),
+  tagRequestBody(WS_METHODS.projectAgentPauseGroup, ProjectAgentGroupControlInput),
+  tagRequestBody(WS_METHODS.projectAgentResumeGroup, ProjectAgentGroupControlInput),
+  tagRequestBody(WS_METHODS.projectAgentArchiveGroup, ProjectAgentGroupControlInput),
+  tagRequestBody(WS_METHODS.projectAgentUnarchiveGroup, ProjectAgentGroupControlInput),
+  tagRequestBody(WS_METHODS.projectAgentRestartCoordinator, ProjectAgentGroupControlInput),
+  tagRequestBody(WS_METHODS.projectAgentDeleteGroup, ProjectAgentDeleteGroupInput),
+  tagRequestBody(WS_METHODS.projectAgentLibraryList, ProjectAgentLibraryListInput),
+  tagRequestBody(WS_METHODS.projectAgentLibraryMkdir, ProjectAgentLibraryMkdirInput),
+  tagRequestBody(WS_METHODS.projectAgentLibraryRename, ProjectAgentLibraryRenameInput),
+  tagRequestBody(WS_METHODS.projectAgentLibraryDelete, ProjectAgentLibraryDeleteInput),
+  tagRequestBody(WS_METHODS.projectAgentLibraryHistory, ProjectAgentLibraryHistoryInput),
+  tagRequestBody(WS_METHODS.projectAgentLibraryRestore, ProjectAgentLibraryRestoreInput),
+  tagRequestBody(WS_METHODS.projectAgentLibraryStatus, ProjectAgentLibraryStatusInput),
+  tagRequestBody(WS_METHODS.projectAgentResolveWorker, ProjectAgentResolveWorkerInput),
+  tagRequestBody(WS_METHODS.subscribeProjectAgentEvents, ProjectAgentSubscribeInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({
@@ -628,6 +782,7 @@ export const WsWelcomePayload = Schema.Struct({
   homeDir: Schema.optional(TrimmedNonEmptyString),
   chatWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
   studioWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
+  groupsWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
   projectName: TrimmedNonEmptyString,
   bootstrapProjectId: Schema.optional(ProjectId),
   bootstrapThreadId: Schema.optional(ThreadId),
@@ -641,6 +796,8 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverProviderStatusesUpdated]: typeof ServerProviderStatusesUpdatedPayload.Type;
   readonly [WS_CHANNELS.serverSettingsUpdated]: typeof ServerSettingsUpdatedPayload.Type;
   readonly [WS_CHANNELS.automationEvent]: typeof AutomationStreamEvent.Type;
+  readonly [WS_CHANNELS.todoEvent]: typeof TodoStreamEvent.Type;
+  readonly [WS_CHANNELS.projectAgentEvent]: typeof ProjectAgentStreamEvent.Type;
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
   readonly [WS_CHANNELS.gitWorktreeSetupProgress]: typeof GitWorktreeSetupProgressEvent.Type;
   readonly [WS_CHANNELS.projectProvisionProgress]: typeof GitHubProjectProvisionProgressEvent.Type;
@@ -688,6 +845,11 @@ export const WsPushAutomationEvent = makeWsPushSchema(
   WS_CHANNELS.automationEvent,
   AutomationStreamEvent,
 );
+export const WsPushTodoEvent = makeWsPushSchema(WS_CHANNELS.todoEvent, TodoStreamEvent);
+export const WsPushProjectAgentEvent = makeWsPushSchema(
+  WS_CHANNELS.projectAgentEvent,
+  ProjectAgentStreamEvent,
+);
 export const WsPushGitActionProgress = makeWsPushSchema(
   WS_CHANNELS.gitActionProgress,
   GitActionProgressEvent,
@@ -730,6 +892,8 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverProviderStatusesUpdated,
   WS_CHANNELS.serverSettingsUpdated,
   WS_CHANNELS.automationEvent,
+  WS_CHANNELS.todoEvent,
+  WS_CHANNELS.projectAgentEvent,
   WS_CHANNELS.terminalEvent,
   WS_CHANNELS.projectDevServerEvent,
   DEVICE_WS_CHANNELS.event,
@@ -747,6 +911,8 @@ export const WsPush = Schema.Union([
   WsPushServerProviderStatusesUpdated,
   WsPushServerSettingsUpdated,
   WsPushAutomationEvent,
+  WsPushTodoEvent,
+  WsPushProjectAgentEvent,
   WsPushGitActionProgress,
   WsPushGitWorktreeSetupProgress,
   WsPushProjectProvisionProgress,

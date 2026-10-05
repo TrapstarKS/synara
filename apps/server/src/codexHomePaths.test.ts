@@ -4,8 +4,10 @@ import { describe, it } from "vitest";
 
 import {
   resolveActiveCodexHomeWritePath,
+  resolveCodexHomeOverlayAccountSegment,
   resolveBaseCodexHomePath,
   resolveCodexHomeAllowlistCandidates,
+  resolveLegacyCodexProfileOverlayPath,
   resolveSynaraCodexHomeOverlayPath,
 } from "./codexHomePaths.ts";
 import { CodexProfileId } from "@synara/contracts";
@@ -20,7 +22,21 @@ describe("Codex home paths", () => {
     assert.ok(resolveBaseCodexHomePath({}).endsWith(`${path.sep}.codex`));
   });
 
-  it("anchors the overlay under SYNARA_HOME", () => {
+  it("expands a leading tilde in explicit homes", () => {
+    const result = resolveBaseCodexHomePath({}, "~/.codex_work");
+
+    assert.ok(result.endsWith(`${path.sep}.codex_work`));
+    assert.ok(!result.startsWith("~"));
+  });
+
+  it("expands a Windows-style tilde home", () => {
+    const result = resolveBaseCodexHomePath({}, "~\\.codex_work");
+
+    assert.ok(result.endsWith(`${path.sep}.codex_work`));
+    assert.ok(!result.startsWith("~"));
+  });
+
+  it("anchors the overlay under SYNARA_HOME when set", () => {
     assert.equal(
       resolveSynaraCodexHomeOverlayPath({ SYNARA_HOME: "/synara/runtime" }, "/users/me/.codex"),
       path.join("/synara/runtime", "codex-home-overlay"),
@@ -33,11 +49,38 @@ describe("Codex home paths", () => {
       path.join("/users/me", ".synara", "runtime", "codex-home-overlay"),
     );
   });
+  it("derives nested account overlays when given an account segment", () => {
+    const segment = resolveCodexHomeOverlayAccountSegment({
+      accountId: "work",
+      homePath: "/users/me/.codex",
+      shadowHomePath: "/users/me/.codex_work",
+    });
+
+    assert.ok(segment?.startsWith("work-"));
+    assert.equal(
+      resolveSynaraCodexHomeOverlayPath(
+        { SYNARA_HOME: "/synara/runtime" },
+        "/users/me/.codex",
+        segment,
+      ),
+      path.join("/synara/runtime", "codex-home-overlay", "accounts", segment ?? ""),
+    );
+  });
+
+  it("does not create a nested account overlay for the explicit default account", () => {
+    assert.equal(
+      resolveCodexHomeOverlayAccountSegment({
+        accountId: "default",
+        homePath: "/users/me/.codex",
+      }),
+      undefined,
+    );
+  });
 
   it("isolates managed profile overlays by profile id", () => {
     const profileId = CodexProfileId.makeUnsafe("0a5e2de9-c0f9-40e6-acf6-580ac0072fc0");
     assert.equal(
-      resolveSynaraCodexHomeOverlayPath(
+      resolveLegacyCodexProfileOverlayPath(
         { SYNARA_HOME: "/synara/runtime" },
         "/private/profile",
         profileId,
@@ -64,5 +107,84 @@ describe("Codex home paths", () => {
       }),
       ["/users/me/.codex", path.join("/synara/runtime", "codex-home-overlay")],
     );
+  });
+
+  it("allowlists account-specific, legacy, source, and shadow homes", () => {
+    const accountInput = {
+      accountId: "work",
+      homePath: "/users/me/.codex",
+      shadowHomePath: "/users/me/.codex_work",
+    };
+    const segment = resolveCodexHomeOverlayAccountSegment(accountInput);
+    const candidates = resolveCodexHomeAllowlistCandidates({
+      env: { SYNARA_HOME: "/synara/runtime" },
+      ...accountInput,
+    });
+    assert.deepEqual(candidates, [
+      "/users/me/.codex",
+      path.join("/synara/runtime", "codex-home-overlay", "accounts", segment ?? ""),
+      path.join("/synara/runtime", "codex-home-overlay"),
+      "/users/me/.codex_work",
+    ]);
+  });
+
+  it("includes account-scoped overlays for account-id-only Codex homes", () => {
+    const segment = resolveCodexHomeOverlayAccountSegment({
+      accountId: "work",
+      homePath: "/users/me/.codex",
+    });
+    const candidates = resolveCodexHomeAllowlistCandidates({
+      env: { SYNARA_HOME: "/synara/runtime" },
+      homePath: "/users/me/.codex",
+      accountId: "work",
+    });
+    assert.deepEqual(candidates, [
+      "/users/me/.codex",
+      path.join("/synara/runtime", "codex-home-overlay", "accounts", segment ?? ""),
+      path.join("/synara/runtime", "codex-home-overlay"),
+    ]);
+  });
+
+  // Fork runtime: sessions write to the native account home; overlays are allowlist-only.
+  it("writes explicit shared homes natively", () => {
+    const env = {
+      CODEX_HOME: "/users/me/.codex",
+      SYNARA_HOME: "/synara/runtime",
+    };
+    const segment = resolveCodexHomeOverlayAccountSegment({
+      accountId: "codex_2",
+      homePath: "/users/me/.codex",
+    });
+
+    assert.equal(
+      resolveActiveCodexHomeWritePath({
+        env,
+        homePath: "/users/me/.codex",
+        accountId: "codex_2",
+      }),
+      "/users/me/.codex",
+    );
+    assert.ok(segment);
+  });
+
+  it("writes dedicated account homes natively", () => {
+    const homePath = "/users/me/.codex-work";
+    const segment = resolveCodexHomeOverlayAccountSegment({
+      accountId: "codex_2",
+      homePath,
+    });
+
+    assert.equal(
+      resolveActiveCodexHomeWritePath({
+        env: {
+          CODEX_HOME: "/users/me/.codex",
+          SYNARA_HOME: "/synara/runtime",
+        },
+        homePath,
+        accountId: "codex_2",
+      }),
+      homePath,
+    );
+    assert.ok(segment);
   });
 });

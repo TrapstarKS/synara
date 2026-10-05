@@ -1,5 +1,6 @@
 import { Cause, Duration, Effect, Layer, Option, Schedule } from "effect";
 
+import { isProviderKind } from "@synara/shared/providerInstances";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory";
 import {
@@ -59,9 +60,11 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         // The reaper handles process-style runtimes. Providers that own a
         // durable native conversation must keep its session/tag alive while
         // only the temporary turn watcher is idle or recovering.
-        const capabilities = yield* providerService
-          .getCapabilities(binding.provider)
-          .pipe(Effect.catchCause(() => Effect.succeed(null)));
+        const capabilities = isProviderKind(binding.provider)
+          ? yield* providerService
+              .getCapabilities(binding.provider)
+              .pipe(Effect.catchCause(() => Effect.succeed(null)))
+          : null;
         if (capabilities?.preserveSessionOnIdle === true) continue;
 
         const thread = yield* projectionSnapshotQuery

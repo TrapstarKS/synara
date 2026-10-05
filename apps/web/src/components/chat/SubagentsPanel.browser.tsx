@@ -32,6 +32,7 @@ it("keeps completed agents accessible, separates live work, and follows completi
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     hasLiveTailWork: false,
+    pendingBackgroundWorkCount: 0,
   };
   const working = {
     ...completed,

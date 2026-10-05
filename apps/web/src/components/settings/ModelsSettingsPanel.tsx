@@ -6,8 +6,10 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   GIT_TEXT_GENERATION_PROVIDERS,
   PROVIDER_DISPLAY_NAMES,
+  MAX_SOURCE_CONTROL_CUSTOM_INSTRUCTIONS_LENGTH,
   type GitTextGenerationProvider,
   type ProviderKind,
+  type SourceControlWritingStyle,
 } from "@synara/contracts";
 import { getModelOptions, normalizeModelSlug } from "@synara/shared/model";
 import { useQuery } from "@tanstack/react-query";
@@ -19,7 +21,7 @@ import {
   MAX_CUSTOM_MODEL_LENGTH,
   getCustomModelsForProvider,
   getDefaultCustomModelsForProvider,
-  getGitTextGenerationModelOptions,
+  getProviderInstanceOptions,
   isGitTextGenerationSettingsDirty,
   patchCustomModels,
 } from "~/appSettings";
@@ -43,6 +45,30 @@ import {
   useSettingsRestoreSignal,
 } from "./SettingControls";
 import { SettingsRow, SettingsSection, SettingsSelectPopup } from "./SettingsPanelPrimitives";
+import { DebouncedSettingTextarea } from "./DebouncedSettingTextInput";
+
+const SOURCE_CONTROL_WRITING_OPTIONS: readonly {
+  value: SourceControlWritingStyle;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "repository",
+    label: "Repository conventions",
+    description: "In each project, matches recent change descriptions and change request titles.",
+  },
+  {
+    value: "conventional",
+    label: "Conventional Commits",
+    description: "Use Conventional Commit prefixes and keep change request text concise.",
+  },
+  {
+    value: "custom",
+    label: "Custom instructions",
+    description:
+      "Use your instructions for change descriptions and change requests in every project.",
+  },
+];
 
 type CustomModelValidationResult =
   | { readonly model: string; readonly error?: never }
@@ -98,8 +124,11 @@ export function ModelsSettingsPanel({
     setShowAllCustomModels(false);
   });
 
-  const { textGenerationModel, textGenerationProvider } = settings;
+  const { textGenerationModel, textGenerationProvider, textGenerationProviderInstanceId } =
+    settings;
   const currentGitTextGenerationProvider = textGenerationProvider ?? "codex";
+  const currentGitTextGenerationInstanceId =
+    textGenerationProviderInstanceId ?? currentGitTextGenerationProvider;
   const currentGitTextGenerationModel = textGenerationModel ?? DEFAULT_GIT_TEXT_GENERATION_MODEL;
   const gitWritingModelHintByProvider = useMemo<Partial<Record<ProviderKind, string | null>>>(
     () => ({ [currentGitTextGenerationProvider]: currentGitTextGenerationModel }),
@@ -110,31 +139,57 @@ export function ModelsSettingsPanel({
     activeProjectCwd: null,
     serverCwd: serverConfigQuery.data?.cwd ?? null,
   });
-  const { modelOptionsByProvider: gitWritingCatalogOptionsByProvider } = useProviderModelCatalog({
-    selectedProvider: currentGitTextGenerationProvider,
-    discoveryEnabled: active,
-    cwd: providerModelDiscoveryCwd,
-    modelHintByProvider: gitWritingModelHintByProvider,
-    prefetchProviders: GIT_TEXT_GENERATION_PROVIDERS,
-  });
-  const gitTextGenerationModelOptions = useMemo(() => {
-    const discoveredOptionsByProvider = {} as Record<
-      GitTextGenerationProvider,
-      (typeof gitWritingCatalogOptionsByProvider)[GitTextGenerationProvider]
-    >;
-    for (const provider of GIT_TEXT_GENERATION_PROVIDERS) {
-      discoveredOptionsByProvider[provider] = gitWritingCatalogOptionsByProvider[provider];
-    }
-    return getGitTextGenerationModelOptions(settings, discoveredOptionsByProvider);
-  }, [gitWritingCatalogOptionsByProvider, settings]);
-  const currentGitTextGenerationValue = `${currentGitTextGenerationProvider}:${currentGitTextGenerationModel}`;
+  const { modelOptionsByProviderInstance: gitWritingCatalogOptionsByInstance } =
+    useProviderModelCatalog({
+      selectedProvider: currentGitTextGenerationProvider,
+      selectedProviderInstanceId: currentGitTextGenerationInstanceId,
+      discoveryEnabled: active,
+      cwd: providerModelDiscoveryCwd,
+      modelHintByProvider: gitWritingModelHintByProvider,
+      prefetchProviders: GIT_TEXT_GENERATION_PROVIDERS,
+    });
+  const providerInstanceOptions = useMemo(() => getProviderInstanceOptions(settings), [settings]);
+  const gitTextGenerationPickerOptions = useMemo(
+    () =>
+      providerInstanceOptions.flatMap((instance) =>
+        (instance.enabled || instance.instanceId === currentGitTextGenerationInstanceId) &&
+        GIT_TEXT_GENERATION_PROVIDERS.includes(instance.provider as GitTextGenerationProvider)
+          ? (gitWritingCatalogOptionsByInstance[instance.instanceId] ?? []).map((option) => ({
+              key: `${instance.instanceId}:${instance.provider}:${option.slug}`,
+              value: `${instance.instanceId}:${instance.provider}:${option.slug}`,
+              instance,
+              option: { ...option, provider: instance.provider },
+            }))
+          : [],
+      ),
+    [
+      currentGitTextGenerationInstanceId,
+      gitWritingCatalogOptionsByInstance,
+      providerInstanceOptions,
+    ],
+  );
+  const currentGitTextGenerationValue = `${currentGitTextGenerationInstanceId}:${currentGitTextGenerationProvider}:${currentGitTextGenerationModel}`;
   const isGitTextGenerationModelDirty = isGitTextGenerationSettingsDirty(settings, defaults);
+  const selectedGitTextGenerationPickerOption = gitTextGenerationPickerOptions.find(
+    (entry) => entry.value === currentGitTextGenerationValue,
+  );
+  const selectedGitTextGenerationModelName =
+    selectedGitTextGenerationPickerOption?.option.name ??
+    gitWritingCatalogOptionsByInstance[currentGitTextGenerationInstanceId]?.find(
+      (option) => option.slug === currentGitTextGenerationModel,
+    )?.name ??
+    currentGitTextGenerationModel;
+  const selectedGitTextGenerationInstanceLabel =
+    selectedGitTextGenerationPickerOption?.instance.label ??
+    providerInstanceOptions.find(
+      (option) => option.instanceId === currentGitTextGenerationInstanceId,
+    )?.label;
   const selectedGitTextGenerationModelLabel =
-    gitTextGenerationModelOptions.find(
-      (option) =>
-        option.provider === currentGitTextGenerationProvider &&
-        option.slug === currentGitTextGenerationModel,
-    )?.name ?? currentGitTextGenerationModel;
+    selectedGitTextGenerationInstanceLabel &&
+    selectedGitTextGenerationInstanceLabel !==
+      PROVIDER_DISPLAY_NAMES[currentGitTextGenerationProvider]
+      ? `${selectedGitTextGenerationInstanceLabel} · ${selectedGitTextGenerationModelName}`
+      : selectedGitTextGenerationModelName;
   const selectedCustomModelProviderSettings = CUSTOM_MODEL_EDITOR_PROVIDER_SETTINGS.find(
     (config) => config.provider === selectedCustomModelProvider,
   )!;
@@ -234,9 +289,65 @@ export function ModelsSettingsPanel({
 
   if (!active) return null;
 
+  const writingOption = SOURCE_CONTROL_WRITING_OPTIONS.find(
+    (option) => option.value === settings.sourceControlWritingStyle,
+  )!;
+  const isWritingStyleDirty =
+    settings.sourceControlWritingStyle !== defaults.sourceControlWritingStyle ||
+    settings.sourceControlCustomInstructions !== defaults.sourceControlCustomInstructions;
+
   return (
     <div className="space-y-6">
       <SettingsSection title="Generation defaults">
+        <SettingsRow
+          title="Source control writing style"
+          description={writingOption.description}
+          resetAction={
+            isWritingStyleDirty ? (
+              <SettingResetButton
+                label="source control writing style"
+                onClick={() =>
+                  updateSettings({
+                    sourceControlWritingStyle: defaults.sourceControlWritingStyle,
+                    sourceControlCustomInstructions: defaults.sourceControlCustomInstructions,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <SettingsSelectControl
+              value={settings.sourceControlWritingStyle}
+              onValueChange={(value) => {
+                const option = SOURCE_CONTROL_WRITING_OPTIONS.find(
+                  (option) => option.value === value,
+                );
+                if (option) updateSettings({ sourceControlWritingStyle: option.value });
+              }}
+              ariaLabel="Source control writing style"
+              triggerClassName="w-full sm:w-60"
+              valueContent={writingOption.label}
+            >
+              {SOURCE_CONTROL_WRITING_OPTIONS.map((option) => (
+                <SelectItem hideIndicator key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SettingsSelectControl>
+          }
+        >
+          <DisclosureRegion open={settings.sourceControlWritingStyle === "custom"}>
+            <DebouncedSettingTextarea
+              key={resetEpoch}
+              className="mt-3 [&_textarea]:min-h-28 [&_textarea]:resize-y"
+              aria-label="Custom source control writing instructions"
+              placeholder="Keep titles concise. Use short bullet points in descriptions."
+              maxLength={MAX_SOURCE_CONTROL_CUSTOM_INSTRUCTIONS_LENGTH}
+              value={settings.sourceControlCustomInstructions}
+              onCommit={(value) => updateSettings({ sourceControlCustomInstructions: value })}
+            />
+          </DisclosureRegion>
+        </SettingsRow>
         <SettingsRow
           title="Git writing model"
           description="Used for generated commit messages, PR titles, and branch names."
@@ -247,6 +358,7 @@ export function ModelsSettingsPanel({
                 onClick={() =>
                   updateSettings({
                     textGenerationProvider: defaults.textGenerationProvider,
+                    textGenerationProviderInstanceId: defaults.textGenerationProviderInstanceId,
                     textGenerationModel: defaults.textGenerationModel,
                   })
                 }
@@ -258,12 +370,12 @@ export function ModelsSettingsPanel({
               value={currentGitTextGenerationValue}
               onValueChange={(value) => {
                 if (!value) return;
-                const separatorIndex = value.indexOf(":");
-                const provider = value.slice(0, separatorIndex) as ProviderKind;
-                const model = value.slice(separatorIndex + 1);
-                if (!provider || !model) return;
+                const [instanceId, provider, ...modelParts] = value.split(":");
+                const model = modelParts.join(":");
+                if (!instanceId || !provider || !model) return;
                 updateSettings({
-                  textGenerationProvider: provider,
+                  textGenerationProvider: provider as ProviderKind,
+                  textGenerationProviderInstanceId: instanceId,
                   textGenerationModel: model,
                 });
               }}
@@ -271,13 +383,9 @@ export function ModelsSettingsPanel({
               triggerClassName="w-full sm:w-52"
               valueContent={selectedGitTextGenerationModelLabel}
             >
-              {gitTextGenerationModelOptions.map((option) => (
-                <SelectItem
-                  hideIndicator
-                  key={`${option.provider}:${option.slug}`}
-                  value={`${option.provider}:${option.slug}`}
-                >
-                  {PROVIDER_DISPLAY_NAMES[option.provider]} / {option.name}
+              {gitTextGenerationPickerOptions.map(({ instance, key, option, value }) => (
+                <SelectItem hideIndicator key={key} value={value}>
+                  {instance.label} / {option.name}
                 </SelectItem>
               ))}
             </SettingsSelectControl>

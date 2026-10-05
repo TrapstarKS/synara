@@ -128,6 +128,130 @@ function verifyReleaseWorkflowSafety(): void {
     "  preflight:\n    name: Preflight\n    runs-on: ubuntu-24.04\n    timeout-minutes: 15\n    permissions:\n      contents: read",
     "Expected preflight to receive read-only repository access.",
   );
+  const buildJob = workflow.slice(
+    workflow.indexOf("  build:\n"),
+    workflow.indexOf("  publish_cli:\n"),
+  );
+  const buildSteps = buildJob.split(/\n      - /).slice(1);
+  const defenderIndex = buildSteps.findIndex((step) =>
+    step.includes("run: ./scripts/verify-windows-defender.ps1"),
+  );
+  const startupIndex = buildSteps.findIndex((step) =>
+    step.includes("node scripts/verify-packaged-desktop-startup.ts"),
+  );
+  const uploadIndex = buildSteps.findIndex((step) =>
+    step.includes("name: desktop-${{ matrix.platform }}-${{ matrix.arch }}"),
+  );
+  if (defenderIndex < 0 || startupIndex <= defenderIndex || uploadIndex <= defenderIndex) {
+    throw new Error("Windows Defender must qualify installers before startup or artifact upload.");
+  }
+  const defenderStep = buildSteps[defenderIndex]!;
+  if (/continue-on-error:\s*(?!false(?:\s|$))\S/.test(defenderStep)) {
+    throw new Error("Windows Defender qualification must not be optional.");
+  }
+  const defenderPredicate = defenderStep.match(/\n        if: (.+)/)?.[1];
+  if (!defenderPredicate) throw new Error("Missing Windows Defender platform predicate.");
+  const scans = new Function("matrix", "needs", `return ${defenderPredicate};`) as (
+    matrix: { platform: string },
+    needs: { preflight: { outputs: { package_artifacts: string } } },
+  ) => boolean;
+  for (const platform of ["win", "mac", "linux"]) {
+    for (const packageArtifacts of ["true", "false"]) {
+      if (
+        scans({ platform }, { preflight: { outputs: { package_artifacts: packageArtifacts } } }) !==
+        (platform === "win" && packageArtifacts === "true")
+      ) {
+        throw new Error(`Incorrect Defender routing for ${platform}/${packageArtifacts}.`);
+      }
+    }
+  }
+  const defenderId = defenderStep.match(/\n        id: (.+)/)?.[1];
+  const evidenceStep = buildSteps.find((step) =>
+    step.includes("name: windows-defender-${{ matrix.arch }}"),
+  );
+  const evidencePredicate = evidenceStep?.match(/\n        if: \$\{\{ (.+) \}\}/)?.[1];
+  if (!defenderId || !evidencePredicate) throw new Error("Missing Defender evidence routing.");
+  const preservesEvidence = new Function(
+    "matrix",
+    "needs",
+    "steps",
+    "always",
+    `return ${evidencePredicate};`,
+  ) as (
+    matrix: { platform: string },
+    needs: { preflight: { outputs: { package_artifacts: string } } },
+    steps: Record<string, { outcome: string }>,
+    always: () => boolean,
+  ) => boolean;
+  for (const outcome of ["success", "failure", "cancelled", "skipped"]) {
+    const upload = preservesEvidence(
+      { platform: "win" },
+      { preflight: { outputs: { package_artifacts: "true" } } },
+      { [defenderId]: { outcome } },
+      () => true,
+    );
+    if (upload !== (outcome !== "skipped")) {
+      throw new Error(`Incorrect Defender evidence upload after ${outcome} scan.`);
+    }
+  }
+  // Execute the actual job predicate against failed/skipped prerequisites. A
+  // matching source string would not detect a permissive OR elsewhere in it.
+  const predicate = buildJob.match(/    if: \$\{\{ (.+) \}\}/)?.[1];
+  if (!predicate) throw new Error("Missing packaging admission predicate.");
+  const admits = new Function("needs", "cancelled", `return ${predicate};`) as (
+    needs: Record<string, unknown>,
+    cancelled: () => boolean,
+  ) => boolean;
+  const prerequisites = [
+    "preflight",
+    "quality",
+    "server_tests",
+    "build_mac_icon",
+    "build_portable",
+    "prepare_cua",
+  ];
+  const dependencies = buildJob.match(/    needs: \[(.+)\]/)?.[1]?.split(/,\s*/) ?? [];
+  for (const name of prerequisites)
+    if (!dependencies.includes(name)) throw new Error(`Packaging does not await ${name}.`);
+  const successful: Record<string, { result: string; outputs?: Record<string, string> }> =
+    Object.fromEntries(prerequisites.map((name) => [name, { result: "success" }]));
+  successful.preflight = {
+    result: "success",
+    outputs: { package_artifacts: "true", prepare_cua: "true", build_icon: "true" },
+  };
+  if (!admits(successful, () => false)) throw new Error("Valid packaging is blocked.");
+  if (admits(successful, () => true)) throw new Error("Cancelled release can package artifacts.");
+  for (const name of prerequisites) {
+    for (const result of ["failure", "cancelled", "skipped", ""]) {
+      if (admits({ ...successful, [name]: { ...successful[name], result } }, () => false))
+        throw new Error(`Packaging admitted ${name}=${result}.`);
+    }
+  }
+  for (const platform of ["linux", "win"]) {
+    const noMac = {
+      ...successful,
+      preflight: {
+        result: "success",
+        outputs: {
+          package_artifacts: "true",
+          build_icon: "false",
+          prepare_cua: platform === "win" ? "false" : "true",
+        },
+      },
+      build_mac_icon: { result: "skipped" },
+      prepare_cua: { result: platform === "win" ? "skipped" : "success" },
+    };
+    if (!admits(noMac, () => false))
+      throw new Error(`${platform} packaging is blocked by an intentional skip.`);
+  }
+  for (const gate of [
+    "  quality:\n    name: Quality gates\n    needs: preflight\n    runs-on: ubuntu-24.04\n    timeout-minutes: 15\n    permissions:\n      contents: read",
+    "  server_tests:\n    name: Server tests (${{ matrix.shard }})\n    needs: preflight\n    if: needs.preflight.outputs.quality_gates == 'true'\n    runs-on: ubuntu-24.04\n    timeout-minutes: 15\n    permissions:\n      contents: read",
+    "bunx turbo run test --filter='!@synara/cli'",
+    "bunx turbo run test --filter=@synara/cli -- --shard=${{ matrix.shard }}",
+  ]) {
+    assertContains(workflow, gate, "Expected read-only, sharded quality gates before packaging.");
+  }
   assertContains(
     workflow,
     "  build:\n    name: Build ${{ matrix.label }}\n    needs: [preflight, build_mac_icon, bundle]\n    runs-on: ${{ matrix.runner }}\n    timeout-minutes: 60\n    permissions:\n      contents: read",

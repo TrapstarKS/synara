@@ -2,7 +2,7 @@
 // Purpose: Task-feed sidebar surface — every thread is a 2-line task row
 //          (provider + title / project + branch) grouped by status, with settle.
 // Layer: Sidebar UI component
-// Exports: SidebarActivityView
+// Exports: SidebarActivityView, ActivityThreadRow, SidebarSnoozedThreadsSection
 
 import {
   useCallback,
@@ -21,11 +21,13 @@ import { resolveThreadEnvironmentMode } from "@synara/shared/threadEnvironment";
 import {
   AddPlusIcon,
   CircleCheckIcon,
+  ClockIcon,
   GitBranchIcon,
   NewThreadIcon,
   SortIcon,
   Undo2Icon,
   WorktreeIcon,
+  FolderIcon,
 } from "~/lib/icons";
 import { beginThreadDrag, endThreadDrag } from "~/lib/threadDrag";
 import { cn } from "~/lib/utils";
@@ -34,14 +36,17 @@ import {
   SIDEBAR_ROW_FOCUS_CLASS_NAME,
   SIDEBAR_ROW_HOVER_CLASS_NAME,
   SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME,
+  SIDEBAR_ROW_SNOOZE_REMINDER_CLASS_NAME,
   SIDEBAR_SECTION_LABEL_CLASS_NAME,
   sidebarHoverRevealHideClassName,
 } from "../sidebarRowStyles";
 import { resolveThreadPullRequestFallback } from "../hooks/useThreadPullRequests";
+import { useThreadIdsWithPendingDraft } from "../composerDraftStore";
 import type { Project, SidebarThreadSummary } from "../types";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
-import { FolderClosed } from "./FolderClosed";
 import { ProviderIcon } from "./ProviderIcon";
+import { SnoozeCountdown } from "./SnoozeCountdown";
+import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import { PrStateChip } from "./pullRequest/PrStateChip";
 import {
   createSidebarThreadHoverAnchorId,
@@ -56,6 +61,7 @@ import {
   collectActivityScopeOptions,
   collectUnreadActivityThreads,
   collectVisibleActivityThreadIds,
+  resolveActivitySectionRows,
   groupActivityThreadsByProject,
   isThreadSettledForActivity,
   resolveActivityScope,
@@ -73,12 +79,17 @@ import {
   type SidebarRowContextMenuPosition,
 } from "./sidebarThreadRowGestures";
 import { SidebarIconButton } from "./SidebarIconButton";
+import {
+  SidebarCollapsibleSection,
+  SidebarSectionLabel,
+  SidebarShowMoreRow,
+} from "./SidebarListSection";
 import { SidebarSectionToolbar } from "./SidebarSectionToolbar";
-import { SidebarStatusTrailingGlyph } from "./SidebarStatusTrailingGlyph";
+import { SidebarDraftGlyph, SidebarStatusTrailingGlyph } from "./SidebarStatusTrailingGlyph";
 import { ThreadArchiveActionButton } from "./ThreadArchiveActionButton";
 import { ThreadPinToggleButton } from "./ThreadPinToggleButton";
+import { ShortcutKbd } from "./ui/kbd";
 import { DisclosureChevron } from "./ui/DisclosureChevron";
-import { DisclosureRegion } from "./ui/DisclosureRegion";
 import {
   Menu,
   MenuGroup,
@@ -100,17 +111,20 @@ function stopRowActivation(event: MouseEvent) {
   event.stopPropagation();
 }
 
-function ActivityThreadRow({
+export function ActivityThreadRow({
   thread,
   project,
   isActive,
   isSettled,
   isPinned,
+  hasPendingDraft,
   pr,
   status,
+  threadJumpLabel,
   onOpen,
   onOpenPullRequest,
   onSetSettled,
+  onReturnSnoozed,
   onTogglePinned,
   onArchive,
   onRename,
@@ -123,11 +137,14 @@ function ActivityThreadRow({
   isActive: boolean;
   isSettled: boolean;
   isPinned: boolean;
+  hasPendingDraft: boolean;
   pr: OrchestrationThreadPullRequest | null;
   status: ThreadStatusPill | null;
+  threadJumpLabel: string | null;
   onOpen: () => void;
   onOpenPullRequest: (event: MouseEvent<HTMLElement>, pr: OrchestrationThreadPullRequest) => void;
   onSetSettled: (settled: boolean) => void;
+  onReturnSnoozed: () => void;
   onTogglePinned: () => void;
   onArchive: () => void;
   onRename: (threadId: ThreadId) => void;
@@ -142,7 +159,6 @@ function ActivityThreadRow({
       envMode: thread.envMode,
       worktreePath: thread.worktreePath,
     }) === "worktree";
-  const ProjectGlyph = isWorktree ? WorktreeIcon : FolderClosed;
   const hoverAnchorId = createSidebarThreadHoverAnchorId({
     scope: "activity",
     threadId: thread.id,
@@ -151,7 +167,11 @@ function ActivityThreadRow({
   // One trailing slot, top-right, shared by every status: the accent dot for an
   // unread completion and the running spinner (or state dot) for everything
   // else — same rule and same glyphs the classic thread/project rows use.
-  const trailingStatus = resolveThreadStatusTrailingIndicator({ status, isActive });
+  const trailingStatus = resolveThreadStatusTrailingIndicator({
+    status,
+    isActive,
+    slotOccupied: Boolean(threadJumpLabel),
+  });
   // Rename/context-menu gestures live on the row wrapper (not the title button) so
   // they also fire over the trailing status and hover-action cluster, which are
   // absolutely positioned siblings of the button.
@@ -189,11 +209,15 @@ function ActivityThreadRow({
             SIDEBAR_ROW_FOCUS_CLASS_NAME,
             isActive ? SIDEBAR_ROW_ACTIVE_CLASS_NAME : SIDEBAR_ROW_HOVER_CLASS_NAME,
             isSettled && "opacity-55 transition-opacity hover:opacity-85",
+            // Snoozed rows carry a tint on top of the clock line so they read apart at a glance.
+            thread.snoozedUntil != null && !isActive && "bg-info/6",
+            status?.label === "Reminder" && !isActive && SIDEBAR_ROW_SNOOZE_REMINDER_CLASS_NAME,
           )}
         >
           <span
             className={cn(
-              "flex min-w-0 items-center gap-1.5 overflow-hidden pr-5 transition-[padding] duration-150 ease-out",
+              "flex min-w-0 items-center gap-1.5 overflow-hidden transition-[padding] duration-150 ease-out",
+              !threadJumpLabel && "pr-5",
               // Yield the title row to the hover action cluster (pin + archive + done).
               "max-md:pr-[7rem] md:group-hover/activity-row:pr-[4.25rem] md:group-focus-within/activity-row:pr-[4.25rem]",
             )}
@@ -207,21 +231,51 @@ function ActivityThreadRow({
             />
             <span
               className={cn(
-                "min-w-0 shrink truncate text-ui leading-5 font-normal",
+                "min-w-0 flex-1 truncate text-ui leading-5 font-normal",
                 isActive ? "text-foreground" : SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME,
               )}
             >
               {thread.title}
             </span>
+            {thread.snoozedUntil != null ? (
+              <ClockIcon
+                className={sidebarGlyphClass("meta", "shrink-0 text-info")}
+                aria-label="Scheduled"
+              />
+            ) : null}
+            {hasPendingDraft ? <SidebarDraftGlyph /> : null}
+            {threadJumpLabel ? (
+              <ShortcutKbd
+                shortcutLabel={threadJumpLabel}
+                title={threadJumpLabel}
+                groupClassName={sidebarHoverRevealHideClassName("activity-row")}
+              />
+            ) : null}
           </span>
           <span className="flex min-w-0 items-center gap-1.5">
-            <ProjectGlyph
-              className={sidebarGlyphClass("meta", "text-muted-foreground/70")}
-              aria-hidden
-            />
+            {project?.cwd ? (
+              <ProjectSidebarIcon
+                cwd={project.cwd}
+                expanded={false}
+                appearance={project.appearance}
+                glyphClassName={sidebarGlyphClass("meta", "text-muted-foreground/70")}
+                presentation="favicon"
+              />
+            ) : (
+              <FolderIcon
+                className={sidebarGlyphClass("meta", "text-muted-foreground/70")}
+                aria-hidden
+              />
+            )}
             <span className="min-w-0 truncate text-ui-sm text-muted-foreground/80">
               {resolveThreadProjectLabel(project)}
             </span>
+            {isWorktree ? (
+              <WorktreeIcon
+                className={sidebarGlyphClass("meta", "text-muted-foreground/70")}
+                aria-label="Worktree"
+              />
+            ) : null}
             <span className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
               {pr ? (
                 <PrStateChip
@@ -238,6 +292,13 @@ function ActivityThreadRow({
               ) : null}
             </span>
           </span>
+          {thread.snoozedUntil != null ? (
+            <span className="flex min-w-0 items-center gap-1 text-ui-sm text-muted-foreground/80">
+              <span className="truncate">
+                <SnoozeCountdown snoozedUntil={thread.snoozedUntil} />
+              </span>
+            </span>
+          ) : null}
         </button>
         {trailingStatus ? (
           <span
@@ -273,15 +334,16 @@ function ActivityThreadRow({
             onArchive={onArchive}
           />
           <SidebarIconButton
-            icon={isSettled ? Undo2Icon : CircleCheckIcon}
-            label={isSettled ? "Undo" : "Done"}
-            title={isSettled ? "Undo" : "Done"}
+            icon={thread.snoozedUntil != null || isSettled ? Undo2Icon : CircleCheckIcon}
+            label={thread.snoozedUntil != null ? "Return now" : isSettled ? "Undo" : "Done"}
+            title={thread.snoozedUntil != null ? "Return now" : isSettled ? "Undo" : "Done"}
             iconClassName={SIDEBAR_TRAILING_ICON_CLASS}
             className={cn("hover:text-foreground/89", actionToneClassName)}
             onMouseDown={stopRowActivation}
             onClick={(event) => {
               stopRowActivation(event);
-              onSetSettled(!isSettled);
+              if (thread.snoozedUntil != null) onReturnSnoozed();
+              else onSetSettled(!isSettled);
             }}
           />
         </span>
@@ -291,69 +353,55 @@ function ActivityThreadRow({
   );
 }
 
-function ActivitySectionLabel({
-  label,
-  onContextMenu,
+/** The same accessible Snoozed section serves Activity and the classic sidebar. */
+export function SidebarSnoozedThreadsSection({
+  threads,
+  renderThreadRow,
+  onVisibleThreadIdsChange,
 }: {
-  label: string;
-  /** Project blocks carry the same right-click menu as a classic project row. */
-  onContextMenu?: (position: SidebarRowContextMenuPosition) => void;
+  threads: readonly SidebarThreadSummary[];
+  renderThreadRow: (thread: SidebarThreadSummary) => ReactNode;
+  onVisibleThreadIdsChange?: (threadIds: readonly ThreadId[]) => void;
 }) {
-  return (
-    <div
-      data-slot="activity-section-label"
-      className="mb-1.5 px-2"
-      {...(onContextMenu
-        ? {
-            onContextMenu: (event: MouseEvent) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onContextMenu({ x: event.clientX, y: event.clientY });
-            },
-          }
-        : {})}
-    >
-      <span className={SIDEBAR_SECTION_LABEL_CLASS_NAME}>{label}</span>
-    </div>
+  const [open, setOpen] = useState(false);
+  const [extraPages, setExtraPages] = useState(0);
+  const paging = resolveSidebarThreadListPaging({
+    totalCount: threads.length,
+    baseLimit: ACTIVITY_LIST_BASE_LIMIT,
+    pageSize: ACTIVITY_LIST_PAGE_SIZE,
+    requestedExtraPages: extraPages,
+  });
+  const visibleThreadIds = useMemo(
+    () => (open ? threads.slice(0, paging.previewLimit).map((thread) => thread.id) : []),
+    [open, paging.previewLimit, threads],
   );
-}
-
-/**
- * Collapsible section (Pinned, Earlier, Settled): the same label + inline
- * disclosure chevron the classic "Chats" header uses, with the shared
- * disclosure motion. Section-to-section spacing is owned by the parent list.
- */
-function ActivityCollapsibleSection({
-  label,
-  open,
-  onToggle,
-  children,
-  className,
-}: {
-  label: string;
-  open: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-  className?: string;
-}) {
+  const visibleThreadIdsFingerprint = visibleThreadIds.join("\0");
+  const visibleThreadIdsRef = useRef(visibleThreadIds);
+  visibleThreadIdsRef.current = visibleThreadIds;
+  useEffect(() => {
+    onVisibleThreadIdsChange?.(visibleThreadIdsRef.current);
+  }, [onVisibleThreadIdsChange, visibleThreadIdsFingerprint]);
+  useEffect(
+    () => () => {
+      onVisibleThreadIdsChange?.([]);
+    },
+    [onVisibleThreadIdsChange],
+  );
+  if (threads.length === 0) return null;
   return (
-    <div className={className}>
-      <button
-        type="button"
-        className={cn(
-          "flex h-7 w-full min-w-0 cursor-pointer items-center gap-1 rounded-md px-2 py-0.5",
-          SIDEBAR_ROW_FOCUS_CLASS_NAME,
-        )}
-        aria-expanded={open}
-        onClick={onToggle}
-      >
-        <span className={cn("min-w-0 truncate", SIDEBAR_SECTION_LABEL_CLASS_NAME)}>{label}</span>
-        <DisclosureChevron open={open} className="text-muted-foreground/58" />
-      </button>
-      <DisclosureRegion open={open}>
-        <div className="flex flex-col gap-0.5 pt-0.5">{children}</div>
-      </DisclosureRegion>
-    </div>
+    <SidebarCollapsibleSection
+      label="Snoozed"
+      open={open}
+      onToggle={() => setOpen((current) => !current)}
+    >
+      {threads.slice(0, paging.previewLimit).map(renderThreadRow)}
+      <SidebarShowMoreRow
+        canShowMore={paging.canShowMore}
+        canShowLess={paging.canShowLess}
+        onShowMore={() => setExtraPages(paging.effectiveExtraPages + 1)}
+        onShowLess={() => setExtraPages(Math.max(0, paging.effectiveExtraPages - 1))}
+      />
+    </SidebarCollapsibleSection>
   );
 }
 
@@ -498,40 +546,6 @@ function ActivityFilterMenu({
   );
 }
 
-function ActivityShowMoreRow({
-  canShowMore,
-  canShowLess,
-  onShowMore,
-  onShowLess,
-}: {
-  canShowMore: boolean;
-  canShowLess: boolean;
-  onShowMore: () => void;
-  onShowLess: () => void;
-}) {
-  if (!canShowMore && !canShowLess) return null;
-  const buttonClassName =
-    "h-7 cursor-pointer rounded-lg px-2.5 text-left text-ui text-muted-foreground/79 hover:text-foreground";
-  return (
-    <div className="flex w-full items-center gap-1">
-      {canShowMore ? (
-        <button type="button" className={cn(buttonClassName, "flex-1")} onClick={onShowMore}>
-          Show more
-        </button>
-      ) : null}
-      {canShowLess ? (
-        <button
-          type="button"
-          className={cn(buttonClassName, canShowMore ? "flex-none" : "flex-1")}
-          onClick={onShowLess}
-        >
-          Show less
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
 export function SidebarActivityView({
   threads,
   projectById,
@@ -539,10 +553,13 @@ export function SidebarActivityView({
   pinnedThreadIdSet,
   settledOverrideByThreadId,
   threadsHydrated,
+  scopeSelection,
+  onScopeSelectionChange,
   resolveThreadStatus,
   onOpenThread,
   onOpenThreadPullRequest,
   onSetThreadSettled,
+  onReturnSnoozedThread,
   onToggleThreadPinned,
   onArchiveThread,
   onMarkThreadRead,
@@ -552,6 +569,7 @@ export function SidebarActivityView({
   onProjectContextMenu,
   renderThreadHoverCard,
   prByThreadId,
+  threadJumpLabelByThreadId,
   onVisibleThreadIdsChange,
   onCreateChat,
   onAddProject,
@@ -562,7 +580,11 @@ export function SidebarActivityView({
   pinnedThreadIdSet: ReadonlySet<ThreadId>;
   settledOverrideByThreadId: ReadonlyMap<ThreadId, boolean>;
   threadsHydrated: boolean;
+  /** Owned by the sidebar so the scope survives this view unmounting (Settings, reloads). */
+  scopeSelection: ActivityScopeSelection;
+  onScopeSelectionChange: (selection: ActivityScopeSelection) => void;
   prByThreadId: ReadonlyMap<ThreadId, OrchestrationThreadPullRequest | null>;
+  threadJumpLabelByThreadId: ReadonlyMap<ThreadId, string>;
   onVisibleThreadIdsChange: (threadIds: readonly ThreadId[]) => void;
   resolveThreadStatus: (thread: SidebarThreadSummary) => ThreadStatusPill | null;
   onOpenThread: (threadId: ThreadId) => void;
@@ -573,6 +595,7 @@ export function SidebarActivityView({
     pr: OrchestrationThreadPullRequest,
   ) => void;
   onSetThreadSettled: (threadId: ThreadId, settled: boolean) => void;
+  onReturnSnoozedThread: (threadId: ThreadId) => void;
   onToggleThreadPinned: (threadId: ThreadId) => void;
   onArchiveThread: (threadId: ThreadId) => void;
   /** Records a completion as seen (the classic sidebar's markThreadVisited). */
@@ -592,17 +615,18 @@ export function SidebarActivityView({
   /** Same "Add project" action the Projects section header runs. */
   onAddProject: () => void;
 }) {
-  const [scopeSelection, setScopeSelection] = useState<ActivityScopeSelection>(null);
   const [groupMode, setGroupMode] = useState<ActivityGroupMode>("time");
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const [earlierOpen, setEarlierOpen] = useState(false);
   const [earlierExtraPages, setEarlierExtraPages] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
   const [settledExtraPages, setSettledExtraPages] = useState(0);
+  const [snoozedVisibleThreadIds, setSnoozedVisibleThreadIds] = useState<readonly ThreadId[]>([]);
   const [projectExtraPagesByKey, setProjectExtraPagesByKey] = useState<ReadonlyMap<string, number>>(
     () => new Map(),
   );
 
+  const draftThreadIdSet = useThreadIdsWithPendingDraft();
   const isRealProject = useCallback(
     (projectId: ProjectId) => projectById.get(projectId)?.kind === "project",
     [projectById],
@@ -622,21 +646,25 @@ export function SidebarActivityView({
     scopeSelection,
     scopeOptions,
   );
+  // Before threads hydrate every option is missing, so dropping the selection
+  // then would wipe the remembered scope on every remount.
   useEffect(() => {
-    if (scopeSelection !== activeScope) setScopeSelection(activeScope);
-  }, [activeScope, scopeSelection]);
+    if (threadsHydrated && scopeSelection !== activeScope) onScopeSelectionChange(activeScope);
+  }, [activeScope, onScopeSelectionChange, scopeSelection, threadsHydrated]);
 
   const model = useMemo(
     () =>
       buildActivityViewModel({
         threads,
         pinnedThreadIdSet,
+        draftThreadIdSet,
         settledOverrideByThreadId,
         projectFilterIds,
       }),
-    [pinnedThreadIdSet, projectFilterIds, settledOverrideByThreadId, threads],
+    [draftThreadIdSet, pinnedThreadIdSet, projectFilterIds, settledOverrideByThreadId, threads],
   );
   const scopedPinnedThreads = model.pinned;
+  const draftThreads = model.drafts;
   // Coarse clock so the date bucketing memo stays effective across renders that
   // happen within the same minute; buckets are day-granular anyway.
   const nowMs = Math.floor(Date.now() / 60_000) * 60_000;
@@ -651,9 +679,10 @@ export function SidebarActivityView({
   const projectGroups = useMemo(
     () =>
       groupMode === "project"
-        ? groupActivityThreadsByProject(model.active, isRealProject)
+        ? // Drafts go in first so they lead their project's block.
+          groupActivityThreadsByProject([...model.drafts, ...model.active], isRealProject)
         : EMPTY_PROJECT_GROUPS,
-    [groupMode, isRealProject, model.active],
+    [groupMode, isRealProject, model.active, model.drafts],
   );
 
   const earlierPaging = resolveSidebarThreadListPaging({
@@ -678,39 +707,83 @@ export function SidebarActivityView({
     return {
       group,
       paging,
-      threads: group.threads.slice(0, paging.previewLimit),
+      threads: resolveActivitySectionRows(group.threads, {
+        open: true,
+        previewLimit: paging.previewLimit,
+        activeThreadId,
+      }).visible,
     };
   });
-
-  const visibleThreadIds = useMemo(
+  const pinnedRows = useMemo(
     () =>
-      collectVisibleActivityThreadIds({
+      resolveActivitySectionRows(scopedPinnedThreads, {
+        open: pinnedOpen,
+        previewLimit: scopedPinnedThreads.length,
+        activeThreadId,
+      }),
+    [activeThreadId, pinnedOpen, scopedPinnedThreads],
+  );
+  const earlierRows = useMemo(
+    () =>
+      resolveActivitySectionRows(dateBuckets.earlier, {
+        open: earlierOpen,
+        previewLimit: earlierPaging.previewLimit,
+        activeThreadId,
+      }),
+    [activeThreadId, dateBuckets.earlier, earlierOpen, earlierPaging.previewLimit],
+  );
+  const settledRows = useMemo(
+    () =>
+      resolveActivitySectionRows(model.settled, {
+        open: settledOpen,
+        previewLimit: settledPaging.previewLimit,
+        activeThreadId,
+      }),
+    [activeThreadId, model.settled, settledOpen, settledPaging.previewLimit],
+  );
+  // The open thread stays on screen even when its section is collapsed.
+  const revealedThreads = useMemo(
+    () => ({
+      pinned: pinnedRows.revealed,
+      earlier: groupMode === "time" ? earlierRows.revealed : [],
+      settled: settledRows.revealed,
+    }),
+    [earlierRows.revealed, groupMode, pinnedRows.revealed, settledRows.revealed],
+  );
+  const visibleThreadIds = useMemo(
+    () => [
+      ...collectVisibleActivityThreadIds({
         groupMode,
         pinnedOpen,
         pinned: scopedPinnedThreads,
+        drafts: draftThreads,
         recent: recentThreads,
         today: dateBuckets.today,
         yesterday: dateBuckets.yesterday,
         earlierOpen,
-        earlier: dateBuckets.earlier.slice(0, earlierPaging.previewLimit),
+        earlier: earlierRows.visible,
         projectGroups: pagedProjectGroups.map((group) => group.threads),
         settledOpen,
-        settled: model.settled.slice(0, settledPaging.previewLimit),
+        settled: settledRows.visible,
+        revealed: revealedThreads,
       }),
+      ...snoozedVisibleThreadIds,
+    ],
     [
-      dateBuckets.earlier,
       dateBuckets.today,
       dateBuckets.yesterday,
+      draftThreads,
       earlierOpen,
-      earlierPaging.previewLimit,
+      earlierRows.visible,
       groupMode,
-      model.settled,
       pagedProjectGroups,
       pinnedOpen,
       recentThreads,
+      revealedThreads,
       scopedPinnedThreads,
       settledOpen,
-      settledPaging.previewLimit,
+      settledRows.visible,
+      snoozedVisibleThreadIds,
     ],
   );
   const visibleThreadIdsFingerprint = visibleThreadIds.join("\0");
@@ -740,6 +813,7 @@ export function SidebarActivityView({
       isActive={activeThreadId === thread.id}
       isSettled={isSettled}
       isPinned={pinnedThreadIdSet.has(thread.id)}
+      hasPendingDraft={draftThreadIdSet.has(thread.id)}
       pr={
         // An explicit null from the resolver means the persisted PR was ruled out (e.g. the
         // checkout moved on); falling back to raw lastKnownPr would resurrect that stale
@@ -754,12 +828,14 @@ export function SidebarActivityView({
             })
       }
       status={resolveThreadStatus(thread)}
+      threadJumpLabel={threadJumpLabelByThreadId.get(thread.id) ?? null}
       onOpen={() => onOpenThread(thread.id)}
       onOpenPullRequest={(event, pr) => onOpenThreadPullRequest(event, thread, pr)}
       onSetSettled={(settled) => {
         if (settled) onMarkThreadRead(thread.id, thread.latestTurn?.completedAt ?? undefined);
         onSetThreadSettled(thread.id, settled);
       }}
+      onReturnSnoozed={() => onReturnSnoozedThread(thread.id)}
       onTogglePinned={() => onToggleThreadPinned(thread.id)}
       onArchive={() => onArchiveThread(thread.id)}
       onRename={onRenameThread}
@@ -775,7 +851,11 @@ export function SidebarActivityView({
   // section has rows — a feed with nothing active but a populated Pinned or Done
   // section is not empty.
   const isEmpty =
-    model.active.length === 0 && model.settled.length === 0 && scopedPinnedThreads.length === 0;
+    model.active.length === 0 &&
+    model.settled.length === 0 &&
+    draftThreads.length === 0 &&
+    model.snoozed.length === 0 &&
+    scopedPinnedThreads.length === 0;
   const emptyLabel =
     activeScope === null
       ? "No activity yet"
@@ -786,15 +866,14 @@ export function SidebarActivityView({
   return (
     <div className="flex flex-col gap-3">
       {scopedPinnedThreads.length > 0 ? (
-        <ActivityCollapsibleSection
+        <SidebarCollapsibleSection
           label="Pinned"
           open={pinnedOpen}
           onToggle={() => setPinnedOpen((open) => !open)}
+          revealedChildren={pinnedRows.revealed.map(renderActiveRow)}
         >
-          {scopedPinnedThreads.map((thread) =>
-            renderRow(thread, isThreadSettledForActivity(thread, settledOverrideByThreadId)),
-          )}
-        </ActivityCollapsibleSection>
+          {scopedPinnedThreads.map(renderActiveRow)}
+        </SidebarCollapsibleSection>
       ) : null}
 
       {/* `group/project-header` is the marker SidebarSectionToolbar reveals on, so
@@ -804,7 +883,7 @@ export function SidebarActivityView({
           options={scopeOptions}
           projectById={projectById}
           scopeSelection={activeScope}
-          onChangeScopeSelection={setScopeSelection}
+          onChangeScopeSelection={onScopeSelectionChange}
         />
         <SidebarSectionToolbar revealOnHover className="mr-0">
           <SidebarIconButton
@@ -837,7 +916,7 @@ export function SidebarActivityView({
       ) : groupMode === "project" ? (
         pagedProjectGroups.map(({ group, paging, threads: visibleThreads }) => (
           <div key={group.key}>
-            <ActivitySectionLabel
+            <SidebarSectionLabel
               label={
                 group.kind === "chats"
                   ? "Synara"
@@ -852,7 +931,7 @@ export function SidebarActivityView({
             />
             <div className="flex flex-col gap-0.5">
               {visibleThreads.map(renderActiveRow)}
-              <ActivityShowMoreRow
+              <SidebarShowMoreRow
                 canShowMore={paging.canShowMore}
                 canShowLess={paging.canShowLess}
                 onShowMore={() => {
@@ -877,34 +956,41 @@ export function SidebarActivityView({
         ))
       ) : (
         <>
+          {draftThreads.length > 0 ? (
+            <div>
+              <SidebarSectionLabel label="Drafts" />
+              <div className="flex flex-col gap-0.5">{draftThreads.map(renderActiveRow)}</div>
+            </div>
+          ) : null}
           {recentThreads.length > 0 ? (
             <div>
-              <ActivitySectionLabel label="Recent" />
+              <SidebarSectionLabel label="Recent" />
               <div className="flex flex-col gap-0.5">{recentThreads.map(renderActiveRow)}</div>
             </div>
           ) : null}
           {dateBuckets.today.length > 0 ? (
             <div>
-              <ActivitySectionLabel label="Today" />
+              <SidebarSectionLabel label="Today" />
               <div className="flex flex-col gap-0.5">{dateBuckets.today.map(renderActiveRow)}</div>
             </div>
           ) : null}
           {dateBuckets.yesterday.length > 0 ? (
             <div>
-              <ActivitySectionLabel label="Yesterday" />
+              <SidebarSectionLabel label="Yesterday" />
               <div className="flex flex-col gap-0.5">
                 {dateBuckets.yesterday.map(renderActiveRow)}
               </div>
             </div>
           ) : null}
           {dateBuckets.earlier.length > 0 ? (
-            <ActivityCollapsibleSection
+            <SidebarCollapsibleSection
               label="Earlier"
               open={earlierOpen}
               onToggle={() => setEarlierOpen((open) => !open)}
+              revealedChildren={earlierRows.revealed.map(renderActiveRow)}
             >
-              {dateBuckets.earlier.slice(0, earlierPaging.previewLimit).map(renderActiveRow)}
-              <ActivityShowMoreRow
+              {earlierRows.visible.map(renderActiveRow)}
+              <SidebarShowMoreRow
                 canShowMore={earlierPaging.canShowMore}
                 canShowLess={earlierPaging.canShowLess}
                 onShowMore={() => setEarlierExtraPages(earlierPaging.effectiveExtraPages + 1)}
@@ -912,21 +998,20 @@ export function SidebarActivityView({
                   setEarlierExtraPages(Math.max(0, earlierPaging.effectiveExtraPages - 1))
                 }
               />
-            </ActivityCollapsibleSection>
+            </SidebarCollapsibleSection>
           ) : null}
         </>
       )}
 
       {model.settled.length > 0 ? (
-        <ActivityCollapsibleSection
+        <SidebarCollapsibleSection
           label="Done"
           open={settledOpen}
           onToggle={() => setSettledOpen((open) => !open)}
+          revealedChildren={settledRows.revealed.map((thread) => renderRow(thread, true))}
         >
-          {model.settled
-            .slice(0, settledPaging.previewLimit)
-            .map((thread) => renderRow(thread, true))}
-          <ActivityShowMoreRow
+          {settledRows.visible.map((thread) => renderRow(thread, true))}
+          <SidebarShowMoreRow
             canShowMore={settledPaging.canShowMore}
             canShowLess={settledPaging.canShowLess}
             onShowMore={() => setSettledExtraPages(settledPaging.effectiveExtraPages + 1)}
@@ -934,8 +1019,13 @@ export function SidebarActivityView({
               setSettledExtraPages(Math.max(0, settledPaging.effectiveExtraPages - 1))
             }
           />
-        </ActivityCollapsibleSection>
+        </SidebarCollapsibleSection>
       ) : null}
+      <SidebarSnoozedThreadsSection
+        threads={model.snoozed}
+        renderThreadRow={(thread) => renderRow(thread, false)}
+        onVisibleThreadIdsChange={setSnoozedVisibleThreadIds}
+      />
     </div>
   );
 }

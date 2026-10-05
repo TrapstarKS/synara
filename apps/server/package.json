@@ -1,6 +1,6 @@
 {
   "name": "@synara/cli",
-  "version": "0.9.30",
+  "version": "1.0.1",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -40,8 +40,7 @@
     "effect": "catalog:",
     "node-pty": "^1.1.0",
     "open": "^10.1.0",
-    "smol-toml": "^1.6.1",
-    "tree-kill": "^1.2.2",
+    "smol-toml": "^1.7.0",
     "ws": "^8.21.0",
     "yaml": "^2.8.3",
     "zod": "4.3.6"

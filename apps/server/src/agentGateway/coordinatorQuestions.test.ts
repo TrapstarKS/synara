@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ServerSettingsService } from "../serverSettings";
 import {
   CommandId,
   EventId,
@@ -66,6 +67,7 @@ async function harness(children = 1) {
     Layer.provideMerge(
       ServerConfig.layerTest(process.cwd(), { prefix: "synara-coordinator-questions-" }),
     ),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
     Layer.provideMerge(NodeServices.layer),
   );
   const runtime = ManagedRuntime.make(layer);

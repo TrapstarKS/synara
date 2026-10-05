@@ -23,10 +23,9 @@ import {
   OrchestrationProjectionPipelineLive,
 } from "../../orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionPipeline } from "../../orchestration/Services/ProjectionPipeline.ts";
-import { runMigrations } from "../Migrations.ts";
+import { migrationEntries, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 import backfill, { MIGRATION_121_PAGE_SIZE } from "./121_BackfillClaudeNativeSubagentEffort.ts";
-import addGoalBlockStreakColumns from "./123_ProjectionThreadsGoalBlockStreak.ts";
 
 const testLayer = OrchestrationProjectionPipelineLive.pipe(
   Layer.provideMerge(OrchestrationEventStoreLive),
@@ -51,10 +50,12 @@ const fixture = Effect.gen(function* () {
   const pipeline = yield* OrchestrationProjectionPipeline;
   yield* runMigrations({ toMigrationInclusive: 120 });
   // This fixture intentionally leaves migration 121 pending while exercising
-  // the current projection repository. Apply the later additive columns without
-  // recording migration 123 so the historical migration under test remains the
+  // the current projection repository. Apply the later additive migrations
+  // without recording them so the historical migration under test remains the
   // only pending migration in `runMigrations({ toMigrationInclusive: 121 })`.
-  yield* addGoalBlockStreakColumns;
+  for (const [id, , migration] of migrationEntries) {
+    if (id > 122) yield* migration;
+  }
   let counter = 0;
   const projectId = ProjectId.makeUnsafe("project-121");
   const base = (threadId: ThreadId, command: string) => ({
@@ -183,7 +184,13 @@ const fixture = Effect.gen(function* () {
   const selection = (threadId: ThreadId) =>
     sql<{ readonly selectionJson: string }>`
       SELECT model_selection_json AS "selectionJson" FROM projection_threads WHERE thread_id = ${threadId}
-    `.pipe(Effect.map((rows) => JSON.parse(rows[0]!.selectionJson) as ModelSelection));
+    `.pipe(
+      Effect.map((rows) => {
+        // The current pipeline names the default instance; historical rows do not.
+        const { instanceId, ...rest } = JSON.parse(rows[0]!.selectionJson);
+        return (instanceId === "claudeAgent" ? rest : { ...rest, instanceId }) as ModelSelection;
+      }),
+    );
   const child = (parent: ThreadId, receiver: string) =>
     ThreadId.makeUnsafe(`subagent:${parent}:${receiver}`);
   const replay = Effect.gen(function* () {
