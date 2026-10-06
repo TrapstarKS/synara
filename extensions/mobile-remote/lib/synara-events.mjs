@@ -431,8 +431,8 @@ export function watchSynara({
         "client-build": "mobile-remote-1",
         "protocol-epoch": "1",
         "protocol-min-revision": "1",
-        // Revision 2 only changed PR-detail shapes, which this monitor never reads.
-        "protocol-max-revision": "2",
+        // Revisions 2-3 only changed PR RPCs and shapes, which this monitor never uses.
+        "protocol-max-revision": "3",
       }))
         url.searchParams.set(`x-synara-${key}`, value);
       for (const capability of REQUIRED)
@@ -446,7 +446,7 @@ export function watchSynara({
       const body = await response.json();
       if (
         body.protocolEpoch !== 1 ||
-        ![1, 2].includes(body.negotiatedRevision) ||
+        ![1, 2, 3].includes(body.negotiatedRevision) ||
         !text(body.serverInstanceId) ||
         !Array.isArray(body.capabilities) ||
         !REQUIRED.every((c) => body.capabilities.includes(c))

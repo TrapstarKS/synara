@@ -140,7 +140,7 @@ Android supports a **Responder**, **Revisar ação** or **Ver conversa** button 
 
 Delivery has a one-hour expiry and bounded retries; invalid subscriptions are removed. Web Push is best effort, not a guaranteed paging system.
 
-The monitor negotiates Synara protocol epoch/revision 1 and stops on incompatibility instead of guessing a new protocol. First connection establishes a silent baseline. After reconnect it compares known tasks' latest state with a bounded checkpoint, recovering at most 20 recent changes from the last 24 hours. The shell protocol is a state stream, not a full event history: intermediate states, tasks first seen during downtime, or consecutive approval requests with an unchanged boolean flag can be missed. Do not treat a lack of notification as proof no work needs attention.
+The monitor negotiates Synara protocol epoch 1, revisions 1-3, and stops on incompatibility instead of guessing a new protocol. First connection establishes a silent baseline. After reconnect it compares known tasks' latest state with a bounded checkpoint, recovering at most 20 recent changes from the last 24 hours. The shell protocol is a state stream, not a full event history: intermediate states, tasks first seen during downtime, or consecutive approval requests with an unchanged boolean flag can be missed. Do not treat a lack of notification as proof no work needs attention.
 
 If a device cannot resolve the `ts.net` name, check `tailscale dns status`. MagicDNS may be disabled locally even while it is enabled for the tailnet. Configure Tailscale DNS on the device used to open the app. Do not bypass a certificate warning.
 
