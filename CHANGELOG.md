@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.4] — 2026-10-06
+
+**Keeps each Codex and Claude account on its own login.**
+
+### Fixed
+
+- An additional Codex account without its own folder no longer signs in to, or reports itself authenticated with, the default account's login. Sign-in, authentication checks, sessions and the usage ring all use the account's private folder. Such accounts need to sign in again once.
+- Codex authentication checks run from the account's folder, so a project's Codex config can't affect them.
+- On macOS, a Claude account with its own home now gets its own Keychain login instead of sharing the default account's. Accounts already signed in that way need to sign in again; the default Claude account is unchanged.
+- The usage rings refresh right after signing in to an account.
+
 ## [1.0.3] — 2026-10-06
 
 **Moves Codex multi-account to the official provider instances, shows usage for every connected account and prices Claude in the profile.**
