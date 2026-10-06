@@ -18,7 +18,9 @@ import {
   linkOrCopyCodexOverlayEntry,
   prioritizeCodexOverlayEntries,
   writeCodexOverlayConfigAtomically,
+  prepareCodexAuthTracking,
 } from "./codexProcessEnv";
+import { resolveActiveCodexHomeWritePath } from "./codexHomePaths";
 import { isProviderCredentialKey } from "./providerChildEnvironment.ts";
 
 const roots: string[] = [];
@@ -35,6 +37,37 @@ function fixture(config = "") {
 }
 
 describe("buildCodexProcessEnv", () => {
+  it.each(["win32", "darwin"] as const)(
+    "keeps account-only logins separate from the ambient home on %s",
+    async (platform) => {
+      const f = fixture();
+      writeFileSync(path.join(f.homePath, "auth.json"), "default-login");
+      const personal = { env: f.env, accountId: "codex_personal", platform };
+      const work = { env: f.env, accountId: "codex_work", platform };
+      const personalEnv = await buildCodexProcessEnv(personal);
+      const workEnv = await buildCodexProcessEnv(work);
+      expect(personalEnv.CODEX_HOME).toBe(resolveActiveCodexHomeWritePath(personal));
+      expect(personalEnv.CODEX_HOME).toBe(
+        path.dirname(prepareCodexAuthTracking(personal).authoritativeAuthFilePath),
+      );
+      expect(personalEnv.CODEX_HOME).not.toBe(f.homePath);
+      expect(personalEnv.CODEX_HOME).not.toBe(workEnv.CODEX_HOME);
+      expect(personalEnv.CODEX_SQLITE_HOME).toBe(personalEnv.CODEX_HOME);
+      expect(readFileSync(path.join(f.homePath, "auth.json"), "utf8")).toBe("default-login");
+    },
+  );
+
+  it("preserves dedicated and shadow home precedence for selected accounts", async () => {
+    const f = fixture();
+    const dedicated = path.join(f.root, "dedicated");
+    const shadow = path.join(f.root, "shadow");
+    const input = { env: f.env, homePath: dedicated, accountId: "personal" };
+    expect((await buildCodexProcessEnv(input)).CODEX_HOME).toBe(dedicated);
+    expect((await buildCodexProcessEnv({ ...input, shadowHomePath: shadow })).CODEX_HOME).toBe(
+      shadow,
+    );
+  });
+
   it.each(["win32", "darwin"] as const)(
     "uses the native home on %s without copying config, authentication or databases",
     async (platform) => {

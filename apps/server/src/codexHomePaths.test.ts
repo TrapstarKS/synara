@@ -131,8 +131,7 @@ describe("Codex home paths", () => {
     ]);
   });
 
-  // Fork runtime: sessions write to the native account home; overlays are allowlist-only.
-  it("writes explicit shared homes natively", () => {
+  it("isolates an account that explicitly aliases the ambient home", () => {
     const env = {
       CODEX_HOME: "/users/me/.codex",
       SYNARA_HOME: "/synara/runtime",
@@ -148,7 +147,7 @@ describe("Codex home paths", () => {
         homePath: "/users/me/.codex",
         accountId: "codex_2",
       }),
-      "/users/me/.codex",
+      resolveSynaraCodexHomeOverlayPath(env, "/users/me/.codex", segment),
     );
     assert.ok(segment);
   });

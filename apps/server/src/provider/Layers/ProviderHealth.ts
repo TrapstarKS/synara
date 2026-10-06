@@ -8,6 +8,7 @@
  *
  * @module ProviderHealthLive
  */
+import { existsSync } from "node:fs";
 import * as OS from "node:os";
 import nodePath from "node:path";
 import type {
@@ -773,11 +774,13 @@ const runProviderCommand = (
   executable: string,
   args: ReadonlyArray<string>,
   env: NodeJS.ProcessEnv,
+  cwd?: string,
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const command = makeEffectProcessCommand(executable, args, {
       env,
+      ...(cwd ? { cwd } : {}),
       // Health probes are non-interactive. Leaving stdin as a pipe can keep CLIs
       // such as Antigravity waiting even after a read-only subcommand has finished.
       stdin: "ignore",
@@ -805,7 +808,14 @@ const runCodexCommand = (
   Effect.gen(function* () {
     const resolved = resolveCodexExecutable(executable, { env });
     if (!resolved) return yield* Effect.fail(new Error(`spawn ${executable} ENOENT`));
-    return yield* runProviderCommand(resolved, args, env);
+    // Account health must not merge project config from the desktop's working directory.
+    const home = env.CODEX_HOME;
+    return yield* runProviderCommand(
+      resolved,
+      args,
+      env,
+      home && existsSync(home) ? home : undefined,
+    );
   }).pipe(
     Effect.flatMap((result) =>
       isWindowsShellCommandMissingResult({ code: result.code, stderr: result.stderr })

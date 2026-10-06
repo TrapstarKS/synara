@@ -67,6 +67,7 @@ import {
 } from "./ProviderHealth";
 import { resolvePackageManagedProviderMaintenance } from "../providerMaintenance";
 import { providerIsolatedHomePath } from "../providerProcessEnv.ts";
+import { resolveActiveCodexHomeWritePath } from "../../codexHomePaths.ts";
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -1517,6 +1518,40 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
   // path being tested.
 
   describe("checkCodexProviderStatus", () => {
+    it.effect(
+      "does not authenticate an unsigned-in account with the default account's login",
+      () => {
+        let personalHome: string;
+        let personalSignedIn = false;
+        return Effect.gen(function* () {
+          yield* withTempCodexHome();
+          personalHome = resolveActiveCodexHomeWritePath({ accountId: "codex_personal" });
+          assert.notStrictEqual(personalHome, process.env.CODEX_HOME);
+          assert.strictEqual((yield* checkCodexProviderStatus).authStatus, "authenticated");
+          const personalCheck = makeCheckCodexProviderStatus(
+            "codex",
+            undefined,
+            undefined,
+            "codex_personal",
+          );
+          assert.strictEqual((yield* personalCheck).authStatus, "unauthenticated");
+          personalSignedIn = true;
+          assert.strictEqual((yield* personalCheck).authStatus, "authenticated");
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args, _command, env) => {
+              if (args.join(" ") === "--version")
+                return { stdout: "codex 1.0.0\n", stderr: "", code: 0 };
+              const signedIn = env?.CODEX_HOME !== personalHome || personalSignedIn;
+              return signedIn
+                ? { stdout: "Logged in\n", stderr: "", code: 0 }
+                : { stdout: "Not logged in\n", stderr: "", code: 1 };
+            }),
+          ),
+        );
+      },
+    );
+
     it.effect("returns ready when codex is installed and authenticated", () =>
       Effect.gen(function* () {
         // Point CODEX_HOME at an empty tmp dir (no config.toml) so the

@@ -119,6 +119,9 @@ export async function resolveProviderAuthenticationLaunch(input: {
     throw new Error(
       "The provider CLI was not found. Install it or check its configured binary path.",
     );
+  if (instance.driver === "codex" && profile.environment.CODEX_HOME) {
+    ensurePrivateDirectorySync(profile.environment.CODEX_HOME);
+  }
   const cwd = path.join(
     input.stateDir,
     "provider-auth",

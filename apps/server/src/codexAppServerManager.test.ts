@@ -533,6 +533,39 @@ describe("Codex Synara harness policy", () => {
       rmSync(homePath, { recursive: true, force: true });
     }
   });
+
+  it("launches and tracks account-only sessions using their own login", async () => {
+    const manager = new CodexAppServerManager();
+    const launcher = manager as unknown as {
+      buildSessionProcess: (
+        options: { accountId: string },
+        token: undefined,
+      ) => Promise<{
+        env: NodeJS.ProcessEnv;
+        authTracking: ReturnType<typeof prepareCodexAuthTracking>;
+        authFingerprint: string;
+      }>;
+    };
+    const personal = await launcher.buildSessionProcess({ accountId: "codex_personal" }, undefined);
+    const work = await launcher.buildSessionProcess({ accountId: "codex_work" }, undefined);
+    expect(personal.env.CODEX_HOME).not.toBe(process.env.CODEX_HOME);
+    expect(personal.env.CODEX_HOME).not.toBe(work.env.CODEX_HOME);
+    expect(personal.authTracking.authoritativeAuthFilePath).toBe(
+      path.join(personal.env.CODEX_HOME!, "auth.json"),
+    );
+    mkdirSync(personal.env.CODEX_HOME!, { recursive: true });
+    writeFileSync(personal.authTracking.authoritativeAuthFilePath, codexAuth("personal", "1"));
+    const signedIn = await launcher.buildSessionProcess({ accountId: "codex_personal" }, undefined);
+    expect(signedIn.authFingerprint).not.toBe(personal.authFingerprint);
+    expect(
+      readCodexPreparedAuthTrackingFingerprint(
+        prepareCodexAuthTracking({ accountId: "codex_personal" }),
+      ),
+    ).toBe(signedIn.authFingerprint);
+    expect(
+      (await launcher.buildSessionProcess({ accountId: "codex_work" }, undefined)).authFingerprint,
+    ).toBe(work.authFingerprint);
+  });
 });
 
 function createSendTurnHarness(runtimeMode: RuntimeMode = "full-access") {

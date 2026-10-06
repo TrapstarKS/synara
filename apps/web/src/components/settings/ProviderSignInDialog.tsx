@@ -7,7 +7,11 @@ import { PROVIDER_AUTHENTICATION } from "@synara/shared/providerCliProfiles";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRefreshProviderStatusesNow } from "~/hooks/useProviderStatusRefresh";
-import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
+import {
+  invalidateProviderUsageQueries,
+  serverConfigQueryOptions,
+  serverQueryKeys,
+} from "~/lib/serverReactQuery";
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
 import TerminalViewport from "../terminal/TerminalViewport";
 import type { TerminalRuntimeStatus } from "../terminal/terminalRuntimeTypes";
@@ -70,6 +74,7 @@ export default function ProviderSignInDialog(props: {
     );
     // Native account preparation can save its isolated roots server-side.
     void queryClient.invalidateQueries({ queryKey: serverQueryKeys.settings() });
+    void invalidateProviderUsageQueries(queryClient);
   }, [props.instanceId, queryClient]);
 
   useEffect(() => {

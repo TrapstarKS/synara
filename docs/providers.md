@@ -176,6 +176,11 @@ avoids merging the internal HTTP transport with an existing user or project
 stdio entry. Ordinary MCP changes made in Synara now persist in the native home.
 See [Codex configuration](https://developers.openai.com/codex/config-advanced).
 
+Additional Codex accounts without a dedicated home use a private directory under
+the current Synara home. Sign-in, authentication checks, sessions and usage all
+use that same account directory; they do not inherit the default account's login.
+An explicitly configured dedicated home or shadow home keeps its existing login.
+
 On first use, Synara recovers saved MCP edits from its corresponding legacy
 overlay, backing up the native configuration before changing it. Existing
 authentication is not replaced. Old rollout and generated-image paths remain
@@ -354,6 +359,12 @@ discovery, imported history, and the instance's terminal command all use that ac
 With `SYNARA_CLAUDE_KEEPALIVE=1` on macOS, the Claude OAuth keepalive runs `claude auth status` for
 every enabled Claude account in that account's own environment, so each account's Keychain token
 stays fresh.
+
+A Claude account with its own home (an explicit **Home**, or the private home Synara creates for an
+additional account) also gets `CLAUDE_CONFIG_DIR=<home>/.claude` unless its environment sets one.
+On macOS, `HOME` alone does not separate Claude's Keychain login, so without this the account would
+sign in, check authentication and run with the default account's login. Accounts signed in before
+this change need to sign in again.
 
 Sensitive environment values are never serialized into terminal shim files. Directory-backed
 authentication works directly. A profile that depends only on a secret environment credential

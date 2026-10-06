@@ -90,6 +90,7 @@ import {
 } from "./codexProcessEnv.ts";
 import { buildCodexRuntimeConfig } from "./codexRuntimeConfig.ts";
 import { migrateLegacyCodexHome } from "./codexLegacyHome.ts";
+import { resolveActiveCodexHomeWritePath } from "./codexHomePaths.ts";
 import { resolveCodexExecutable } from "@synara/shared/codexExecutable";
 import type { ProviderAdapterForkThreadInput } from "./provider/Services/ProviderAdapter.ts";
 import { withoutProviderCredentialEnvironment } from "./providerChildEnvironment.ts";
@@ -1243,7 +1244,6 @@ function codexProcessEnvInputForOptions(
 ): CodexProcessEnvInput {
   const accountScoped = Boolean(options?.accountId);
   const explicitProviderEnvironment = options?.environment;
-  const nativeHomePath = options?.shadowHomePath || options?.homePath;
   const inheritedEnvironment = accountScoped
     ? withoutProviderCredentialEnvironment(process.env)
     : { ...process.env };
@@ -1255,9 +1255,9 @@ function codexProcessEnvInputForOptions(
           explicitProviderEnvironment: explicitProviderEnvironment ?? {},
         }
       : {}),
-    // Native launches run directly in the selected account home; there is no
-    // per-account overlay, so the shadow home (when present) is that home.
-    ...(nativeHomePath ? { homePath: nativeHomePath } : {}),
+    ...(options?.homePath ? { homePath: options.homePath } : {}),
+    ...(options?.shadowHomePath ? { shadowHomePath: options.shadowHomePath } : {}),
+    ...(options?.accountId ? { accountId: options.accountId } : {}),
   };
 }
 
@@ -1355,7 +1355,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ) {
     const processEnvInput = codexProcessEnvInputForOptions(codexOptions);
     await migrateLegacyCodexHome({
-      ...(processEnvInput.homePath ? { homePath: processEnvInput.homePath } : {}),
+      ...(processEnvInput.env ? { env: processEnvInput.env } : {}),
+      homePath: resolveActiveCodexHomeWritePath(processEnvInput),
     });
     const processLaunch = await buildCodexProcessLaunchContext(processEnvInput);
     const env = processLaunch.env;

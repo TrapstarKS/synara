@@ -165,6 +165,16 @@ export function buildClaudeInstanceProcessEnv(
   if (effectiveHomePath) {
     if (!selectedEnvironment || !("CLAUDE_CONFIG_DIR" in selectedEnvironment)) {
       delete env.CLAUDE_CONFIG_DIR;
+      // HOME alone does not scope Claude's macOS Keychain item; only CLAUDE_CONFIG_DIR
+      // does. Without it a separate account signs in, checks auth and runs with the
+      // default account's login.
+      const pathApi = platform === "win32" ? NodePath.win32 : NodePath.posix;
+      if (
+        pathApi.resolve(effectiveHomePath) !==
+        pathApi.resolve(options?.homeDir?.trim() || homedir())
+      ) {
+        env.CLAUDE_CONFIG_DIR = pathApi.join(effectiveHomePath, ".claude");
+      }
     }
   }
   return buildClaudeProcessEnv({

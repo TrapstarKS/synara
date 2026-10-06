@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { expandProviderAccountHomePath } from "./providerAccountHomePath.ts";
+import { codexPathsReferenceSameLocation } from "./codexPathIdentity.ts";
 
 export const SYNARA_CODEX_HOME_OVERLAY_DIR = "codex-home-overlay";
 export const SYNARA_CODEX_HOME_ACCOUNT_OVERLAYS_DIR = "accounts";
@@ -69,11 +70,25 @@ export function resolveCodexHomeOverlayAccountSegment(
 /**
  * Returns the home directory that the codex app-server child process actually
  * writes under. Interactive sessions use the user's normal Codex home, or the
- * explicitly selected account home. Legacy overlays remain readable below.
+ * explicitly selected account home. Accounts without a dedicated home use their
+ * private account directory so they cannot read or replace the default login.
  */
 export function resolveActiveCodexHomeWritePath(input: CodexHomePathsInput = {}): string {
   const env = input.env ?? process.env;
-  return resolveBaseCodexHomePath(env, input.homePath);
+  if (input.shadowHomePath?.trim()) {
+    return resolveBaseCodexHomePath(env, input.shadowHomePath);
+  }
+  const source = resolveBaseCodexHomePath(env, input.homePath);
+  const dedicated =
+    Boolean(input.homePath?.trim()) &&
+    !codexPathsReferenceSameLocation(source, resolveBaseCodexHomePath(env));
+  const accountSegment = resolveCodexHomeOverlayAccountSegment({
+    homePath: source,
+    ...(input.accountId ? { accountId: input.accountId } : {}),
+  });
+  return accountSegment && !dedicated
+    ? resolveSynaraCodexHomeOverlayPath(env, source, accountSegment)
+    : source;
 }
 
 /**

@@ -401,6 +401,7 @@ it("survives StrictMode, waits for account edits, and verifies selected-account 
   harness.refresh.mockResolvedValue([{ ...WORK_STATUS, authStatus: "authenticated" }]);
   await dialog.getByRole("button", { name: "Check authentication" }).click();
   await expect.element(dialog.getByText("Authenticated. You can close this window.")).toBeVisible();
+  expect(harness.invalidate).toHaveBeenCalledWith({ queryKey: ["server", "allProviderUsage"] });
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect.poll(() => harness.api.terminal.close.mock.calls.length).toBeGreaterThan(0);
   expect(harness.api.terminal.close).toHaveBeenCalledWith({

@@ -261,7 +261,7 @@ describe("ClaudeTextGenerationServiceLive", () => {
           );
           assert.strictEqual(path.basename(path.dirname(env.HOME)), "claude");
           assert.strictEqual(path.basename(path.dirname(path.dirname(env.HOME))), "provider-homes");
-          assert.strictEqual(env.CLAUDE_CONFIG_DIR, undefined);
+          assert.strictEqual(env.CLAUDE_CONFIG_DIR, path.join(env.HOME, ".claude"));
           assert.strictEqual(env.ANTHROPIC_AUTH_TOKEN, "work-token");
           return {
             stdout: '{"structured_output":{"title":"Provider instances"}}\n',

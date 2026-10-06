@@ -21,6 +21,7 @@ import {
 import { afterEach, expect, it } from "vitest";
 import { ServerSettingsService } from "../serverSettings";
 import { getDevinApiKeyEnv } from "../provider/acp/DevinAcpSupport";
+import { resolveActiveCodexHomeWritePath } from "../codexHomePaths";
 import { PtyAdapter } from "./Services/PTY";
 import { layer as NodePtyLive } from "./Layers/NodePTY";
 import { TerminalManagerRuntime } from "./Layers/Manager";
@@ -61,11 +62,7 @@ process.stdin.once('data', () => { fs.mkdirSync(home, { recursive: true }); fs.w
     providerInstances: {
       [instanceId]: {
         driver: provider,
-        // Fork Codex accounts own a native home; without one they share ~/.codex.
-        config: {
-          binaryPath,
-          ...(provider === "codex" ? { homePath: path.join(root, "codex") } : {}),
-        },
+        config: { binaryPath },
       },
     },
   };
@@ -73,6 +70,7 @@ process.stdin.once('data', () => { fs.mkdirSync(home, { recursive: true }); fs.w
     PATH: path.dirname(process.execPath),
     HOME: homeDir,
     SYNARA_HOME: path.join(root, "synara"),
+    CODEX_HOME: path.join(root, "ambient-codex"),
     OPENAI_API_KEY: "ambient-fixture",
     FACTORY_API_KEY: "ambient-fixture",
     WINDSURF_API_KEY: "ambient-fixture",
@@ -111,6 +109,12 @@ it.skipIf(process.platform === "win32").each([
     const patch = prepareProviderAuthenticationSettings(input);
     const settings = patch ? applyServerSettingsPatch(input.settings, patch) : input.settings;
     const launch = await resolveProviderAuthenticationLaunch({ ...input, settings });
+    if (provider === "codex") {
+      expect(launch.env.CODEX_HOME).toBe(
+        resolveActiveCodexHomeWritePath({ env: input.baseEnv, accountId: input.instanceId }),
+      );
+      expect(launch.env.CODEX_HOME).not.toBe(input.baseEnv.CODEX_HOME);
+    }
     // Native providers must persist exactly the roots later managed sessions receive.
     if (["devin", "antigravity", "droid"].includes(provider)) {
       const instance = deriveProviderInstances(settings).find(

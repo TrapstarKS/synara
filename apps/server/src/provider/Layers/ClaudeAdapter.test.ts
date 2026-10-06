@@ -839,7 +839,7 @@ describe("ClaudeAdapterLive", () => {
               providerInstanceId: "claude_work",
             }),
           );
-          assert.equal(queryEnv?.CLAUDE_CONFIG_DIR, undefined);
+          assert.equal(queryEnv?.CLAUDE_CONFIG_DIR, `${queryEnv?.HOME}/.claude`);
           assert.equal(queryEnv?.ANTHROPIC_AUTH_TOKEN, "work-token");
         }),
       (previous) =>

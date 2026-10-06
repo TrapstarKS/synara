@@ -32,6 +32,7 @@ import {
 } from "@synara/shared/shell";
 
 import {
+  resolveActiveCodexHomeWritePath,
   resolveBaseCodexHomePath,
   resolveCodexHomeOverlayAccountSegment,
   resolveSynaraCodexHomeOverlayPath,
@@ -754,9 +755,7 @@ export function prepareCodexAuthTracking(
     ...(shadowHomePath ? { shadowHomePath } : {}),
   });
   const overlayHomePath = resolveSynaraCodexHomeOverlayPath(env, sourceHomePath, accountSegment);
-  const authoritativeAuthHomePath =
-    shadowHomePath ??
-    (accountSegment && !hasDedicatedAccountHome ? overlayHomePath : sourceHomePath);
+  const authoritativeAuthHomePath = resolveActiveCodexHomeWritePath(input);
   const requiresRealPrivateHome = Boolean(
     shadowHomePath || (accountSegment && !hasDedicatedAccountHome),
   );
@@ -2688,11 +2687,11 @@ export async function buildCodexProcessEnv(
   input: CodexProcessEnvInput = {},
 ): Promise<NodeJS.ProcessEnv> {
   const baseEnv = { ...(input.env ?? process.env) };
-  // Interactive sessions run against the native home: the account home when one
-  // is selected, otherwise the configured CODEX_HOME (normally ~/.codex).
-  const homePath = path.resolve(
-    resolveBaseCodexHomePath(baseEnv, input.shadowHomePath ?? input.homePath),
-  );
+  // Login, health checks and sessions use the same account home as usage.
+  if (input.accountId || input.shadowHomePath) {
+    prepareCodexAuthTracking(input);
+  }
+  const homePath = path.resolve(resolveActiveCodexHomeWritePath(input));
   const configuredEnv: NodeJS.ProcessEnv = { ...baseEnv, CODEX_HOME: homePath };
   // Older releases already used this source directory for SQLite. Keep the
   // database and its sidecars on the same path while native sessions use it too.
@@ -2755,7 +2754,7 @@ export async function buildCodexProcessLaunchContext(
   input: CodexProcessEnvInput = {},
 ): Promise<CodexProcessLaunchContext> {
   const env = await buildCodexProcessEnv(input);
-  const authTracking = prepareCodexAuthTracking({ env, homePath: resolveBaseCodexHomePath(env) });
+  const authTracking = prepareCodexAuthTracking(input);
   return {
     env,
     authTracking,

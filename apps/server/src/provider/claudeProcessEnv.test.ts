@@ -323,8 +323,8 @@ describe("claudeProcessEnv", () => {
     assert.equal(result.PATH, "C:\\Windows\\System32");
     assert.equal(result.PROVIDER_TEST_INSTANCE, "work");
     assert.equal(result.HTTPS_PROXY, "https://shared-proxy.example.test");
+    assert.equal(result.CLAUDE_CONFIG_DIR, path.win32.join(result.HOME!, ".claude"));
     for (const key of [
-      "CLAUDE_CONFIG_DIR",
       "ANTHROPIC_API_KEY",
       "AWS_PROFILE",
       "GOOGLE_APPLICATION_CREDENTIALS",
@@ -444,6 +444,13 @@ describe("claudeProcessEnv", () => {
     const result = buildClaudeInstanceProcessEnv("/home/work-account");
 
     assert.equal(result.HOME, "/home/work-account");
+    // A separate home needs its own config dir: HOME alone shares the macOS Keychain login.
+    assert.equal(result.CLAUDE_CONFIG_DIR, "/home/work-account/.claude");
+    assert.equal(
+      buildClaudeInstanceProcessEnv("/home/me", undefined, { homeDir: "/home/me" })
+        .CLAUDE_CONFIG_DIR,
+      undefined,
+    );
   });
 
   it("does not fall back to ambient auth when an explicit instance home lacks OAuth", () => {
@@ -461,7 +468,7 @@ describe("claudeProcessEnv", () => {
       const result = buildClaudeInstanceProcessEnv("/home/account-b");
 
       assert.equal(result.HOME, "/home/account-b");
-      assert.equal(result.CLAUDE_CONFIG_DIR, undefined);
+      assert.equal(result.CLAUDE_CONFIG_DIR, "/home/account-b/.claude");
       for (const key of CLAUDE_ACCOUNT_ISOLATION_ENV_KEYS) {
         assert.equal(result[key], undefined);
         assert.notEqual(inherited[key], undefined);
