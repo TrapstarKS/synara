@@ -46,6 +46,29 @@ export function assertPrivateWindowsPath(path) {
   });
 }
 
+// Other tools (e.g. the Codex Windows sandbox) can grant groups read access that this
+// directory inherits. Only for companion-owned paths: drop inheritance and keep the
+// owner, SYSTEM and Administrators, then validate as usual.
+export function ensurePrivateWindowsPath(path) {
+  powershell(
+    `$item = Get-Item -LiteralPath $env:SYNARA_MOBILE_PRIVATE_PATH -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Private path is a reparse point' }
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = $item.GetAccessControl('Owner')
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'Private path belongs to another user' }
+    $acl = $item.GetAccessControl('Access')
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+    $inherit = if ($item.PSIsContainer) { 'ContainerInherit, ObjectInherit' } else { 'None' }
+    foreach ($id in @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+      $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($id)), 'FullControl', $inherit, 'None', 'Allow')))
+    }
+    $item.SetAccessControl($acl)`,
+    { SYNARA_MOBILE_PRIVATE_PATH: path },
+  );
+  assertPrivateWindowsPath(path);
+}
+
 /** Validate a runtime directory and file without blocking HTTP or WebSocket heartbeats. */
 export function assertPrivateWindowsPaths(paths, run = execFile) {
   return new Promise((resolve, reject) =>

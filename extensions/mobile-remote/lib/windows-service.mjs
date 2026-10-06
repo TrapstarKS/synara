@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { powershell, assertPrivateWindowsPath } from "./windows.mjs";
+import { powershell, assertPrivateWindowsPath, ensurePrivateWindowsPath } from "./windows.mjs";
 import { resolveServiceSettings } from "./service-config.mjs";
 
 export const taskName = "Synara Mobile Remote";
@@ -47,7 +47,7 @@ export function windowsTaskScript(command) {
 export async function windowsService({ command, origin, directory, entry, repo }) {
   const configPath = join(directory, "service.json");
   if (command === "run") {
-    assertPrivateWindowsPath(directory);
+    ensurePrivateWindowsPath(directory);
     assertPrivateWindowsPath(configPath);
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     const settings = resolveServiceSettings({
@@ -83,7 +83,7 @@ export async function windowsService({ command, origin, directory, entry, repo }
   if (status === "Running")
     throw new Error("Uninstall the running companion before reinstalling it");
   mkdirSync(directory, { recursive: true });
-  assertPrivateWindowsPath(directory);
+  ensurePrivateWindowsPath(directory);
   let previous = {};
   if (existsSync(configPath)) {
     assertPrivateWindowsPath(configPath);

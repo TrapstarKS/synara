@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { assertPrivateWindowsPath } from "./windows.mjs";
+import { ensurePrivateWindowsPath } from "./windows.mjs";
 
 export const hash = (value) => createHash("sha256").update(value).digest("hex");
 export const secret = () => randomBytes(32).toString("base64url");
@@ -10,11 +10,11 @@ export const defaults = { completed: true, failed: true, approval: true, input: 
 export function openStore(directory) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   chmodSync(directory, 0o700);
-  if (process.platform === "win32") assertPrivateWindowsPath(directory);
+  if (process.platform === "win32") ensurePrivateWindowsPath(directory);
   const path = join(directory, "state.json");
   let state;
   try {
-    if (process.platform === "win32" && existsSync(path)) assertPrivateWindowsPath(path);
+    if (process.platform === "win32" && existsSync(path)) ensurePrivateWindowsPath(path);
     state = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;

@@ -6,7 +6,10 @@ import { writeFileStringAtomically } from "./atomicWrite";
 import type { ServerConfigShape } from "./config";
 import { formatHostForUrl, isLoopbackHost, isWildcardHost } from "./startupAccess";
 import { externalMcpRuntimeSecret } from "./externalMcp/runtimeProof.ts";
-import { assertPrivateWindowsRuntimePathAsync } from "./externalMcp/bridge.ts";
+import {
+  assertPrivateWindowsRuntimePathAsync,
+  protectWindowsRuntimeDirectoryAsync,
+} from "./externalMcp/bridge.ts";
 
 const WINDOWS_RUNTIME_RECOVERY_INTERVAL = Duration.seconds(15);
 const runtimeGenerations = new Map<string, string>();
@@ -73,7 +76,12 @@ export const persistServerRuntimeState = (input: {
         catch: (cause) => cause,
       }).pipe(Effect.option);
       const privateDirectory = yield* Effect.tryPromise({
-        try: (signal) => assertPrivateWindowsRuntimePathAsync(directoryPath, "directory", signal),
+        try: (signal) =>
+          assertPrivateWindowsRuntimePathAsync(directoryPath, "directory", signal).catch(() =>
+            protectWindowsRuntimeDirectoryAsync(directoryPath, signal).then(() =>
+              assertPrivateWindowsRuntimePathAsync(directoryPath, "directory", signal),
+            ),
+          ),
         catch: (cause) => cause,
       }).pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
       const directoryAfter = yield* Effect.try({

@@ -266,6 +266,49 @@ export function assertPrivateWindowsRuntimePath(
   }
 }
 
+// The state directory inherits the profile DACL, which other tools (e.g. the Codex
+// Windows sandbox group) may extend. Only an owned, non-reparse directory is narrowed
+// to the owner, LocalSystem and Administrators; callers re-verify afterwards.
+const WINDOWS_PROTECT_RUNTIME_DIRECTORY_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "$item = Get-Item -LiteralPath $env:SYNARA_RUNTIME_ACL_TARGET -Force",
+  "if (-not $item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { throw 'Refusing unsafe runtime directory' }",
+  "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+  "if ($item.GetAccessControl('Owner').GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'Runtime directory belongs to another user' }",
+  "$acl = $item.GetAccessControl('Access')",
+  "$acl.SetAccessRuleProtection($true, $false)",
+  "foreach ($rule in @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) { [void]$acl.RemoveAccessRuleSpecific($rule) }",
+  "foreach ($id in @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')) { $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($id)), 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow'))) }",
+  "$item.SetAccessControl($acl)",
+].join("; ");
+
+export function protectWindowsRuntimeDirectoryAsync(
+  directoryPath: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const invocation = makeWindowsRuntimeAclPowerShellInvocation(directoryPath);
+  const args = [
+    ...invocation.args.slice(0, -1),
+    Buffer.from(WINDOWS_PROTECT_RUNTIME_DIRECTORY_SCRIPT, "utf16le").toString("base64"),
+  ];
+  return new Promise((resolve, reject) => {
+    execProcessFile(
+      "powershell.exe",
+      args,
+      { ...invocation.options, platform: "win32", ...(signal ? { signal } : {}) },
+      (cause) =>
+        cause
+          ? reject(
+              new ExternalMcpBridgeError(
+                `Could not make Windows runtime-state directory private: ${directoryPath}`,
+                { cause },
+              ),
+            )
+          : resolve(),
+    );
+  });
+}
+
 export function assertPrivateWindowsRuntimePathAsync(
   targetPath: string,
   kind: "file" | "directory",
