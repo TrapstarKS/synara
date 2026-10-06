@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.2] — 2026-10-05
+
+**Fixes the phone companion for Synara 1.0, so paired computers show as online again.**
+
+### Fixed
+
+- The mobile companion accepts the Synara 1.0 WebSocket protocol (revision 3) instead of reporting the computer as unavailable.
+- On Windows, the companion and the server now make their own data folders private when another group (such as the Codex Windows sandbox users) can read them. Previously the companion refused to start and the server withheld the credential the companion needs, so the PC showed as unavailable.
+- The official Codex smoke test retries its temporary-folder cleanup while Windows releases file handles.
+
 ## [1.0.1] — 2026-10-05
 
 **Fork release that merges the official Synara 1.0.0 into this fork while keeping the fork-only features.**
