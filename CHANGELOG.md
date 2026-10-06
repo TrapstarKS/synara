@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.3] — 2026-10-06
+
+**Moves Codex multi-account to the official provider instances, shows usage for every connected account and prices Claude in the profile.**
+
+### Changed
+
+- The fork's Codex profiles, account manager and bridge proxy setting are removed in favor of the official provider instances. Old profiles are dropped from settings; their chats stay visible and continue on the default Codex account, and images generated in them still preview. Login folders are left on disk.
+- The app rail shows one usage ring per connected account instead of one per provider.
+- The profile USD equivalent now includes Claude, using the per-turn cost reported by the Claude SDK (cache reads and writes included).
+- Profile pricing for GPT-6 adds GPT-6.1 Sol, cache-write rates, the 2.5x Fast multiplier and GPT-6 Astra long-context pricing.
+
 ## [1.0.2] — 2026-10-05
 
 **Fixes the phone companion for Synara 1.0, so paired computers show as online again.**
