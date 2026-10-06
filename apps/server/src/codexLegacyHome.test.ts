@@ -18,16 +18,12 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-function fixture(profileId?: string) {
+function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), "synara-codex-native-home-"));
   roots.push(root);
-  const homePath = profileId
-    ? path.join(root, "secrets", "codex-profiles", profileId)
-    : path.join(root, ".codex");
+  const homePath = path.join(root, ".codex");
   const runtime = path.join(root, ".synara");
-  const overlay = profileId
-    ? path.join(runtime, "codex-home-overlays", profileId)
-    : path.join(runtime, "codex-home-overlay");
+  const overlay = path.join(runtime, "codex-home-overlay");
   mkdirSync(homePath, { recursive: true });
   mkdirSync(overlay, { recursive: true });
   const configPath = path.join(homePath, "config.toml");
@@ -84,23 +80,6 @@ describe("native Codex home migration", () => {
     await migrateLegacyCodexHome(f.input);
     expect(readFileSync(f.configPath, "utf8")).toContain('model="new-native-model"');
     expect(readFileSync(f.configPath, "utf8")).not.toContain("mcp_servers");
-  });
-
-  it("migrates a migrated profile home's legacy overlay only", async () => {
-    const f = fixture("be54e3c8-c56b-4113-8257-a9090d97b936");
-    writeFileSync(f.configPath, 'cli_auth_credentials_store="file"\n');
-    writeFileSync(f.overlayConfigPath, '[mcp_servers.mine]\ncommand="my-profile-tool"\n');
-    const other = path.join(f.runtime, "codex-home-overlay");
-    mkdirSync(other);
-    writeFileSync(
-      path.join(other, "config.toml"),
-      '[mcp_servers.other]\ncommand="other-account"\n',
-    );
-    await migrateLegacyCodexHome(f.input);
-    expect(parse(readFileSync(f.configPath, "utf8")).mcp_servers).toEqual({
-      mine: { command: "my-profile-tool" },
-    });
-    expect(readdirSync(other)).toEqual(["config.toml"]);
   });
 
   it("retains source bytes and remains retryable after malformed legacy state", async () => {

@@ -3080,7 +3080,7 @@ describe("AgentGateway", () => {
   });
 
   it.effect("inherits the caller Codex instance for a new thread", () => {
-    const instanceId = "codex-profile-4ae646ed-62ad-4e45-965a-d11cd459a853";
+    const instanceId = "codex_personal";
     const { gatewayLayer, makeHarness } = makeHarnessLayer([
       makeThreadShell("thread-parent", {
         modelSelection: { provider: "codex", model: "gpt-5.5", instanceId },
@@ -3092,7 +3092,7 @@ describe("AgentGateway", () => {
         token: "token-parent",
         name: "synara_create_thread",
         args: {
-          requestId: "create-codex-profile-child",
+          requestId: "create-codex-instance-child",
           prompt: "use the parent instance",
           provider: "codex",
         },

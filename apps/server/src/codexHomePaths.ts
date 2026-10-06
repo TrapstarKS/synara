@@ -37,40 +37,12 @@ export function resolveSynaraCodexHomeOverlayPath(
   sourceHomePath: string,
   accountSegment?: string,
 ): string {
-  const overlayHome = path.join(
-    synaraCodexOverlayRoot(env, sourceHomePath),
-    SYNARA_CODEX_HOME_OVERLAY_DIR,
-  );
+  const runtimeHome = env.SYNARA_HOME?.trim();
+  const overlayRoot = runtimeHome || path.join(path.dirname(sourceHomePath), ".synara", "runtime");
+  const overlayHome = path.join(overlayRoot, SYNARA_CODEX_HOME_OVERLAY_DIR);
   return accountSegment
     ? path.join(overlayHome, SYNARA_CODEX_HOME_ACCOUNT_OVERLAYS_DIR, accountSegment)
     : overlayHome;
-}
-
-function synaraCodexOverlayRoot(env: NodeJS.ProcessEnv, sourceHomePath: string): string {
-  const runtimeHome = env.SYNARA_HOME?.trim();
-  return runtimeHome || path.join(path.dirname(sourceHomePath), ".synara", "runtime");
-}
-
-const LEGACY_CODEX_PROFILE_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Overlay used by earlier fork releases for a Synara-managed Codex profile.
- * Those profiles now run as provider instances whose home is
- * `<secrets>/codex-profiles/<uuid>`, so the profile id is derived from the home.
- */
-export function resolveLegacyCodexProfileOverlayPath(
-  env: NodeJS.ProcessEnv,
-  sourceHomePath: string,
-): string | undefined {
-  const profileId = path.basename(sourceHomePath);
-  if (
-    path.basename(path.dirname(sourceHomePath)) !== "codex-profiles" ||
-    !LEGACY_CODEX_PROFILE_ID_PATTERN.test(profileId)
-  ) {
-    return undefined;
-  }
-  return path.join(synaraCodexOverlayRoot(env, sourceHomePath), "codex-home-overlays", profileId);
 }
 
 export function resolveCodexHomeOverlayAccountSegment(
@@ -125,9 +97,7 @@ export function resolveCodexHomeAllowlistCandidates(
     ...(input.accountId ? { accountId: input.accountId } : {}),
     ...(shadow ? { shadowHomePath: shadow } : {}),
   });
-  const overlay =
-    resolveLegacyCodexProfileOverlayPath(env, source) ??
-    resolveSynaraCodexHomeOverlayPath(env, source, accountSegment);
+  const overlay = resolveSynaraCodexHomeOverlayPath(env, source, accountSegment);
   const legacyOverlay = resolveSynaraCodexHomeOverlayPath(env, source);
   const sourceResolved = path.resolve(source);
   const overlayResolved = path.resolve(overlay);

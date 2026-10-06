@@ -4,7 +4,6 @@
 
 import {
   CHATGPT_REASONING_EFFORT_OPTIONS,
-  LEGACY_CODEX_PROFILE_INSTANCE_PREFIX,
   GROK_REASONING_EFFORT_OPTIONS,
   ProviderInstanceId,
   ProviderKind,
@@ -566,15 +565,7 @@ export function normalizeModelSelection(
   if (typeof rawModel !== "string") {
     return null;
   }
-  const explicitInstanceId = normalizeProviderInstanceId(candidate?.instanceId);
-  // Drafts saved before fork Codex profiles became provider instances.
-  const instanceId =
-    provider === "codex" &&
-    (explicitInstanceId ?? "codex") === "codex" &&
-    typeof candidate?.profileId === "string" &&
-    candidate.profileId.length > 0
-      ? (`${LEGACY_CODEX_PROFILE_INSTANCE_PREFIX}${candidate.profileId}` as ProviderInstanceId)
-      : explicitInstanceId;
+  const instanceId = normalizeProviderInstanceId(candidate?.instanceId);
   const antigravityLegacyMatch =
     provider === "antigravity" ? rawModel.trim().match(/^(.*?)\s+\(([^()]+)\)$/u) : null;
   const antigravityLegacyEffort = antigravityLegacyMatch?.[2]?.trim().toLowerCase();

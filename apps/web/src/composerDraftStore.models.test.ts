@@ -26,7 +26,7 @@ describe("resolvePreferredComposerModelSelection", () => {
     ).toEqual(modelSelection("claudeAgent", "claude-fable-5-1[1m]", { autoCompactWindow: "200k" }));
   });
 
-  it("maps a removed Codex profile draft to its migrated provider instance", () => {
+  it("drops a removed Codex profile from saved drafts", () => {
     expect(
       normalizeModelSelection({
         provider: "codex",
@@ -36,7 +36,6 @@ describe("resolvePreferredComposerModelSelection", () => {
       }),
     ).toEqual({
       provider: "codex",
-      instanceId: "codex-profile-8fd3e58d-f8ee-4cd4-a20a-7a30709c128c",
       model: "gpt-5.6-sol",
       options: { reasoningEffort: "high" },
     });

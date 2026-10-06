@@ -95,11 +95,10 @@ describe("resolveAllowedLocalPreviewFile", () => {
     }
   });
 
-  it("allows generated images from a migrated Codex profile's legacy overlay", async () => {
+  it("allows generated images from a removed Codex profile's legacy overlay", async () => {
     const fakeRoot = path.join(process.cwd(), `.test-codex-profile-${process.pid}-${Date.now()}`);
     const synaraHome = path.join(fakeRoot, "synara");
     const profileId = "81520e8d-68ee-40ae-9df5-24b19b19a87b";
-    const profileHome = path.join(fakeRoot, "secrets", "codex-profiles", profileId);
     const imageDir = path.join(
       synaraHome,
       "codex-home-overlays",
@@ -117,10 +116,20 @@ describe("resolveAllowedLocalPreviewFile", () => {
       const result = await resolveAllowedLocalPreviewFile({
         requestedPath: imagePath,
         cwd: null,
-        codexHomePaths: [profileHome],
+        codexHomePaths: [],
       });
 
       assert.equal(result?.path, realpathSync(imagePath));
+      const outsideImages = path.join(synaraHome, "codex-home-overlays", profileId, "other.png");
+      writeFileSync(outsideImages, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      assert.equal(
+        await resolveAllowedLocalPreviewFile({
+          requestedPath: outsideImages,
+          cwd: null,
+          codexHomePaths: [],
+        }),
+        null,
+      );
     } finally {
       if (previousSynaraHome === undefined) {
         delete process.env.SYNARA_HOME;

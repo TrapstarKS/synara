@@ -553,12 +553,12 @@ describe("ServerSettingsService", () => {
     expect(settings.providerInstances.codex_work).toBeUndefined();
   });
 
-  it("migrates removed Codex profiles to provider instances with their private homes", async () => {
+  it("drops removed Codex profiles without converting them to provider instances", async () => {
     const profileId = "53b0de8c-bd84-4dba-84a6-42b2f508fe63";
     const result = await runWithSettings(
       Effect.gen(function* () {
         const service = yield* ServerSettingsService;
-        const { settingsPath, secretsDir } = yield* ServerConfig;
+        const { settingsPath } = yield* ServerConfig;
         const fs = yield* FileSystem.FileSystem;
         yield* fs.makeDirectory(dirname(settingsPath), { recursive: true });
         yield* fs.writeFileString(
@@ -584,21 +584,20 @@ describe("ServerSettingsService", () => {
         yield* service.start;
         const settings = yield* service.getSettings;
         const persisted = JSON.parse(yield* fs.readFileString(settingsPath));
-        return { settings, persisted, secretsDir };
+        return { settings, persisted };
       }),
     );
 
-    expect(result.settings.providerInstances[`codex-profile-${profileId}`]).toEqual({
-      driver: "codex",
-      displayName: "Work",
-      enabled: true,
-      config: { homePath: path.join(result.secretsDir, "codex-profiles", profileId) },
-    });
-    expect(Object.keys(result.settings.providerInstances)).not.toContain("codex-profile-../escape");
+    expect(
+      Object.keys(result.settings.providerInstances).filter((id) =>
+        id.startsWith("codex-profile-"),
+      ),
+    ).toEqual([]);
     expect(result.settings.textGenerationModelSelection).toMatchObject({
       provider: "codex",
-      instanceId: `codex-profile-${profileId}`,
+      instanceId: "codex",
     });
+    expect(result.persisted.settings.textGenerationModelSelection).not.toHaveProperty("profileId");
     expect(result.persisted.migrationVersion).toBe(5);
     expect(result.persisted.settings.providers?.codex).not.toHaveProperty("profiles");
     expect(result.persisted.settings.providers?.codex).not.toHaveProperty("proxyBinaryPath");

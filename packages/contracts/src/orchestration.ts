@@ -354,15 +354,13 @@ const ModelSelectionJsonValue: Schema.Codec<unknown, unknown> = Schema.Json.pipe
   ),
 );
 
-/** Provider instance id prefix for Codex profiles from earlier fork releases. */
-export const LEGACY_CODEX_PROFILE_INSTANCE_PREFIX = "codex-profile-";
-
 const ModelSelectionSource = Schema.Struct({
   provider: Schema.optional(ModelSelectionJsonValue),
   instanceId: Schema.optional(ModelSelectionJsonValue),
   model: Schema.optional(ModelSelectionJsonValue),
   options: Schema.optional(ModelSelectionJsonValue),
   supportsAutoMode: Schema.optional(ModelSelectionJsonValue),
+  // Removed fork Codex profiles. Accepted and ignored: those threads use their instance.
   profileId: Schema.optional(ModelSelectionJsonValue),
 });
 
@@ -377,19 +375,10 @@ export const ModelSelection: Schema.Codec<typeof ModelSelectionByProvider.Type, 
             typeof raw.model === "string" && raw.model.trim().length > 0
               ? raw.model
               : defaultModelForProvider(provider);
-          let instanceId =
+          const instanceId =
             typeof raw.instanceId === "string" && raw.instanceId.trim().length > 0
               ? raw.instanceId.trim()
               : provider;
-          // Removed fork Codex profiles were migrated to provider instances.
-          if (
-            provider === "codex" &&
-            instanceId === "codex" &&
-            typeof raw.profileId === "string" &&
-            raw.profileId.length > 0
-          ) {
-            instanceId = `${LEGACY_CODEX_PROFILE_INSTANCE_PREFIX}${raw.profileId}`;
-          }
           const base: Record<string, unknown> = {
             provider,
             instanceId,

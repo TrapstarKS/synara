@@ -1694,8 +1694,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       } as const;
       const expectedThreadSelection = {
         provider: "codex",
-        // Removed fork Codex profiles map onto their migrated provider instance.
-        instanceId: "codex-profile-4ae646ed-62ad-4e45-965a-d11cd459a853",
+        // Removed fork Codex profiles fall back to the default Codex instance.
+        instanceId: "codex",
         model: "gpt-5.5",
         options: { reasoningEffort: "medium" },
       } as const;

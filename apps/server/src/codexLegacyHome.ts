@@ -7,7 +7,6 @@ import { Effect } from "effect";
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import {
   resolveBaseCodexHomePath,
-  resolveLegacyCodexProfileOverlayPath,
   resolveSynaraCodexHomeOverlayPath,
   type CodexHomePathsInput,
 } from "./codexHomePaths.ts";
@@ -24,9 +23,7 @@ async function readOptional(filePath: string): Promise<string | undefined> {
 export async function migrateLegacyCodexHome(input: CodexHomePathsInput = {}): Promise<void> {
   const env = input.env ?? process.env;
   const source = path.resolve(resolveBaseCodexHomePath(env, input.homePath));
-  const overlay =
-    resolveLegacyCodexProfileOverlayPath(env, source) ??
-    resolveSynaraCodexHomeOverlayPath(env, source);
+  const overlay = resolveSynaraCodexHomeOverlayPath(env, source);
   if (source === path.resolve(overlay)) return;
   await serializeCodexConfigAccess(source, async () => {
     // Scope the marker to this exact destination; explicitly configured homes

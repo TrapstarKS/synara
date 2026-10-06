@@ -10,7 +10,6 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
-  LEGACY_CODEX_PROFILE_INSTANCE_PREFIX,
   type ModelSelection,
   type GitTextGenerationProvider,
   type ProviderInstanceConfig,
@@ -45,7 +44,6 @@ import {
   Stream,
 } from "effect";
 import * as Semaphore from "effect/Semaphore";
-import nodePath from "node:path";
 import { writeFileStringAtomically } from "./atomicWrite";
 import { isServerBetaFeatureEnabled } from "./betaFeatureGate";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore";
@@ -619,10 +617,9 @@ function migrateRemovedKiloSettings(settings: unknown): unknown {
   return migrated;
 }
 
-// Earlier fork releases kept extra Codex logins as "profiles" with private homes
-// under secrets/codex-profiles. Keep those logins as ordinary Codex provider
-// instances; chats that still name a profile resolve to the same instance id.
-function migrateRemovedCodexProfiles(settings: unknown, secretsDir: string): unknown {
+// Earlier fork releases kept extra Codex logins as "profiles". They are
+// dropped (not converted); their login homes are left on disk untouched.
+function migrateRemovedCodexProfiles(settings: unknown): unknown {
   if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
     return settings;
   }
@@ -631,51 +628,24 @@ function migrateRemovedCodexProfiles(settings: unknown, secretsDir: string): unk
   const codex = providers?.codex;
   if (codex === null || typeof codex !== "object" || Array.isArray(codex)) return settings;
   const {
-    profiles,
+    profiles: _profiles,
     defaultProfileId: _defaultProfileId,
     proxyBinaryPath: _proxyBinaryPath,
     ...codexSettings
   } = codex as Record<string, unknown>;
-  const instances =
-    record.providerInstances !== null &&
-    typeof record.providerInstances === "object" &&
-    !Array.isArray(record.providerInstances)
-      ? { ...(record.providerInstances as Record<string, unknown>) }
-      : {};
-  for (const profile of Array.isArray(profiles) ? profiles : []) {
-    const { id, name } = (profile ?? {}) as { id?: unknown; name?: unknown };
-    if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id)) continue;
-    const instanceId = `${LEGACY_CODEX_PROFILE_INSTANCE_PREFIX}${id}`;
-    if (instanceId in instances) continue;
-    instances[instanceId] = {
-      driver: "codex",
-      displayName: typeof name === "string" && name.trim() ? name.trim() : "Codex",
-      enabled: true,
-      config: { homePath: nodePath.join(secretsDir, "codex-profiles", id) },
-    };
-  }
   let selection = record.textGenerationModelSelection;
   if (selection !== null && typeof selection === "object" && !Array.isArray(selection)) {
-    const { profileId, ...rest } = selection as Record<string, unknown>;
-    selection =
-      rest.provider === "codex" &&
-      typeof profileId === "string" &&
-      (rest.instanceId ?? "codex") === "codex"
-        ? {
-            ...rest,
-            instanceId: `${LEGACY_CODEX_PROFILE_INSTANCE_PREFIX}${profileId}`,
-          }
-        : rest;
+    const { profileId: _profileId, ...rest } = selection as Record<string, unknown>;
+    selection = rest;
   }
   return {
     ...record,
     ...(selection !== undefined ? { textGenerationModelSelection: selection } : {}),
     providers: { ...providers, codex: codexSettings },
-    providerInstances: instances,
   };
 }
 
-function decodeSettingsFromJson(settingsPath: string, raw: string, secretsDir: string) {
+function decodeSettingsFromJson(settingsPath: string, raw: string) {
   try {
     const parsed = JSON.parse(raw) as unknown;
     const envelope =
@@ -687,10 +657,7 @@ function decodeSettingsFromJson(settingsPath: string, raw: string, secretsDir: s
           })
         : null;
     const decoded = Schema.decodeUnknownExit(ServerSettings)(
-      migrateRemovedCodexProfiles(
-        migrateRemovedKiloSettings(envelope?.settings ?? parsed),
-        secretsDir,
-      ),
+      migrateRemovedCodexProfiles(migrateRemovedKiloSettings(envelope?.settings ?? parsed)),
     );
     if (decoded._tag === "Failure") {
       return { _tag: "Failure" as const, error: Cause.pretty(decoded.cause) };
@@ -719,7 +686,7 @@ function decodeSettingsFromJson(settingsPath: string, raw: string, secretsDir: s
 }
 
 const makeServerSettings = Effect.gen(function* () {
-  const { settingsPath, secretsDir } = yield* ServerConfig;
+  const { settingsPath } = yield* ServerConfig;
   const providerCredentials = yield* ProviderCredentials;
   const secretStore = yield* ServerSecretStore;
   const fs = yield* FileSystem.FileSystem;
@@ -1154,7 +1121,7 @@ const makeServerSettings = Effect.gen(function* () {
             }),
         ),
       );
-      const decoded = decodeSettingsFromJson(settingsPath, raw, secretsDir);
+      const decoded = decodeSettingsFromJson(settingsPath, raw);
       if (decoded._tag === "Failure") {
         const quarantinePath = `${settingsPath}.invalid-${Date.now()}`;
         yield* fs.rename(settingsPath, quarantinePath).pipe(Effect.catch(() => Effect.void));

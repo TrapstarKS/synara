@@ -237,8 +237,22 @@ export async function resolveAllowedLocalPreviewFile(input: {
   ).then((roots) => roots.filter((root): root is string => root !== null));
   const allowed =
     generatedImagesRoots.some((root) => isPathInside(realFilePath, root)) ||
-    tempRoots.some((root) => isPathInside(realFilePath, root));
+    tempRoots.some((root) => isPathInside(realFilePath, root)) ||
+    (await isLegacyCodexProfileImage(realFilePath));
   return allowed ? resolved : null;
+}
+
+const LEGACY_CODEX_PROFILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Removed fork Codex profiles wrote images to
+// $SYNARA_HOME/codex-home-overlays/<uuid>/generated_images; old chats still link them.
+async function isLegacyCodexProfileImage(realFilePath: string): Promise<boolean> {
+  const synaraHome = process.env.SYNARA_HOME?.trim();
+  if (!synaraHome) return false;
+  const overlays = await realpathOrNull(path.join(synaraHome, "codex-home-overlays"));
+  if (!overlays || !isPathInside(realFilePath, overlays)) return false;
+  const [profileId, imagesDir] = path.relative(overlays, realFilePath).split(path.sep);
+  return LEGACY_CODEX_PROFILE_ID.test(profileId ?? "") && imagesDir === "generated_images";
 }
 
 export async function createLocalPreviewGrant(input: {

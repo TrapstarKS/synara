@@ -216,7 +216,7 @@ it.effect("preserves provider instance ids when decoding model selections", () =
   }),
 );
 
-it.effect("maps removed fork Codex profiles to their migrated provider instance", () =>
+it.effect("drops removed fork Codex profiles onto the default Codex instance", () =>
   Effect.gen(function* () {
     const profileId = "4ae646ed-62ad-4e45-965a-d11cd459a853";
     const legacy = yield* decodeModelSelection({ provider: "codex", model: "gpt-5.5", profileId });
@@ -229,7 +229,7 @@ it.effect("maps removed fork Codex profiles to their migrated provider instance"
 
     assert.deepStrictEqual(legacy, {
       provider: "codex",
-      instanceId: `codex-profile-${profileId}`,
+      instanceId: "codex",
       model: "gpt-5.5",
     });
     assert.deepStrictEqual(explicit, {
