@@ -8,7 +8,6 @@ import path from "node:path";
 
 import {
   CODEX_GENERATED_IMAGE_ARTIFACT_KIND,
-  type CodexProfileId,
   type CodexGeneratedImageArtifact,
   type ProviderRuntimeEvent,
   type ProviderInstanceId,
@@ -97,7 +96,6 @@ const CODEX_HOME_CONTEXT_ENV_KEYS = ["CODEX_HOME", "SYNARA_HOME"] as const;
 
 function codexHomePathsInputFromContext(
   codexHome?: CodexGeneratedImageHomeCandidate,
-  profileId?: CodexProfileId,
 ): CodexHomePathsInput {
   const context: CodexGeneratedImageHomeContext =
     typeof codexHome === "string" ? { homePath: codexHome } : (codexHome ?? {});
@@ -108,7 +106,6 @@ function codexHomePathsInputFromContext(
     // The child runs with the instance environment layered over the server's,
     // so the write-home decision must see the same merged view.
     ...(context.environment ? { env: { ...process.env, ...context.environment } } : {}),
-    ...(profileId ? { profileId } : {}),
   };
 }
 
@@ -132,19 +129,15 @@ function codexHomeCandidateKey(candidate: CodexGeneratedImageHomeCandidate): str
  * writes images under for the current process env: the native Codex home or
  * the explicitly selected account home.
  */
-export function resolveCodexHomePath(
-  codexHome?: string | CodexGeneratedImageHomeContext,
-  profileId?: CodexProfileId,
-): string {
-  return resolveActiveCodexHomeWritePath(codexHomePathsInputFromContext(codexHome, profileId));
+export function resolveCodexHomePath(codexHome?: string | CodexGeneratedImageHomeContext): string {
+  return resolveActiveCodexHomeWritePath(codexHomePathsInputFromContext(codexHome));
 }
 
 /** The single generated-images directory we predict against (overlay-aware). */
 export function resolveCodexGeneratedImagesRoot(
   codexHome?: string | CodexGeneratedImageHomeContext,
-  profileId?: CodexProfileId,
 ): string {
-  return path.join(resolveCodexHomePath(codexHome, profileId), "generated_images");
+  return path.join(resolveCodexHomePath(codexHome), "generated_images");
 }
 
 /**
@@ -197,18 +190,16 @@ export function enabledCodexProviderInstanceIdsFromSettings(
  */
 export function resolveCodexGeneratedImagesRoots(
   homePath?: CodexGeneratedImageHomeCandidate,
-  profileId?: CodexProfileId,
 ): readonly string[] {
-  return resolveCodexGeneratedImageHomes(homePath, profileId).map((home) =>
+  return resolveCodexGeneratedImageHomes(homePath).map((home) =>
     path.join(home, "generated_images"),
   );
 }
 
 export function resolveCodexGeneratedImageHomes(
   homePath?: CodexGeneratedImageHomeCandidate,
-  profileId?: CodexProfileId,
 ): readonly string[] {
-  return resolveCodexHomeAllowlistCandidates(codexHomePathsInputFromContext(homePath, profileId));
+  return resolveCodexHomeAllowlistCandidates(codexHomePathsInputFromContext(homePath));
 }
 
 export function firstStringValue(

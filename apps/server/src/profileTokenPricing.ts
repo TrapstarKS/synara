@@ -2,7 +2,7 @@
 // Purpose: Convert recorded Codex token usage into a current-rate USD equivalent.
 // Rates are public per-1M-token prices, not the user's actual subscription bill.
 
-export const PROFILE_TOKEN_PRICING_AS_OF = "2026-09-22";
+export const PROFILE_TOKEN_PRICING_AS_OF = "2026-10-05";
 
 const TOKENS_PER_MILLION = 1_000_000;
 const LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
@@ -10,6 +10,8 @@ const LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
 interface TokenRates {
   readonly input: number;
   readonly cachedInput: number;
+  // Only where the rate card charges cache writes; otherwise they bill as nothing.
+  readonly cacheWrite?: number;
   readonly output: number;
   readonly fastMultiplier?: number;
   readonly longContext?: true;
@@ -34,14 +36,53 @@ export interface ProfileTokenCostEstimate {
 
 // ChatGPT Work / Codex USD rates where published. Older Codex models retain
 // their current API rates so existing local history can still be repriced.
-// Source checked 2026-09-22:
+// Sources checked 2026-10-05 (GPT-6 Fast is 2.5x in Work and Codex):
 // https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing
+// https://developers.openai.com/api/docs/pricing
 const CODEX_TOKEN_RATES: ReadonlyArray<readonly [string, TokenRates]> = [
-  ["gpt-6-astra", { input: 10, cachedInput: 1, output: 50, fastMultiplier: 2.5 }],
-  ["gpt-6-sol", { input: 2, cachedInput: 0.2, output: 10, fastMultiplier: 2, longContext: true }],
+  [
+    "gpt-6-astra",
+    {
+      input: 10,
+      cachedInput: 1,
+      cacheWrite: 12.5,
+      output: 50,
+      fastMultiplier: 2.5,
+      longContext: true,
+    },
+  ],
+  [
+    "gpt-6.1-sol",
+    {
+      input: 2,
+      cachedInput: 0.1,
+      cacheWrite: 2.5,
+      output: 10,
+      fastMultiplier: 2.5,
+      longContext: true,
+    },
+  ],
+  [
+    "gpt-6-sol",
+    {
+      input: 2,
+      cachedInput: 0.2,
+      cacheWrite: 2.5,
+      output: 10,
+      fastMultiplier: 2.5,
+      longContext: true,
+    },
+  ],
   [
     "gpt-6-luna",
-    { input: 0.1, cachedInput: 0.01, output: 0.5, fastMultiplier: 2, longContext: true },
+    {
+      input: 0.1,
+      cachedInput: 0.01,
+      cacheWrite: 0.125,
+      output: 0.5,
+      fastMultiplier: 2.5,
+      longContext: true,
+    },
   ],
   [
     "gpt-5.6-sol",
@@ -124,7 +165,7 @@ export function estimateProfileTokenUsageUsd(usage: ProfileTokenPricingUsage): n
 
   // Codex reports cached input as a subset of input. Clamp malformed telemetry
   // instead of allowing it to create negative uncached usage. Cache writes are
-  // also included in input but carry no charge on the current Codex rate card.
+  // also included in input; only models with a published cache-write rate bill them.
   // Reasoning output is already a subset of output and is intentionally not added.
   const cached = Math.min(cachedInputTokens, inputTokens);
   const cacheWrites = Math.min(cacheWriteInputTokens, inputTokens - cached);
@@ -140,6 +181,7 @@ export function estimateProfileTokenUsageUsd(usage: ProfileTokenPricingUsage): n
   return (
     ((uncached * rates.input * inputMultiplier +
       cached * rates.cachedInput * inputMultiplier +
+      cacheWrites * (rates.cacheWrite ?? 0) * inputMultiplier +
       outputTokens * rates.output * outputMultiplier) /
       TOKENS_PER_MILLION) *
     fastMultiplier

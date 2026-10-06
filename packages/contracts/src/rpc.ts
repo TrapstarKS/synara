@@ -329,11 +329,6 @@ import {
 } from "./project";
 import {
   ServerConfig,
-  ServerCodexAccountBridgeInput,
-  ServerCodexAccountInput,
-  ServerCodexAccountLoginInput,
-  ServerCodexAccountState,
-  ServerListCodexAccountStatesResult,
   ServerConfigStreamEvent,
   ServerDiagnosticsResult,
   ServerReadThreadDiagnosticsInput,
@@ -1467,27 +1462,6 @@ export const WsServerListProviderUsageRpc = Rpc.make(WS_METHODS.serverListProvid
   error: WsRpcError,
 });
 
-export const WsServerListCodexAccountStatesRpc = Rpc.make(WS_METHODS.serverListCodexAccountStates, {
-  payload: Schema.Struct({}),
-  success: ServerListCodexAccountStatesResult,
-  error: WsRpcError,
-});
-
-export const WsServerStartCodexAccountLoginRpc = Rpc.make(WS_METHODS.serverStartCodexAccountLogin, {
-  payload: ServerCodexAccountLoginInput,
-  success: ServerCodexAccountState,
-  error: WsRpcError,
-});
-
-export const WsServerCancelCodexAccountLoginRpc = Rpc.make(
-  WS_METHODS.serverCancelCodexAccountLogin,
-  {
-    payload: ServerCodexAccountInput,
-    success: ServerCodexAccountState,
-    error: WsRpcError,
-  },
-);
-
 export const WsServerConsumeCodexResetCreditRpc = Rpc.make(
   WS_METHODS.serverConsumeCodexResetCredit,
   {
@@ -1496,18 +1470,6 @@ export const WsServerConsumeCodexResetCreditRpc = Rpc.make(
     error: WsRpcError,
   },
 );
-
-export const WsServerLogoutCodexAccountRpc = Rpc.make(WS_METHODS.serverLogoutCodexAccount, {
-  payload: ServerCodexAccountLoginInput,
-  success: ServerCodexAccountState,
-  error: WsRpcError,
-});
-
-export const WsServerSetCodexAccountBridgeRpc = Rpc.make(WS_METHODS.serverSetCodexAccountBridge, {
-  payload: ServerCodexAccountBridgeInput,
-  success: ServerCodexAccountState,
-  error: WsRpcError,
-});
 
 export const WsStatsGetProfileStatsRpc = Rpc.make(WS_METHODS.statsGetProfileStats, {
   payload: StatsGetProfileStatsInput,
@@ -2208,11 +2170,6 @@ const WsServerProviderFeatureRpcGroup = RpcGroup.make(
   WsServerStopLocalServerRpc,
   WsServerGetProviderUsageSnapshotRpc,
   WsServerListProviderUsageRpc,
-  WsServerListCodexAccountStatesRpc,
-  WsServerStartCodexAccountLoginRpc,
-  WsServerCancelCodexAccountLoginRpc,
-  WsServerLogoutCodexAccountRpc,
-  WsServerSetCodexAccountBridgeRpc,
   WsServerConsumeCodexResetCreditRpc,
   WsStatsGetProfileStatsRpc,
   WsStatsGetProfileTokenStatsRpc,

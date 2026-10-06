@@ -85,7 +85,6 @@ function ProviderUsageCard({
   const usageSummary = useProviderUsageSummary({
     provider,
     instanceId: snapshot.instanceId ?? provider,
-    codexProfileId: snapshot.profileId ?? null,
     providerSnapshot: snapshot,
   });
   const meterRows = deriveProviderUsageDisplayRows(usageSummary.rateLimits);
@@ -316,15 +315,14 @@ export function ProviderUsageSettingsPanel() {
             {cards.map((snapshot) => {
               const instanceId = snapshot.instanceId ?? snapshot.provider;
               const instance = providerInstances.get(instanceId);
-              const accountLabel = snapshot.profileName
-                ? snapshot.profileName
-                : instanceId !== snapshot.provider
+              const accountLabel =
+                instanceId !== snapshot.provider
                   ? (instance?.displayName ?? instanceId)
                   : instance?.raw.displayName?.trim() ||
                     (snapshot.instanceId ? "Default account" : null);
               return (
                 <ProviderUsageCard
-                  key={`${instanceId}:${snapshot.profileId ?? "default"}`}
+                  key={instanceId}
                   snapshot={snapshot}
                   accountLabel={accountLabel}
                 />

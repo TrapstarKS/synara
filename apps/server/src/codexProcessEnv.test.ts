@@ -11,7 +11,6 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexProfileId } from "@synara/contracts";
 import {
   buildCodexProcessEnv,
   disableCodexConfigSections,
@@ -64,34 +63,6 @@ describe("buildCodexProcessEnv", () => {
     expect(env.CODEX_HOME).toBe(selected);
     expect(env.CODEX_SQLITE_HOME).toBe("explicit-sqlite");
     expect(existsSync(selected)).toBe(false);
-  });
-
-  it("keeps accounts in their explicitly selected private homes without inheriting a global API key", async () => {
-    const f = fixture();
-    const profiles = [
-      "be54e3c8-c56b-4113-8257-a9090d97b936",
-      "7cc2e449-3a05-4a0e-9556-c8cc959e180e",
-    ];
-    const envs = await Promise.all(
-      profiles.map((id) =>
-        buildCodexProcessEnv({
-          env: { ...f.env, OPENAI_API_KEY: "must-not-leak" },
-          homePath: path.join(f.root, id),
-          profileId: CodexProfileId.makeUnsafe(id),
-          platform: "win32",
-        }),
-      ),
-    );
-    for (let index = 0; index < envs.length; index++) {
-      const env = envs[index]!;
-      expect(env.CODEX_HOME).toBe(path.join(f.root, profiles[index]!));
-      expect(env.OPENAI_API_KEY).toBeUndefined();
-      if (process.platform !== "win32") {
-        expect(statSync(env.CODEX_HOME!).mode & 0o777).toBe(0o700);
-        expect(statSync(path.join(env.CODEX_HOME!, "config.toml")).mode & 0o777).toBe(0o600);
-      }
-    }
-    expect(envs[0]!.CODEX_HOME).not.toBe(envs[1]!.CODEX_HOME);
   });
 
   it("uses login-shell PATH for a custom provider without prioritizing the retired fork", async () => {

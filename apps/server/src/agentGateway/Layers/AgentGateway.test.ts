@@ -17,7 +17,6 @@ import type {
 } from "@synara/contracts";
 import {
   AutomationId,
-  CodexProfileId,
   CommandId,
   DEFAULT_AUTOMATION_STOP_CONFIDENCE_THRESHOLD,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -3080,11 +3079,11 @@ describe("AgentGateway", () => {
     }).pipe(Effect.provide(gatewayLayer));
   });
 
-  it.effect("inherits the caller Codex profile for a new thread", () => {
-    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+  it.effect("inherits the caller Codex instance for a new thread", () => {
+    const instanceId = "codex-profile-4ae646ed-62ad-4e45-965a-d11cd459a853";
     const { gatewayLayer, makeHarness } = makeHarnessLayer([
       makeThreadShell("thread-parent", {
-        modelSelection: { provider: "codex", model: "gpt-5.5", profileId },
+        modelSelection: { provider: "codex", model: "gpt-5.5", instanceId },
       }),
     ]);
     return Effect.gen(function* () {
@@ -3094,7 +3093,7 @@ describe("AgentGateway", () => {
         name: "synara_create_thread",
         args: {
           requestId: "create-codex-profile-child",
-          prompt: "use the parent profile",
+          prompt: "use the parent instance",
           provider: "codex",
         },
       });
@@ -3105,7 +3104,7 @@ describe("AgentGateway", () => {
         if (create.modelSelection.provider !== "codex") {
           throw new Error("Expected the child thread to use Codex.");
         }
-        assert.equal(create.modelSelection.profileId, profileId);
+        assert.equal(create.modelSelection.instanceId, instanceId);
       }
     }).pipe(Effect.provide(gatewayLayer));
   });

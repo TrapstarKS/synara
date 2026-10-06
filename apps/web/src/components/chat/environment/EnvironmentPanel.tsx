@@ -10,7 +10,6 @@
 
 import { SidePanelOverlay } from "~/components/chat/SidePanelOverlay";
 import type {
-  CodexProfileId,
   AutomationDefinition,
   EditorId,
   MessageId,
@@ -113,7 +112,6 @@ export interface EnvironmentPanelProps {
   activeThreadId: ThreadId | null;
   /** Active provider for the usage row (same chip the header shows). */
   activeProvider: ProviderKind;
-  activeCodexProfileId?: CodexProfileId;
   /**
    * Whether the active thread is a group chat. Group chats show the Output section:
    * the Outbox files THIS chat produced, so its output stays attached to the chat.
@@ -229,7 +227,6 @@ export function EnvironmentPanel({
   availableEditors,
   activeThreadId,
   activeProvider,
-  activeCodexProfileId,
   isGroupChat,
   groupFolderPath: groupFolderPathProp,
   showGitActions,
@@ -467,12 +464,7 @@ export function EnvironmentPanel({
         actually shows, so toggling any section via the header gear menu never leaves a doubled or
         dangling rule. Visibility is gated on the per-section AppSettings flags.
       */}
-      {settings.showEnvironmentUsage ? (
-        <EnvironmentUsageSection
-          provider={activeProvider}
-          {...(activeCodexProfileId ? { codexProfileId: activeCodexProfileId } : {})}
-        />
-      ) : null}
+      {settings.showEnvironmentUsage ? <EnvironmentUsageSection provider={activeProvider} /> : null}
 
       {settings.showEnvironmentRepository && githubRepository && onOpenGithubRepository ? (
         <EnvironmentLabeledSection label="Repository">

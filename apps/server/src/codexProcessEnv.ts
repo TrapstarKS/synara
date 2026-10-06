@@ -22,7 +22,6 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
-import type { CodexProfileId } from "@synara/contracts";
 
 import { readActiveCodexProviderEnvKey } from "@synara/shared/codexConfig";
 import { removeRetiredCodexEnvironment } from "@synara/shared/codexExecutable";
@@ -37,7 +36,6 @@ import {
   resolveCodexHomeOverlayAccountSegment,
   resolveSynaraCodexHomeOverlayPath,
 } from "./codexHomePaths.ts";
-import { ensureManagedCodexHome } from "./codexProfiles.ts";
 import { codexPathsReferenceSameLocation, resolveCodexPathIdentity } from "./codexPathIdentity.ts";
 import {
   buildProviderChildEnvironment,
@@ -173,8 +171,6 @@ export interface CodexProcessEnvInput {
   readonly isolateProviderCredentials?: boolean;
   readonly explicitProviderEnvironment?: Readonly<Record<string, string>>;
   readonly homePath?: string;
-  /** Synara-managed Codex profile; its homePath is a private managed home. */
-  readonly profileId?: CodexProfileId;
   readonly shadowHomePath?: string;
   readonly accountId?: string;
   readonly platform?: NodeJS.Platform;
@@ -2692,10 +2688,6 @@ export async function buildCodexProcessEnv(
   input: CodexProcessEnvInput = {},
 ): Promise<NodeJS.ProcessEnv> {
   const baseEnv = { ...(input.env ?? process.env) };
-  if (input.profileId && input.homePath) {
-    await ensureManagedCodexHome(input.homePath);
-    delete baseEnv.OPENAI_API_KEY;
-  }
   // Interactive sessions run against the native home: the account home when one
   // is selected, otherwise the configured CODEX_HOME (normally ~/.codex).
   const homePath = path.resolve(

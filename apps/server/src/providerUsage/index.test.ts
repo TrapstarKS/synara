@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CodexProfileId, type ServerProviderUsageSnapshot } from "@synara/contracts";
+import type { ServerProviderUsageSnapshot } from "@synara/contracts";
 
 import { ServerConfig } from "../config";
 import { ServerSettingsService } from "../serverSettings";
@@ -256,24 +256,27 @@ describe("collectProviderUsageSnapshots caching", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("returns independently cached usage for every managed Codex account", async () => {
+  it("returns independently cached usage for every enabled Codex instance", async () => {
     fetchMock.mockImplementation(async (ctx) => okSnapshot(NOW_MS, ctx.env.CODEX_HOME ?? "legacy"));
-    const first = CodexProfileId.makeUnsafe("e688a620-189c-433a-87f4-15802135c9d4");
-    const second = CodexProfileId.makeUnsafe("94710356-b19f-4a1a-8feb-dc15add772d0");
     const configLayer = ServerConfig.layerTest(process.cwd(), {
-      prefix: "synara-usage-profiles-",
+      prefix: "synara-usage-instances-",
     }).pipe(Layer.provide(NodeServices.layer));
     const layer = Layer.mergeAll(
       NodeServices.layer,
       configLayer,
       ServerSettingsService.layerTest({
-        providers: {
-          codex: {
-            profiles: [
-              { id: first, name: "Personal" },
-              { id: second, name: "Work" },
-            ],
-            defaultProfileId: first,
+        providerInstances: {
+          codex_personal: {
+            driver: "codex",
+            displayName: "Personal",
+            enabled: true,
+            config: { homePath: "/tmp/synara-usage-personal" },
+          },
+          codex_work: {
+            driver: "codex",
+            displayName: "Work",
+            enabled: true,
+            config: { homePath: "/tmp/synara-usage-work" },
           },
         },
       }),
@@ -287,14 +290,12 @@ describe("collectProviderUsageSnapshots caching", () => {
       }).pipe(Effect.provide(layer), Effect.scoped),
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(result.cached).toEqual(result.initial);
-    expect(result.initial.map((snapshot) => snapshot.profileName ?? "Current account")).toEqual([
-      "Current account",
-      "Personal",
-      "Work",
+    expect(result.initial.map((snapshot) => snapshot.instanceId)).toEqual([
+      "codex",
+      "codex_personal",
+      "codex_work",
     ]);
-    expect(fetchMock.mock.calls.filter(([ctx]) => ctx.codexManagedProfile)).toHaveLength(2);
   });
 });
 

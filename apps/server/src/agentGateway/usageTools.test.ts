@@ -82,16 +82,16 @@ describe("makeAgentGatewayUsageTools", () => {
     expect(resultJson(result).usage).toEqual(usage);
   });
 
-  it("forwards the caller's selected Codex profile instead of guessing", async () => {
+  it("forwards the caller's Codex provider instance instead of guessing", async () => {
     let requestedProfile: string | undefined;
     const [tool] = makeAgentGatewayUsageTools({
-      loadProviderUsage: (_provider, profileId) => {
-        requestedProfile = profileId;
+      loadProviderUsage: (_provider, instanceId) => {
+        requestedProfile = instanceId;
         return Effect.succeed([usage]);
       },
     });
 
-    await Effect.runPromise(tool!.handler({}, { ...context, callerProfileId: "codex-profile-b" }));
+    await Effect.runPromise(tool!.handler({}, { ...context, callerInstanceId: "codex-profile-b" }));
 
     expect(requestedProfile).toBe("codex-profile-b");
   });

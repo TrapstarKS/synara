@@ -1,7 +1,6 @@
 import {
   ApprovalRequestId,
   CheckpointRef,
-  CodexProfileId,
   CommandId,
   EventId,
   MessageId,
@@ -1695,9 +1694,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       } as const;
       const expectedThreadSelection = {
         provider: "codex",
-        instanceId: "codex",
+        // Removed fork Codex profiles map onto their migrated provider instance.
+        instanceId: "codex-profile-4ae646ed-62ad-4e45-965a-d11cd459a853",
         model: "gpt-5.5",
-        profileId: CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853"),
         options: { reasoningEffort: "medium" },
       } as const;
 

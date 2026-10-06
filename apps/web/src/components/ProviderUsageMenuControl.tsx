@@ -3,7 +3,6 @@
 
 import {
   PROVIDER_DISPLAY_NAMES,
-  type CodexProfileId,
   type ProviderInstanceId,
   type ProviderKind,
   type ServerCodexResetCredits,
@@ -91,7 +90,6 @@ export function useProviderUsageMenuModel(
   input: {
     instanceId?: ProviderInstanceId | undefined;
     providerSnapshot?: ServerGetProviderUsageSnapshotResult | undefined;
-    codexProfileId?: CodexProfileId | null | undefined;
   } = {},
 ): ProviderUsageMenuModel {
   const { settings } = useAppSettings();
@@ -101,7 +99,6 @@ export function useProviderUsageMenuModel(
     instanceId: input.instanceId,
     threads,
     codexHomePath: settings.codexHomePath || null,
-    ...(input.codexProfileId !== undefined ? { codexProfileId: input.codexProfileId } : {}),
     providerSnapshot: input.providerSnapshot,
     fetchOpenUsageData: false,
   });
@@ -149,14 +146,8 @@ export function ProviderUsageMenuPopup({
   );
 }
 
-export function ProviderUsageMenuControl({
-  provider,
-  codexProfileId,
-}: {
-  provider: ProviderKind;
-  codexProfileId?: CodexProfileId | undefined;
-}) {
-  const model = useProviderUsageMenuModel(provider, { codexProfileId });
+export function ProviderUsageMenuControl({ provider }: { provider: ProviderKind }) {
+  const model = useProviderUsageMenuModel(provider);
 
   if (!model.primaryRow) {
     return null;

@@ -25,10 +25,6 @@ export interface ProviderUsageContext {
   readonly claudeBinaryPath?: string;
   /** Codex CLI binary (settings.providers.codex.binaryPath); defaults to "codex". */
   readonly codexBinaryPath?: string;
-  /** Stable cache scope when one provider has multiple configured accounts. */
-  readonly scopeKey?: string;
-  /** Prevent managed Codex profiles from falling through to global files/keychain. */
-  readonly codexManagedProfile?: boolean;
   /** Stable account route; omitted by legacy provider-only callers. */
   readonly instanceId?: ProviderInstanceId;
   /** Explicit account boundary: credential readers must not fall back to ambient accounts. */

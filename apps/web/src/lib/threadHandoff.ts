@@ -4,7 +4,6 @@
 // Exports: target-provider, title, transcript, and model-selection helpers.
 
 import {
-  type CodexProfileId,
   EventId,
   MessageId,
   type OrchestrationThreadActivity,
@@ -36,9 +35,6 @@ export interface ThreadHandoffTarget {
   readonly provider: ProviderKind;
   readonly instanceId: ProviderInstanceId;
   readonly label: string;
-  // Set for a managed Codex account: the target keeps the Codex instance and
-  // switches only the account home.
-  readonly codexProfileId?: CodexProfileId;
 }
 
 function isImportableThreadMessage(
@@ -63,37 +59,10 @@ function isImportableThreadActivity(
 export function resolveAvailableHandoffTargets(input: {
   readonly sourceProvider: ProviderKind;
   readonly sourceProviderInstanceId?: ProviderInstanceId | null | undefined;
-  readonly sourceCodexProfileId?: CodexProfileId | undefined;
-  readonly codexProfiles?: ReadonlyArray<{ readonly id: CodexProfileId; readonly name: string }>;
   readonly providerInstances: ReadonlyArray<ProviderInstanceOption>;
   readonly providerStatuses: readonly ServerProviderStatus[];
 }): ReadonlyArray<ThreadHandoffTarget> {
   const sourceInstanceId = input.sourceProviderInstanceId ?? input.sourceProvider;
-  const codexProfileTargets = (instance: ProviderInstanceOption): ThreadHandoffTarget[] => {
-    if (instance.provider !== "codex" || !instance.isDefault || !input.codexProfiles) {
-      return [];
-    }
-    const targets: ThreadHandoffTarget[] = input.codexProfiles.map((profile) => ({
-      provider: "codex",
-      instanceId: instance.instanceId,
-      label: `${instance.label} · ${profile.name}`,
-      codexProfileId: profile.id,
-    }));
-    // Leaving a managed account for the instance's own login is a target too.
-    if (input.sourceCodexProfileId !== undefined) {
-      targets.unshift({
-        provider: "codex",
-        instanceId: instance.instanceId,
-        label: instance.label,
-      });
-    }
-    return targets.filter(
-      (target) =>
-        input.sourceProvider !== "codex" ||
-        target.instanceId !== sourceInstanceId ||
-        target.codexProfileId !== input.sourceCodexProfileId,
-    );
-  };
   const providerRank = new Map(DEFAULT_PROVIDER_ORDER.map((provider, index) => [provider, index]));
   return input.providerInstances
     .filter((instance) => instance.enabled)
@@ -101,6 +70,10 @@ export function resolveAvailableHandoffTargets(input: {
       isProviderUsable(
         findProviderStatus(input.providerStatuses, instance.provider, instance.instanceId),
       ),
+    )
+    .filter(
+      (instance) =>
+        instance.provider !== input.sourceProvider || instance.instanceId !== sourceInstanceId,
     )
     .toSorted((left, right) => {
       const providerDelta =
@@ -114,20 +87,11 @@ export function resolveAvailableHandoffTargets(input: {
       }
       return left.label.localeCompare(right.label);
     })
-    .flatMap((instance): ThreadHandoffTarget[] => [
-      ...(instance.provider !== input.sourceProvider || instance.instanceId !== sourceInstanceId
-        ? [{ provider: instance.provider, instanceId: instance.instanceId, label: instance.label }]
-        : []),
-      ...codexProfileTargets(instance),
-    ])
-    .filter(
-      (target, index, targets) =>
-        targets.findIndex(
-          (other) =>
-            other.instanceId === target.instanceId &&
-            other.codexProfileId === target.codexProfileId,
-        ) === index,
-    );
+    .map((instance) => ({
+      provider: instance.provider,
+      instanceId: instance.instanceId,
+      label: instance.label,
+    }));
 }
 
 export function resolveThreadHandoffBadgeLabel(thread: Pick<Thread, "handoff">): string | null {
@@ -270,11 +234,8 @@ export function canCreateThreadHandoff(input: {
 export function canContinueThreadHandoff(input: {
   readonly sourceProvider: ProviderKind;
   readonly targetProvider: ProviderKind;
-  // A Codex account switch restarts the session with another managed home,
-  // which the same-thread path supports (see the decider's profile rule).
-  readonly isCodexProfileSwitch?: boolean;
 }): boolean {
-  return input.targetProvider !== input.sourceProvider || input.isCodexProfileSwitch === true;
+  return input.targetProvider !== input.sourceProvider;
 }
 
 // Mirrors the outcome rows ProviderCommandReactor appends for a same-thread
@@ -354,25 +315,8 @@ export function resolveThreadHandoffModelSelection(input: {
   readonly stickyModelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>>;
   // First model the target reported, for providers (Pi) without a built-in default.
   readonly discoveredFallbackModel?: string | null;
-  readonly targetCodexProfileId?: CodexProfileId;
 }): ModelSelection {
   const targetInstanceId = input.targetProviderInstanceId ?? input.targetProvider;
-  const source = input.sourceThread.modelSelection;
-  // An account switch on the same Codex instance keeps the model and options.
-  if (
-    input.targetProvider === "codex" &&
-    source.provider === "codex" &&
-    (source.instanceId ?? source.provider) === targetInstanceId &&
-    source.profileId !== input.targetCodexProfileId
-  ) {
-    const { profileId: _sourceProfileId, ...rest } = source;
-    return input.targetCodexProfileId === undefined
-      ? rest
-      : { ...rest, profileId: input.targetCodexProfileId };
-  }
-  if (input.targetCodexProfileId !== undefined) {
-    throw new Error("A Codex profile handoff requires a Codex source thread.");
-  }
   const isCompatibleSelection = (
     selection: ModelSelection | null | undefined,
   ): selection is ModelSelection => {

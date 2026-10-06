@@ -52,8 +52,8 @@ export interface ToolContext {
   readonly callerThreadLabel: string | null;
   readonly callerSessionKey: string;
   readonly callerProvider: ProviderKind;
-  /** Exact Codex account selected by the caller thread, when applicable. */
-  readonly callerProfileId?: string;
+  /** Provider account (instance) selected by the caller thread. */
+  readonly callerInstanceId?: string;
   readonly callerCapabilities: ReadonlySet<AgentGatewayCapability>;
   readonly callerTurnId: string | null;
   readonly assertCallerTurnActive: () => Effect.Effect<void, GatewayToolError>;

@@ -29,7 +29,6 @@ import { ClaudeCacheObservation } from "./claudeCache";
 import {
   ApprovalRequestId,
   CheckpointRef,
-  CodexProfileId,
   CommandId,
   EventId,
   IsoDateTime,
@@ -245,7 +244,6 @@ export const CodexModelSelection = Schema.Struct({
   provider: Schema.Literal("codex"),
   instanceId: ProviderInstanceIdForDriver("codex"),
   model: TrimmedNonEmptyString,
-  profileId: Schema.optional(CodexProfileId),
   options: Schema.optional(CodexModelOptions),
 });
 export type CodexModelSelection = typeof CodexModelSelection.Type;
@@ -356,6 +354,9 @@ const ModelSelectionJsonValue: Schema.Codec<unknown, unknown> = Schema.Json.pipe
   ),
 );
 
+/** Provider instance id prefix for Codex profiles from earlier fork releases. */
+export const LEGACY_CODEX_PROFILE_INSTANCE_PREFIX = "codex-profile-";
+
 const ModelSelectionSource = Schema.Struct({
   provider: Schema.optional(ModelSelectionJsonValue),
   instanceId: Schema.optional(ModelSelectionJsonValue),
@@ -376,10 +377,19 @@ export const ModelSelection: Schema.Codec<typeof ModelSelectionByProvider.Type, 
             typeof raw.model === "string" && raw.model.trim().length > 0
               ? raw.model
               : defaultModelForProvider(provider);
-          const instanceId =
+          let instanceId =
             typeof raw.instanceId === "string" && raw.instanceId.trim().length > 0
               ? raw.instanceId.trim()
               : provider;
+          // Removed fork Codex profiles were migrated to provider instances.
+          if (
+            provider === "codex" &&
+            instanceId === "codex" &&
+            typeof raw.profileId === "string" &&
+            raw.profileId.length > 0
+          ) {
+            instanceId = `${LEGACY_CODEX_PROFILE_INSTANCE_PREFIX}${raw.profileId}`;
+          }
           const base: Record<string, unknown> = {
             provider,
             instanceId,
@@ -390,10 +400,6 @@ export const ModelSelection: Schema.Codec<typeof ModelSelectionByProvider.Type, 
           }
           if (raw.supportsAutoMode !== undefined) {
             base.supportsAutoMode = raw.supportsAutoMode;
-          }
-          // Codex profiles are a fork extension; only Codex selections carry one.
-          if (provider === "codex" && raw.profileId !== undefined) {
-            base.profileId = raw.profileId;
           }
           return Effect.succeed(base as typeof ModelSelectionByProvider.Encoded);
         },
@@ -406,7 +412,6 @@ export type ModelSelection = typeof ModelSelection.Type;
 export const CodexProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
-  profileId: Schema.optional(CodexProfileId),
   shadowHomePath: Schema.optional(TrimmedNonEmptyString),
   accountId: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optional(ProcessEnvRecord),

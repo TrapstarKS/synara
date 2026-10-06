@@ -5,7 +5,13 @@
 // Depends on: the shared provider-usage menu model and panel content, so the rail reads the
 //             same numbers as the chat header chip, the Environment panel, and Settings.
 
-import type { ProviderKind, ServerProviderUsageSnapshot } from "@synara/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS_VIEW,
+  type ProviderInstanceId,
+  type ProviderKind,
+  type ServerProviderUsageSnapshot,
+} from "@synara/contracts";
+import { deriveProviderInstances } from "@synara/shared/providerInstances";
 import { providerUsageDisplayName } from "@synara/shared/providerUsage";
 import { useQuery } from "@tanstack/react-query";
 
@@ -23,7 +29,10 @@ import {
   selectRailUsageRows,
   type RailUsageRingTone,
 } from "./AppRailUsage.logic";
-import { resolveEnvironmentProviderUsageSummary } from "./chat/environment/EnvironmentUsageSection.logic";
+import {
+  resolveEnvironmentProviderUsageSummary,
+  resolveProviderUsageAccounts,
+} from "./chat/environment/EnvironmentUsageSection.logic";
 import { ProviderIcon } from "./ProviderIcon";
 import { useProviderUsageMenuModel } from "./ProviderUsageMenuControl";
 import { ProviderUsagePanelContent } from "./ProviderUsagePanelContent";
@@ -52,16 +61,20 @@ const RING_SPACING = 4.5;
 
 function AppRailUsageRing({
   provider,
+  instanceId,
+  label,
   snapshot,
   window,
   onOpenUsageSettings,
 }: {
   provider: ProviderKind;
+  instanceId: ProviderInstanceId | undefined;
+  label: string;
   snapshot: ServerProviderUsageSnapshot | undefined;
   window: RailUsageWindow;
   onOpenUsageSettings: () => void;
 }) {
-  const model = useProviderUsageMenuModel(provider, { providerSnapshot: snapshot });
+  const model = useProviderUsageMenuModel(provider, { instanceId, providerSnapshot: snapshot });
 
   // A failed fetch keeps a dimmed, empty ring (its card says why) so a chosen provider does
   // not vanish on a network blip. Otherwise nothing displayable (still loading, signed out,
@@ -71,9 +84,8 @@ function AppRailUsageRing({
     return null;
   }
 
-  const providerName = providerUsageDisplayName(provider);
   const summary = resolveEnvironmentProviderUsageSummary({
-    providerName,
+    providerName: label,
     rows: model.rows,
     snapshot,
     hasUsageLines: model.usageLines.length > 0,
@@ -157,7 +169,7 @@ function AppRailUsageRing({
       >
         <div className="space-y-2 p-2.5">
           <div className="flex items-center justify-between gap-2">
-            <span className="truncate text-ui font-medium text-foreground">{providerName}</span>
+            <span className="truncate text-ui font-medium text-foreground">{label}</span>
             {snapshot?.planName ? (
               <span className="shrink-0 text-ui-sm text-muted-foreground">{snapshot.planName}</span>
             ) : null}
@@ -188,7 +200,7 @@ function AppRailUsageRing({
   );
 }
 
-/** Sits above Help: a ring per provider, with the windows chosen in Settings → Usage. */
+/** Sits above Help: a ring per connected account of each chosen provider, with the windows chosen in Settings → Usage. */
 export function AppRailUsage({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
   const { settings } = useAppSettings();
   const providers = resolveRailUsageProviders(settings.railUsageProviders);
@@ -204,13 +216,46 @@ export function AppRailUsage({ onOpenUsageSettings }: { onOpenUsageSettings: () 
     return null;
   }
 
+  const snapshots = usageQuery.data ?? [];
+  const instances = deriveProviderInstances(settingsQuery.data ?? DEFAULT_SERVER_SETTINGS_VIEW);
+  const rings = visibleProviders.flatMap(
+    (
+      provider,
+    ): Array<{
+      key: string;
+      provider: ProviderKind;
+      instanceId: ProviderInstanceId | undefined;
+      label: string;
+      snapshot: ServerProviderUsageSnapshot | undefined;
+    }> => {
+      const accounts = resolveProviderUsageAccounts({ provider, instances, snapshots });
+      if (accounts.length > 0) {
+        return accounts.map(({ instance, snapshot, label }) => ({
+          key: instance.instanceId,
+          provider,
+          instanceId: instance.instanceId,
+          label,
+          snapshot,
+        }));
+      }
+      return [
+        {
+          key: provider,
+          provider,
+          instanceId: undefined,
+          label: providerUsageDisplayName(provider),
+          snapshot: snapshots.find((entry) => entry.provider === provider),
+        },
+      ];
+    },
+  );
+
   return (
     <>
-      {visibleProviders.map((provider) => (
+      {rings.map(({ key, ...ring }) => (
         <AppRailUsageRing
-          key={provider}
-          provider={provider}
-          snapshot={(usageQuery.data ?? []).find((entry) => entry.provider === provider)}
+          key={key}
+          {...ring}
           window={settings.railUsageWindow}
           onOpenUsageSettings={onOpenUsageSettings}
         />

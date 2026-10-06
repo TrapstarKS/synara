@@ -4,7 +4,6 @@ import {
   resolveComputerInvocationMode,
 } from "@synara/shared/computerInvocation";
 import {
-  type CodexProfileId,
   MessageId,
   OrchestrationThreadActivity,
   PROVIDER_DISPLAY_NAMES,
@@ -79,7 +78,6 @@ import {
 import { getLocalFolderBrowseRootPath } from "~/lib/localFolderMentions";
 import { findProviderStatus, resolveVoiceTranscriptionTarget } from "~/lib/providerAvailability";
 import { resolveProviderInstanceLabel } from "~/lib/providerInstancePresentation";
-import { serverSettingsQueryOptions } from "~/lib/serverReactQuery";
 import { resolveAuxiliaryTextGenerationSelection } from "~/lib/textGenerationCapabilities";
 import { cn, isMacNavigatorPlatform, newCommandId, newThreadId, randomUUID } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
@@ -254,7 +252,6 @@ import {
   resolveActiveThreadTitle,
   type TurnDispatchSettings,
   resolveActiveTurnLiveDiffState,
-  resolveCodexProfileId,
   resolveCommittedProviderModel,
   resolveDefaultEnvironmentPanelOpen,
   resolveDraftFallbackModelSelection,
@@ -311,7 +308,6 @@ import {
   ComposerModelPicker,
   type ComposerModelSelectionOptions,
 } from "./chat/ComposerModelPicker";
-import { CodexProfilePicker } from "./chat/CodexProfilePicker";
 import { ProviderInstancePicker } from "./chat/ProviderInstancePicker";
 import { ComposerPendingApprovalPanel } from "./chat/ComposerPendingApprovalPanel";
 import { ComposerPendingBackgroundWorkRow } from "./chat/ComposerPendingBackgroundWorkRow";
@@ -1402,7 +1398,7 @@ export default function ChatView({
     selectedRuntimeModel,
     composerProviderState,
     selectedPromptEffort,
-    selectedModelSelection: baseSelectedModelSelection,
+    selectedModelSelection,
     providerOptionsForDispatch,
     selectedModelForPickerWithCustomFallback,
     showComposerModelBootstrapSkeleton,
@@ -1454,24 +1450,6 @@ export default function ChatView({
   const enableComputerControl = computerControlMode !== "off";
   const featureFlags = useFeatureFlags();
   const showDebugTaskBanner = import.meta.env.DEV && featureFlags["show-debug-task-banner"];
-  const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
-  const draftCodexModelSelection = composerDraft.modelSelectionByProvider.codex;
-  const resolvedCodexProfileId = resolveCodexProfileId({
-    hasThreadStarted,
-    threadModelSelection: activeThread?.modelSelection ?? null,
-    draftModelSelection: draftCodexModelSelection ?? null,
-    defaultProfileId: serverSettingsQuery.data?.providers.codex.defaultProfileId ?? undefined,
-  });
-  const selectedCodexProfileId = selectedProvider === "codex" ? resolvedCodexProfileId : undefined;
-  const selectedModelSelection = useMemo<ModelSelection>(() => {
-    if (baseSelectedModelSelection.provider !== "codex" || selectedCodexProfileId === undefined) {
-      return baseSelectedModelSelection;
-    }
-    return {
-      ...baseSelectedModelSelection,
-      profileId: selectedCodexProfileId,
-    };
-  }, [baseSelectedModelSelection, selectedCodexProfileId]);
 
   const phase = derivePhase(activeThread?.session ?? null);
   const isConnecting = phase === "connecting";
@@ -2466,11 +2444,6 @@ export default function ChatView({
   const activeThreadProvider = activeThread?.modelSelection.provider ?? null;
   const activeThreadProviderInstanceId =
     activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection.instanceId;
-  const activeThreadCodexProfileId =
-    activeThread?.modelSelection.provider === "codex"
-      ? activeThread.modelSelection.profileId
-      : undefined;
-  const handoffCodexProfiles = serverSettingsQuery.data?.providers.codex.profiles;
   const handoffTargets = useMemo(
     () =>
       activeThreadProvider
@@ -2479,18 +2452,9 @@ export default function ChatView({
             sourceProviderInstanceId: activeThreadProviderInstanceId,
             providerInstances,
             providerStatuses,
-            sourceCodexProfileId: activeThreadCodexProfileId,
-            codexProfiles: handoffCodexProfiles ?? [],
           })
         : [],
-    [
-      activeThreadCodexProfileId,
-      activeThreadProvider,
-      activeThreadProviderInstanceId,
-      providerInstances,
-      providerStatuses,
-      handoffCodexProfiles,
-    ],
+    [activeThreadProvider, activeThreadProviderInstanceId, providerInstances, providerStatuses],
   );
   const continueHandoffTargets = useMemo(
     () =>
@@ -2500,12 +2464,9 @@ export default function ChatView({
           canContinueThreadHandoff({
             sourceProvider: activeThreadProvider,
             targetProvider: target.provider,
-            isCodexProfileSwitch:
-              target.codexProfileId !== undefined &&
-              target.codexProfileId !== activeThreadCodexProfileId,
           }),
       ),
-    [activeThreadCodexProfileId, activeThreadProvider, handoffTargets],
+    [activeThreadProvider, handoffTargets],
   );
   const sidechatTargetProviders = useMemo(
     () => [...new Set(handoffTargets.map((target) => target.provider))],
@@ -3794,10 +3755,6 @@ export default function ChatView({
         provider === "claudeAgent" ? runtimeModel?.supportsAutoMode : undefined,
         { instanceId: resolvedInstanceId },
       );
-      const nextSelectionWithProfile: ModelSelection =
-        nextModelSelection.provider === "codex" && resolvedCodexProfileId !== undefined
-          ? { ...nextModelSelection, profileId: resolvedCodexProfileId }
-          : nextModelSelection;
       const providerStatus = findProviderStatus(providerStatuses, provider, resolvedInstanceId);
       const nextRuntimeMode =
         runtimeMode === "auto" &&
@@ -3811,7 +3768,7 @@ export default function ChatView({
         nextRuntimeMode,
         persistRuntimeMode: persistRuntimeModeChange,
         commit: () => {
-          setComposerDraftModelSelectionAndSticky(activeThread.id, nextSelectionWithProfile);
+          setComposerDraftModelSelectionAndSticky(activeThread.id, nextModelSelection);
           if (provider === "cursor" && !selectionOptions?.modelOptions) {
             setComposerDraftProviderModelOptions(
               activeThread.id,
@@ -3850,7 +3807,6 @@ export default function ChatView({
       runtimeModelsByProvider,
       runtimeModelsByProviderInstance,
       scheduleComposerFocus,
-      resolvedCodexProfileId,
       selectedProviderInstanceId,
       settings,
       setComposerDraftModelSelectionAndSticky,
@@ -4238,12 +4194,7 @@ export default function ChatView({
     }
 
     try {
-      await createThreadHandoff(
-        activeThread,
-        target.provider,
-        target.instanceId,
-        target.codexProfileId,
-      );
+      await createThreadHandoff(activeThread, target.provider, target.instanceId);
     } catch (error) {
       toastManager.add({
         type: "error",
@@ -4262,13 +4213,7 @@ export default function ChatView({
     }
 
     try {
-      await continueThreadHandoff(
-        activeThread,
-        target.provider,
-        target.instanceId,
-        undefined,
-        target.codexProfileId,
-      );
+      await continueThreadHandoff(activeThread, target.provider, target.instanceId);
     } catch (error) {
       toastManager.add({
         type: "error",
@@ -4711,23 +4656,6 @@ export default function ChatView({
       handleModelPickerOpenChange,
     ],
   );
-  const codexProfilePicker =
-    selectedProvider === "codex" ? (
-      <CodexProfilePicker
-        profiles={serverSettingsQuery.data?.providers.codex.profiles ?? []}
-        profileId={selectedCodexProfileId}
-        disabled={hasThreadStarted}
-        onChange={(profileId: CodexProfileId | undefined) => {
-          if (!activeThread || selectedModelSelection.provider !== "codex") return;
-          const { profileId: _previousProfileId, ...selection } = selectedModelSelection;
-          setComposerDraftModelSelectionAndSticky(
-            activeThread.id,
-            profileId ? { ...selection, profileId } : selection,
-          );
-          scheduleComposerFocus();
-        }}
-      />
-    ) : null;
   // Event handlers handed to children below. Their closures read live thread and draft
   // state, so they are recreated with every streamed token and keystroke; one identity
   // keeps those children from re-rendering (and re-registering editor commands) for it.
@@ -4798,7 +4726,6 @@ export default function ChatView({
           />
         )
       ) : null}
-      {codexProfilePicker}
       {composerModelAndTraitsControls}
     </>
   );
@@ -5664,13 +5591,6 @@ export default function ChatView({
     activeThread.id,
   ).map((definition) => ({ definition }));
 
-  const activeCodexProfileId =
-    selectedProvider === "codex"
-      ? selectedCodexProfileId
-      : activeThread.modelSelection.provider === "codex"
-        ? activeThread.modelSelection.profileId
-        : undefined;
-
   // Read from the two inputs it uses, not from the thread object, so the list keeps its
   // identity (and the Environment panel its render) while the thread streams.
   const environmentSidechats = activeThreadIsSidechat
@@ -5692,7 +5612,6 @@ export default function ChatView({
     availableEditors,
     activeThreadId: activeThread.id,
     activeProvider: activeThread.session?.provider ?? activeThread.modelSelection.provider,
-    ...(activeCodexProfileId ? { activeCodexProfileId } : {}),
     isGroupChat: isGroupContainer,
     groupFolderPath: isGroupContainer ? resolvedThreadWorkingDirectory : null,
     showGitActions,
@@ -6446,7 +6365,6 @@ export default function ChatView({
           diffToggleShortcutLabel={diffPanelShortcutLabel}
           handoffActionLabel={handoffActionLabel}
           handoffDisabled={handoffDisabled}
-          {...(activeCodexProfileId ? { activeCodexProfileId } : {})}
           handoffActionTargets={handoffTargets}
           continueHandoffActionTargets={continueHandoffTargets}
           showHandoffAction={handoffAvailability.providerHandoff}

@@ -91,32 +91,6 @@ export interface PendingFileUndo {
   readonly existingFailureActivityIds: readonly string[];
 }
 
-export function resolveCodexProfileId(input: {
-  readonly hasThreadStarted: boolean;
-  readonly threadModelSelection: ModelSelection | null;
-  readonly draftModelSelection: ModelSelection | null;
-  readonly defaultProfileId: Extract<ModelSelection, { provider: "codex" }>["profileId"];
-}): Extract<ModelSelection, { provider: "codex" }>["profileId"] {
-  if (input.hasThreadStarted) {
-    if (input.threadModelSelection?.provider === "codex" && input.threadModelSelection.profileId) {
-      return input.threadModelSelection.profileId;
-    }
-    // A promoted draft can receive messages/session state before its refreshed
-    // server projection arrives. Keep showing the account used for the first
-    // turn during that window instead of falling back to "Current account".
-    return input.draftModelSelection?.provider === "codex"
-      ? input.draftModelSelection.profileId
-      : undefined;
-  }
-  if (input.draftModelSelection?.provider === "codex") {
-    return input.draftModelSelection.profileId;
-  }
-  if (input.threadModelSelection?.provider === "codex" && input.threadModelSelection.profileId) {
-    return input.threadModelSelection.profileId;
-  }
-  return input.defaultProfileId;
-}
-
 export function hasFileUndoSettled(input: {
   readonly pending: PendingFileUndo;
   readonly thread: Pick<Thread, "id" | "turnDiffSummaries" | "activities"> | null;
@@ -250,9 +224,7 @@ export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection
   return (
     left.provider === right.provider &&
     left.model === right.model &&
-    (left.provider !== "codex" ||
-      right.provider !== "codex" ||
-      left.profileId === right.profileId) &&
+    (left.instanceId ?? left.provider) === (right.instanceId ?? right.provider) &&
     JSON.stringify(left.options ?? null) === JSON.stringify(right.options ?? null) &&
     (left.provider !== "claudeAgent" ||
       right.provider !== "claudeAgent" ||

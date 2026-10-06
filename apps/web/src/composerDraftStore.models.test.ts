@@ -1,9 +1,4 @@
-import {
-  CodexProfileId,
-  ProviderInstanceId,
-  ThreadId,
-  type ModelSelection,
-} from "@synara/contracts";
+import { ProviderInstanceId, ThreadId, type ModelSelection } from "@synara/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   deriveEffectiveComposerModelState,
@@ -31,20 +26,18 @@ describe("resolvePreferredComposerModelSelection", () => {
     ).toEqual(modelSelection("claudeAgent", "claude-fable-5-1[1m]", { autoCompactWindow: "200k" }));
   });
 
-  it("preserves the selected Codex account during normalization", () => {
-    const profileId = CodexProfileId.makeUnsafe("8fd3e58d-f8ee-4cd4-a20a-7a30709c128c");
-
+  it("maps a removed Codex profile draft to its migrated provider instance", () => {
     expect(
       normalizeModelSelection({
         provider: "codex",
         model: "gpt-5.6-sol",
-        profileId,
+        profileId: "8fd3e58d-f8ee-4cd4-a20a-7a30709c128c",
         options: { reasoningEffort: "high" },
       }),
     ).toEqual({
       provider: "codex",
+      instanceId: "codex-profile-8fd3e58d-f8ee-4cd4-a20a-7a30709c128c",
       model: "gpt-5.6-sol",
-      profileId,
       options: { reasoningEffort: "high" },
     });
   });
@@ -435,46 +428,6 @@ describe("composerDraftStore modelSelection", () => {
         fastMode: false,
       }),
     );
-  });
-
-  it("keeps the selected Codex account while model options change or clear", () => {
-    const store = useComposerDraftStore.getState();
-    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
-    const selection = {
-      ...modelSelection("codex", "gpt-5.6-luna", { reasoningEffort: "high" }),
-      profileId,
-    } as const;
-
-    store.setModelSelection(threadId, selection);
-    store.setStickyModelSelection(selection);
-    store.setProviderModelOptions(
-      threadId,
-      "codex",
-      { reasoningEffort: "max", fastMode: true },
-      { persistSticky: true },
-    );
-
-    let state = useComposerDraftStore.getState();
-    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toMatchObject({
-      profileId,
-      options: { reasoningEffort: "max", fastMode: true },
-    });
-    expect(state.stickyModelSelectionByProvider.codex).toMatchObject({ profileId });
-
-    store.setModelOptions(threadId, providerModelOptions({ codex: { reasoningEffort: "xhigh" } }));
-    state = useComposerDraftStore.getState();
-    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toMatchObject({
-      profileId,
-      options: { reasoningEffort: "xhigh" },
-    });
-
-    store.setProviderModelOptions(threadId, "codex", undefined);
-    state = useComposerDraftStore.getState();
-    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual({
-      provider: "codex",
-      model: "gpt-5.6-luna",
-      profileId,
-    });
   });
 
   it.each([

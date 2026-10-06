@@ -11,7 +11,6 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parse, stringify } from "smol-toml";
-import { CodexProfileId } from "@synara/contracts";
 import { migrateLegacyCodexHome } from "./codexLegacyHome.ts";
 import { CODEX_MCP_CONFIG_STATE_FILE, reconcileCodexMcpConfig } from "./codexMcpConfig.ts";
 
@@ -22,19 +21,20 @@ afterEach(() => {
 function fixture(profileId?: string) {
   const root = mkdtempSync(path.join(tmpdir(), "synara-codex-native-home-"));
   roots.push(root);
-  const homePath = path.join(root, ".codex");
+  const homePath = profileId
+    ? path.join(root, "secrets", "codex-profiles", profileId)
+    : path.join(root, ".codex");
   const runtime = path.join(root, ".synara");
   const overlay = profileId
     ? path.join(runtime, "codex-home-overlays", profileId)
     : path.join(runtime, "codex-home-overlay");
-  mkdirSync(homePath);
+  mkdirSync(homePath, { recursive: true });
   mkdirSync(overlay, { recursive: true });
   const configPath = path.join(homePath, "config.toml");
   const overlayConfigPath = path.join(overlay, "config.toml");
   const input = {
     env: { SYNARA_HOME: runtime },
     homePath,
-    ...(profileId ? { profileId: CodexProfileId.makeUnsafe(profileId) } : {}),
   };
   return { root, homePath, runtime, overlay, configPath, overlayConfigPath, input };
 }
@@ -86,7 +86,7 @@ describe("native Codex home migration", () => {
     expect(readFileSync(f.configPath, "utf8")).not.toContain("mcp_servers");
   });
 
-  it("migrates the selected profile's overlay only", async () => {
+  it("migrates a migrated profile home's legacy overlay only", async () => {
     const f = fixture("be54e3c8-c56b-4113-8257-a9090d97b936");
     writeFileSync(f.configPath, 'cli_auth_credentials_store="file"\n');
     writeFileSync(f.overlayConfigPath, '[mcp_servers.mine]\ncommand="my-profile-tool"\n');

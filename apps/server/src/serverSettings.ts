@@ -10,6 +10,7 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
+  LEGACY_CODEX_PROFILE_INSTANCE_PREFIX,
   type ModelSelection,
   type GitTextGenerationProvider,
   type ProviderInstanceConfig,
@@ -44,6 +45,7 @@ import {
   Stream,
 } from "effect";
 import * as Semaphore from "effect/Semaphore";
+import nodePath from "node:path";
 import { writeFileStringAtomically } from "./atomicWrite";
 import { isServerBetaFeatureEnabled } from "./betaFeatureGate";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore";
@@ -86,7 +88,7 @@ export interface ServerSettingsSnapshot {
   readonly settings: ServerSettings;
 }
 
-const SERVER_SETTINGS_MIGRATION_VERSION = 4;
+const SERVER_SETTINGS_MIGRATION_VERSION = 5;
 const PREVIOUS_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
 const PREVIOUS_LUNA_GIT_TEXT_GENERATION_MODEL = "gpt-5.6-luna";
 const providerEnvironmentTextEncoder = new TextEncoder();
@@ -112,7 +114,10 @@ function migrateSettings(settings: ServerSettings, migrationVersion: number): Se
   ) {
     settings = {
       ...settings,
-      textGenerationModelSelection: { ...selection, model: DEFAULT_GIT_TEXT_GENERATION_MODEL },
+      textGenerationModelSelection: {
+        ...selection,
+        model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+      },
     };
   }
 
@@ -502,40 +507,7 @@ function normalizeSettings(
   return Schema.decodeUnknownEffect(ServerSettings)(
     applyServerSettingsPatch(current, preservedPatch),
   ).pipe(
-    Effect.flatMap((settings) => {
-      const profiles = settings.providers.codex.profiles;
-      const ids = new Set(profiles.map((profile) => profile.id));
-      const names = new Set(profiles.map((profile) => profile.name.toLowerCase()));
-      if (ids.size !== profiles.length || names.size !== profiles.length) {
-        return Effect.fail(
-          new ServerSettingsError({
-            settingsPath,
-            detail: "Codex account IDs and names must be unique.",
-          }),
-        );
-      }
-      const defaultProfileId = settings.providers.codex.defaultProfileId;
-      if (defaultProfileId && !ids.has(defaultProfileId)) {
-        return Effect.fail(
-          new ServerSettingsError({
-            settingsPath,
-            detail: "The default Codex account does not exist.",
-          }),
-        );
-      }
-      const selection = settings.textGenerationModelSelection;
-      if (selection.provider === "codex" && selection.profileId && !ids.has(selection.profileId)) {
-        return Effect.fail(
-          new ServerSettingsError({
-            settingsPath,
-            detail: "The Codex account selected for text generation does not exist.",
-          }),
-        );
-      }
-      return Effect.succeed(settings);
-    }),
     Effect.mapError((cause) => {
-      if (cause instanceof ServerSettingsError) return cause;
       return new ServerSettingsError({
         settingsPath,
         detail: `failed to normalize server settings: ${SchemaIssue.makeFormatterDefault()(cause.issue)}`,
@@ -647,15 +619,78 @@ function migrateRemovedKiloSettings(settings: unknown): unknown {
   return migrated;
 }
 
-function decodeSettingsFromJson(settingsPath: string, raw: string) {
+// Earlier fork releases kept extra Codex logins as "profiles" with private homes
+// under secrets/codex-profiles. Keep those logins as ordinary Codex provider
+// instances; chats that still name a profile resolve to the same instance id.
+function migrateRemovedCodexProfiles(settings: unknown, secretsDir: string): unknown {
+  if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+    return settings;
+  }
+  const record = settings as Record<string, unknown>;
+  const providers = record.providers as Record<string, unknown> | undefined;
+  const codex = providers?.codex;
+  if (codex === null || typeof codex !== "object" || Array.isArray(codex)) return settings;
+  const {
+    profiles,
+    defaultProfileId: _defaultProfileId,
+    proxyBinaryPath: _proxyBinaryPath,
+    ...codexSettings
+  } = codex as Record<string, unknown>;
+  const instances =
+    record.providerInstances !== null &&
+    typeof record.providerInstances === "object" &&
+    !Array.isArray(record.providerInstances)
+      ? { ...(record.providerInstances as Record<string, unknown>) }
+      : {};
+  for (const profile of Array.isArray(profiles) ? profiles : []) {
+    const { id, name } = (profile ?? {}) as { id?: unknown; name?: unknown };
+    if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id)) continue;
+    const instanceId = `${LEGACY_CODEX_PROFILE_INSTANCE_PREFIX}${id}`;
+    if (instanceId in instances) continue;
+    instances[instanceId] = {
+      driver: "codex",
+      displayName: typeof name === "string" && name.trim() ? name.trim() : "Codex",
+      enabled: true,
+      config: { homePath: nodePath.join(secretsDir, "codex-profiles", id) },
+    };
+  }
+  let selection = record.textGenerationModelSelection;
+  if (selection !== null && typeof selection === "object" && !Array.isArray(selection)) {
+    const { profileId, ...rest } = selection as Record<string, unknown>;
+    selection =
+      rest.provider === "codex" &&
+      typeof profileId === "string" &&
+      (rest.instanceId ?? "codex") === "codex"
+        ? {
+            ...rest,
+            instanceId: `${LEGACY_CODEX_PROFILE_INSTANCE_PREFIX}${profileId}`,
+          }
+        : rest;
+  }
+  return {
+    ...record,
+    ...(selection !== undefined ? { textGenerationModelSelection: selection } : {}),
+    providers: { ...providers, codex: codexSettings },
+    providerInstances: instances,
+  };
+}
+
+function decodeSettingsFromJson(settingsPath: string, raw: string, secretsDir: string) {
   try {
     const parsed = JSON.parse(raw) as unknown;
     const envelope =
       parsed !== null && typeof parsed === "object" && "settings" in parsed
-        ? (parsed as { revision?: unknown; migrationVersion?: unknown; settings: unknown })
+        ? (parsed as {
+            revision?: unknown;
+            migrationVersion?: unknown;
+            settings: unknown;
+          })
         : null;
     const decoded = Schema.decodeUnknownExit(ServerSettings)(
-      migrateRemovedKiloSettings(envelope?.settings ?? parsed),
+      migrateRemovedCodexProfiles(
+        migrateRemovedKiloSettings(envelope?.settings ?? parsed),
+        secretsDir,
+      ),
     );
     if (decoded._tag === "Failure") {
       return { _tag: "Failure" as const, error: Cause.pretty(decoded.cause) };
@@ -684,7 +719,7 @@ function decodeSettingsFromJson(settingsPath: string, raw: string) {
 }
 
 const makeServerSettings = Effect.gen(function* () {
-  const { settingsPath } = yield* ServerConfig;
+  const { settingsPath, secretsDir } = yield* ServerConfig;
   const providerCredentials = yield* ProviderCredentials;
   const secretStore = yield* ServerSecretStore;
   const fs = yield* FileSystem.FileSystem;
@@ -719,7 +754,12 @@ const makeServerSettings = Effect.gen(function* () {
               continue;
             }
             const secret = yield* secretStore
-              .get(providerEnvironmentSecretName({ instanceId, name: variable.name }))
+              .get(
+                providerEnvironmentSecretName({
+                  instanceId,
+                  name: variable.name,
+                }),
+              )
               .pipe(
                 Effect.mapError((cause) =>
                   secretStoreError(
@@ -914,7 +954,11 @@ const makeServerSettings = Effect.gen(function* () {
                   providerEnvironmentTextEncoder.encode(value),
                   `secret for provider instance '${instanceId}' environment variable '${variable.name}'`,
                 );
-                environment.push({ ...variable, value: "", valueRedacted: true });
+                environment.push({
+                  ...variable,
+                  value: "",
+                  valueRedacted: true,
+                });
               } else {
                 obsoleteSecretNames.add(secretName);
                 nextEnvironmentSecretKeys.delete(secretName);
@@ -958,7 +1002,10 @@ const makeServerSettings = Effect.gen(function* () {
       for (const [instanceId, instance] of Object.entries(current.providerInstances)) {
         for (const variable of instance.environment ?? []) {
           if (!variable.sensitive) continue;
-          const secretName = providerEnvironmentSecretName({ instanceId, name: variable.name });
+          const secretName = providerEnvironmentSecretName({
+            instanceId,
+            name: variable.name,
+          });
           if (!nextEnvironmentSecretKeys.has(secretName)) {
             obsoleteSecretNames.add(secretName);
           }
@@ -1107,7 +1154,7 @@ const makeServerSettings = Effect.gen(function* () {
             }),
         ),
       );
-      const decoded = decodeSettingsFromJson(settingsPath, raw);
+      const decoded = decodeSettingsFromJson(settingsPath, raw, secretsDir);
       if (decoded._tag === "Failure") {
         const quarantinePath = `${settingsPath}.invalid-${Date.now()}`;
         yield* fs.rename(settingsPath, quarantinePath).pipe(Effect.catch(() => Effect.void));
@@ -1290,7 +1337,10 @@ const makeServerSettings = Effect.gen(function* () {
     ready: Deferred.await(startedDeferred),
     getSettings,
     getSettingsView: getSettings.pipe(Effect.map(toServerSettingsView)),
-    getSnapshot: Effect.all({ revision: Ref.get(revisionRef), settings: getSettings }).pipe(
+    getSnapshot: Effect.all({
+      revision: Ref.get(revisionRef),
+      settings: getSettings,
+    }).pipe(
       Effect.map(({ revision, settings }) => ({
         revision,
         migrationVersion: SERVER_SETTINGS_MIGRATION_VERSION,

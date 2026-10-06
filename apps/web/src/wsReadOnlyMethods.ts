@@ -61,7 +61,6 @@ const reloadSafeMethods = new Set<string>([
   WS_METHODS.serverListLocalServers,
   WS_METHODS.serverGetProviderUsageSnapshot,
   WS_METHODS.serverListProviderUsage,
-  WS_METHODS.serverListCodexAccountStates,
   WS_METHODS.statsGetProfileStats,
   WS_METHODS.statsGetProfileTokenStats,
   WS_METHODS.serverGetDiagnostics,

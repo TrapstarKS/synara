@@ -146,7 +146,6 @@ import {
 import { QueuedTurnPromotionRepository } from "../../persistence/Services/QueuedTurnPromotions.ts";
 import { ManagedAttachmentRepository } from "../../persistence/Services/ManagedAttachments.ts";
 import { ServerConfig } from "../../config.ts";
-import { resolveCodexProfileOptions } from "../../codexProfiles.ts";
 import { diagnosticIssueReason } from "@synara/shared/diagnosticIssue";
 import { reportBetaOperationalIssue } from "../../betaOperationalIssue.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -1420,19 +1419,10 @@ const make = Effect.gen(function* () {
     if (!instance?.enabled) {
       return null;
     }
-    const providerOptions = yield* Effect.try({
-      try: () =>
-        resolveCodexProfileOptions({
-          settings,
-          secretsDir: serverConfig.secretsDir,
-          modelSelection: selection,
-          providerOptions: mergeProviderStartOptions(
-            providerStartOptionsFromServerSettings(settings),
-            providerStartOptionsFromInstance(instance),
-          ),
-        }),
-      catch: (error) => error as Error,
-    });
+    const providerOptions = mergeProviderStartOptions(
+      providerStartOptionsFromServerSettings(settings),
+      providerStartOptionsFromInstance(instance),
+    );
     return resolveTextGenerationInputForSelection(selection, providerOptions, instance.driver);
   });
 
@@ -1470,16 +1460,6 @@ const make = Effect.gen(function* () {
         }
       }
     }
-    selectionProviderOptions = yield* Effect.try({
-      try: () =>
-        resolveCodexProfileOptions({
-          settings,
-          secretsDir: serverConfig.secretsDir,
-          modelSelection,
-          ...(selectionProviderOptions ? { providerOptions: selectionProviderOptions } : {}),
-        }),
-      catch: (error) => error as Error,
-    });
     const threadTextGenerationInput = resolveTextGenerationInputForSelection(
       modelSelection,
       selectionProviderOptions,
@@ -2057,14 +2037,6 @@ const make = Effect.gen(function* () {
             canAdoptRequestedProvider: thread.latestTurn === null && thread.messages.length <= 1,
           })
         : options?.modelSelection;
-    const requestedCodexProfileId =
-      requestedModelSelection?.provider === "codex" ? requestedModelSelection.profileId : undefined;
-    const currentCodexProfileId =
-      thread.modelSelection.provider === "codex" ? thread.modelSelection.profileId : undefined;
-    const requestedChangesCodexProfile =
-      requestedModelSelection?.provider === "codex" &&
-      thread.modelSelection.provider === "codex" &&
-      requestedCodexProfileId !== currentCodexProfileId;
     const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
     const desiredProviderInstanceId =
       desiredModelSelection.instanceId ?? desiredModelSelection.provider;
@@ -2111,9 +2083,7 @@ const make = Effect.gen(function* () {
       currentProvider !== undefined &&
       ((thread.latestTurn === null &&
         requestedModelSelection !== undefined &&
-        (desiredProvider !== currentProvider ||
-          requestedProviderInstanceChanged ||
-          requestedChangesCodexProfile)) ||
+        (desiredProvider !== currentProvider || requestedProviderInstanceChanged)) ||
         thread.modelSelection.provider !== currentProvider)
         ? yield* resolveActiveSession(threadId)
         : undefined;
@@ -2202,38 +2172,12 @@ const make = Effect.gen(function* () {
             : `Provider instance '${desiredProviderInstance.displayName}' is disabled in Settings > Providers. Re-enable it to continue this thread.`,
       });
     }
-    // A Codex account cannot change under a started thread; a same-thread
-    // handoff stops the source session and stores the target selection first.
-    if (
-      (activeSession !== undefined || thread.latestTurn !== null) &&
-      requestedChangesCodexProfile
-    ) {
-      return yield* new ProviderAdapterValidationError({
-        provider: "codex",
-        operation: "thread.turn.start",
-        issue: "A Codex account cannot be changed after the thread has started.",
-      });
-    }
-    const resolvedProviderOptions = yield* Effect.try({
-      try: () =>
-        resolveCodexProfileOptions({
-          settings,
-          secretsDir: serverConfig.secretsDir,
-          modelSelection: desiredModelSelection,
-          providerOptions: mergeProviderStartOptions(
-            providerStartOptionsFromServerSettings(settings),
-            desiredProviderInstance.driver === preferredProvider
-              ? providerStartOptionsFromInstance(desiredProviderInstance)
-              : undefined,
-          ),
-        }),
-      catch: (error) =>
-        new ProviderAdapterValidationError({
-          provider: "codex",
-          operation: "thread.turn.start",
-          issue: error instanceof Error ? error.message : String(error),
-        }),
-    });
+    const resolvedProviderOptions = mergeProviderStartOptions(
+      providerStartOptionsFromServerSettings(settings),
+      desiredProviderInstance.driver === preferredProvider
+        ? providerStartOptionsFromInstance(desiredProviderInstance)
+        : undefined,
+    );
     const effectiveCwd = yield* resolveProjectedThreadWorkspaceCwd(thread);
     const workspaceState = resolveThreadWorkspaceState({
       envMode: thread.envMode,
@@ -2281,7 +2225,7 @@ const make = Effect.gen(function* () {
     };
     const autoApproveSynaraToolsChanged = autoApproveSynaraTools !== previousAutoApproveSynaraTools;
 
-    const desiredClaudeChrome = resolvedProviderOptions.claudeAgent?.enableChrome === true;
+    const desiredClaudeChrome = resolvedProviderOptions?.claudeAgent?.enableChrome === true;
     const providerSessionStartInput = (resumeCursor?: unknown) => ({
       ...providerSessionOptions,
       ...(preferredProvider ? { provider: preferredProvider } : {}),
@@ -2398,8 +2342,6 @@ const make = Effect.gen(function* () {
               currentProvider === "devin") &&
             requestedModelSelection !== undefined &&
             !isDeepStrictEqual(previousModelSelection, requestedModelSelection);
-      const shouldRestartForCodexProfileChange =
-        currentProvider === "codex" && requestedChangesCodexProfile;
       const requestedComputerControl = options?.enableComputerControl;
       // A missing cache entry means the session was started by a dispatch that
       // carried no computer-control flag, which provisions the default (off), so
@@ -2434,7 +2376,6 @@ const make = Effect.gen(function* () {
         !providerInstanceChanged &&
         !shouldRestartForModelChange &&
         !shouldRestartForModelSelectionChange &&
-        !shouldRestartForCodexProfileChange &&
         !computerControlChanged &&
         !claudeChromeChanged &&
         !autoApproveSynaraToolsChanged &&
@@ -2501,7 +2442,6 @@ const make = Effect.gen(function* () {
         providerChanged ||
         providerInstanceChanged ||
         shouldRestartForModelChange ||
-        shouldRestartForCodexProfileChange ||
         runtimeModeChanged ||
         shouldDropResumeCursorForProviderOptionsChange({
           requestedProvider: desiredRoutedModelSelection.provider,
@@ -2555,10 +2495,7 @@ const make = Effect.gen(function* () {
       const restartAttempt = yield* startProviderSessionWithOutcome(
         resumeCursor,
         options?.registerPriorTranscriptBootstrapOnFreshStart === true ||
-          ((workspaceChanged ||
-            providerChanged ||
-            shouldRestartForModelChange ||
-            shouldRestartForCodexProfileChange) &&
+          ((workspaceChanged || providerChanged || shouldRestartForModelChange) &&
             shouldRegisterContextBootstrap),
       ).pipe(
         Effect.map(Option.some),

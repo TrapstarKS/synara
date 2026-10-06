@@ -314,13 +314,10 @@ describe("wsNativeApi", () => {
           codex: {
             enabled: true,
             binaryPath: "codex",
-            proxyBinaryPath: "claude-code-proxy",
             homePath: "",
             selectedAccountId: "default",
             accounts: [],
             customModels: [],
-            profiles: [],
-            defaultProfileId: null,
           },
           claudeAgent: {
             enabled: true,

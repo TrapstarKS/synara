@@ -208,18 +208,6 @@ function validateAutoRuntimeMode(
       );
 }
 
-// Switching the Codex account restarts the session with another managed home,
-// which the same-thread handoff path supports like a provider switch.
-function isCodexProfileSwitch(thread: OrchestrationThread, target: ModelSelection): boolean {
-  return (
-    target.provider === "codex" &&
-    thread.modelSelection.provider === "codex" &&
-    (target.instanceId ?? target.provider) ===
-      (thread.modelSelection.instanceId ?? thread.modelSelection.provider) &&
-    target.profileId !== thread.modelSelection.profileId
-  );
-}
-
 /**
  * A same-thread provider handoff restarts the session on another provider, so
  * it shares Hand off's preconditions: no running turn, pending approval, or
@@ -235,7 +223,7 @@ function validateProviderHandoff(
   const detail =
     target === undefined
       ? "A provider handoff needs a target model selection."
-      : target.provider === thread.modelSelection.provider && !isCodexProfileSwitch(thread, target)
+      : target.provider === thread.modelSelection.provider
         ? `Thread '${command.threadId}' already runs on '${target.provider}'; hand off to a new thread instead.`
         : thread.session?.status === "starting" || thread.session?.status === "running"
           ? `Thread '${command.threadId}' still has a running turn.`

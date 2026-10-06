@@ -23,8 +23,7 @@ import {
 } from "@synara/shared/providerInstances";
 
 import { ServerConfig } from "../config";
-import { resolveManagedCodexProfileHome } from "../codexProfiles";
-import { resolveActiveCodexHomeWritePath, resolveBaseCodexHomePath } from "../codexHomePaths";
+import { resolveBaseCodexHomePath } from "../codexHomePaths";
 import { prepareCodexAuthTracking } from "../codexProcessEnv";
 import { expandProviderAccountHomePath } from "../providerAccountHomePath";
 import { buildClaudeInstanceProcessEnv } from "../provider/claudeEnvironment";
@@ -96,7 +95,7 @@ function buildProviderContext(
 // concurrent requests for the same provider coalesce into a single fetch, and `forceRefresh`
 // (the settings panel's explicit refresh button) bypasses the TTL but still joins an in-flight
 // fetch. Degraded snapshots (errors, re-served last-good data) expire faster so recovery is
-// picked up quickly. Instance and managed Codex account scopes are pruned when removed or disabled.
+// picked up quickly. Instance scopes are pruned when their account is removed or disabled.
 const SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1000;
 const SNAPSHOT_CACHE_DEGRADED_TTL_MS = 60 * 1000;
 
@@ -181,7 +180,7 @@ async function getProviderUsageSnapshot(
   ctx: ProviderUsageContext,
   forceRefresh: boolean,
 ): Promise<ServerProviderUsageSnapshot | null> {
-  const scope = ctx.scopeKey ?? (ctx.instanceId ? `${provider}:${ctx.instanceId}` : provider);
+  const scope = ctx.instanceId ? `${provider}:${ctx.instanceId}` : provider;
   const cacheGeneration = snapshotCacheGenerations.get(scope) ?? Symbol();
   snapshotCacheGenerations.set(scope, cacheGeneration);
   const providerContext = buildProviderContext(provider, ctx);
@@ -440,10 +439,9 @@ export const listProviderUsage = Effect.fn(function* (input: ServerListProviderU
   const instances = deriveProviderInstances(settings).filter(
     (instance) => instance.enabled && PROVIDER_USAGE_FETCHERS[instance.driver] !== undefined,
   );
-  const activeScopes = new Set([
-    ...instances.map((instance) => `${instance.driver}:${instance.instanceId}`),
-    ...settings.providers.codex.profiles.map((profile) => `codex:${profile.id}`),
-  ]);
+  const activeScopes = new Set(
+    instances.map((instance) => `${instance.driver}:${instance.instanceId}`),
+  );
   invalidateProviderUsageScopes(
     [...snapshotCacheGenerations.keys()].filter(
       (scope) => scope.includes(":") && !activeScopes.has(scope),
@@ -452,59 +450,6 @@ export const listProviderUsage = Effect.fn(function* (input: ServerListProviderU
   const selected = input.provider
     ? instances.filter((instance) => instance.driver === input.provider)
     : instances;
-
-  if (input.profileId && input.provider !== undefined && input.provider !== "codex") return [];
-
-  const baseContext = {
-    ...buildContext(),
-    homeDir: serverConfig.homeDir,
-    claudeBinaryPath: settings.providers.claudeAgent.binaryPath,
-    codexBinaryPath: settings.providers.codex.binaryPath,
-  };
-  const profiles =
-    !settings.providers.codex.enabled ||
-    (input.provider !== undefined && input.provider !== "codex")
-      ? []
-      : input.profileId
-        ? settings.providers.codex.profiles.filter((profile) => profile.id === input.profileId)
-        : settings.providers.codex.profiles;
-  if (input.profileId && profiles.length === 0) return [];
-  const profileSnapshots = (yield* Effect.forEach(
-    profiles,
-    (profile) =>
-      Effect.tryPromise({
-        try: async () => {
-          const sourceHome = resolveManagedCodexProfileHome(serverConfig.secretsDir, profile.id);
-          const localUsageHomePath = resolveActiveCodexHomeWritePath({
-            env: process.env,
-            homePath: sourceHome,
-            profileId: profile.id,
-          });
-          const snapshot = await getProviderUsageSnapshot(
-            "codex",
-            {
-              ...baseContext,
-              env: { ...process.env, CODEX_HOME: sourceHome },
-              scopeKey: `codex:${profile.id}`,
-              codexManagedProfile: true,
-              localUsageHomePath,
-            },
-            input.forceRefresh === true,
-          );
-          return snapshot
-            ? {
-                ...snapshot,
-                profileId: profile.id,
-                profileName: profile.name,
-              }
-            : null;
-        },
-        catch: () => null,
-      }),
-    { concurrency: 4 },
-  )).filter((snapshot) => snapshot !== null);
-
-  if (input.profileId) return profileSnapshots;
 
   return yield* Effect.tryPromise({
     try: async () => {
@@ -540,7 +485,7 @@ export const listProviderUsage = Effect.fn(function* (input: ServerListProviderU
       });
     },
     catch: () => [] as unknown as ServerListProviderUsageResult,
-  }).pipe(Effect.map((snapshots) => [...snapshots, ...profileSnapshots]));
+  });
 });
 
 /** Spend one banked Codex reset, then drop the cached Codex snapshot so the

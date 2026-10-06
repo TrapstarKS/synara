@@ -69,12 +69,9 @@ function serverSettings(overrides: Partial<ServerSettings["providers"]> = {}): S
       codex: {
         ...provider,
         binaryPath: "codex",
-        proxyBinaryPath: "claude-code-proxy",
         homePath: "",
         selectedAccountId: "default",
         accounts: [],
-        profiles: [],
-        defaultProfileId: null,
       },
       claudeAgent: {
         ...provider,
@@ -299,11 +296,8 @@ describe("shouldShowProviderUpdateStatus", () => {
         enabled: false,
         binaryPath: "codex",
         homePath: "",
-        proxyBinaryPath: "claude-code-proxy",
         selectedAccountId: "default",
         accounts: [],
-        profiles: [],
-        defaultProfileId: null,
         customModels: [],
       },
     });

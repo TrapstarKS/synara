@@ -1,5 +1,4 @@
 import {
-  CodexProfileId,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   ProjectId,
@@ -88,19 +87,6 @@ describe("decider same-thread provider handoff", () => {
         model: "gpt-5.4",
       }),
     ).rejects.toThrow(/hand off to a new thread instead/);
-  });
-
-  it("allows a same-thread switch to another Codex profile", async () => {
-    const profileId = CodexProfileId.makeUnsafe("81520e8d-68ee-40ae-9df5-24b19b19a87b");
-    const event = await decideHandoff({ provider: "codex", model: "gpt-5.4", profileId });
-    const single = Array.isArray(event) ? event[0] : event;
-    expect(single).toMatchObject({
-      type: "thread.meta-updated",
-      payload: {
-        modelSelection: { provider: "codex", profileId },
-        providerHandoff: { sourceModelSelection: SOURCE },
-      },
-    });
   });
 
   it("rejects a handoff while the session is running", async () => {

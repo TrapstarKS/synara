@@ -1,5 +1,4 @@
 import {
-  CodexProfileId,
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
   MessageId,
@@ -413,75 +412,5 @@ describe("threadHandoff", () => {
         isCoordinatorThread: true,
       }),
     ).toEqual({ providerHandoff: false, workspaceHandoff: false });
-  });
-});
-
-describe("Codex profile handoffs", () => {
-  const sourceProfileId = CodexProfileId.makeUnsafe("8fd3e58d-f8ee-4cd4-a20a-7a30709c128c");
-  const targetProfileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
-  const sourceModelSelection = {
-    provider: "codex",
-    model: "gpt-5.6-sol",
-    profileId: sourceProfileId,
-  } as const;
-
-  it("keeps the model and options when switching Codex accounts", () => {
-    expect(
-      resolveThreadHandoffModelSelection({
-        sourceThread: { modelSelection: sourceModelSelection },
-        targetProvider: "codex",
-        targetCodexProfileId: targetProfileId,
-        projectDefaultModelSelection: null,
-        stickyModelSelectionByProvider: {},
-      }),
-    ).toEqual({ provider: "codex", model: "gpt-5.6-sol", profileId: targetProfileId });
-    expect(
-      resolveThreadHandoffModelSelection({
-        sourceThread: { modelSelection: sourceModelSelection },
-        targetProvider: "codex",
-        projectDefaultModelSelection: null,
-        stickyModelSelectionByProvider: {},
-      }),
-    ).toEqual({ provider: "codex", model: "gpt-5.6-sol" });
-  });
-
-  it("offers other Codex profiles and the base login, but not the source profile", () => {
-    const providerInstances = getProviderInstanceOptions(AppSettingsSchema.makeUnsafe({}));
-    const targets = resolveAvailableHandoffTargets({
-      sourceProvider: "codex",
-      sourceCodexProfileId: sourceProfileId,
-      codexProfiles: [
-        { id: sourceProfileId, name: "Personal" },
-        { id: targetProfileId, name: "Work" },
-      ],
-      providerInstances,
-      providerStatuses: [
-        {
-          provider: "codex",
-          instanceId: "codex",
-          driver: "codex",
-          status: "ready",
-          available: true,
-          authStatus: "authenticated",
-          checkedAt: "2026-08-07T12:00:00.000Z",
-        },
-      ],
-    }).filter((target) => target.provider === "codex");
-    expect(targets).toEqual([
-      { provider: "codex", instanceId: "codex", label: "Codex" },
-      {
-        provider: "codex",
-        instanceId: "codex",
-        label: "Codex · Work",
-        codexProfileId: targetProfileId,
-      },
-    ]);
-    expect(
-      canContinueThreadHandoff({
-        sourceProvider: "codex",
-        targetProvider: "codex",
-        isCodexProfileSwitch: true,
-      }),
-    ).toBe(true);
   });
 });

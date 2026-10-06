@@ -365,9 +365,8 @@ export function makeAgentGatewayMcpTransport(input: {
         callerThreadLabel: callerThread.value.subagentNickname ?? callerThread.value.title ?? null,
         callerSessionKey: callerSession.sessionKey,
         callerProvider: callerSession.provider,
-        ...(callerThread.value.modelSelection.provider === "codex" &&
-        callerThread.value.modelSelection.profileId
-          ? { callerProfileId: callerThread.value.modelSelection.profileId }
+        ...(callerThread.value.modelSelection.instanceId
+          ? { callerInstanceId: callerThread.value.modelSelection.instanceId }
           : {}),
         callerCapabilities: callerSession.capabilities,
         callerTurnId: callerWriteAuthority?.turnId ?? null,

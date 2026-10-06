@@ -10,7 +10,6 @@ import {
   resolveLegacyCodexProfileOverlayPath,
   resolveSynaraCodexHomeOverlayPath,
 } from "./codexHomePaths.ts";
-import { CodexProfileId } from "@synara/contracts";
 
 describe("Codex home paths", () => {
   it("resolves the source home using explicit, environment, then default precedence", () => {
@@ -77,15 +76,17 @@ describe("Codex home paths", () => {
     );
   });
 
-  it("isolates managed profile overlays by profile id", () => {
-    const profileId = CodexProfileId.makeUnsafe("0a5e2de9-c0f9-40e6-acf6-580ac0072fc0");
+  it("derives legacy profile overlays from migrated profile homes", () => {
+    const profileId = "0a5e2de9-c0f9-40e6-acf6-580ac0072fc0";
+    const env = { SYNARA_HOME: "/synara/runtime" };
     assert.equal(
-      resolveLegacyCodexProfileOverlayPath(
-        { SYNARA_HOME: "/synara/runtime" },
-        "/private/profile",
-        profileId,
-      ),
+      resolveLegacyCodexProfileOverlayPath(env, path.join("/secrets", "codex-profiles", profileId)),
       path.join("/synara/runtime", "codex-home-overlays", profileId),
+    );
+    assert.equal(resolveLegacyCodexProfileOverlayPath(env, "/private/profile"), undefined);
+    assert.equal(
+      resolveLegacyCodexProfileOverlayPath(env, path.join("/secrets", "codex-profiles", "x")),
+      undefined,
     );
   });
 

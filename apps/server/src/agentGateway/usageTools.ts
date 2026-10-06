@@ -13,7 +13,7 @@ import { READ_ONLY_TOOL_ANNOTATIONS, type ToolEntry } from "./toolRuntime.ts";
 export interface AgentGatewayUsageToolsInput {
   readonly loadProviderUsage: (
     provider?: ProviderKind,
-    profileId?: string,
+    instanceId?: string,
   ) => Effect.Effect<ReadonlyArray<ServerAgentProviderUsage>, unknown, never>;
 }
 
@@ -30,7 +30,7 @@ export function makeAgentGatewayUsageTools(
       annotations: { title: "Get provider usage", ...READ_ONLY_TOOL_ANNOTATIONS },
     },
     handler: (_args, context) =>
-      input.loadProviderUsage(context.callerProvider, context.callerProfileId).pipe(
+      input.loadProviderUsage(context.callerProvider, context.callerInstanceId).pipe(
         Effect.map((results) =>
           mcpToolResultJson({
             usage:

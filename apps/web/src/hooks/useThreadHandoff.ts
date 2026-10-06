@@ -6,7 +6,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
-  type CodexProfileId,
   PROVIDER_DISPLAY_NAMES,
   type ModelSelection,
   type ProviderInstanceId,
@@ -29,7 +28,7 @@ import {
 import { resolveProviderSendAvailabilityWithRefresh } from "../lib/providerAvailability";
 import { resolveProviderDiscoveryCwd } from "../lib/providerDiscovery";
 import { providerModelsPrefetchQueryOptions } from "../lib/providerModelPrefetch";
-import { serverConfigQueryOptions, serverSettingsQueryOptions } from "../lib/serverReactQuery";
+import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { newCommandId, newThreadId } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
@@ -73,7 +72,6 @@ export function useThreadHandoff() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { settings } = useAppSettings();
-  const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const projects = useStore((store) => store.projects);
   const syncServerShellSnapshot = useStore((store) => store.syncServerShellSnapshot);
@@ -86,7 +84,6 @@ export function useThreadHandoff() {
     thread: Thread,
     targetProvider: ProviderKind,
     targetProviderInstanceId?: ProviderInstanceId,
-    targetCodexProfileId?: CodexProfileId,
   ) => {
     const api = readNativeApi();
     if (!api) {
@@ -106,12 +103,9 @@ export function useThreadHandoff() {
       thread.modelSelection.instanceId ??
       thread.modelSelection.provider;
     const targetInstanceId = targetProviderInstanceId ?? targetProvider;
-    const sourceCodexProfileId =
-      thread.modelSelection.provider === "codex" ? thread.modelSelection.profileId : undefined;
     if (
       targetProvider === thread.modelSelection.provider &&
-      targetInstanceId === sourceProviderInstanceId &&
-      targetCodexProfileId === sourceCodexProfileId
+      targetInstanceId === sourceProviderInstanceId
     ) {
       throw new Error("This handoff target is not available for the current thread.");
     }
@@ -129,14 +123,6 @@ export function useThreadHandoff() {
       );
     }
 
-    if (
-      targetCodexProfileId !== undefined &&
-      !serverSettingsQuery.data?.providers.codex.profiles.some(
-        (profile) => profile.id === targetCodexProfileId,
-      )
-    ) {
-      throw new Error("The selected Codex profile is no longer configured.");
-    }
     const { stickyModelSelectionByProvider } = useComposerDraftStore.getState();
     // Pi has no built-in default model; without a remembered selection, use
     // the first model the target reports.
@@ -169,7 +155,6 @@ export function useThreadHandoff() {
       projectDefaultModelSelection: project.defaultModelSelection,
       stickyModelSelectionByProvider,
       discoveredFallbackModel,
-      ...(targetCodexProfileId !== undefined ? { targetCodexProfileId } : {}),
     });
     return { api, modelSelection };
   };
@@ -186,26 +171,13 @@ export function useThreadHandoff() {
     // The model picked in the composer; the header menu leaves it to the
     // same default the new-thread handoff uses.
     explicitModelSelection?: ModelSelection,
-    targetCodexProfileId?: CodexProfileId,
   ): Promise<void> => {
-    const sourceCodexProfileId =
-      thread.modelSelection.provider === "codex" ? thread.modelSelection.profileId : undefined;
     if (
-      !canContinueThreadHandoff({
-        sourceProvider: thread.modelSelection.provider,
-        targetProvider,
-        isCodexProfileSwitch:
-          targetProvider === "codex" && targetCodexProfileId !== sourceCodexProfileId,
-      })
+      !canContinueThreadHandoff({ sourceProvider: thread.modelSelection.provider, targetProvider })
     ) {
       throw new Error("Hand off to a new thread to switch between accounts of the same provider.");
     }
-    const prepared = await prepareThreadHandoff(
-      thread,
-      targetProvider,
-      targetProviderInstanceId,
-      targetCodexProfileId,
-    );
+    const prepared = await prepareThreadHandoff(thread, targetProvider, targetProviderInstanceId);
     const modelSelection = explicitModelSelection ?? prepared.modelSelection;
     const commandId = newCommandId();
     // The composer shows the provider the next message goes to.
@@ -231,13 +203,11 @@ export function useThreadHandoff() {
     thread: Thread,
     targetProvider: ProviderKind,
     targetProviderInstanceId?: ProviderInstanceId,
-    targetCodexProfileId?: CodexProfileId,
   ): Promise<Thread["id"]> => {
     const { api, modelSelection } = await prepareThreadHandoff(
       thread,
       targetProvider,
       targetProviderInstanceId,
-      targetCodexProfileId,
     );
 
     const nextThreadId = newThreadId();

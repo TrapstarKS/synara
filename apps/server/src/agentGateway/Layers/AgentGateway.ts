@@ -21,7 +21,6 @@ import {
   COMPUTER_SETUP_REQUIRED_ACTIVITY_KIND,
   COMPUTER_CONTROL_DENIED_ACTIVITY_KIND,
   CommandId,
-  CodexProfileId,
   EventId,
   SYNARA_GATEWAY_MAX_THREADS_PER_OPERATION,
   SynaraSendMessageInput,
@@ -238,7 +237,7 @@ export const makeAgentGateway = Effect.gen(function* () {
       }),
     );
   });
-  const loadProviderUsage = (provider?: ProviderKind, profileId?: string) =>
+  const loadProviderUsage = (provider?: ProviderKind, instanceId?: string) =>
     Effect.gen(function* () {
       const settings = yield* serverSettings.getSettings.pipe(Effect.timeout("3 seconds"));
       const enabledProviders = new Set(
@@ -248,14 +247,14 @@ export const makeAgentGateway = Effect.gen(function* () {
         providers: provider ? [provider] : [...enabledProviders],
         enabledProviders,
         loadSnapshot: (kind) =>
-          kind === "codex" && profileId
-            ? listProviderUsage({
-                provider: "codex",
-                profileId: CodexProfileId.makeUnsafe(profileId),
-              }).pipe(
+          instanceId && instanceId !== kind
+            ? listProviderUsage({ provider: kind }).pipe(
                 Effect.provideService(ServerConfig, serverConfig),
                 Effect.provideService(ServerSettingsService, serverSettings),
-                Effect.map((snapshots) => snapshots[0] ?? null),
+                Effect.map(
+                  (snapshots) =>
+                    snapshots.find((snapshot) => snapshot.instanceId === instanceId) ?? null,
+                ),
               )
             : Effect.promise(() =>
                 collectProviderUsageSnapshots(
@@ -419,14 +418,6 @@ export const makeAgentGateway = Effect.gen(function* () {
     projectionTurns,
     providerDiscovery,
     loadProviderAvailabilities,
-    loadCodexProfiles: serverSettings.getSettings.pipe(
-      Effect.map((settings) =>
-        settings.providers.codex.profiles.map((profile) => ({
-          profileId: profile.id,
-          name: profile.name,
-        })),
-      ),
-    ),
     requireThreadShell,
     workspacePaths: {
       homeDir: serverConfig.homeDir,
@@ -643,12 +634,6 @@ export const makeAgentGateway = Effect.gen(function* () {
           },
           provider: { type: "string", enum: [...PROVIDER_KINDS] },
           model: { type: "string" },
-          profileId: {
-            type: "string",
-            format: "uuid",
-            description:
-              "Codex profile id from synara_capabilities.codexProfiles. Omit to inherit the caller thread's profile.",
-          },
           options: {
             type: "object",
             description: AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION,
@@ -679,20 +664,15 @@ export const makeAgentGateway = Effect.gen(function* () {
     handler: (args, context) =>
       Effect.suspend(() => {
         const explicitTarget = readRecordArg(args, "target");
-        const profileId = readStringArg(args, "profileId");
         let target: Record<string, unknown>;
         if (explicitTarget) {
-          target = {
-            ...explicitTarget,
-            ...(profileId && explicitTarget.profileId === undefined ? { profileId } : {}),
-          };
+          target = explicitTarget;
         } else {
           const provider = parseProviderKind(readStringArg(args, "provider", { required: true })!);
           const modelSelection = buildModelSelection(provider, readStringArg(args, "model"));
           const options = readRecordArg(args, "options");
           target = {
             ...modelSelection,
-            ...(profileId ? { profileId } : {}),
             ...(options ? { options } : {}),
           };
         }

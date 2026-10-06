@@ -17,7 +17,6 @@ import type {
 import {
   ApprovalRequestId,
   CommandId,
-  CodexProfileId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
   MessageId,
@@ -7547,14 +7546,14 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
-  it("preserves native Codex receiver effort and profile across partial updates", async () => {
-    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+  it("preserves native Codex receiver effort and instance across partial updates", async () => {
+    const instanceId = "codex_work";
     const harness = await createHarness({
       parentModelSelection: {
         provider: "codex",
         model: "gpt-5-codex",
         options: { reasoningEffort: "low" },
-        profileId,
+        instanceId,
       },
     });
     const childId = asThreadId("subagent:thread-1:codex-worker");
@@ -7587,11 +7586,10 @@ describe("ProviderRuntimeIngestion", () => {
       childId,
     );
     expect(child.modelSelection).toEqual({
-      instanceId: "codex",
+      instanceId,
       provider: "codex",
       model: "gpt-5.6-luna",
       options: { reasoningEffort: "ultra" },
-      profileId,
     });
     harness.emit({
       ...base,
@@ -7719,9 +7717,9 @@ describe("ProviderRuntimeIngestion", () => {
   );
 
   it("persists native child display names and renames without renaming the parent", async () => {
-    const profileId = CodexProfileId.makeUnsafe("4ae646ed-62ad-4e45-965a-d11cd459a853");
+    const instanceId = "codex_work";
     const harness = await createHarness({
-      parentModelSelection: { provider: "codex", model: "gpt-5-codex", profileId },
+      parentModelSelection: { provider: "codex", model: "gpt-5-codex", instanceId },
     });
     const childId = asThreadId("subagent:thread-1:child-named");
     const parentBefore = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
@@ -7763,10 +7761,9 @@ describe("ProviderRuntimeIngestion", () => {
       childId,
     );
     expect(updatedChild.modelSelection).toEqual({
-      instanceId: "codex",
+      instanceId,
       provider: "codex",
       model: "gpt-5.6-luna",
-      profileId,
       options: { reasoningEffort: "max" },
     });
     const parentAfter = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(

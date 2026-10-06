@@ -4,7 +4,7 @@
 
 import {
   CHATGPT_REASONING_EFFORT_OPTIONS,
-  CodexProfileId,
+  LEGACY_CODEX_PROFILE_INSTANCE_PREFIX,
   GROK_REASONING_EFFORT_OPTIONS,
   ProviderInstanceId,
   ProviderKind,
@@ -566,7 +566,15 @@ export function normalizeModelSelection(
   if (typeof rawModel !== "string") {
     return null;
   }
-  const instanceId = normalizeProviderInstanceId(candidate?.instanceId);
+  const explicitInstanceId = normalizeProviderInstanceId(candidate?.instanceId);
+  // Drafts saved before fork Codex profiles became provider instances.
+  const instanceId =
+    provider === "codex" &&
+    (explicitInstanceId ?? "codex") === "codex" &&
+    typeof candidate?.profileId === "string" &&
+    candidate.profileId.length > 0
+      ? (`${LEGACY_CODEX_PROFILE_INSTANCE_PREFIX}${candidate.profileId}` as ProviderInstanceId)
+      : explicitInstanceId;
   const antigravityLegacyMatch =
     provider === "antigravity" ? rawModel.trim().match(/^(.*?)\s+\(([^()]+)\)$/u) : null;
   const antigravityLegacyEffort = antigravityLegacyMatch?.[2]?.trim().toLowerCase();
@@ -620,7 +628,7 @@ export function normalizeModelSelection(
           reasoningEffort: modelOptions?.antigravity?.reasoningEffort ?? antigravityLegacyEffort,
         }
       : options;
-  const normalized = makeModelSelection(
+  return makeModelSelection(
     provider,
     model,
     normalizedOptions,
@@ -629,9 +637,6 @@ export function normalizeModelSelection(
       : undefined,
     instanceId,
   );
-  return normalized.provider === "codex" && Schema.is(CodexProfileId)(candidate?.profileId)
-    ? { ...normalized, profileId: candidate.profileId }
-    : normalized;
 }
 
 export function reconcileProviderScopedModelSelection(
@@ -647,7 +652,7 @@ export function reconcileProviderScopedModelSelection(
   if (current.model === requested.model) {
     const currentSupportsAutoMode =
       current.provider === "claudeAgent" ? current.supportsAutoMode : undefined;
-    const reconciled = makeModelSelection(
+    return makeModelSelection(
       requested.provider,
       requested.model,
       current.options,
@@ -656,9 +661,6 @@ export function reconcileProviderScopedModelSelection(
         : undefined,
       requested.instanceId,
     );
-    return reconciled.provider === "codex" && requested.provider === "codex" && requested.profileId
-      ? { ...reconciled, profileId: requested.profileId }
-      : reconciled;
   }
   if (
     current.provider !== "codex" &&
@@ -690,16 +692,13 @@ export function reconcileProviderScopedModelSelection(
       preservedOptions = Object.keys(remainingOptions).length > 0 ? remainingOptions : undefined;
     }
   }
-  const reconciled = makeModelSelection(
+  return makeModelSelection(
     requested.provider,
     requested.model,
     preservedOptions,
     requested.provider === "claudeAgent" ? requested.supportsAutoMode : undefined,
     requested.instanceId,
   );
-  return reconciled.provider === "codex" && requested.provider === "codex" && requested.profileId
-    ? { ...reconciled, profileId: requested.profileId }
-    : reconciled;
 }
 
 export function stripNonStickyModelOptions(selection: ModelSelection): ModelSelection {
@@ -750,18 +749,13 @@ export function legacySyncModelSelectionOptions(
     modelSelection.provider === "grok"
       ? normalizeGrokModelOptions(modelSelection.model, modelOptions?.grok)
       : modelOptions?.[modelSelection.provider];
-  const normalized = makeModelSelection(
+  return makeModelSelection(
     modelSelection.provider,
     modelSelection.model,
     normalizedOptions,
     modelSelection.provider === "claudeAgent" ? modelSelection.supportsAutoMode : undefined,
     modelSelection.instanceId,
   );
-  return normalized.provider === "codex" &&
-    modelSelection.provider === "codex" &&
-    modelSelection.profileId
-    ? { ...normalized, profileId: modelSelection.profileId }
-    : normalized;
 }
 
 export function legacyMergeModelSelectionIntoProviderModelOptions(

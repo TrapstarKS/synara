@@ -46,7 +46,6 @@ import {
   enabledCodexProviderInstanceIdsFromSettings,
 } from "./codexGeneratedImages.ts";
 import { ServerConfig, type ServerConfigShape } from "./config";
-import { resolveManagedCodexProfileHome } from "./codexProfiles";
 import { writeFileStringAtomically } from "./atomicWrite";
 import { GitCore } from "./git/Services/GitCore";
 import { LibraryError } from "./projectAgent/Errors";
@@ -1021,10 +1020,6 @@ export const localImageEffectRouteLayer = HttpRouter.add(
           Effect.map((settings) => ({
             configuredHomePaths: codexConfiguredHomePathsFromSettings(settings),
             enabledProviderInstanceIds: enabledCodexProviderInstanceIdsFromSettings(settings),
-            profileHomes: settings.providers.codex.profiles.map((profile) => ({
-              homePath: resolveManagedCodexProfileHome(config.secretsDir, profile.id),
-              profileId: profile.id,
-            })),
           })),
           Effect.catch(() => Effect.succeed(null)),
         )
@@ -1055,7 +1050,6 @@ export const localImageEffectRouteLayer = HttpRouter.add(
       resolveAllowedLocalPreviewFile({
         requestedPath: url.searchParams.get("path"),
         cwd: url.searchParams.get("cwd"),
-        codexProfileHomes: codexSettingsScope?.profileHomes ?? [],
         codexHomePaths,
         scratchWorkspacesRoot: resolveScratchWorkspacesRoot(),
         allowAbsoluteLocalPreviewFile: true,

@@ -25,7 +25,6 @@ import {
   WsProjectAgentRpcGroup,
   WsRpcError,
   PullRequestsUnavailableError,
-  type CodexProfileId,
   type DeviceEvent,
   type ComputerEvent,
   type GitRemoveWorktreeInput,
@@ -94,8 +93,6 @@ import { SessionCredentialService } from "./auth/Services/SessionCredentialServi
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { resolveThreadWorkspaceCwd } from "./checkpointing/Utils";
 import { ServerConfig, type ServerConfigShape } from "./config";
-import { CodexAccountManager } from "./codexAccountManager";
-import { resolveCodexProfileOptions } from "./codexProfiles";
 import { realpathNearestExisting } from "./realpathNearestExisting";
 import { isGroupContainerKind } from "@synara/shared/projectContainers";
 import { workspaceRootsEqual } from "@synara/shared/threadWorkspace";
@@ -177,11 +174,7 @@ import { recoverUnregisteredGitHubCheckout } from "./project/githubProjectRegist
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { ProviderService } from "./provider/Services/ProviderService";
-import {
-  consumeCodexResetCreditEffect,
-  invalidateProviderUsageSnapshots,
-  listProviderUsage,
-} from "./providerUsage";
+import { consumeCodexResetCreditEffect, listProviderUsage } from "./providerUsage";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { ProfileStatsQuery } from "./profileStats";
 import { RecapStatsQuery } from "./recapStats";
@@ -421,18 +414,15 @@ const resnapshotEscalationTracker = makeResnapshotEscalationTracker();
 // would silently reroute the request to the globally configured model.
 function resolveTextGenerationRouting(
   settings: ServerSettings,
-  secretsDir: string,
   input: {
     readonly textGenerationModel?: string | undefined;
     readonly textGenerationModelSelection?: ModelSelection | undefined;
     readonly providerOptions?: ProviderStartOptions | undefined;
-    readonly codexHomePath?: string | undefined;
   },
 ): {
   readonly model: string;
   readonly modelSelection: ModelSelection | undefined;
   readonly providerOptions: ProviderStartOptions | undefined;
-  readonly codexHomePath: string | undefined;
 } {
   const explicitModel = input.textGenerationModel?.trim();
   if (!input.textGenerationModelSelection && explicitModel) {
@@ -440,7 +430,6 @@ function resolveTextGenerationRouting(
       model: explicitModel,
       modelSelection: undefined,
       providerOptions: input.providerOptions,
-      codexHomePath: input.codexHomePath,
     };
   }
   const modelSelection =
@@ -449,24 +438,13 @@ function resolveTextGenerationRouting(
     provider: modelSelection.provider,
     instanceId: resolveModelSelectionInstanceId(modelSelection),
   });
-  // A managed Codex account replaces the home of the selected instance.
-  const providerOptions = resolveCodexProfileOptions({
-    settings,
-    secretsDir,
+  return {
+    model: explicitModel || modelSelection.model,
     modelSelection,
     providerOptions: mergeProviderStartOptions(
       input.providerOptions,
       instance ? providerStartOptionsFromInstance(instance) : undefined,
     ),
-  });
-  return {
-    model: explicitModel || modelSelection.model,
-    modelSelection,
-    providerOptions,
-    codexHomePath:
-      modelSelection.provider === "codex" && modelSelection.profileId
-        ? providerOptions.codex?.homePath
-        : input.codexHomePath,
   };
 }
 
@@ -532,18 +510,6 @@ const makeWsRpcHandlersLayer = () =>
       const runtimeStartup = yield* ServerRuntimeStartup;
       const serverEnvironment = yield* ServerEnvironment;
       const serverSettings = yield* ServerSettingsService;
-      const codexAccountManager = new CodexAccountManager(config.secretsDir, () =>
-        invalidateProviderUsageSnapshots(["codex"]),
-      );
-      yield* Effect.addFinalizer(() => Effect.promise(() => codexAccountManager.close()));
-      const getSettingsForCodexProfile = (profileId: CodexProfileId) =>
-        serverSettings.getSettings.pipe(
-          Effect.flatMap((settings) =>
-            settings.providers.codex.profiles.some((profile) => profile.id === profileId)
-              ? Effect.succeed(settings)
-              : Effect.fail(new Error("Codex account was not found.")),
-          ),
-        );
       const terminalManager = yield* TerminalManager;
       const textGeneration = yield* TextGeneration;
       const workspaceEntries = yield* WorkspaceEntries;
@@ -578,7 +544,7 @@ const makeWsRpcHandlersLayer = () =>
       const runGitAction = yield* makeGitActionRunner((input, publish) =>
         Effect.gen(function* () {
           const settings = yield* serverSettings.getSettings;
-          const routing = resolveTextGenerationRouting(settings, config.secretsDir, input);
+          const routing = resolveTextGenerationRouting(settings, input);
           yield* gitManager.runStackedAction(
             {
               ...input,
@@ -1946,7 +1912,7 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             Effect.gen(function* () {
               const settings = yield* serverSettings.getSettings;
-              const routing = resolveTextGenerationRouting(settings, config.secretsDir, input);
+              const routing = resolveTextGenerationRouting(settings, input);
               return yield* gitManager.summarizeDiff({
                 ...input,
                 ...(routing.modelSelection
@@ -2283,29 +2249,7 @@ const makeWsRpcHandlersLayer = () =>
         [WS_METHODS.serverGetSettings]: () =>
           rpcEffect(serverSettings.getSettingsView, "Failed to load server settings"),
         [WS_METHODS.serverUpdateSettings]: (input) =>
-          rpcEffect(
-            Effect.gen(function* () {
-              const previous = yield* serverSettings.getSettings;
-              const next = yield* serverSettings.updateSettingsView(input);
-              const nextProfileIds = new Set(
-                next.providers.codex.profiles.map((profile) => profile.id),
-              );
-              const removedProfileIds = previous.providers.codex.profiles
-                .map((profile) => profile.id)
-                .filter((profileId) => !nextProfileIds.has(profileId));
-              if (removedProfileIds.length > 0) {
-                yield* Effect.promise(() =>
-                  Promise.all(
-                    removedProfileIds.map((profileId) =>
-                      codexAccountManager.closeProfile(profileId),
-                    ),
-                  ),
-                );
-              }
-              return next;
-            }),
-            "Failed to update server settings",
-          ),
+          rpcEffect(serverSettings.updateSettingsView(input), "Failed to update server settings"),
         [WS_METHODS.serverRefreshProviders]: () =>
           rpcEffect(
             providerHealth.refresh.pipe(Effect.map((providers) => ({ providers }))),
@@ -2360,102 +2304,6 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(getProviderUsageSnapshot(input), "Failed to load provider usage"),
         [WS_METHODS.serverListProviderUsage]: (input) =>
           rpcEffect(listProviderUsage(input), "Failed to load provider usage"),
-        [WS_METHODS.serverListCodexAccountStates]: () =>
-          rpcEffect(
-            requireOwner.pipe(
-              Effect.andThen(serverSettings.getSettings),
-              Effect.flatMap((settings) =>
-                Effect.forEach(
-                  settings.providers.codex.profiles,
-                  (profile) =>
-                    Effect.promise(() =>
-                      codexAccountManager.getState({
-                        profileId: profile.id,
-                        proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
-                      }),
-                    ),
-                  { concurrency: 4 },
-                ),
-              ),
-            ),
-            "Failed to load Codex account state",
-          ),
-        [WS_METHODS.serverStartCodexAccountLogin]: (input) =>
-          rpcEffect(
-            requireOwner.pipe(
-              Effect.andThen(getSettingsForCodexProfile(input.profileId)),
-              Effect.flatMap((settings) =>
-                Effect.tryPromise({
-                  try: () =>
-                    codexAccountManager.startLogin({
-                      ...input,
-                      codexBinaryPath: settings.providers.codex.binaryPath,
-                      proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
-                    }),
-                  catch: (error) => error as Error,
-                }),
-              ),
-            ),
-            "Failed to start Codex account login",
-          ),
-        [WS_METHODS.serverCancelCodexAccountLogin]: (input) =>
-          rpcEffect(
-            requireOwner.pipe(
-              Effect.andThen(getSettingsForCodexProfile(input.profileId)),
-              Effect.flatMap((settings) =>
-                Effect.promise(async () => {
-                  await codexAccountManager.cancelLogin(input.profileId);
-                  return codexAccountManager.getState({
-                    profileId: input.profileId,
-                    proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
-                  });
-                }),
-              ),
-            ),
-            "Failed to cancel Codex account login",
-          ),
-        [WS_METHODS.serverLogoutCodexAccount]: (input) =>
-          rpcEffect(
-            requireOwner.pipe(
-              Effect.andThen(getSettingsForCodexProfile(input.profileId)),
-              Effect.flatMap((settings) =>
-                Effect.promise(async () => {
-                  await codexAccountManager.logout(input.profileId, input.target);
-                  return codexAccountManager.getState({
-                    profileId: input.profileId,
-                    proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
-                  });
-                }),
-              ),
-            ),
-            "Failed to sign out of Codex account",
-          ),
-        [WS_METHODS.serverSetCodexAccountBridge]: (input) =>
-          rpcEffect(
-            requireOwner.pipe(
-              Effect.andThen(getSettingsForCodexProfile(input.profileId)),
-              Effect.flatMap((settings) =>
-                Effect.tryPromise({
-                  try: async () => {
-                    if (input.action === "start") {
-                      await codexAccountManager.startBridge({
-                        profileId: input.profileId,
-                        proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
-                      });
-                    } else {
-                      await codexAccountManager.stopBridge(input.profileId);
-                    }
-                    return codexAccountManager.getState({
-                      profileId: input.profileId,
-                      proxyBinaryPath: settings.providers.codex.proxyBinaryPath,
-                    });
-                  },
-                  catch: (error) => error as Error,
-                }),
-              ),
-            ),
-            "Failed to update Claude Code bridge",
-          ),
         [WS_METHODS.serverConsumeCodexResetCredit]: (input) =>
           rpcEffect(consumeCodexResetCreditEffect(input), "Failed to use Codex reset"),
         [WS_METHODS.serverGetDiagnostics]: () =>
@@ -2573,13 +2421,13 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             Effect.gen(function* () {
               const settings = yield* serverSettings.getSettings;
-              const routing = resolveTextGenerationRouting(settings, config.secretsDir, input);
+              const routing = resolveTextGenerationRouting(settings, input);
               return yield* textGeneration.generateThreadRecap({
                 cwd: input.cwd,
                 newMaterial: input.newMaterial,
                 ...(input.previousRecap ? { previousRecap: input.previousRecap } : {}),
                 ...(input.currentState ? { currentState: input.currentState } : {}),
-                ...(routing.codexHomePath ? { codexHomePath: routing.codexHomePath } : {}),
+                ...(input.codexHomePath ? { codexHomePath: input.codexHomePath } : {}),
                 model: routing.model,
                 ...(routing.modelSelection ? { modelSelection: routing.modelSelection } : {}),
                 ...(routing.providerOptions ? { providerOptions: routing.providerOptions } : {}),
@@ -2591,13 +2439,13 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             Effect.gen(function* () {
               const settings = yield* serverSettings.getSettings;
-              const routing = resolveTextGenerationRouting(settings, config.secretsDir, input);
+              const routing = resolveTextGenerationRouting(settings, input);
               return yield* textGeneration.generateAutomationIntent({
                 cwd: input.cwd,
                 message: input.message,
                 ...(input.defaultMode ? { defaultMode: input.defaultMode } : {}),
                 nowIso: input.nowIso,
-                ...(routing.codexHomePath ? { codexHomePath: routing.codexHomePath } : {}),
+                ...(input.codexHomePath ? { codexHomePath: input.codexHomePath } : {}),
                 model: routing.model,
                 ...(routing.modelSelection ? { modelSelection: routing.modelSelection } : {}),
                 ...(routing.providerOptions ? { providerOptions: routing.providerOptions } : {}),

@@ -3,7 +3,6 @@
 // and provider-specific snapshots into one UI-friendly summary.
 
 import type {
-  CodexProfileId,
   OrchestrationThread,
   ProviderInstanceId,
   ProviderKind,
@@ -107,12 +106,10 @@ export function useProviderUsageSummary(input: {
   threads?: ReadonlyArray<Pick<OrchestrationThread, "activities">>;
   threadRateLimits?: ReadonlyArray<ProviderRateLimit> | undefined;
   codexHomePath?: string | null;
-  codexProfileId?: CodexProfileId | null;
   providerSnapshot?: ServerGetProviderUsageSnapshotResult | undefined;
   fetchOpenUsageData?: boolean | undefined;
 }) {
   const provider = input.provider ?? null;
-  const codexProfileId = provider === "codex" ? (input.codexProfileId ?? null) : null;
   const instanceId = input.instanceId ?? input.providerSnapshot?.instanceId;
   const shouldFetchLiveProviderUsage = provider !== null && input.providerSnapshot === undefined;
   const allProviderUsageQuery = useQuery(
@@ -123,17 +120,14 @@ export function useProviderUsageSummary(input: {
   const liveProviderSnapshot = (allProviderUsageQuery.data ?? []).find(
     (snapshot) =>
       snapshot.provider === provider &&
-      (snapshot.instanceId ?? snapshot.provider) === (instanceId ?? provider) &&
-      (provider !== "codex" || (snapshot.profileId ?? null) === codexProfileId),
+      (snapshot.instanceId ?? snapshot.provider) === (instanceId ?? provider),
   );
   const authoritativeLiveSnapshot =
     input.providerSnapshot !== undefined ? input.providerSnapshot : (liveProviderSnapshot ?? null);
   // Thread, local and OpenUsage fallbacks identify only the driver. They cannot be
   // attributed to a selected account, even when that account is the default one.
   const accountScoped =
-    instanceId !== undefined ||
-    authoritativeLiveSnapshot?.instanceId !== undefined ||
-    codexProfileId !== null;
+    instanceId !== undefined || authoritativeLiveSnapshot?.instanceId !== undefined;
   const shouldFetchLocalProviderUsage = shouldFetchLiveProviderUsage && !accountScoped;
   const localUsageSnapshotQuery = useQuery(
     serverProviderUsageSnapshotQueryOptions({

@@ -58,10 +58,5 @@ export function selectVisibleProviderUsageSnapshots(
     snapshots.filter((snapshot) => snapshot.provider === provider),
   );
   const connected = ordered.filter((snapshot) => (snapshot.status ?? "ok") !== "needs-auth");
-  return connected.length > 0
-    ? ordered.filter(
-        (snapshot) =>
-          snapshot.profileId !== undefined || (snapshot.status ?? "ok") !== "needs-auth",
-      )
-    : ordered;
+  return connected.length > 0 ? connected : ordered;
 }

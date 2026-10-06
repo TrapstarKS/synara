@@ -1,5 +1,4 @@
 import {
-  CodexProfileId,
   CheckpointRef,
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
@@ -67,7 +66,6 @@ import {
   resolveEnvironmentPanelPreferenceUpdate,
   resolveGitRepoUiState,
   resolveQueuedSteerGateTransition,
-  resolveCodexProfileId,
   resolveRuntimeModeAfterApprovalDecision,
   resolveSettledThreadBranchMismatch,
   resolveThreadDetailHydration,
@@ -89,51 +87,19 @@ import {
 } from "./ChatView.logic";
 
 describe("model selection equality", () => {
-  it("treats Codex accounts as part of the durable selection", () => {
-    const first = CodexProfileId.makeUnsafe("679c91a5-a4f8-4f19-b2ca-2744bc779d89");
-    const second = CodexProfileId.makeUnsafe("d408bd3d-e93a-4406-a67e-44333a23da32");
+  it("treats the provider instance as part of the durable selection", () => {
     expect(
       modelSelectionsEqual(
-        { provider: "codex", model: "gpt-5.6-sol", profileId: first },
-        { provider: "codex", model: "gpt-5.6-sol", profileId: second },
+        { provider: "codex", model: "gpt-5.6-sol", instanceId: "codex_work" },
+        { provider: "codex", model: "gpt-5.6-sol", instanceId: "codex_personal" },
       ),
     ).toBe(false);
-  });
-});
-
-describe("Codex account selection", () => {
-  it("uses the persisted account after a thread starts even when the draft says current account", () => {
-    const profileId = CodexProfileId.makeUnsafe("679c91a5-a4f8-4f19-b2ca-2744bc779d89");
     expect(
-      resolveCodexProfileId({
-        hasThreadStarted: true,
-        threadModelSelection: { provider: "codex", model: "gpt-5.6-sol", profileId },
-        draftModelSelection: { provider: "codex", model: "gpt-5.6-sol" },
-        defaultProfileId: undefined,
-      }),
-    ).toBe(profileId);
-  });
-  it("keeps the draft account while a newly started thread waits for its refreshed projection", () => {
-    const profileId = CodexProfileId.makeUnsafe("679c91a5-a4f8-4f19-b2ca-2744bc779d89");
-    expect(
-      resolveCodexProfileId({
-        hasThreadStarted: true,
-        threadModelSelection: { provider: "codex", model: "gpt-5.6-sol" },
-        draftModelSelection: { provider: "codex", model: "gpt-5.6-sol", profileId },
-        defaultProfileId: undefined,
-      }),
-    ).toBe(profileId);
-  });
-  it("lets an unstarted draft explicitly choose current account over the default", () => {
-    const profileId = CodexProfileId.makeUnsafe("d408bd3d-e93a-4406-a67e-44333a23da32");
-    expect(
-      resolveCodexProfileId({
-        hasThreadStarted: false,
-        threadModelSelection: null,
-        draftModelSelection: { provider: "codex", model: "gpt-5.6-sol" },
-        defaultProfileId: profileId,
-      }),
-    ).toBeUndefined();
+      modelSelectionsEqual(
+        { provider: "codex", model: "gpt-5.6-sol", instanceId: "codex" },
+        { provider: "codex", model: "gpt-5.6-sol" },
+      ),
+    ).toBe(true);
   });
 });
 

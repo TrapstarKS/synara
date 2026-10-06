@@ -3,7 +3,6 @@
 
 import {
   DEFAULT_SERVER_SETTINGS_VIEW,
-  type CodexProfileId,
   type ProviderKind,
   type ServerProviderUsageSnapshot,
 } from "@synara/contracts";
@@ -11,7 +10,6 @@ import {
   deriveProviderInstances,
   type ResolvedProviderInstance,
 } from "@synara/shared/providerInstances";
-import { providerUsageDisplayName } from "@synara/shared/providerUsage";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -25,7 +23,10 @@ import {
   serverSettingsQueryOptions,
 } from "~/lib/serverReactQuery";
 
-import { resolveEnvironmentProviderUsageSummary } from "./EnvironmentUsageSection.logic";
+import {
+  resolveEnvironmentProviderUsageSummary,
+  resolveProviderUsageAccounts,
+} from "./EnvironmentUsageSection.logic";
 import {
   ENVIRONMENT_ROW_CLASS_NAME,
   ENVIRONMENT_ROW_ICON_CLASS_NAME,
@@ -38,18 +39,15 @@ function EnvironmentUsageAccountRow({
   instance,
   snapshot,
   label,
-  codexProfileId,
 }: {
   instance: ResolvedProviderInstance;
   snapshot: ServerProviderUsageSnapshot;
   label: string;
-  codexProfileId?: CodexProfileId | undefined;
 }) {
   const provider = instance.driver;
   const model = useProviderUsageMenuModel(provider, {
     instanceId: instance.instanceId,
     providerSnapshot: snapshot,
-    codexProfileId,
   });
   const summary = resolveEnvironmentProviderUsageSummary({
     providerName: label,
@@ -107,54 +105,13 @@ function EnvironmentUsageAccountRow({
   );
 }
 
-export function EnvironmentUsageSection({
-  provider,
-  codexProfileId,
-}: {
-  provider: ProviderKind;
-  codexProfileId?: CodexProfileId | undefined;
-}) {
+export function EnvironmentUsageSection({ provider }: { provider: ProviderKind }) {
   const usageQuery = useQuery(serverAllProviderUsageQueryOptions());
   const settingsQuery = useQuery(serverSettingsQueryOptions());
-  const providerInstances = deriveProviderInstances(
-    settingsQuery.data ?? DEFAULT_SERVER_SETTINGS_VIEW,
-  ).filter((instance) => instance.enabled && instance.driver === provider);
-  const accounts = providerInstances.flatMap((instance) => {
-    const snapshot = usageQuery.data?.find(
-      (entry) =>
-        entry.provider === provider &&
-        (entry.instanceId ?? entry.provider) === instance.instanceId &&
-        (provider !== "codex" || (entry.profileId ?? null) === (codexProfileId ?? null)),
-    );
-    if (!snapshot) return [];
-    const hasUsage =
-      snapshot.limits.length > 0 ||
-      snapshot.usageLines.length > 0 ||
-      (snapshot.resetCredits?.availableCount ?? 0) > 0;
-    // Unused default providers should not crowd the panel. Configured extra
-    // accounts stay visible so an expired login or failed usage check is clear.
-    if (
-      instance.isDefault &&
-      providerInstances.length === 1 &&
-      !instance.raw.displayName &&
-      !hasUsage &&
-      (snapshot.status === "needs-auth" || (snapshot.status ?? "ok") === "ok")
-    )
-      return [];
-    const providerName = providerUsageDisplayName(provider);
-    const showAccountName =
-      !instance.isDefault || providerInstances.length > 1 || instance.displayName !== providerName;
-    const accountName =
-      instance.isDefault && instance.displayName === providerName
-        ? "Default"
-        : instance.displayName;
-    return [
-      {
-        instance,
-        snapshot,
-        label: showAccountName ? `${providerName} · ${accountName}` : providerName,
-      },
-    ];
+  const accounts = resolveProviderUsageAccounts({
+    provider,
+    instances: deriveProviderInstances(settingsQuery.data ?? DEFAULT_SERVER_SETTINGS_VIEW),
+    snapshots: usageQuery.data ?? [],
   });
 
   if (accounts.length === 0) return null;
@@ -167,7 +124,6 @@ export function EnvironmentUsageSection({
           instance={instance}
           snapshot={snapshot}
           label={label}
-          codexProfileId={codexProfileId}
         />
       ))}
     </EnvironmentLabeledSection>

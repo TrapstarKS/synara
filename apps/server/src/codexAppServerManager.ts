@@ -6,7 +6,6 @@ import path from "node:path";
 import {
   ApprovalRequestId,
   BROWSER_TOOL_NAMES,
-  type CodexProfileId,
   EventId,
   type ProviderStartOptions,
   type ProviderComposerCapabilities,
@@ -1186,7 +1185,6 @@ function normalizeCodexDiscoveryOptions(
   const normalized = {
     ...(options.binaryPath?.trim() ? { binaryPath: options.binaryPath.trim() } : {}),
     ...(options.homePath?.trim() ? { homePath: options.homePath.trim() } : {}),
-    ...(options.profileId ? { profileId: options.profileId } : {}),
     ...(options.shadowHomePath?.trim() ? { shadowHomePath: options.shadowHomePath.trim() } : {}),
     ...(options.accountId?.trim() ? { accountId: options.accountId.trim() } : {}),
     ...(environment ? { environment } : {}),
@@ -1260,7 +1258,6 @@ function codexProcessEnvInputForOptions(
     // Native launches run directly in the selected account home; there is no
     // per-account overlay, so the shadow home (when present) is that home.
     ...(nativeHomePath ? { homePath: nativeHomePath } : {}),
-    ...(options?.profileId ? { profileId: options.profileId } : {}),
   };
 }
 
@@ -1359,7 +1356,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const processEnvInput = codexProcessEnvInputForOptions(codexOptions);
     await migrateLegacyCodexHome({
       ...(processEnvInput.homePath ? { homePath: processEnvInput.homePath } : {}),
-      ...(processEnvInput.profileId ? { profileId: processEnvInput.profileId } : {}),
     });
     const processLaunch = await buildCodexProcessLaunchContext(processEnvInput);
     const env = processLaunch.env;
@@ -1447,7 +1443,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const normalizedCodexOptions = normalizeCodexDiscoveryOptions(codexOptions);
       const codexBinaryPath = codexOptions.binaryPath ?? "codex";
       const codexHomePath = codexOptions.homePath;
-      const codexProfileId = codexOptions.profileId;
       const requiredMinimumVersion = highestCodexCliVersion([
         minimumVersion,
         this.agentGatewayMcp ? MINIMUM_CODEX_NATIVE_GATEWAY_CLI_VERSION : undefined,
@@ -1469,7 +1464,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             }
           : {}),
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
-        ...(codexProfileId ? { profileId: codexProfileId } : {}),
         ...(codexShadowHomePath ? { shadowHomePath: codexShadowHomePath } : {}),
         ...(codexAccountId ? { accountId: codexAccountId } : {}),
         ...(codexEnvironment ? { environment: codexEnvironment } : {}),
@@ -2511,7 +2505,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const normalizedCodexOptions = normalizeCodexDiscoveryOptions(codexOptions);
       const codexBinaryPath = codexOptions.binaryPath ?? "codex";
       const codexHomePath = codexOptions.homePath;
-      const codexProfileId = codexOptions.profileId;
       const codexShadowHomePath = codexOptions.shadowHomePath;
       const codexAccountId = codexOptions.accountId;
       const codexEnvironment = codexOptions.environment;
@@ -2535,7 +2528,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             }
           : {}),
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
-        ...(codexProfileId ? { profileId: codexProfileId } : {}),
         ...(codexShadowHomePath ? { shadowHomePath: codexShadowHomePath } : {}),
         ...(codexAccountId ? { accountId: codexAccountId } : {}),
         ...(codexEnvironment ? { environment: codexEnvironment } : {}),
@@ -5320,7 +5312,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     readonly binaryPath: string;
     readonly cwd: string;
     readonly homePath?: string;
-    readonly profileId?: CodexProfileId;
     readonly shadowHomePath?: string;
     readonly accountId?: string;
     readonly environment?: Readonly<Record<string, string>>;
@@ -5763,7 +5754,6 @@ function readCodexProviderOptions(input: {
 }): {
   readonly binaryPath?: string;
   readonly homePath?: string;
-  readonly profileId?: CodexProfileId;
   readonly shadowHomePath?: string;
   readonly accountId?: string;
   readonly environment?: Readonly<Record<string, string>>;
@@ -5775,7 +5765,6 @@ function readCodexProviderOptions(input: {
   return {
     ...(options.binaryPath ? { binaryPath: options.binaryPath } : {}),
     ...(options.homePath ? { homePath: options.homePath } : {}),
-    ...(options.profileId ? { profileId: options.profileId } : {}),
     ...(options.shadowHomePath ? { shadowHomePath: options.shadowHomePath } : {}),
     ...(options.accountId ? { accountId: options.accountId } : {}),
     ...(options.environment ? { environment: options.environment } : {}),
@@ -5894,7 +5883,6 @@ async function runCodexCliVersionGate(input: {
   readonly binaryPath: string;
   readonly cwd: string;
   readonly homePath?: string;
-  readonly profileId?: CodexProfileId;
   readonly shadowHomePath?: string;
   readonly accountId?: string;
   readonly environment?: Readonly<Record<string, string>>;
@@ -5904,7 +5892,6 @@ async function runCodexCliVersionGate(input: {
 }): Promise<CodexCliBinaryFingerprint | null> {
   const codexOptions = normalizeCodexDiscoveryOptions({
     ...(input.homePath ? { homePath: input.homePath } : {}),
-    ...(input.profileId ? { profileId: input.profileId } : {}),
     ...(input.shadowHomePath ? { shadowHomePath: input.shadowHomePath } : {}),
     ...(input.accountId ? { accountId: input.accountId } : {}),
     ...(input.environment ? { environment: input.environment } : {}),
@@ -5989,7 +5976,6 @@ const codexCliVersionGates = new Map<string, CodexCliVersionGateEntry>();
 function codexCliVersionGateKey(
   binaryPath: string,
   homePath: string | undefined,
-  profileId: CodexProfileId | undefined,
   shadowHomePath: string | undefined,
   accountId: string | undefined,
   environment: Readonly<Record<string, string>> | undefined,
@@ -6003,7 +5989,6 @@ function codexCliVersionGateKey(
   return JSON.stringify([
     binaryPath,
     homePath ?? "",
-    profileId ?? "",
     shadowHomePath ?? "",
     accountId ?? "",
     environment
@@ -6034,7 +6019,6 @@ async function assertSupportedCodexCliVersion(input: {
   readonly binaryPath: string;
   readonly cwd: string;
   readonly homePath?: string;
-  readonly profileId?: CodexProfileId;
   readonly shadowHomePath?: string;
   readonly accountId?: string;
   readonly environment?: Readonly<Record<string, string>>;
@@ -6050,7 +6034,6 @@ async function assertSupportedCodexCliVersion(input: {
   const key = codexCliVersionGateKey(
     input.binaryPath,
     input.homePath,
-    input.profileId,
     input.shadowHomePath,
     input.accountId,
     input.environment,

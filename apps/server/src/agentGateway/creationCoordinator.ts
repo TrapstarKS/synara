@@ -52,7 +52,7 @@ import {
 } from "./targetResolver.ts";
 import { ToolInputError, errorText } from "./toolInput.ts";
 import { GatewayToolError, gatewayToolErrorResult } from "./toolRuntime.ts";
-import { inheritCodexProfile } from "./profileInheritance.ts";
+import { inheritCodexInstance } from "./codexInstanceInheritance.ts";
 import type { AwaitedDispatch } from "./awaitedDispatch.ts";
 import type { AwaitRegistration } from "./awaitThreads.ts";
 import type { GatewayWaitRow, PinnedWaitScope } from "./awaitRepository.ts";
@@ -574,7 +574,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
           );
           const providerAvailability = providerAvailabilities.get(spec.target.provider);
           const target = yield* resolveAgentGatewayTarget({
-            target: inheritCodexProfile({
+            target: inheritCodexInstance({
               target: spec.target,
               ...(caller ? { parentModelSelection: caller.modelSelection } : {}),
             }),

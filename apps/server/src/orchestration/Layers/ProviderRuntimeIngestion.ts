@@ -98,7 +98,6 @@ import {
 } from "../stalePendingInteractions.ts";
 import { isExpiredSidechat } from "../sidechatLifecycle.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { inheritCodexProfile } from "../../agentGateway/profileInheritance.ts";
 import {
   ProjectionSnapshotQuery,
   type ProjectionGeneratedImageActivityRecord,
@@ -2210,17 +2209,14 @@ const make = Effect.gen(function* () {
                 if (!observedModel && !reasoningEffort) return undefined;
                 const matching =
                   matchingSelection?.provider === "codex" ? matchingSelection : undefined;
-                return inheritCodexProfile({
-                  target: {
-                    ...matching,
-                    provider: "codex",
-                    model,
-                    ...(reasoningEffort
-                      ? { options: { ...matching?.options, reasoningEffort } }
-                      : {}),
-                  },
-                  parentModelSelection: parentSelection,
-                });
+                return {
+                  ...matching,
+                  provider: "codex",
+                  model,
+                  ...(reasoningEffort
+                    ? { options: { ...matching?.options, reasoningEffort } }
+                    : {}),
+                };
               }
               if (parentSelection.provider === "claudeAgent") {
                 const effort =

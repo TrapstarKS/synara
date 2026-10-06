@@ -216,6 +216,30 @@ it.effect("preserves provider instance ids when decoding model selections", () =
   }),
 );
 
+it.effect("maps removed fork Codex profiles to their migrated provider instance", () =>
+  Effect.gen(function* () {
+    const profileId = "4ae646ed-62ad-4e45-965a-d11cd459a853";
+    const legacy = yield* decodeModelSelection({ provider: "codex", model: "gpt-5.5", profileId });
+    const explicit = yield* decodeModelSelection({
+      provider: "codex",
+      instanceId: "codex_work",
+      model: "gpt-5.5",
+      profileId,
+    });
+
+    assert.deepStrictEqual(legacy, {
+      provider: "codex",
+      instanceId: `codex-profile-${profileId}`,
+      model: "gpt-5.5",
+    });
+    assert.deepStrictEqual(explicit, {
+      provider: "codex",
+      instanceId: "codex_work",
+      model: "gpt-5.5",
+    });
+  }),
+);
+
 it.effect("normalizes mixed legacy option payloads when decoding model selections", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeModelSelection({

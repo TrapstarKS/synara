@@ -105,15 +105,6 @@ export function deriveTurnStartModelSelection(input: {
   ) {
     return input.currentModelSelection;
   }
-  if (
-    !input.canAdoptRequestedProvider &&
-    requestedModelSelection.provider === "codex" &&
-    input.currentModelSelection.provider === "codex" &&
-    input.currentModelSelection.profileId &&
-    !requestedModelSelection.profileId
-  ) {
-    return { ...requestedModelSelection, profileId: input.currentModelSelection.profileId };
-  }
   return requestedModelSelection;
 }
 

@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "vitest";
 
-import { CodexProfileId } from "@synara/contracts";
 import { resolveCodexHomeOverlayAccountSegment } from "./codexHomePaths.ts";
 import { resolveAllowedLocalPreviewFile } from "./localImageFiles.ts";
 
@@ -96,10 +95,10 @@ describe("resolveAllowedLocalPreviewFile", () => {
     }
   });
 
-  it("allows generated images from a configured Codex profile overlay", async () => {
+  it("allows generated images from a migrated Codex profile's legacy overlay", async () => {
     const fakeRoot = path.join(process.cwd(), `.test-codex-profile-${process.pid}-${Date.now()}`);
     const synaraHome = path.join(fakeRoot, "synara");
-    const profileId = CodexProfileId.makeUnsafe("81520e8d-68ee-40ae-9df5-24b19b19a87b");
+    const profileId = "81520e8d-68ee-40ae-9df5-24b19b19a87b";
     const profileHome = path.join(fakeRoot, "secrets", "codex-profiles", profileId);
     const imageDir = path.join(
       synaraHome,
@@ -118,7 +117,7 @@ describe("resolveAllowedLocalPreviewFile", () => {
       const result = await resolveAllowedLocalPreviewFile({
         requestedPath: imagePath,
         cwd: null,
-        codexProfileHomes: [{ homePath: profileHome, profileId }],
+        codexHomePaths: [profileHome],
       });
 
       assert.equal(result?.path, realpathSync(imagePath));

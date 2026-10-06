@@ -4,7 +4,6 @@
 // Depends on: project action controls, git actions, and panel toggle callbacks
 
 import {
-  type CodexProfileId,
   type EditorId,
   type ProjectId,
   type ProjectScript,
@@ -83,7 +82,6 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeThreadEntryPoint: ThreadPrimarySurface;
   activeProvider: ProviderKind;
-  activeCodexProfileId?: CodexProfileId;
   activeProjectName: string | undefined;
   threadBreadcrumbs: ReadonlyArray<{
     threadId: ThreadId;
@@ -421,7 +419,6 @@ export function ChatHeader({
   activeThreadTitle,
   activeThreadEntryPoint,
   activeProvider,
-  activeCodexProfileId,
   activeProjectName,
   threadBreadcrumbs,
   className,
@@ -711,10 +708,7 @@ export function ChatHeader({
       </div>
       <div className="flex shrink-0 items-center gap-2 [-webkit-app-region:no-drag]">
         {!minimalChrome && !hideHandoffControls && !environment ? (
-          <ProviderUsageMenuControl
-            provider={activeProvider}
-            codexProfileId={activeCodexProfileId}
-          />
+          <ProviderUsageMenuControl provider={activeProvider} />
         ) : null}
         {!minimalChrome && !hideHandoffControls && showHandoffAction ? (
           <Menu modal={false}>
@@ -744,7 +738,7 @@ export function ChatHeader({
                     <MenuGroupLabel>Continue in this thread</MenuGroupLabel>
                     {continueHandoffActionTargets.map((target) => (
                       <MenuItem
-                        key={`${target.instanceId}:${target.codexProfileId ?? ""}`}
+                        key={target.instanceId}
                         data-handoff-destination="this-thread"
                         onClick={() => onContinueHandoff(target)}
                       >
@@ -761,7 +755,7 @@ export function ChatHeader({
                 <MenuGroupLabel>Continue in a new thread</MenuGroupLabel>
                 {handoffActionTargets.map((target) => (
                   <MenuItem
-                    key={`${target.instanceId}:${target.codexProfileId ?? ""}`}
+                    key={target.instanceId}
                     data-handoff-destination="new-thread"
                     onClick={() => onCreateHandoff(target)}
                   >

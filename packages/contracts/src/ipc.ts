@@ -306,11 +306,6 @@ import type { ComputerGetAuditHistoryInput, ComputerGetAuditHistoryResult } from
 import type { StudioListThreadOutputsInput, StudioListThreadOutputsResult } from "./studio";
 import type {
   ServerConfig,
-  ServerCodexAccountBridgeInput,
-  ServerCodexAccountInput,
-  ServerCodexAccountLoginInput,
-  ServerCodexAccountState,
-  ServerListCodexAccountStatesResult,
   ServerDiagnosticsResult,
   ServerReadThreadDiagnosticsInput,
   ServerReadThreadDiagnosticsResult,
@@ -1401,15 +1396,6 @@ export interface NativeApi {
     listProviderUsage: (
       input: ServerListProviderUsageInput,
     ) => Promise<ServerListProviderUsageResult>;
-    listCodexAccountStates: () => Promise<ServerListCodexAccountStatesResult>;
-    startCodexAccountLogin: (
-      input: ServerCodexAccountLoginInput,
-    ) => Promise<ServerCodexAccountState>;
-    cancelCodexAccountLogin: (input: ServerCodexAccountInput) => Promise<ServerCodexAccountState>;
-    logoutCodexAccount: (input: ServerCodexAccountLoginInput) => Promise<ServerCodexAccountState>;
-    setCodexAccountBridge: (
-      input: ServerCodexAccountBridgeInput,
-    ) => Promise<ServerCodexAccountState>;
     consumeCodexResetCredit: (
       input: ServerConsumeCodexResetCreditInput,
     ) => Promise<ServerConsumeCodexResetCreditResult>;

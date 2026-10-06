@@ -143,4 +143,31 @@ describe("profile token pricing", () => {
       }),
     ).toBeCloseTo(0.315);
   });
+
+  it("prices GPT-6.1 Sol cache writes, Fast mode, and GPT-6 Astra long context", () => {
+    const sol = {
+      provider: "codex",
+      model: "gpt-6.1-sol",
+      inputTokens: 1_000_000,
+      cachedInputTokens: 500_000,
+      cacheWriteInputTokens: 100_000,
+      outputTokens: 100_000,
+      fastMode: false,
+      lastInputTokens: 100_000,
+    };
+    expect(estimateProfileTokenUsageUsd(sol)).toBeCloseTo(2.1);
+    expect(estimateProfileTokenUsageUsd({ ...sol, fastMode: true })).toBeCloseTo(5.25);
+    expect(
+      estimateProfileTokenUsageUsd({
+        provider: "codex",
+        model: "gpt-6-astra",
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 0,
+        fastMode: false,
+        lastInputTokens: 300_000,
+      }),
+    ).toBeCloseTo(20);
+  });
 });

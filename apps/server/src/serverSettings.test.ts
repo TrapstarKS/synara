@@ -1,11 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { dirname } from "node:path";
+import path, { dirname } from "node:path";
 import {
-  CodexProfileId,
   DEFAULT_DROID_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
-  type ServerSettingsPatch,
   DEFAULT_SERVER_SETTINGS,
   type ServerSettings,
 } from "@synara/contracts";
@@ -118,7 +116,7 @@ describe("ServerSettingsService", () => {
     expect(result.updated.providers.codex.binaryPath).toBe("/usr/local/bin/codex");
     expect(result.parsed).toMatchObject({
       revision: 1,
-      migrationVersion: 4,
+      migrationVersion: 5,
       settings: {
         enableAssistantStreaming: true,
         enableProviderUpdateChecks: false,
@@ -169,7 +167,7 @@ describe("ServerSettingsService", () => {
     );
 
     expect(result.settings.textGenerationModelSelection.model).toBe(expected);
-    expect(result.persisted.migrationVersion).toBe(4);
+    expect(result.persisted.migrationVersion).toBe(5);
     expect(result.persisted.settings.textGenerationModelSelection.model).toBe(expected);
   });
 
@@ -555,52 +553,55 @@ describe("ServerSettingsService", () => {
     expect(settings.providerInstances.codex_work).toBeUndefined();
   });
 
-  it("persists isolated Codex account metadata", async () => {
-    const profileId = CodexProfileId.makeUnsafe("53b0de8c-bd84-4dba-84a6-42b2f508fe63");
-    const settings = await Effect.runPromise(
+  it("migrates removed Codex profiles to provider instances with their private homes", async () => {
+    const profileId = "53b0de8c-bd84-4dba-84a6-42b2f508fe63";
+    const result = await runWithSettings(
       Effect.gen(function* () {
         const service = yield* ServerSettingsService;
-        return yield* service.updateSettings({
-          providers: {
-            codex: {
-              profiles: [{ id: profileId, name: "Work" }],
-              defaultProfileId: profileId,
+        const { settingsPath, secretsDir } = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(dirname(settingsPath), { recursive: true });
+        yield* fs.writeFileString(
+          settingsPath,
+          JSON.stringify({
+            revision: 2,
+            migrationVersion: 4,
+            settings: {
+              providers: {
+                codex: {
+                  profiles: [
+                    { id: profileId, name: "Work" },
+                    { id: "../escape", name: "Bad" },
+                  ],
+                  defaultProfileId: profileId,
+                  proxyBinaryPath: "/usr/local/bin/claude-code-proxy",
+                },
+              },
+              textGenerationModelSelection: { provider: "codex", model: "gpt-5.5", profileId },
             },
-          },
-        });
-      }).pipe(Effect.provide(ServerSettingsService.layerTest())),
-    );
-
-    expect(settings.providers.codex.profiles).toHaveLength(1);
-    expect(settings.providers.codex.defaultProfileId).toBe(profileId);
-  });
-
-  it("rejects duplicate Codex account names and dangling defaults", async () => {
-    const first = CodexProfileId.makeUnsafe("4830cc8d-6814-49ab-9760-f54df713398c");
-    const second = CodexProfileId.makeUnsafe("210341b7-e718-4d76-874f-33ce9f997abc");
-    const runUpdate = (patch: ServerSettingsPatch) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const service = yield* ServerSettingsService;
-          return yield* service.updateSettings(patch);
-        }).pipe(Effect.provide(ServerSettingsService.layerTest())),
-      );
-
-    await expect(
-      runUpdate({
-        providers: {
-          codex: {
-            profiles: [
-              { id: first, name: "Work" },
-              { id: second, name: "work" },
-            ],
-          },
-        },
+          }),
+        );
+        yield* service.start;
+        const settings = yield* service.getSettings;
+        const persisted = JSON.parse(yield* fs.readFileString(settingsPath));
+        return { settings, persisted, secretsDir };
       }),
-    ).rejects.toThrow(/unique/);
-    await expect(runUpdate({ providers: { codex: { defaultProfileId: first } } })).rejects.toThrow(
-      /does not exist/,
     );
+
+    expect(result.settings.providerInstances[`codex-profile-${profileId}`]).toEqual({
+      driver: "codex",
+      displayName: "Work",
+      enabled: true,
+      config: { homePath: path.join(result.secretsDir, "codex-profiles", profileId) },
+    });
+    expect(Object.keys(result.settings.providerInstances)).not.toContain("codex-profile-../escape");
+    expect(result.settings.textGenerationModelSelection).toMatchObject({
+      provider: "codex",
+      instanceId: `codex-profile-${profileId}`,
+    });
+    expect(result.persisted.migrationVersion).toBe(5);
+    expect(result.persisted.settings.providers?.codex).not.toHaveProperty("profiles");
+    expect(result.persisted.settings.providers?.codex).not.toHaveProperty("proxyBinaryPath");
   });
 
   it("redacts sensitive provider-instance environment and config values for clients", () => {
