@@ -243,6 +243,45 @@ describe("ProfileStatsQuery", () => {
     );
   });
 
+  it("adds Claude-reported turn cost to the USD equivalent", async () => {
+    await runProfileStatsTest(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const statsQuery = yield* ProfileStatsQuery;
+        yield* sql`
+          INSERT INTO projection_threads
+            (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+             env_mode, created_at, updated_at)
+          VALUES ('claude-cost', 'project', 'Claude', '{"provider":"claudeAgent","model":"claude-opus-5-5"}',
+            'full-access', 'default', 'local', '2026-10-05', '2026-10-05')
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_activities
+            (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at)
+          VALUES ('1', 'claude-cost', 'turn', 'info', 'turn.completed', 'done',
+            ${JSON.stringify({
+              tokenAccountingVersion: 1,
+              mainLoopTokens: 1_000,
+              totalCostUsd: 1.25,
+              modelUsage: {
+                "claude-opus-5-5": {
+                  inputTokens: 100,
+                  outputTokens: 100,
+                  cacheReadInputTokens: 700,
+                  cacheCreationInputTokens: 100,
+                  costUSD: 1.25,
+                },
+              },
+            })}, 1, '2026-10-05T12:00:00Z')
+        `;
+        const stats = yield* statsQuery.getProfileTokenStats({ utcOffsetMinutes: 0 });
+        expect(stats.lifetimeTotalTokens).toBe(1_000);
+        expect(stats.estimatedEquivalentUsd).toBeCloseTo(1.25);
+        expect(stats.estimatedEquivalentUsdCoveragePercent).toBe(100);
+      }),
+    );
+  });
+
   it("uses versioned Claude results once, recovers retained main usage, and excludes unverifiable history", async () => {
     await runProfileStatsTest(
       Effect.gen(function* () {

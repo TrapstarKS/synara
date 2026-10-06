@@ -1384,6 +1384,47 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       `,
     );
 
+  // Claude reports SDK-computed list-price USD per turn (cache reads/writes
+  // included), so Claude is priced from that instead of a local rate table.
+  const queryClaudeReportedCost = () =>
+    Effect.gen(function* () {
+      const liveRows = yield* legacyCompatibleQuery(
+        "profileStats.claudeReportedCosts",
+        sql<ReportedCostActivityRow>`
+          WITH reported_costs AS (${reportedCostActivityCte(sql)})
+          SELECT * FROM reported_costs
+          WHERE provider = 'claudeAgent'
+          ORDER BY
+            threadId ASC,
+            CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
+            sequence ASC,
+            createdAt ASC,
+            activityId ASC
+        `,
+      );
+      // Archived costs carry no provider; keep only purged Claude-only threads.
+      const archivedRows = yield* legacyCompatibleQuery(
+        "profileStats.archivedClaudeReportedCosts",
+        sql<{ readonly costUsd: number | bigint | null }>`
+          SELECT SUM(c.cost_usd) AS costUsd
+          FROM profile_stats_deleted_costs c
+          WHERE EXISTS (
+              SELECT 1 FROM profile_stats_deleted_tokens t
+              WHERE t.thread_id = c.thread_id AND t.provider = 'claudeAgent'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM profile_stats_deleted_tokens t
+              WHERE t.thread_id = c.thread_id AND COALESCE(t.provider, '') != 'claudeAgent'
+            )
+        `,
+      );
+      return {
+        costUsd:
+          aggregateReportedCostRows(liveRows).costUsd +
+          (nonNegativeFiniteNumber(archivedRows[0]?.costUsd ?? null) ?? 0),
+      };
+    });
+
   const queryTotalThreads = () =>
     legacyCompatibleQuery(
       "profileStats.totalThreads",
@@ -1860,11 +1901,17 @@ const makeProfileStatsQuery = Effect.gen(function* () {
         ...livePricingUsages,
         ...archivedPricingUsages,
       ]);
+      const claudeCost = yield* queryClaudeReportedCost();
+      // ponytail: counts all Claude tokens as covered once any cost exists; turns
+      // recorded before the SDK cost field overstate coverage slightly.
+      const claudePricedTokens =
+        claudeCost.costUsd > 0 ? (tokensByProvider.get("claudeAgent") ?? 0) : 0;
+      const pricedTokens = pricingEstimate.pricedTokens + claudePricedTokens;
       const estimatedEquivalentUsd =
-        pricingEstimate.pricedTokens > 0 ? pricingEstimate.costUsd : null;
+        pricedTokens > 0 ? pricingEstimate.costUsd + claudeCost.costUsd : null;
       const estimatedEquivalentUsdCoveragePercent =
-        pricingEstimate.pricedTokens > 0 && lifetime > 0
-          ? percent1(Math.min(pricingEstimate.pricedTokens, lifetime), lifetime)
+        pricedTokens > 0 && lifetime > 0
+          ? percent1(Math.min(pricedTokens, lifetime), lifetime)
           : null;
 
       let peakDay: string | null = null;

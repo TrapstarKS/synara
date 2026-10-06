@@ -182,7 +182,7 @@ function ProfileContent({
       tokenStats.estimatedEquivalentUsdCoveragePercent < 100 ? (
         <p className="text-ui-sm leading-snug text-muted-foreground">
           USD equivalent currently covers {tokenStats.estimatedEquivalentUsdCoveragePercent}% of
-          recorded token volume with published Codex pricing and complete mode/context evidence.
+          recorded token volume with published Codex pricing or Claude-reported cost.
         </p>
       ) : null}
 
