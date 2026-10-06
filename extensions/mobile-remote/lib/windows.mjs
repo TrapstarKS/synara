@@ -12,7 +12,8 @@ function invocation(script, environment) {
     {
       encoding: "utf8",
       windowsHide: true,
-      timeout: 10_000,
+      // Cold PowerShell start plus ACL work can exceed 10s on busy machines and CI runners.
+      timeout: 30_000,
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
     },

@@ -179,7 +179,7 @@ test("Windows ACL batch uses one bounded asynchronous process and preserves stri
   const pending = windows.assertPrivateWindowsPaths(paths, (command, args, options, done) => {
     calls++;
     assert.equal(command, "powershell.exe");
-    assert.equal(options.timeout, 10_000);
+    assert.equal(options.timeout, 30_000);
     assert.equal(options.windowsHide, true);
     assert.deepEqual(JSON.parse(options.env.SYNARA_MOBILE_PRIVATE_PATHS), paths);
     const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
