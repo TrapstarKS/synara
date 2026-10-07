@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.5] — 2026-10-07
+
+**Orchestrators get nested child threads and automatic finish notifications; usage stops flipping to errors.**
+
+### Added
+
+- Threads created by an orchestrator nest under it in the sidebar, collapsed by default with an "X/N done" counter.
+- Each child appears in the orchestrator transcript as a collapsible card with live status; expanding shows its recent messages and an "Open thread" button.
+- The orchestrator is notified automatically when a child finishes; children finishing together arrive as one notification.
+- `synara_orchestrator_status` returns every child's status and short summary in one call; `synara_await_threads` accepts `until: "any"`.
+
+### Changed
+
+- Clicking a usage ring refreshes usage instead of opening Settings → Usage.
+- Usage reserve and deficit show one decimal place.
+- Provider commands run in per-thread lanes, so one slow thread no longer delays the others.
+
+### Fixed
+
+- A transient network or provider failure no longer replaces usage values under an hour old with an error; the last values are shown with a note.
+- Provider usage works behind fake-ip DNS proxies (Clash/Mihomo, Surge).
+
 ## [1.0.4] — 2026-10-06
 
 **Keeps each Codex and Claude account on its own login.**
