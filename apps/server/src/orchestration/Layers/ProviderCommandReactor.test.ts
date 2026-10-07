@@ -12415,6 +12415,167 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession).not.toHaveBeenCalled();
   });
 
+  describe("per-thread delivery lanes", () => {
+    const createLaneThread = async (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      threadId: ThreadId,
+    ) => {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe(`cmd-create-${threadId}`),
+          threadId,
+          projectId: asProjectId("project-1"),
+          title: "Lane thread",
+          modelSelection: { provider: "codex", model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: new Date().toISOString(),
+        }),
+      );
+    };
+    const threadA = ThreadId.makeUnsafe("thread-1");
+    const threadB = ThreadId.makeUnsafe("thread-lane-b");
+    const sentThreads = (harness: Awaited<ReturnType<typeof createHarness>>) =>
+      harness.sendTurn.mock.calls.map(([input]) => input.threadId);
+    const readHarnessDeliveryForMessage = async (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      messageId: string,
+    ) => {
+      const highWater = await Effect.runPromise(harness.engine.getEventHighWaterSequence);
+      const events = await Effect.runPromise(
+        Stream.runCollect(harness.engine.readEventsThrough(0, highWater)),
+      );
+      const event = Array.from(events).find(
+        (candidate) =>
+          candidate.type === "thread.turn-start-requested" &&
+          candidate.payload.messageId === messageId,
+      );
+      if (!event) throw new Error(`No turn start for ${messageId}`);
+      const delivery = await Effect.runPromise(
+        harness.deliveryRepository.getDelivery({
+          consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+          eventSequence: event.sequence,
+        }),
+      );
+      return { eventSequence: event.sequence, state: Option.getOrUndefined(delivery)?.state };
+    };
+
+    it("delivers another thread's turn while one thread's provider call is slow", async () => {
+      const harness = await createHarness();
+      await createLaneThread(harness, threadB);
+      await harness.drain();
+      const aStarted = Effect.runSync(Deferred.make<void>());
+      const releaseA = Effect.runSync(Deferred.make<void>());
+      harness.sendTurn.mockImplementationOnce(() =>
+        Deferred.succeed(aStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseA)),
+          Effect.as({ threadId: threadA, turnId: asTurnId("turn-lane-a") }),
+        ),
+      );
+
+      const createdAt = new Date().toISOString();
+      await dispatchHarnessUserTurn(harness, { messageId: "lane-a", text: "slow", createdAt });
+      await Effect.runPromise(Deferred.await(aStarted));
+      await dispatchHarnessUserTurn(harness, {
+        messageId: "lane-b",
+        text: "fast",
+        createdAt,
+        threadId: threadB,
+      });
+
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      expect(sentThreads(harness)).toEqual([threadA, threadB]);
+      // The slow delivery holds the durable cursor; B settled out of order.
+      const consumer = await Effect.runPromise(
+        harness.deliveryRepository.getConsumerState(PROVIDER_COMMAND_REACTOR_CONSUMER),
+      );
+      const aDelivery = await readHarnessDeliveryForMessage(harness, "lane-a");
+      expect(Option.getOrThrow(consumer).lastAckedSequence).toBeLessThan(aDelivery.eventSequence);
+
+      await Effect.runPromise(Deferred.succeed(releaseA, undefined));
+      await harness.drain();
+      expect((await readHarnessDeliveryForMessage(harness, "lane-a")).state).toBe("succeeded");
+    });
+
+    it("keeps one thread's commands in order behind its slow call", async () => {
+      const harness = await createHarness();
+      await createLaneThread(harness, threadB);
+      await harness.drain();
+      const aStarted = Effect.runSync(Deferred.make<void>());
+      const releaseA = Effect.runSync(Deferred.make<void>());
+      harness.sendTurn.mockImplementationOnce(() =>
+        Deferred.succeed(aStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseA)),
+          Effect.as({ threadId: threadA, turnId: asTurnId("turn-lane-order") }),
+        ),
+      );
+
+      const createdAt = new Date().toISOString();
+      await dispatchHarnessUserTurn(harness, { messageId: "order-a", text: "first", createdAt });
+      await Effect.runPromise(Deferred.await(aStarted));
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.makeUnsafe("cmd-lane-order-interrupt"),
+          threadId: threadA,
+          createdAt,
+        }),
+      );
+      await dispatchHarnessUserTurn(harness, {
+        messageId: "order-b",
+        text: "other thread",
+        createdAt,
+        threadId: threadB,
+      });
+
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      // A's interrupt is queued behind A's own in-flight turn start.
+      expect(harness.interruptTurn).not.toHaveBeenCalled();
+      await Effect.runPromise(Deferred.succeed(releaseA, undefined));
+      await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+      expect(harness.interruptTurn.mock.calls[0]?.[0]).toMatchObject({ threadId: threadA });
+      await harness.drain();
+    });
+
+    it("continues a thread and its neighbours after a rejected provider call", async () => {
+      const harness = await createHarness();
+      await createLaneThread(harness, threadB);
+      await harness.drain();
+      harness.sendTurn.mockImplementationOnce(() =>
+        Effect.fail(
+          new ProviderAdapterValidationError({
+            provider: "codex",
+            operation: "sendTurn",
+            issue: "rejected before acceptance",
+          }),
+        ),
+      );
+
+      const createdAt = new Date().toISOString();
+      await dispatchHarnessUserTurn(harness, { messageId: "fail-a1", text: "rejected", createdAt });
+      await dispatchHarnessUserTurn(harness, {
+        messageId: "fail-b",
+        text: "neighbour",
+        createdAt,
+        threadId: threadB,
+      });
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      await harness.drain();
+      await dispatchHarnessUserTurn(harness, { messageId: "fail-a2", text: "retry", createdAt });
+      await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+      await harness.drain();
+
+      expect(sentThreads(harness).toSorted()).toEqual([threadA, threadA, threadB].toSorted());
+      expect(harness.sendTurn.mock.calls.at(-1)?.[0]).toMatchObject({
+        threadId: threadA,
+        input: "retry",
+      });
+    });
+  });
+
   it("does not send when the checkpoint preparation is interrupted by its owning scope", async () => {
     const probeStarted = Effect.runSync(Deferred.make<void>());
     let probeInterrupted = false;
