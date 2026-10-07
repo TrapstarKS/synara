@@ -221,9 +221,13 @@ export const makeAwaitRepository = Effect.gen(function* () {
   const settle = (waitId: string, state: "dispatched" | "cancelled", now: string) =>
     sql`UPDATE agent_gateway_waits SET state = ${state}, settled_at = ${now}
       WHERE wait_id = ${waitId} AND state IN ('waiting', 'dispatching')`.pipe(Effect.asVoid);
+  const listByCaller = (callerThreadId: string) =>
+    sql<GatewayWaitRow>`SELECT ${columns} FROM agent_gateway_waits
+      WHERE caller_thread_id = ${callerThreadId} ORDER BY created_at, wait_id`;
   return {
     getById,
     getByScope,
+    listByCaller,
     pending,
     dispatchReceipt,
     reserve,

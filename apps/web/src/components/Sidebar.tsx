@@ -397,6 +397,7 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import {
   excludeHiddenProjectAgentCoordinatorThreads,
   buildProjectThreadTree,
+  type SidebarProjectEntry,
   derivePinnedProjectIdsForSidebar,
   deriveSidebarProjectData,
   deriveSidebarThreadActivity,
@@ -1716,6 +1717,17 @@ export default function Sidebar() {
   const [threadListExtraPagesByProjectCwd, setThreadListExtraPagesByProjectCwd] = useState<
     ReadonlyMap<string, number>
   >(() => new Map(Object.entries(readSidebarUiState().projectThreadListExtraPagesByCwd)));
+  // Session-local: orchestrator rows start collapsed so their children don't flood the list.
+  const [expandedOrchestratorIds, setExpandedOrchestratorIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const toggleOrchestratorExpanded = useCallback((threadId: string) => {
+    setExpandedOrchestratorIds((current) => {
+      const next = new Set(current);
+      if (!next.delete(threadId)) next.add(threadId);
+      return next;
+    });
+  }, []);
   const [chatSectionExpanded, setChatSectionExpanded] = useState(
     () => readSidebarUiState().chatSectionExpanded,
   );
@@ -4519,9 +4531,11 @@ export default function Sidebar() {
         appSettings.sidebarThreadSortOrder,
       ),
       forceVisibleThreadId: activeSidebarThreadId ?? undefined,
+      expandedOrchestratorIds,
     });
   }, [
     activeSidebarThreadId,
+    expandedOrchestratorIds,
     appSettings.sidebarThreadSortOrder,
     chatSectionExpanded,
     chatProjects,
@@ -4665,10 +4679,12 @@ export default function Sidebar() {
         activeSidebarThreadId: activeSidebarThreadId ?? undefined,
         previewLimit: THREAD_PREVIEW_LIMIT,
         previewPageSize: THREAD_PREVIEW_PAGE_SIZE,
+        expandedOrchestratorIds,
         resolveThreadStatus: resolveThreadStatusForSidebar,
       }),
     [
       activeSidebarThreadId,
+      expandedOrchestratorIds,
       threadListExtraPagesByProjectCwd,
       pinnedThreadIds,
       sortedSidebarThreadsByProjectId,
@@ -4737,10 +4753,12 @@ export default function Sidebar() {
       activeSidebarThreadId: activeSidebarThreadId ?? undefined,
       previewLimit: THREAD_PREVIEW_LIMIT,
       previewPageSize: THREAD_PREVIEW_PAGE_SIZE,
+      expandedOrchestratorIds,
       resolveThreadStatus: resolveThreadStatusForSidebar,
     });
   }, [
     activeSidebarThreadId,
+    expandedOrchestratorIds,
     isOnGroups,
     threadListExtraPagesByProjectCwd,
     pinnedThreadIds,
@@ -5443,7 +5461,9 @@ export default function Sidebar() {
     // A group member thread dispatched into a linked repo shows where it runs —
     // same small-label treatment as pinned rows' project name.
     projectContextLabel?: string,
+    tree?: Pick<SidebarProjectEntry, "orchestratorChildren" | "isOrchestratorChild">,
   ) {
+    const orchestratorChildren = tree?.orchestratorChildren;
     const threadTerminalState = selectThreadTerminalState(terminalStateByThreadId, thread.id);
     const threadEntryPoint = threadTerminalState.entryPoint;
     const isActive = visualActiveSidebarThreadId === thread.id;
@@ -5475,7 +5495,9 @@ export default function Sidebar() {
     const isSubagentThread = Boolean(thread.parentThreadId);
     const prChip =
       !isSubagentThread && !thread.forkSourceThreadId && pr ? resolveThreadRowPrChip(pr) : null;
-    const subagentIndentPx = Math.max(0, Math.min(depth - 1, 3) * 10);
+    const subagentIndentPx = tree?.isOrchestratorChild
+      ? Math.min(depth, 3) * 10
+      : Math.max(0, Math.min(depth - 1, 3) * 10);
     const showCompactMeta = !isSubagentThread;
     const showTemporaryThreadIcon = showCompactMeta && isTemporaryThread;
     const threadJumpLabel = visibleThreadJumpLabelByThreadId.get(thread.id) ?? null;
@@ -5577,6 +5599,24 @@ export default function Sidebar() {
                       <TooltipPopup side="top">Temporary chat</TooltipPopup>
                     </Tooltip>
                   </div>
+                ) : orchestratorChildren ? (
+                  <button
+                    type="button"
+                    data-thread-selection-safe
+                    aria-expanded={orchestratorChildren.expanded}
+                    aria-label={`${orchestratorChildren.expanded ? "Collapse" : "Expand"} ${orchestratorChildren.total} child threads`}
+                    className="ml-auto flex shrink-0 items-center gap-1 rounded px-1 text-ui-xs text-muted-foreground/60 hover:text-foreground"
+                    onMouseDown={preventFocusOnMouseDown}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      toggleOrchestratorExpanded(thread.id);
+                    }}
+                  >
+                    {orchestratorChildren.done}/{orchestratorChildren.total} done
+                    <DisclosureChevron open={orchestratorChildren.expanded} className="size-3" />
+                  </button>
                 ) : projectContextLabel ? (
                   <span className="min-w-0 max-w-[40%] shrink truncate pl-1 pr-1 text-ui-meta text-muted-foreground/38">
                     {projectContextLabel}
@@ -5683,7 +5723,14 @@ export default function Sidebar() {
     return (
       <>
         {visibleEntries.map((entry) =>
-          renderThreadRow(entry.thread, orderedProjectThreadIds, entry.depth),
+          renderThreadRow(
+            entry.thread,
+            orderedProjectThreadIds,
+            entry.depth,
+            false,
+            undefined,
+            entry,
+          ),
         )}
 
         {(canShowMoreThreads || canShowLessThreads) && (
@@ -7002,11 +7049,7 @@ export default function Sidebar() {
     bottomItems: railBottomItems,
     bottomSlot: (
       <>
-        <AppRailUsage
-          onOpenUsageSettings={() => {
-            void navigate({ to: "/settings", search: { section: "usage" } });
-          }}
-        />
+        <AppRailUsage />
         <SidebarHelpMenu inRail {...sidebarHelpMenuProps} />
         {showDesktopUpdateButton && desktopUpdateState ? (
           <DesktopUpdateRailButton
@@ -7506,6 +7549,8 @@ export default function Sidebar() {
                               visibleChatThreadIds,
                               entry.row.depth,
                               true,
+                              undefined,
+                              entry.row,
                             ),
                           )
                         ) : (

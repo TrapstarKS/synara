@@ -197,6 +197,30 @@ describe("collectProviderUsageSnapshots caching", () => {
     expect(polled[0]?.source).toBe("healthy");
   });
 
+  it("serves the last healthy snapshot as stale when a poll after the TTL fails", async () => {
+    const failed = (nowMs: number) => ({
+      ...okSnapshot(nowMs, "failed-poll"),
+      status: "error" as const,
+      detail: "Could not reach the usage endpoint.",
+    });
+    fetchMock
+      .mockResolvedValueOnce(okSnapshot(NOW_MS, "healthy"))
+      .mockImplementation(async (ctx) => failed(ctx.nowMs));
+
+    await collectProviderUsageSnapshots(makeCtx(NOW_MS));
+    const polled = await collectProviderUsageSnapshots(makeCtx(NOW_MS + 6 * 60_000));
+    expect(polled[0]).toMatchObject({ source: "healthy", status: "ok", stale: true });
+    expect(polled[0]?.detail).toContain("Could not reach the usage endpoint.");
+
+    // The healthy entry stays cached, so the next poll retries instead of serving stale data.
+    await collectProviderUsageSnapshots(makeCtx(NOW_MS + 7 * 60_000));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // Too old to stand in for a failure any more.
+    const expired = await collectProviderUsageSnapshots(makeCtx(NOW_MS + 2 * 60 * 60_000));
+    expect(expired[0]?.source).toBe("failed-poll");
+  });
+
   it("replaces a healthy cache entry when refresh discovers authentication is required", async () => {
     fetchMock.mockResolvedValueOnce(okSnapshot(NOW_MS, "healthy")).mockResolvedValueOnce({
       ...okSnapshot(NOW_MS + 1_000, "auth-required"),

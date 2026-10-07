@@ -181,6 +181,7 @@ const SYNARA_GATEWAY_OWNED_TOOL_NAMES = [
   "synara_list_threads",
   "synara_read_thread",
   "synara_wait_for_threads",
+  "synara_orchestrator_status",
   // Kanban tools (kanbanTools.ts)
   "synara_read_kanban_board",
   "synara_read_kanban_card",

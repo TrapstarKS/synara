@@ -339,6 +339,8 @@ export type SidebarProjectEntry = {
   rootRowId: ThreadId;
   thread: SidebarThreadSummary;
   depth: number;
+  orchestratorChildren?: SidebarThreadTreeRow<SidebarThreadSummary>["orchestratorChildren"];
+  isOrchestratorChild?: boolean;
 };
 
 export type SidebarThreadHoverAnchorScope = "pinned" | "chat" | "project" | "activity";
@@ -1040,22 +1042,48 @@ export interface SidebarThreadTreeRow<
   thread: T;
   depth: number;
   rootThreadId: T["id"];
+  /** Set on orchestrator rows: threads they created through synara_create_thread(s). */
+  orchestratorChildren?: { total: number; done: number; expanded: boolean };
+  /** True for rows nested under an orchestrator thread. */
+  isOrchestratorChild?: boolean;
+}
+
+/** The orchestrator that created this thread through the Synara gateway, if any. */
+export function orchestratorParentThreadId(
+  thread: Partial<
+    Pick<SidebarThreadSummary, "parentThreadId" | "creationSource" | "sourceThreadId">
+  >,
+): ThreadId | null {
+  if (thread.parentThreadId) return null;
+  return thread.creationSource === "synara_mcp" ? (thread.sourceThreadId ?? null) : null;
 }
 
 // Build the project-local parent/child thread tree while preserving sort order from the input list.
+// Subagents nest under parentThreadId (visible while working); orchestrator children nest under
+// their creating thread and stay collapsed unless that thread is in expandedOrchestratorIds.
 export function buildProjectThreadTree<
   T extends Pick<SidebarThreadSummary, "id" | "parentThreadId"> &
+    Partial<Pick<SidebarThreadSummary, "creationSource" | "sourceThreadId">> &
     Parameters<typeof isThreadActivelyWorking>[0],
 >(input: {
   threads: readonly T[];
   forceVisibleThreadId?: T["id"] | undefined;
+  expandedOrchestratorIds?: ReadonlySet<string> | undefined;
 }): SidebarThreadTreeRow<T>[] {
-  const { threads } = input;
+  const { threads, forceVisibleThreadId, expandedOrchestratorIds } = input;
   const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
   const childrenByParentId = new Map<T["id"], T[]>();
+  const orchestratorChildrenById = new Map<T["id"], T[]>();
   const roots: T[] = [];
 
   for (const thread of threads) {
+    const orchestratorId = orchestratorParentThreadId(thread);
+    if (orchestratorId && orchestratorId !== thread.id && threadById.has(orchestratorId)) {
+      const siblings = orchestratorChildrenById.get(orchestratorId) ?? [];
+      siblings.push(thread);
+      orchestratorChildrenById.set(orchestratorId, siblings);
+      continue;
+    }
     const parentThreadId = thread.parentThreadId ?? null;
     if (!parentThreadId) {
       roots.push(thread);
@@ -1072,23 +1100,61 @@ export function buildProjectThreadTree<
     childrenByParentId.set(parentThreadId, siblings);
   }
 
+  // Keep the active thread reachable: expand every orchestrator above it.
+  const forcedOpen = new Set<string>();
+  let forced = forceVisibleThreadId ? threadById.get(forceVisibleThreadId) : undefined;
+  const seen = new Set<string>();
+  while (forced && !seen.has(forced.id)) {
+    seen.add(forced.id);
+    const orchestratorId = orchestratorParentThreadId(forced);
+    const parentId = orchestratorId ?? forced.parentThreadId ?? null;
+    if (orchestratorId) forcedOpen.add(orchestratorId);
+    forced = parentId ? threadById.get(parentId) : undefined;
+  }
+
   const orderedRows: SidebarThreadTreeRow<T>[] = [];
 
-  const visit = (thread: T, depth: number, rootThreadId: T["id"]) => {
+  const visit = (
+    thread: T,
+    depth: number,
+    rootThreadId: T["id"],
+    shown: boolean,
+    isOrchestratorChild: boolean,
+  ) => {
     const childThreads = childrenByParentId.get(thread.id) ?? [];
+    const orchestrated = orchestratorChildrenById.get(thread.id) ?? [];
 
-    const visible = depth === 0 || isThreadActivelyWorking(thread);
+    const visible =
+      shown && (depth === 0 || isOrchestratorChild || isThreadActivelyWorking(thread));
+    const expanded = expandedOrchestratorIds?.has(thread.id) === true || forcedOpen.has(thread.id);
     if (visible) {
-      orderedRows.push({ thread, depth, rootThreadId });
+      orderedRows.push({
+        thread,
+        depth,
+        rootThreadId,
+        ...(isOrchestratorChild ? { isOrchestratorChild } : {}),
+        ...(orchestrated.length > 0
+          ? {
+              orchestratorChildren: {
+                total: orchestrated.length,
+                done: orchestrated.filter((child) => !isThreadActivelyWorking(child)).length,
+                expanded,
+              },
+            }
+          : {}),
+      });
     }
 
     for (const child of childThreads) {
-      visit(child, depth + (visible ? 1 : 0), rootThreadId);
+      visit(child, depth + (visible ? 1 : 0), rootThreadId, shown, false);
+    }
+    for (const child of orchestrated) {
+      visit(child, depth + 1, rootThreadId, visible && expanded, true);
     }
   };
 
   for (const root of roots) {
-    visit(root, 0, root.id);
+    visit(root, 0, root.id, true, false);
   }
 
   return orderedRows;
@@ -1678,6 +1744,7 @@ export function deriveSidebarProjectData(input: {
   activeSidebarThreadId: ThreadId | undefined;
   previewLimit: number;
   previewPageSize: number;
+  expandedOrchestratorIds?: ReadonlySet<string>;
   resolveThreadStatus?: (
     thread: SidebarThreadSummary,
   ) => ReturnType<typeof resolveThreadStatusPill>;
@@ -1741,14 +1808,17 @@ export function deriveSidebarProjectData(input: {
     const projectThreadTree = buildProjectThreadTree({
       threads: projectThreads,
       forceVisibleThreadId: input.activeSidebarThreadId,
+      expandedOrchestratorIds: input.expandedOrchestratorIds,
     });
     const orderedEntries: SidebarProjectEntry[] = projectThreadTree.map(
-      ({ thread, depth, rootThreadId }) => ({
+      ({ thread, depth, rootThreadId, orchestratorChildren, isOrchestratorChild }) => ({
         kind: "thread",
         rowId: thread.id,
         rootRowId: rootThreadId,
         thread,
         depth,
+        ...(orchestratorChildren ? { orchestratorChildren } : {}),
+        ...(isOrchestratorChild ? { isOrchestratorChild } : {}),
       }),
     );
 

@@ -130,7 +130,7 @@ function RailFixture({
           bottomItems={[item("settings")]}
           bottomSlot={
             <>
-              <AppRailUsage onOpenUsageSettings={vi.fn()} />
+              <AppRailUsage />
               <SidebarIconButton
                 icon={CircleQuestionIcon}
                 label="Help"

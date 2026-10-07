@@ -1338,6 +1338,54 @@ describe("resolveProjectStatusIndicator", () => {
 });
 
 describe("buildProjectThreadTree", () => {
+  it("nests orchestrator children collapsed with a done count and expands on request", () => {
+    const orchestrator = makeThread({ id: ThreadId.makeUnsafe("orch") });
+    const child = (id: string, running: boolean) =>
+      makeThread({
+        id: ThreadId.makeUnsafe(id),
+        creationSource: "synara_mcp",
+        sourceThreadId: ThreadId.makeUnsafe("orch"),
+        session: running
+          ? {
+              provider: "codex",
+              status: "running",
+              orchestrationStatus: "running",
+              createdAt: "2026-03-09T10:00:00.000Z",
+              updatedAt: "2026-03-09T10:00:00.000Z",
+            }
+          : null,
+      });
+    const threads = [orchestrator, child("c1", true), child("c2", false)];
+
+    const collapsed = buildProjectThreadTree({ threads });
+    expect(collapsed.map((row) => row.thread.id)).toEqual(["orch"]);
+    expect(collapsed[0]?.orchestratorChildren).toEqual({ total: 2, done: 1, expanded: false });
+
+    const expanded = buildProjectThreadTree({
+      threads,
+      expandedOrchestratorIds: new Set(["orch"]),
+    });
+    expect(
+      expanded.map((row) => [row.thread.id, row.depth, row.isOrchestratorChild ?? false]),
+    ).toEqual([
+      ["orch", 0, false],
+      ["c1", 1, true],
+      ["c2", 1, true],
+    ]);
+
+    // The active child keeps its orchestrator open.
+    const forced = buildProjectThreadTree({
+      threads,
+      forceVisibleThreadId: ThreadId.makeUnsafe("c2"),
+    });
+    expect(forced.map((row) => row.thread.id)).toEqual(["orch", "c1", "c2"]);
+
+    // Without the orchestrator in the list, children stay top-level.
+    expect(buildProjectThreadTree({ threads: threads.slice(1) }).map((row) => row.depth)).toEqual([
+      0, 0,
+    ]);
+  });
+
   it("shows working child threads without requiring a selection", () => {
     const rows = buildProjectThreadTree({
       threads: [

@@ -51,6 +51,8 @@ interface ComposerSubagentStripProps {
   onStopItem?: (item: ComposerSubagentStripItem) => void;
   onStopAll?: () => void;
   attachedToPrevious?: boolean;
+  /** Row noun for the header; orchestrator strips list "thread" children. */
+  noun?: string;
 }
 
 export const ComposerSubagentStrip = function ComposerSubagentStrip({
@@ -62,6 +64,7 @@ export const ComposerSubagentStrip = function ComposerSubagentStrip({
   onStopItem,
   onStopAll,
   attachedToPrevious: attachedToPreviousProp,
+  noun = "subagent",
 }: ComposerSubagentStripProps) {
   const attachedToPrevious = attachedToPreviousProp ?? false;
   const subagentItems = items.filter(
@@ -73,7 +76,7 @@ export const ComposerSubagentStrip = function ComposerSubagentStrip({
     <ComposerStackedPanel
       passthroughSideMargins
       attachedToPrevious={attachedToPrevious}
-      data-testid="composer-subagent-strip"
+      data-testid={noun === "subagent" ? "composer-subagent-strip" : `composer-${noun}-strip`}
     >
       <ComposerStackedPanelHeaderRow>
         <ComposerStackedPanelRowMain>
@@ -84,8 +87,8 @@ export const ComposerSubagentStrip = function ComposerSubagentStrip({
           )}
           <ComposerStackedPanelRowLabel tone="meta">
             {runningCount > 0
-              ? `${runningCount} of ${subagentItems.length} ${pluralize(subagentItems.length, "subagent")} running`
-              : `${subagentItems.length} ${pluralize(subagentItems.length, "subagent")}`}
+              ? `${runningCount} of ${subagentItems.length} ${pluralize(subagentItems.length, noun)} running`
+              : `${subagentItems.length} ${pluralize(subagentItems.length, noun)}`}
           </ComposerStackedPanelRowLabel>
         </ComposerStackedPanelRowMain>
         {onStopAll && runningCount > 1 ? (
@@ -107,8 +110,8 @@ export const ComposerSubagentStrip = function ComposerSubagentStrip({
           size="icon-xs"
           className={cn("shrink-0", COMPOSER_STACKED_PANEL_ICON_BUTTON_CLASS_NAME)}
           onClick={() => onCompactChange(!compact)}
-          aria-label={compact ? "Expand subagent strip" : "Collapse subagent strip"}
-          title={compact ? "Expand subagent strip" : "Collapse subagent strip"}
+          aria-label={compact ? `Expand ${noun} strip` : `Collapse ${noun} strip`}
+          title={compact ? `Expand ${noun} strip` : `Collapse ${noun} strip`}
         >
           {compact ? (
             <PanelExpandIcon className="size-3" strokeWidth={2} />

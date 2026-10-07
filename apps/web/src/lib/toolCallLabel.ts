@@ -365,6 +365,11 @@ const SYNARA_MCP_TOOL_PRESENTATIONS = {
     completed: "Synara finished waiting for threads",
     failed: "Synara couldn't wait for threads",
   },
+  synara_orchestrator_status: {
+    running: "Synara is checking child threads",
+    completed: "Synara checked child threads",
+    failed: "Synara couldn't check child threads",
+  },
   synara_send_message: {
     running: "Synara is sending a message",
     completed: "Synara sent a message",

@@ -37,9 +37,8 @@ import { useProviderUsageSummary } from "~/hooks/useProviderUsageSummary";
 import { RotateCcwIcon, TriangleAlertIcon } from "~/lib/icons";
 import { deriveProviderUsageDisplayRows } from "~/lib/providerUsageDisplay";
 import {
-  fetchAllProviderUsage,
   serverAllProviderUsageQueryOptions,
-  serverQueryKeys,
+  serverRefreshAllProviderUsageMutationOptions,
   serverSettingsQueryOptions,
 } from "~/lib/serverReactQuery";
 import { cn } from "~/lib/utils";
@@ -175,17 +174,9 @@ export function ProviderUsageSettingsPanel() {
     [serverSettingsQuery.data],
   );
   const usageQuery = useQuery(serverAllProviderUsageQueryOptions());
-  const refreshMutation = useMutation({
-    mutationFn: () => fetchAllProviderUsage({ forceRefresh: true }),
-    onSuccess: (data) => {
-      // The batch owns account membership. Keeping omitted previous snapshots
-      // would restore accounts that were removed or disabled since the last fetch.
-      queryClient.setQueryData<readonly ServerProviderUsageSnapshot[]>(
-        serverQueryKeys.allProviderUsage(),
-        data,
-      );
-    },
-  });
+  const refreshMutation = useMutation(
+    serverRefreshAllProviderUsageMutationOptions({ queryClient }),
+  );
 
   // Use the live payload only. Inventing error placeholders for omitted providers
   // would count as "connected" and hide unsigned cards.

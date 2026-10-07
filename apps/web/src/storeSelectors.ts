@@ -613,6 +613,18 @@ export function createSidechatSummariesForSourceSelector(
   );
 }
 
+/** Threads an orchestrator created through synara_create_thread(s). */
+export function createOrchestratorChildSummariesSelector(
+  orchestratorThreadId: ThreadId,
+): (state: AppState) => readonly SidebarThreadSummary[] {
+  return createSortedSidechatSummariesSelector(
+    (thread) =>
+      !thread.parentThreadId &&
+      thread.creationSource === "synara_mcp" &&
+      thread.sourceThreadId === orchestratorThreadId,
+  );
+}
+
 /** Sidechats for one GitHub item; Ask can scope reuse to its chosen project. */
 export function createSidechatSummariesForGitHubItemSelector(item: {
   readonly projectId?: ProjectId;

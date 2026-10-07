@@ -353,6 +353,18 @@ export async function fetchAllProviderUsage(input: ServerListProviderUsageInput 
   return api.server.listProviderUsage(input);
 }
 
+/** Explicit usage refresh (bypasses the server TTL) that replaces the batch cache. */
+export function serverRefreshAllProviderUsageMutationOptions(input: { queryClient: QueryClient }) {
+  return mutationOptions({
+    mutationFn: () => fetchAllProviderUsage({ forceRefresh: true }),
+    onSuccess: (data) => {
+      // The batch owns account membership. Keeping omitted previous snapshots
+      // would restore accounts that were removed or disabled since the last fetch.
+      input.queryClient.setQueryData(serverQueryKeys.allProviderUsage(), data);
+    },
+  });
+}
+
 export async function consumeCodexResetCredit(input: ServerConsumeCodexResetCreditInput) {
   const api = ensureNativeApi();
   return api.server.consumeCodexResetCredit(input);

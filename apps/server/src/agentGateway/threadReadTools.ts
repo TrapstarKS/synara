@@ -51,6 +51,26 @@ import {
 } from "./toolRuntime.ts";
 
 const LIST_THREADS_DEFAULT_LIMIT = 50;
+export const ORCHESTRATOR_SUMMARY_MAX_CHARS = 400;
+
+/** Threads an orchestrator created through the Synara gateway, oldest first. */
+export const orchestratorChildren = <
+  T extends Pick<OrchestrationThreadShell, "sourceThreadId" | "createdAt">,
+>(
+  threads: ReadonlyArray<T>,
+  orchestratorThreadId: string,
+): T[] =>
+  threads
+    .filter((thread) => thread.sourceThreadId === orchestratorThreadId)
+    .toSorted((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+
+export const compactSummary = (text: string | null | undefined): string | null => {
+  if (!text) return null;
+  const trimmed = text.trim();
+  return trimmed.length <= ORCHESTRATOR_SUMMARY_MAX_CHARS
+    ? trimmed
+    : `${trimmed.slice(0, ORCHESTRATOR_SUMMARY_MAX_CHARS)}…`;
+};
 const LIST_THREADS_MAX_LIMIT = 200;
 
 export interface ThreadReadToolsInput {
@@ -605,5 +625,65 @@ export function makeThreadReadTools(input: ThreadReadToolsInput): ReadonlyArray<
       ),
   };
 
-  return [contextTool, capabilitiesTool, listProjects, listThreads, readThread, waitForThreads];
+  const orchestratorStatus: ToolEntry = {
+    requiredCapability: "thread:read",
+    definition: {
+      name: "synara_orchestrator_status",
+      description: `List every thread this thread created (via synara_create_thread(s)) with its status and a short final summary (≤${ORCHESTRATOR_SUMMARY_MAX_CHARS} chars) in one call. Use this instead of reading each child thread. Pair with synara_await_threads until=any to react as each child finishes.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          includeArchived: { type: "boolean", description: "Include archived children." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { title: "Orchestrator child status", ...READ_ONLY_TOOL_ANNOTATIONS },
+    },
+    handler: (args, context) =>
+      Effect.gen(function* () {
+        const includeArchived = readBooleanArg(args, "includeArchived") ?? false;
+        const snapshot = yield* snapshotQuery
+          .getShellSnapshot()
+          .pipe(Effect.mapError((error) => new ToolInputError(errorText(error))));
+        const children = orchestratorChildren(snapshot.threads, context.callerThreadId).filter(
+          (thread) => includeArchived || (thread.archivedAt ?? null) === null,
+        );
+        const items = yield* Effect.forEach(children, (thread) =>
+          Effect.gen(function* () {
+            const status = deriveAgentThreadStatus(thread);
+            const detail =
+              status === "working"
+                ? null
+                : Option.getOrNull(
+                    yield* snapshotQuery
+                      .getThreadDetailById(thread.id)
+                      .pipe(Effect.orElseSucceed(() => Option.none())),
+                  );
+            return {
+              threadId: thread.id,
+              title: thread.title,
+              status,
+              provider: thread.modelSelection.provider,
+              updatedAt: thread.updatedAt,
+              summary: compactSummary(
+                detail?.messages.findLast((message) => message.role === "assistant")?.text,
+              ),
+            };
+          }),
+        );
+        const counts: Record<string, number> = {};
+        for (const item of items) counts[item.status] = (counts[item.status] ?? 0) + 1;
+        return mcpToolResultJson({ total: items.length, counts, children: items });
+      }).pipe(Effect.catch((error) => Effect.succeed(mcpToolResultError(errorText(error))))),
+  };
+
+  return [
+    contextTool,
+    capabilitiesTool,
+    listProjects,
+    listThreads,
+    readThread,
+    waitForThreads,
+    orchestratorStatus,
+  ];
 }

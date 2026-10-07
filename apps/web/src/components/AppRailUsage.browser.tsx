@@ -14,6 +14,12 @@ const settings = vi.hoisted(() => ({
 
 vi.mock("~/appSettings", () => ({ useAppSettings: () => ({ settings }) }));
 
+const listProviderUsage = vi.hoisted(() => vi.fn(async () => []));
+vi.mock("~/nativeApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/nativeApi")>()),
+  ensureNativeApi: () => ({ server: { listProviderUsage } }),
+}));
+
 import { serverQueryKeys } from "~/lib/serverReactQuery";
 
 import { AppRailUsage } from "./AppRailUsage";
@@ -36,13 +42,11 @@ async function renderUsage(
     } satisfies ServerProviderUsageSnapshot,
   ]);
   client.setQueryData(serverQueryKeys.settings(), DEFAULT_SERVER_SETTINGS_VIEW);
-  const onOpenUsageSettings = vi.fn();
   await render(
     <QueryClientProvider client={client}>
-      <AppRailUsage onOpenUsageSettings={onOpenUsageSettings} />
+      <AppRailUsage />
     </QueryClientProvider>,
   );
-  return onOpenUsageSettings;
 }
 
 describe("AppRailUsage", () => {
@@ -51,7 +55,7 @@ describe("AppRailUsage", () => {
   });
 
   it("shows independent weekly and five-hour rings even when a model sublimit is tighter", async () => {
-    const onOpenUsageSettings = await renderUsage([
+    await renderUsage([
       { window: "seven_day", usedPercent: 57, windowDurationMins: 10_080 },
       { window: "five_hour", usedPercent: 22, windowDurationMins: 300 },
       { window: "seven_day_sonnet", usedPercent: 96, windowDurationMins: 10_080 },
@@ -77,7 +81,7 @@ describe("AppRailUsage", () => {
     await expect.element(page.getByText("43% left", { exact: true })).toBeVisible();
     await expect.element(page.getByText("78% left", { exact: true })).toBeVisible();
     await button.click();
-    expect(onOpenUsageSettings).toHaveBeenCalledOnce();
+    expect(listProviderUsage).toHaveBeenCalledWith({ forceRefresh: true });
   });
 
   it.each([
@@ -112,7 +116,7 @@ describe("AppRailUsage", () => {
       { window: "5h", usedPercent: 100 },
     ]);
     const button = page.getByRole("button", {
-      name: "Codex usage: 5h 0% remaining, Weekly 100% remaining. Open usage settings",
+      name: "Codex usage: 5h 0% remaining, Weekly 100% remaining. Refresh usage",
     });
     await expect.element(button).toBeVisible();
     expect(button.element().querySelectorAll("circle")).toHaveLength(3);
@@ -133,7 +137,7 @@ describe("AppRailUsage", () => {
   it("keeps the unavailable provider visible without a quota arc", async () => {
     await renderUsage([], "error");
     const button = page.getByRole("button", {
-      name: "Codex usage: Unavailable. Open usage settings",
+      name: "Codex usage: Unavailable. Refresh usage",
     });
     await expect.element(button).toBeVisible();
     expect(button.element().querySelectorAll("circle")).toHaveLength(1);

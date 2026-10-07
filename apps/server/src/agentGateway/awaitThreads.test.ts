@@ -94,6 +94,7 @@ const harness = (prefix: string, childCount = 1) =>
     const dispatched: OrchestrationCommand[] = [];
     let behavior: "normal" | "transient" | "lost-ack" = "normal";
     const engine = {
+      getReadModel: () => Effect.sync(() => ({ threads: [...threads.values()] })),
       getEventHighWaterSequence: sql<{
         sequence: number;
       }>`SELECT COALESCE(MAX(sequence), 0) AS sequence FROM orchestration_events`.pipe(
@@ -219,6 +220,39 @@ const harness = (prefix: string, childCount = 1) =>
   });
 
 layer("await and continue", (it) => {
+  it.effect("auto-notifies an orchestrator once per finished batch and joins explicit waits", () =>
+    Effect.gen(function* () {
+      const h = yield* harness("orchestrator", 2);
+      for (const id of h.children) {
+        h.threads.set(id, {
+          ...h.threads.get(id)!,
+          title: `Child ${id}`,
+          createdAt: now,
+          deletedAt: null,
+          creationSource: "synara_mcp",
+          sourceThreadId: h.caller,
+        } as OrchestrationThread);
+      }
+      yield* h.service.armOrchestratorWaits();
+      // An explicit wait in the same turn joins the implicit one instead of conflicting.
+      expect((yield* h.register()).isError).not.toBe(true);
+      yield* h.service.armOrchestratorWaits();
+      yield* h.finish(h.children[0]!, "child zero done");
+      yield* h.service.deliverPending();
+      expect(h.starts()).toHaveLength(0); // orchestrator still busy: queued until its turn ends
+      yield* h.finish(h.caller, "orchestrating");
+      yield* h.service.deliverPending();
+      expect(h.starts()).toHaveLength(1);
+      const text = h.starts()[0]!.message.text;
+      expect(text).toContain("Synara child thread update");
+      expect(text).toContain(`Child ${h.children[0]}`);
+      expect(text).toContain("child zero done");
+      expect(text).toContain('"state":"pending"');
+      yield* h.service.deliverPending();
+      expect(h.starts()).toHaveLength(1);
+    }),
+  );
+
   it.effect(
     "does not resume while the caller is still working or its final output is unacknowledged",
     () =>

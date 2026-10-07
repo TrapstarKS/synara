@@ -326,7 +326,13 @@ export const makeAgentGateway = Effect.gen(function* () {
         ),
         Effect.andThen(
           awaitThreads
-            .deliverPending()
+            .armOrchestratorWaits()
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("orchestrator auto-wait scan failed", { error }),
+              ),
+              Effect.andThen(awaitThreads.deliverPending()),
+            )
             .pipe(
               Effect.catch((error) => Effect.logWarning("gateway wait scan failed", { error })),
             ),

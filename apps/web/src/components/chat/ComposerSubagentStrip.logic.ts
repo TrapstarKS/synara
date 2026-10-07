@@ -8,6 +8,8 @@
 import { ThreadId, type TurnId } from "@synara/contracts";
 
 import type { WorkLogEntry, WorkLogSubagent } from "../../session-logic";
+import type { SidebarThreadSummary } from "../../types";
+import { isThreadActivelyWorking } from "../Sidebar.logic";
 import {
   formatSubagentModelLabel,
   humanizeSubagentStatus,
@@ -212,4 +214,30 @@ export function deriveComposerSubagentStripItems(input: {
     viewedThreadId,
   ).filter((item) => item.statusKind === "running" || item.statusKind === "queued");
   return withParentRow(activeItems, input.parentRow);
+}
+
+/** Strip rows for threads an orchestrator created; settled children stay listed with their outcome. */
+export function deriveOrchestratorChildStripItems(
+  threads: ReadonlyArray<SidebarThreadSummary>,
+): ComposerSubagentStripItem[] {
+  return threads.map((thread) => {
+    const isActive = isThreadActivelyWorking(thread);
+    const rawStatus = thread.latestTurn?.state ?? thread.session?.status ?? null;
+    return {
+      kind: "subagent",
+      key: `orchestrated:${thread.id}`,
+      threadId: thread.id,
+      providerThreadId: thread.id,
+      primaryLabel: thread.title,
+      fullLabel: thread.title,
+      role: null,
+      modelLabel: thread.modelSelection.model,
+      statusLabel: humanizeSubagentStatus(rawStatus, isActive) ?? "Idle",
+      statusKind: normalizeSubagentStatusKind(rawStatus, isActive),
+      isActive,
+      isViewed: false,
+      isBackground: false,
+      accentColor: "currentColor",
+    };
+  });
 }

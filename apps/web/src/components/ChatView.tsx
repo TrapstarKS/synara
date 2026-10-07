@@ -220,6 +220,7 @@ import {
   createComposerThreadMentionSourcesSelector,
   createProjectSelector,
   createSidechatSummariesForSourceSelector,
+  createOrchestratorChildSummariesSelector,
   createThreadSelector,
 } from "../storeSelectors";
 import { useTemporaryThreadStore } from "../temporaryThreadStore";
@@ -330,6 +331,7 @@ import { ComposerSubagentStrip } from "./chat/ComposerSubagentStrip";
 import {
   collectForegroundRunningSubagentStripItems,
   collectRunningSubagentStripItems,
+  deriveOrchestratorChildStripItems,
   type ComposerSubagentStripItem,
 } from "./chat/ComposerSubagentStrip.logic";
 import { ContextWindowMeter } from "./chat/ContextWindowMeter";
@@ -745,6 +747,15 @@ export default function ChatView({
   const threadDetailSyncState = useStore((state) =>
     threadId ? (state.threadDetailSyncById?.[threadId] ?? null) : null,
   );
+  const orchestratorChildSummaries = useStore(
+    useMemo(() => createOrchestratorChildSummariesSelector(threadId), [threadId]),
+  );
+  const orchestratorChildStripItems = useMemo(
+    () => deriveOrchestratorChildStripItems(orchestratorChildSummaries),
+    [orchestratorChildSummaries],
+  );
+  // Orchestrators often run many children; start collapsed to a one-line summary.
+  const [orchestratorStripCompact, setOrchestratorStripCompact] = useState(true);
   const composerThreadSummaries = useStore(
     useMemo(() => createComposerThreadMentionSourcesSelector(), []),
   );
@@ -5706,6 +5717,7 @@ export default function ChatView({
   const showComposerActiveTaskListCard = Boolean(activeTaskList && !planSidebarOpen);
   const showComposerWorkflowRunCard = workflowRunState !== null;
   const showComposerSubagentStrip = composerSubagentStripItems.length > 0;
+  const showComposerOrchestratorStrip = orchestratorChildStripItems.length > 0;
   const activeThreadGoalText = activeThread?.goal?.trim() ?? "";
   const showComposerGoalHeader = activeThreadGoalText.length > 0;
   const showComposerComputerControlEffortHint = shouldShowComputerControlEffortHint({
@@ -5830,6 +5842,21 @@ export default function ChatView({
                 }
               />
             ) : null}
+            {showComposerOrchestratorStrip ? (
+              <ComposerSubagentStrip
+                noun="thread"
+                items={orchestratorChildStripItems}
+                compact={orchestratorStripCompact}
+                onCompactChange={setOrchestratorStripCompact}
+                onOpenThread={onNavigateToThread}
+                attachedToPrevious={
+                  showComposerLiveChangesHeader ||
+                  showComposerActiveTaskListCard ||
+                  showComposerWorkflowRunCard ||
+                  showComposerSubagentStrip
+                }
+              />
+            ) : null}
             {showComposerBackgroundTasksPanel ? (
               <ComposerBackgroundTasksPanel
                 rows={composerBackgroundTaskRows}
@@ -5843,7 +5870,8 @@ export default function ChatView({
                   showComposerLiveChangesHeader ||
                   showComposerActiveTaskListCard ||
                   showComposerWorkflowRunCard ||
-                  showComposerSubagentStrip
+                  showComposerSubagentStrip ||
+                  showComposerOrchestratorStrip
                 }
               />
             ) : null}
@@ -5858,6 +5886,7 @@ export default function ChatView({
                 showComposerActiveTaskListCard ||
                 showComposerWorkflowRunCard ||
                 showComposerSubagentStrip ||
+                showComposerOrchestratorStrip ||
                 showComposerBackgroundTasksPanel
               }
             />
@@ -5877,6 +5906,7 @@ export default function ChatView({
                   showComposerActiveTaskListCard ||
                   showComposerWorkflowRunCard ||
                   showComposerSubagentStrip ||
+                  showComposerOrchestratorStrip ||
                   showComposerBackgroundTasksPanel ||
                   queuedComposerTurns.length > 0
                 }
@@ -5891,6 +5921,7 @@ export default function ChatView({
                   showComposerActiveTaskListCard ||
                   showComposerWorkflowRunCard ||
                   showComposerSubagentStrip ||
+                  showComposerOrchestratorStrip ||
                   showComposerBackgroundTasksPanel ||
                   queuedComposerTurns.length > 0 ||
                   showComposerGoalHeader
@@ -5905,6 +5936,7 @@ export default function ChatView({
                   showComposerActiveTaskListCard ||
                   showComposerWorkflowRunCard ||
                   showComposerSubagentStrip ||
+                  showComposerOrchestratorStrip ||
                   showComposerBackgroundTasksPanel ||
                   queuedComposerTurns.length > 0 ||
                   showComposerGoalHeader ||
@@ -5922,6 +5954,7 @@ export default function ChatView({
                 showComposerActiveTaskListCard ||
                 showComposerWorkflowRunCard ||
                 showComposerSubagentStrip ||
+                showComposerOrchestratorStrip ||
                 showComposerBackgroundTasksPanel ||
                 queuedComposerTurns.length > 0 ||
                 showComposerGoalHeader ||

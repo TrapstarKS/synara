@@ -219,6 +219,8 @@ export type SynaraWaitForThreadsInput = typeof SynaraWaitForThreadsInput.Type;
 export const SynaraAwaitThreadsInput = Schema.Struct({
   threadIds: SynaraWaitForThreadsInput.fields.threadIds,
   runIds: SynaraWaitForThreadsInput.fields.runIds,
+  /** "any" continues the caller as soon as one target finishes; default "all". */
+  until: Schema.optional(Schema.Literals(["all", "any"])),
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
 export type SynaraAwaitThreadsInput = typeof SynaraAwaitThreadsInput.Type;
 

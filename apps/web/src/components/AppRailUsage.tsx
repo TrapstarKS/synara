@@ -1,6 +1,6 @@
 // FILE: AppRailUsage.tsx
 // Purpose: Provider usage rings at the bottom of the app rail, above Help: the provider glyph inside a
-//          remaining-quota ring, a hover card with every limit, click opens Settings → Usage.
+//          remaining-quota ring, a hover card with every limit, click refreshes usage.
 // Layer: App shell component
 // Depends on: the shared provider-usage menu model and panel content, so the rail reads the
 //             same numbers as the chat header chip, the Environment panel, and Settings.
@@ -13,11 +13,12 @@ import {
 } from "@synara/contracts";
 import { deriveProviderInstances } from "@synara/shared/providerInstances";
 import { providerUsageDisplayName } from "@synara/shared/providerUsage";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useAppSettings, type RailUsageWindow } from "~/appSettings";
 import {
   serverAllProviderUsageQueryOptions,
+  serverRefreshAllProviderUsageMutationOptions,
   serverSettingsQueryOptions,
 } from "~/lib/serverReactQuery";
 import { cn } from "~/lib/utils";
@@ -65,14 +66,16 @@ function AppRailUsageRing({
   label,
   snapshot,
   window,
-  onOpenUsageSettings,
+  refreshing,
+  onRefresh,
 }: {
   provider: ProviderKind;
   instanceId: ProviderInstanceId | undefined;
   label: string;
   snapshot: ServerProviderUsageSnapshot | undefined;
   window: RailUsageWindow;
-  onOpenUsageSettings: () => void;
+  refreshing: boolean;
+  onRefresh: () => void;
 }) {
   const model = useProviderUsageMenuModel(provider, { instanceId, providerSnapshot: snapshot });
 
@@ -104,18 +107,23 @@ function AppRailUsageRing({
         render={
           <button
             type="button"
-            aria-label={`${summary.ariaLabel}. Open usage settings`}
+            aria-label={`${summary.ariaLabel}. ${refreshing ? "Refreshing usage" : "Refresh usage"}`}
+            aria-busy={refreshing}
             className={cn(
               appRailButtonClassName(false),
               "relative flex shrink-0 items-center justify-center",
             )}
-            onClick={onOpenUsageSettings}
+            onClick={refreshing ? undefined : onRefresh}
           />
         }
       >
         <svg
           viewBox={`0 0 ${ring.size} ${ring.size}`}
-          className={cn("-rotate-90", ring.svgClassName)}
+          className={cn(
+            "-rotate-90",
+            ring.svgClassName,
+            refreshing && "animate-pulse motion-reduce:animate-none",
+          )}
           fill="none"
           aria-hidden
         >
@@ -201,7 +209,11 @@ function AppRailUsageRing({
 }
 
 /** Sits above Help: a ring per connected account of each chosen provider, with the windows chosen in Settings → Usage. */
-export function AppRailUsage({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
+export function AppRailUsage() {
+  const queryClient = useQueryClient();
+  const refreshMutation = useMutation(
+    serverRefreshAllProviderUsageMutationOptions({ queryClient }),
+  );
   const { settings } = useAppSettings();
   const providers = resolveRailUsageProviders(settings.railUsageProviders);
   const usageQuery = useQuery(
@@ -257,7 +269,8 @@ export function AppRailUsage({ onOpenUsageSettings }: { onOpenUsageSettings: () 
           key={key}
           {...ring}
           window={settings.railUsageWindow}
-          onOpenUsageSettings={onOpenUsageSettings}
+          refreshing={refreshMutation.isPending}
+          onRefresh={() => refreshMutation.mutate()}
         />
       ))}
     </>

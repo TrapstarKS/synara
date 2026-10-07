@@ -98,6 +98,8 @@ function buildProviderContext(
 // picked up quickly. Instance scopes are pruned when their account is removed or disabled.
 const SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1000;
 const SNAPSHOT_CACHE_DEGRADED_TTL_MS = 60 * 1000;
+// How long a clean read may stand in for failed refreshes before the failure is shown.
+const SNAPSHOT_LAST_GOOD_MAX_AGE_MS = 60 * 60 * 1000;
 
 interface CachedSnapshot {
   snapshot: ServerProviderUsageSnapshot;
@@ -223,13 +225,23 @@ async function getProviderUsageSnapshot(
       snapshotCacheGenerations.get(scope) === cacheGeneration
     ) {
       const current = snapshotCache.get(scope);
-      const hasFreshHealthySnapshot =
+      // A transient failure (network blip, 5xx) must not replace the last clean read of the
+      // same login. Polls only refetch after the healthy TTL, so this cannot be limited to
+      // fresh entries; serve it as stale (the cache keeps the healthy entry, so the next
+      // request retries) until it is too old to trust.
+      const hasRecentHealthySnapshot =
         current?.credentialKey === credentialKey &&
         snapshotCacheTtlMs(current.snapshot) === SNAPSHOT_CACHE_TTL_MS &&
-        ctx.nowMs - current.fetchedAtMs < SNAPSHOT_CACHE_TTL_MS;
+        ctx.nowMs - current.fetchedAtMs < SNAPSHOT_LAST_GOOD_MAX_AGE_MS;
       const fetchedFailedSnapshot = (enriched.status ?? "ok") === "error";
-      if (fetchedFailedSnapshot && hasFreshHealthySnapshot && current) {
-        return current.snapshot;
+      if (fetchedFailedSnapshot && hasRecentHealthySnapshot && current) {
+        return ctx.nowMs - current.fetchedAtMs < SNAPSHOT_CACHE_TTL_MS
+          ? current.snapshot
+          : {
+              ...current.snapshot,
+              stale: true,
+              detail: `${enriched.detail ?? "Usage check failed."} Showing your last values.`,
+            };
       }
       snapshotCache.set(scope, {
         snapshot: enriched,

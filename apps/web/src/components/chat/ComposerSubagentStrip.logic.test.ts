@@ -21,6 +21,7 @@ import {
   collectForegroundRunningSubagentStripItems,
   collectRunningSubagentStripItems,
   deriveComposerSubagentStripItems,
+  deriveOrchestratorChildStripItems,
   type ComposerSubagentStripItem,
   type ComposerSubagentStripRow,
 } from "./ComposerSubagentStrip.logic";
@@ -821,5 +822,50 @@ describe("collectForegroundRunningSubagentStripItems", () => {
 
     const foreground = collectForegroundRunningSubagentStripItems(rows);
     expect(foreground.map((item) => item.primaryLabel)).toEqual(["Ada"]);
+  });
+});
+
+describe("deriveOrchestratorChildStripItems", () => {
+  it("lists running and settled orchestrator children with their outcome", () => {
+    const base = {
+      projectId: "project-1",
+      modelSelection: { provider: "codex", model: "gpt-5.4" },
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-03-09T10:00:00.000Z",
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      hasLiveTailWork: false,
+      pendingBackgroundWorkCount: 0,
+    };
+    const items = deriveOrchestratorChildStripItems([
+      {
+        ...base,
+        id: "running",
+        title: "Running child",
+        session: {
+          provider: "codex",
+          status: "running",
+          orchestrationStatus: "running",
+          createdAt: base.createdAt,
+          updatedAt: base.createdAt,
+        },
+        latestTurn: null,
+      },
+      {
+        ...base,
+        id: "done",
+        title: "Done child",
+        session: null,
+        latestTurn: { state: "completed" },
+      },
+    ] as never);
+    expect(items.map((item) => [item.primaryLabel, item.isActive, item.statusKind])).toEqual([
+      ["Running child", true, "running"],
+      ["Done child", false, "completed"],
+    ]);
   });
 });
