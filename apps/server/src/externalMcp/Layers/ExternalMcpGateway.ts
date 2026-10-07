@@ -1,3 +1,4 @@
+import { deriveProviderInstances } from "@synara/shared/providerInstances";
 import {
   EXTERNAL_MCP_DEFAULT_WAIT_MS,
   EXTERNAL_MCP_MAX_MESSAGE_CHARS,
@@ -10,10 +11,8 @@ import {
   ThreadId,
   type ExternalMcpCapability,
   type ProviderKind,
-  type ServerProviderStatus,
 } from "@synara/contracts";
 import { Effect, Layer, Option, Schema } from "effect";
-import { isProviderKind } from "@synara/shared/providerInstances";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -53,6 +52,8 @@ import {
   AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION,
   agentGatewayTargetOptionGuidance,
   loadAgentGatewayProviderCatalog,
+  listDriverAccounts,
+  pickDriverStatus,
   type AgentGatewayProviderAvailability,
 } from "../../agentGateway/targetResolver.ts";
 import {
@@ -182,19 +183,16 @@ export const makeExternalMcpGateway = Effect.gen(function* () {
       settings.getSettings,
       providerHealth.getStatuses,
     ]);
-    const statusByProvider = new Map<ProviderKind, ServerProviderStatus>();
-    for (const status of statuses) {
-      if (isProviderKind(status.driver)) {
-        statusByProvider.set(status.driver, status);
-      }
-    }
+    const instances = deriveProviderInstances(serverSettings);
     return new Map<ProviderKind, AgentGatewayProviderAvailability>(
       PROVIDER_KINDS.map((provider) => {
-        const status = statusByProvider.get(provider);
+        const status = pickDriverStatus(statuses, provider);
+        const accounts = listDriverAccounts(instances, statuses, provider);
         return [
           provider,
           {
             enabled: serverSettings.providers[provider].enabled,
+            ...(accounts.length > 0 ? { accounts } : {}),
             ...(status
               ? {
                   available: status.available,

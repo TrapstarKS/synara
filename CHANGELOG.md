@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.6] — 2026-10-07
+
+**Agents can create Codex threads again with several Codex accounts, and can pick the account.**
+
+### Added
+
+- `synara_capabilities` lists each provider's enabled accounts (`providers[].accounts`); agents pass an account's `instanceId` in the target to choose it.
+
+### Fixed
+
+- `synara_create_thread` no longer reports Codex as "disabled in Synara settings" when a stale or disabled account status exists next to an enabled one.
+
 ## [1.0.5] — 2026-10-07
 
 **Orchestrators get nested child threads and automatic finish notifications; usage stops flipping to errors.**

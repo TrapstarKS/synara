@@ -12,9 +12,13 @@ import {
   type ProviderListModelsResult,
   type ProviderModelDescriptor,
   type ServerProviderAuthStatus,
+  type ServerProviderStatus,
 } from "@synara/contracts";
 import { getClaudeContextWindowSuffix, stripClaudeContextWindowSuffix } from "@synara/shared/model";
-import { defaultInstanceIdForProvider } from "@synara/shared/providerInstances";
+import {
+  defaultInstanceIdForProvider,
+  type ResolvedProviderInstance,
+} from "@synara/shared/providerInstances";
 import { Effect } from "effect";
 
 import type { ProviderDiscoveryServiceShape } from "../provider/Services/ProviderDiscoveryService.ts";
@@ -53,6 +57,52 @@ export interface AgentGatewayProviderAvailability {
   readonly available?: boolean;
   readonly authStatus?: ServerProviderAuthStatus;
   readonly message?: string;
+  /** Enabled account instances; pass one as target.instanceId to pick it. */
+  readonly accounts?: ReadonlyArray<AgentGatewayProviderAccount>;
+}
+
+export interface AgentGatewayProviderAccount {
+  readonly instanceId: string;
+  readonly displayName: string;
+  readonly isDefault: boolean;
+  readonly available?: boolean;
+  readonly authStatus?: ServerProviderAuthStatus;
+}
+
+/** Enabled instances of one driver, each with its own health status. */
+export function listDriverAccounts(
+  instances: ReadonlyArray<ResolvedProviderInstance>,
+  statuses: ReadonlyArray<ServerProviderStatus>,
+  provider: ProviderKind,
+): ReadonlyArray<AgentGatewayProviderAccount> {
+  return instances
+    .filter((instance) => instance.driver === provider && instance.enabled)
+    .map((instance) => {
+      const status = statuses.find((entry) => entry.instanceId === instance.instanceId);
+      return {
+        instanceId: instance.instanceId,
+        displayName: instance.displayName,
+        isDefault: instance.isDefault,
+        ...(status ? { available: status.available, authStatus: status.authStatus } : {}),
+      };
+    });
+}
+
+/**
+ * One health status per driver for the gateway. A driver can carry several
+ * account instances (and stale ones no longer in settings), so the default
+ * instance wins, then any available instance, then whatever exists.
+ */
+export function pickDriverStatus(
+  statuses: ReadonlyArray<ServerProviderStatus>,
+  provider: ProviderKind,
+): ServerProviderStatus | undefined {
+  const forDriver = statuses.filter((status) => status.driver === provider);
+  return (
+    forDriver.find((status) => status.instanceId === defaultInstanceIdForProvider(provider)) ??
+    forDriver.find((status) => status.available) ??
+    forDriver[0]
+  );
 }
 
 export const AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION =

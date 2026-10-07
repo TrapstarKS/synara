@@ -1,3 +1,4 @@
+import { deriveProviderInstances } from "@synara/shared/providerInstances";
 import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
 /**
  * AgentGatewayLive - Synara app-control MCP tool surface.
@@ -38,13 +39,11 @@ import {
   type ProviderApprovalDecision,
   type ProviderKind,
   type RuntimeMode,
-  type ServerProviderStatus,
   type TurnDispatchMode,
 } from "@synara/contracts";
 import { PROVIDER_USAGE_PROVIDERS } from "@synara/shared/providerUsage";
 import { runtimeModeEscalatesPrivilege } from "@synara/shared/runtimeMode";
 import { Effect, Layer, Option, Schema } from "effect";
-import { isProviderKind } from "@synara/shared/providerInstances";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { GitManager } from "../../git/Services/GitManager.ts";
@@ -72,6 +71,8 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION,
   resolveAgentGatewayTarget,
+  listDriverAccounts,
+  pickDriverStatus,
   type AgentGatewayProviderAvailability,
 } from "../targetResolver.ts";
 import { mcpToolResultError, mcpToolResultJson } from "../protocol.ts";
@@ -212,19 +213,16 @@ export const makeAgentGateway = Effect.gen(function* () {
       serverSettings.getSettings,
       providerHealth.getStatuses,
     ]);
-    const statusByProvider = new Map<ProviderKind, ServerProviderStatus>();
-    for (const status of statuses) {
-      if (isProviderKind(status.driver)) {
-        statusByProvider.set(status.driver, status);
-      }
-    }
+    const instances = deriveProviderInstances(settings);
     return new Map<ProviderKind, AgentGatewayProviderAvailability>(
       PROVIDER_KINDS.map((provider) => {
-        const status = statusByProvider.get(provider);
+        const status = pickDriverStatus(statuses, provider);
+        const accounts = listDriverAccounts(instances, statuses, provider);
         return [
           provider,
           {
             enabled: settings.providers[provider].enabled,
+            ...(accounts.length > 0 ? { accounts } : {}),
             ...(status
               ? {
                   available: status.available,

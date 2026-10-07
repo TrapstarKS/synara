@@ -180,7 +180,7 @@ export function makeThreadReadTools(input: ThreadReadToolsInput): ReadonlyArray<
     requiredCapability: "thread:read",
     definition: {
       name: "synara_capabilities",
-      description: `List canonical Synara provider/model targets, exact provider option keys, examples, and gateway limits used to validate thread creation. ${AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION}`,
+      description: `List canonical Synara provider/model targets, exact provider option keys, examples, and gateway limits used to validate thread creation. providers[].accounts lists enabled accounts; pass one's instanceId in target.instanceId to pick it (default: the parent's Codex account, else the default account). ${AGENT_GATEWAY_TARGET_OPTIONS_DESCRIPTION}`,
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: {
         title: "Synara capabilities",
@@ -225,7 +225,10 @@ export function makeThreadReadTools(input: ThreadReadToolsInput): ReadonlyArray<
         );
         return mcpToolResultJson({
           targetConstruction,
-          providers,
+          providers: providers.map((provider) => {
+            const accounts = availabilities.get(provider.provider)?.accounts;
+            return accounts ? { ...provider, accounts } : provider;
+          }),
           limits: {
             maxThreadsPerOperation: SYNARA_GATEWAY_MAX_THREADS_PER_OPERATION,
             maxWaitMs: 60_000,
