@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.7] — 2026-10-07
+
+**Sending messages and typing in terminals no longer times out while many agents run.**
+
+### Fixed
+
+- Messages and other actions you send run ahead of streaming agent traffic, so an orchestrator with many agents no longer causes "dispatchCommand timed out after 60000ms".
+- Terminal open, write, resize and close have their own request budget and no longer time out behind busy orchestration commands.
+- Orchestrator child threads keep their provider icon and title in the sidebar, with a guide line grouping them under their orchestrator.
+
 ## [1.0.6] — 2026-10-07
 
 **Agents can create Codex threads again with several Codex accounts, and can pick the account.**
