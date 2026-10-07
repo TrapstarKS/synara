@@ -174,6 +174,7 @@ export function SidebarThreadRowContent({
   isActive,
   variant,
   subagentIndentPx: subagentIndentPxProp,
+  nested = false,
   pendingStatusColorClass,
   coordinationStatus,
   suffix,
@@ -185,12 +186,13 @@ export function SidebarThreadRowContent({
   isActive: boolean;
   variant: "pinned" | "standard";
   subagentIndentPx?: number;
+  nested?: boolean;
   pendingStatusColorClass?: string | null | undefined;
   coordinationStatus?: ThreadCoordinationBadge | undefined;
   suffix?: ReactNode;
 }) {
   const subagentIndentPx = subagentIndentPxProp ?? 0;
-  const isSubagentThread = Boolean(thread.parentThreadId);
+  const isSubagentThread = nested || Boolean(thread.parentThreadId);
   const subagentPresentation =
     variant === "standard" && isSubagentThread
       ? resolveSubagentPresentationForThread({

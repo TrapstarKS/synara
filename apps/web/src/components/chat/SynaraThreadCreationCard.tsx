@@ -31,7 +31,9 @@ export function childTranscriptPreview(
 }
 
 function ChildStatus({ threadId }: { readonly threadId: string }) {
-  const summary = useStore((state) => state.sidebarThreadSummaryById[ThreadId.makeUnsafe(threadId)]);
+  const summary = useStore(
+    (state) => state.sidebarThreadSummaryById[ThreadId.makeUnsafe(threadId)],
+  );
   if (!summary) return null;
   const item = deriveOrchestratorChildStripItems([summary])[0];
   return (

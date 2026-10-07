@@ -5582,6 +5582,7 @@ export default function Sidebar() {
               isActive={isActive}
               variant="standard"
               subagentIndentPx={subagentIndentPx}
+              nested={tree?.isOrchestratorChild === true}
               pendingStatusColorClass={
                 threadStatus?.label === "Pending Approval" ? threadStatus.colorClass : null
               }

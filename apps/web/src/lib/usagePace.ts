@@ -51,7 +51,7 @@ function paceStatus(usedPercent: number, projectedUsedPercent: number): UsagePac
 }
 
 function reserveOrDeficitText(deltaPercent: number): string | null {
-  const rounded = Math.round(Math.abs(deltaPercent));
+  const rounded = Math.round(Math.abs(deltaPercent) * 10) / 10;
   if (rounded <= 0) {
     return null;
   }

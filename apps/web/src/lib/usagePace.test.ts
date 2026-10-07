@@ -81,7 +81,7 @@ describe("deriveUsagePace", () => {
     const periodDurationMs = FIVE_HOURS * 60_000;
     const nowMs = resetMs - Math.round(periodDurationMs * 0.5);
     const pace = deriveUsagePace({
-      remainingPercent: 49.6,
+      remainingPercent: 49.96,
       resetsAt: new Date(resetMs).toISOString(),
       windowDurationMins: FIVE_HOURS,
       nowMs,
