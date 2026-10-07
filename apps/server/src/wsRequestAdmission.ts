@@ -3,10 +3,13 @@ import * as Crypto from "node:crypto";
 import { ORCHESTRATION_WS_METHODS, WS_METHODS, WsRpcError } from "@synara/contracts";
 import { Effect, Ref } from "effect";
 
-export type WsRequestClass = "control" | "standard" | "expensive-read";
+export type WsRequestClass = "control" | "terminal" | "standard" | "expensive-read";
 
 export const WS_REQUEST_CLASS_LIMITS: Readonly<Record<WsRequestClass, number>> = {
   control: 16,
+  // Terminal I/O is fast and keystroke-paced; it gets its own slots so slow
+  // orchestration dispatches can never leave a terminal unable to type.
+  terminal: 32,
   standard: 12,
   "expensive-read": 2,
 };
@@ -16,10 +19,6 @@ const CONTROL_METHODS = new Set<string>([
   ORCHESTRATION_WS_METHODS.settleTurnDispatch,
   ORCHESTRATION_WS_METHODS.reconcileProviderDelivery,
   ORCHESTRATION_WS_METHODS.prepareQuitResume,
-  WS_METHODS.terminalWrite,
-  WS_METHODS.terminalAckOutput,
-  WS_METHODS.terminalResize,
-  WS_METHODS.terminalClose,
   WS_METHODS.serverStopLocalServer,
   WS_METHODS.providerReloadMcpServers,
   WS_METHODS.providerConnectMcpServer,
@@ -77,8 +76,19 @@ const EXPENSIVE_READ_METHODS = new Set<string>([
   WS_METHODS.providerListMcpServers,
 ]);
 
+const TERMINAL_METHODS = new Set<string>([
+  WS_METHODS.terminalOpen,
+  WS_METHODS.terminalWrite,
+  WS_METHODS.terminalAckOutput,
+  WS_METHODS.terminalResize,
+  WS_METHODS.terminalClear,
+  WS_METHODS.terminalRestart,
+  WS_METHODS.terminalClose,
+]);
+
 export function classifyWsRequest(method: string): WsRequestClass {
   if (CONTROL_METHODS.has(method)) return "control";
+  if (TERMINAL_METHODS.has(method)) return "terminal";
   if (EXPENSIVE_READ_METHODS.has(method)) return "expensive-read";
   return "standard";
 }

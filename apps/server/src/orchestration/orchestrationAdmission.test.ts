@@ -124,4 +124,34 @@ describe("orchestration command admission", () => {
       }),
     );
   });
+
+  it("runs user-initiated background-type commands ahead of provider traffic", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const queues = yield* makeQueues;
+        const policy = { capacity: 8, reservedCapacity: 2 } as const;
+
+        expect(
+          tryAdmitOrchestrationCommand({
+            queues,
+            envelope: "provider-activity",
+            commandType: "thread.activity.append",
+            policy,
+          }),
+        ).toEqual({ accepted: true });
+        expect(
+          tryAdmitOrchestrationCommand({
+            queues,
+            envelope: "client-meta",
+            commandType: "thread.meta.update",
+            policy,
+            userInitiated: true,
+          }),
+        ).toEqual({ accepted: true });
+
+        expect(yield* takeNextOrchestrationCommand(queues)).toBe("client-meta");
+        expect(yield* takeNextOrchestrationCommand(queues)).toBe("provider-activity");
+      }),
+    );
+  });
 });

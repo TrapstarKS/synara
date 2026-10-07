@@ -192,7 +192,10 @@ export function SidebarThreadRowContent({
   suffix?: ReactNode;
 }) {
   const subagentIndentPx = subagentIndentPxProp ?? 0;
-  const isSubagentThread = nested || Boolean(thread.parentThreadId);
+  const isSubagentThread = Boolean(thread.parentThreadId);
+  // Orchestrator children are full threads: keep their provider avatar and title,
+  // with a guide line that groups them under their orchestrator.
+  const isOrchestratorChild = variant === "standard" && nested && !isSubagentThread;
   const subagentPresentation =
     variant === "standard" && isSubagentThread
       ? resolveSubagentPresentationForThread({
@@ -224,15 +227,28 @@ export function SidebarThreadRowContent({
             style={{ backgroundColor: subagentPresentation?.accentColor }}
           />
         </span>
-      ) : terminalEntryPoint ? (
-        <SidebarGlyph icon={TerminalIcon} variant="chrome" />
-      ) : showThreadProviderAvatar ? (
-        <ProviderAvatarWithTerminal
-          thread={thread}
-          terminalStatus={terminalStatus}
-          terminalCount={terminalCount}
-        />
-      ) : null}
+      ) : (
+        <>
+          {isOrchestratorChild ? (
+            <span
+              aria-hidden="true"
+              className="relative h-7 w-2.5 shrink-0"
+              style={{ marginLeft: `${subagentIndentPx}px` }}
+            >
+              <span className="absolute left-1 top-0 bottom-0 w-px bg-border/50" />
+            </span>
+          ) : null}
+          {terminalEntryPoint ? (
+            <SidebarGlyph icon={TerminalIcon} variant="chrome" />
+          ) : showThreadProviderAvatar ? (
+            <ProviderAvatarWithTerminal
+              thread={thread}
+              terminalStatus={terminalStatus}
+              terminalCount={terminalCount}
+            />
+          ) : null}
+        </>
+      )}
       <div
         className={cn(
           "flex min-w-0 flex-1 items-center text-left",

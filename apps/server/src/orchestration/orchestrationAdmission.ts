@@ -98,6 +98,7 @@ export function tryAdmitOrchestrationCommand<A>(input: {
   readonly commandType: OrchestrationCommand["type"];
   readonly policy?: OrchestrationCommandAdmissionPolicy;
   readonly settleOnly?: boolean;
+  readonly userInitiated?: boolean;
 }): OrchestrationCommandAdmissionDecision {
   const policy = input.policy ?? {
     capacity: ORCHESTRATION_COMMAND_QUEUE_CAPACITY,
@@ -123,7 +124,10 @@ export function tryAdmitOrchestrationCommand<A>(input: {
     return { accepted: false, reason: "stopped" };
   }
 
-  const lane = input.settleOnly ? "control" : orchestrationCommandLane(input.commandType);
+  const baseLane = input.settleOnly ? "control" : orchestrationCommandLane(input.commandType);
+  // Anything a person dispatches outranks provider and background traffic;
+  // otherwise a burst of streaming agents queues it for up to the dispatch timeout.
+  const lane = input.userInitiated && baseLane === "normal" ? "user" : baseLane;
   // The reserve is measured against everything already queued, so only control
   // commands can consume the last `reservedCapacity` slots.
   const admissionLimit =

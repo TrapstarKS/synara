@@ -1768,6 +1768,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             envelope,
             commandType: command.type,
             settleOnly: envelope.settleOnly,
+            userInitiated: context?.userInitiated === true,
           });
           if (!decision.accepted) {
             return [decision, current] as const;

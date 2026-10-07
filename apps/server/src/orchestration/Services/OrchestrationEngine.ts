@@ -29,6 +29,11 @@ export interface OrchestrationDispatchContext {
   readonly attachmentPrincipal?: ManagedAttachmentPrincipal;
   /** Resolve an uncertain turn start, durably rejecting it if it has not committed. Never execute it. */
   readonly settleOnly?: boolean;
+  /**
+   * A person dispatched this command from a client. It runs ahead of provider
+   * and background traffic so a busy workspace cannot stall the UI.
+   */
+  readonly userInitiated?: boolean;
 }
 
 export interface OrchestrationProjectionCatchUpStatus {

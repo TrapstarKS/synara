@@ -871,11 +871,17 @@ const makeWsRpcHandlersLayer = () =>
         stateDir: config.stateDir,
       });
 
-      const dispatchOrchestrationCommand = (command: OrchestrationCommand) =>
+      const dispatchOrchestrationCommand = (
+        command: OrchestrationCommand,
+        options?: { readonly userInitiated?: boolean },
+      ) =>
         Effect.gen(function* () {
           const attachmentPrincipal = yield* CurrentManagedAttachmentPrincipal;
           return yield* runtimeStartup.enqueueCommand(
-            orchestrationEngine.dispatch(command, { attachmentPrincipal }),
+            orchestrationEngine.dispatch(command, {
+              attachmentPrincipal,
+              ...(options?.userInitiated ? { userInitiated: true } : {}),
+            }),
           );
         });
 
@@ -1333,7 +1339,9 @@ const makeWsRpcHandlersLayer = () =>
                   threadId: normalizedCommand.threadId,
                 });
               }
-              const result = yield* dispatchOrchestrationCommand(normalizedCommand);
+              const result = yield* dispatchOrchestrationCommand(normalizedCommand, {
+                userInitiated: true,
+              });
               // Only scaffold managed workspace-root subdirectories (Inbox/Outbox/work/outputs)
               // AFTER the decider has accepted the command. A rejected dispatch (e.g. a
               // cross-kind workspace-root ownership conflict) must never mutate the filesystem.
@@ -2163,7 +2171,10 @@ const makeWsRpcHandlersLayer = () =>
                   threadId: input.threadId,
                   terminalId: input.terminalId ?? DEFAULT_TERMINAL_ID,
                   data: input.data,
-                }).pipe(Effect.catch(() => Effect.void)),
+                }).pipe(
+                  Effect.catch(() => Effect.void),
+                  Effect.forkDetach,
+                ),
               ),
             ),
             "Failed to write terminal",

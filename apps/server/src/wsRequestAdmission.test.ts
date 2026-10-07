@@ -16,7 +16,8 @@ describe("WsRequestAdmission", () => {
     expect(classifyWsRequest(WS_METHODS.projectsResolveWorkspaceFileReferences)).toBe(
       "expensive-read",
     );
-    expect(classifyWsRequest(WS_METHODS.terminalAckOutput)).toBe("control");
+    expect(classifyWsRequest(WS_METHODS.terminalAckOutput)).toBe("terminal");
+    expect(classifyWsRequest(WS_METHODS.terminalWrite)).toBe("terminal");
   });
 
   it("reserves independent capacity for control traffic during an expensive-read flood", async () => {
@@ -34,7 +35,7 @@ describe("WsRequestAdmission", () => {
           expect(String(rejected.cause)).toContain("RPC_EXPENSIVE_READ_CAPACITY_EXCEEDED");
         }
 
-        const control = yield* admission.acquire(1, WS_METHODS.terminalAckOutput);
+        const control = yield* admission.acquire(1, ORCHESTRATION_WS_METHODS.dispatchCommand);
         expect(control.requestClass).toBe("control");
         yield* admission.release(first);
         yield* admission.release(first);
