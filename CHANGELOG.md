@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.8] — 2026-10-07
+
+**Synara no longer freezes for minutes on large databases or while many agents run.**
+
+### Fixed
+
+- Database maintenance runs in small background batches instead of one long pass at startup and every 24 hours, which froze chats, terminals and new threads on multi-GB databases.
+- Deleting a thread takes under a second instead of over a minute on large databases.
+- Checkpoints work in repositories that already ignore their `artifacts` folders.
+
 ## [1.0.7] — 2026-10-07
 
 **Sending messages and typing in terminals no longer times out while many agents run.**
