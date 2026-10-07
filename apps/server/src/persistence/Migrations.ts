@@ -161,6 +161,7 @@ import ProjectImportHistoryMigration from "./Migrations/127_ProjectImportHistory
 import HubWorkMigration from "./Migrations/128_HubWork.ts";
 import ProjectionThreadsSnoozeMigration from "./Migrations/129_ProjectionThreadsSnooze.ts";
 import PullRequestAutoFixMigration from "./Migrations/130_PullRequestAutoFix.ts";
+import OrchestrationEventsForeignThreadIndexMigration from "./Migrations/131_OrchestrationEventsForeignThreadIndex.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -331,6 +332,7 @@ export const migrationEntries = [
   [143, "HubWork", HubWorkMigration],
   [144, "ProjectionThreadsSnooze", ProjectionThreadsSnoozeMigration],
   [145, "PullRequestAutoFix", PullRequestAutoFixMigration],
+  [146, "OrchestrationEventsForeignThreadIndex", OrchestrationEventsForeignThreadIndexMigration],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

@@ -236,12 +236,32 @@ const makeCheckpointStore = Effect.gen(function* () {
               }
             }
 
-            yield* git.execute({
+            // An exclusion pathspec that names a gitignored directory makes git
+            // report it and exit 1 after staging everything else, which used to
+            // fail every checkpoint in repos that ignore their artifacts folder.
+            const addResult = yield* git.execute({
               operation,
               cwd: input.cwd,
               args: ["add", "-A", "--", ".", ...checkpointExcludedPathspecs(policy)],
-              env: commitEnv,
+              env: { ...commitEnv, LC_ALL: "C" },
+              allowNonZeroExit: true,
             });
+            if (
+              addResult.code !== 0 &&
+              !(
+                addResult.code === 1 &&
+                addResult.stderr.startsWith(
+                  "The following paths are ignored by one of your .gitignore files:",
+                )
+              )
+            ) {
+              return yield* new GitCommandError({
+                operation,
+                command: "git add -A",
+                cwd: input.cwd,
+                detail: addResult.stderr.trim() || `git add exited with code ${addResult.code}.`,
+              });
+            }
 
             const writeTreeResult = yield* git.execute({
               operation,

@@ -980,13 +980,16 @@ const makeProfileStatsArchive = Effect.gen(function* () {
         },
         { concurrency: 1, discard: true },
       );
+      // Two statements so each uses an index; the OR form scanned every event.
+      yield* sql`
+        DELETE FROM orchestration_events
+        WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+      `;
       yield* sql`
         DELETE FROM orchestration_events
         WHERE aggregate_kind = 'thread'
-          AND (
-            stream_id = ${threadId}
-            OR json_extract(payload_json, '$.threadId') = ${threadId}
-          )
+          AND json_extract(payload_json, '$.threadId') <> stream_id
+          AND json_extract(payload_json, '$.threadId') = ${threadId}
       `;
       yield* sql`DELETE FROM checkpoint_diff_blobs WHERE thread_id = ${threadId}`;
       yield* sql`DELETE FROM provider_session_runtime WHERE thread_id = ${threadId}`;

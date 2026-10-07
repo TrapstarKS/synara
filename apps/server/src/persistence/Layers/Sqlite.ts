@@ -15,7 +15,7 @@ import {
 import { createMigrationSchemaTooNewStartupBlockError } from "../MigrationSchemaTooNewStartupBlock.ts";
 import { ensurePrivateFileSync, repairPrivateFile } from "../../privatePathPermissions.ts";
 import { resolveSqliteMemoryBudget } from "../sqliteMemoryBudget.ts";
-import { runStorageMaintenance } from "../StorageMaintenance.ts";
+import { runStorageMaintenance, usesIncrementalVacuum } from "../StorageMaintenance.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   acquireDatabaseLifecycleLock,
@@ -159,11 +159,15 @@ const makeSetup = ({
         ),
       );
       if (dbPath) {
-        // Startup may run the one-time full VACUUM that switches old databases
-        // to incremental vacuum; the daily pass only prunes and frees pages.
-        yield* runStorageMaintenance(dbPath, { allowFullVacuum: true });
+        // The one-time full VACUUM that switches old databases to incremental
+        // vacuum needs the database to itself, so it runs before startup. The
+        // regular pass works in short batches in the background: inline it
+        // held startup for minutes on a multi-GB database.
+        if (!(yield* usesIncrementalVacuum)) {
+          yield* runStorageMaintenance(dbPath, { allowFullVacuum: true });
+        }
         yield* runStorageMaintenance(dbPath, { allowFullVacuum: false }).pipe(
-          Effect.delay(Duration.hours(24)),
+          Effect.delay(Duration.minutes(2)),
           Effect.repeat(Schedule.spaced(Duration.hours(24))),
           Effect.forkScoped,
         );

@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "./Layers/Sqlite.ts";
@@ -59,7 +60,9 @@ layer("pruneStorageHistory", (it) => {
         INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
         VALUES ('p', 1000000, ${recent})
       `;
-      yield* pruneStorageHistory(now);
+      // One row per batch: every final event lands in a later batch than its
+      // deltas and every receipt in its own page.
+      yield* TestClock.withLive(pruneStorageHistory(now, { batchRows: 1 }));
 
       const receipts = yield* sql<{ readonly id: string }>`
         SELECT command_id AS id FROM orchestration_command_receipts ORDER BY command_id
@@ -104,7 +107,7 @@ layer("pruneStorageHistory", (it) => {
         INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
         VALUES ('behind', 0, ${recent})
       `;
-      yield* pruneStorageHistory(now);
+      yield* TestClock.withLive(pruneStorageHistory(now));
       const rows = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_events
       `;

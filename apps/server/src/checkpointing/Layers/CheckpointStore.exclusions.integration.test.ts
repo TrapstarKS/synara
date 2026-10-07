@@ -161,6 +161,16 @@ describe("checkpoint exclusion policy with real Git", () => {
     },
   );
 
+  it("captures repos that already gitignore their artifacts directories", async () => {
+    const h = await fixture();
+    write(h.cwd, ".gitignore", "/artifacts/\n.artifacts/\n");
+    write(h.cwd, "artifacts/report.txt", "ignored output\n");
+    write(h.cwd, ".artifacts/output.txt", "ignored output\n");
+    write(h.cwd, "source.txt", "after\n");
+    await h.capture("ignored-outputs");
+    expect(h.tree("ignored-outputs")).toEqual([".gitignore", "source.txt"]);
+  });
+
   it("keeps tracked source roots, ordinary files and nested artifact names checkpointed", async () => {
     const h = await fixture();
     write(h.cwd, "artifacts-client/index.ts", "before source\n");

@@ -689,6 +689,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [143, "HubWork"],
         [144, "ProjectionThreadsSnooze"],
         [145, "PullRequestAutoFix"],
+        [146, "OrchestrationEventsForeignThreadIndex"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -786,6 +787,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 143, name: "HubWork" },
           { migration_id: 144, name: "ProjectionThreadsSnooze" },
           { migration_id: 145, name: "PullRequestAutoFix" },
+          { migration_id: 146, name: "OrchestrationEventsForeignThreadIndex" },
         ],
       );
       const groupConfigColumns = yield* sql<{ readonly name: string }>`
@@ -963,6 +965,7 @@ agentGatewayRetentionLegacyLayer(
           [143, "HubWork"],
           [144, "ProjectionThreadsSnooze"],
           [145, "PullRequestAutoFix"],
+          [146, "OrchestrationEventsForeignThreadIndex"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -1103,6 +1106,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [143, "HubWork"],
         [144, "ProjectionThreadsSnooze"],
         [145, "PullRequestAutoFix"],
+        [146, "OrchestrationEventsForeignThreadIndex"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -1184,6 +1188,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [143, "HubWork"],
           [144, "ProjectionThreadsSnooze"],
           [145, "PullRequestAutoFix"],
+          [146, "OrchestrationEventsForeignThreadIndex"],
         ],
       );
 
@@ -1319,6 +1324,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [143, "HubWork"],
         [144, "ProjectionThreadsSnooze"],
         [145, "PullRequestAutoFix"],
+        [146, "OrchestrationEventsForeignThreadIndex"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -1396,6 +1402,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [143, "HubWork"],
           [144, "ProjectionThreadsSnooze"],
           [145, "PullRequestAutoFix"],
+          [146, "OrchestrationEventsForeignThreadIndex"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`

@@ -178,6 +178,12 @@ const seedTwoThreadsWithActivity = Effect.gen(function* () {
         '2026-06-14T10:10:00.000Z', 'cmd-purge-delete', 'user',
         '{"threadId":"thread-purge","deletedAt":"2026-06-14T10:10:00.000Z"}',
         '{}'
+      ),
+      (
+        'event-purge-foreign', 'thread', 'thread-keep', 2, 'thread.activity-appended',
+        '2026-06-14T10:11:00.000Z', NULL, 'system',
+        '{"threadId":"thread-purge"}',
+        '{}'
       )
   `;
 
@@ -784,9 +790,15 @@ describe("ProfileStatsArchive", () => {
           },
         ]);
         const remainingEvents = yield* sql<{ readonly count: number }>`
-          SELECT COUNT(*) AS count FROM orchestration_events WHERE stream_id = 'thread-purge'
+          SELECT COUNT(*) AS count FROM orchestration_events
+          WHERE stream_id = 'thread-purge'
+            OR json_extract(payload_json, '$.threadId') = 'thread-purge'
         `;
         expect(remainingEvents[0]?.count).toBe(0);
+        const keptEvents = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS count FROM orchestration_events WHERE stream_id = 'thread-keep'
+        `;
+        expect(keptEvents[0]?.count).toBe(1);
         expect(
           yield* sql<{
             readonly costUsd: number;
