@@ -151,6 +151,8 @@ export interface ProviderServiceLiveOptions {
   /** Test override for supervised event retry timing. */
   readonly runtimeEventRetryBaseDelayMs?: number;
   readonly runtimeEventRetryMaxDelayMs?: number;
+  /** See ProviderRuntimeEventPumpOptions.deltaCoalesceWindowMs. Off unless set. */
+  readonly runtimeEventDeltaCoalesceWindowMs?: number;
   /** Server-authoritative start gate. Omit only in isolated tests and embedded callers. */
   readonly providerIsEnabled?: (
     provider: ProviderKind,
@@ -2513,6 +2515,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           : {}),
         ...(options?.runtimeEventRetryMaxDelayMs !== undefined
           ? { retryMaxDelayMs: options.runtimeEventRetryMaxDelayMs }
+          : {}),
+        ...(options?.runtimeEventDeltaCoalesceWindowMs !== undefined
+          ? { deltaCoalesceWindowMs: options.runtimeEventDeltaCoalesceWindowMs }
           : {}),
       }).pipe(Effect.forkIn(runtimeEventProducerScope)),
     ).pipe(Effect.asVoid);
@@ -5172,6 +5177,10 @@ export function makeDurableProviderServiceLive(options?: ProviderServiceLiveOpti
     Effect.gen(function* () {
       const runtimeEvents = yield* ProviderRuntimeEventRepository;
       return yield* makeProviderService({
+        // Each streamed delta costs a journal row and an engine transaction;
+        // with many agents streaming that saturated the event loop. 100 ms
+        // caps each item at ~10 updates/s, which still reads as live text.
+        runtimeEventDeltaCoalesceWindowMs: 100,
         ...options,
         persistRuntimeEvent: (event) => runtimeEvents.append(event),
         quarantineRuntimeEvent: (event, cause) =>

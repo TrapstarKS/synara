@@ -3272,6 +3272,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return this.hasSession(threadId) ? this.sessions.get(threadId)?.codexOptions : undefined;
   }
 
+  /**
+   * Per-event lookup for events the session's own process emitted. It skips
+   * the auth-file revalidation of hasSession/listSessions: run per event over
+   * every session, those synchronous reads grew quadratically with live
+   * sessions and stalled the server. Lifecycle paths still revalidate.
+   */
+  peekRoutableSession(
+    threadId: ThreadId,
+  ): { session: ProviderSession; codexOptions: CodexDiscoveryOptions | undefined } | undefined {
+    const context = this.sessions.get(threadId);
+    if (!context || !this.isContextRoutable(context)) return undefined;
+    return { session: context.session, codexOptions: context.codexOptions };
+  }
+
   async stopAll(): Promise<void> {
     const discoveryKeys = new Set([
       ...this.discoverySessions.keys(),
@@ -3664,11 +3678,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   private contextAuthStalenessMessage(context: CodexSessionContext): string | undefined {
     if (!context.authTracking || context.authFingerprint === undefined) return undefined;
     try {
-      const codexOptions = context.codexOptions;
-      const currentTracking = prepareCodexAuthTracking(
-        codexProcessEnvInputForOptions(codexOptions),
-      );
-      return readCodexPreparedAuthTrackingFingerprint(currentTracking) === context.authFingerprint
+      return this.currentAuthFingerprint(context.codexOptions) === context.authFingerprint
         ? undefined
         : "Codex authentication changed on disk; the stale app-server session was stopped and must be restarted.";
     } catch (error) {
@@ -3678,6 +3688,33 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       });
       return "Codex configuration or authentication state could not be safely revalidated; the stale app-server session was stopped and must be restarted.";
     }
+  }
+
+  /**
+   * One revalidation costs ~1.3 ms of synchronous file IO. listSessions and
+   * friends revalidate every session in one synchronous pass, so many sessions
+   * on the same account repeated identical reads and stalled the event loop.
+   * The memo lives only until the current synchronous pass ends, so a change
+   * on disk is still seen by the next call.
+   */
+  private authFingerprintMemo: Map<string, string> | undefined;
+
+  private currentAuthFingerprint(codexOptions: CodexDiscoveryOptions | undefined): string {
+    if (!this.authFingerprintMemo) {
+      const memo = new Map<string, string>();
+      this.authFingerprintMemo = memo;
+      queueMicrotask(() => {
+        if (this.authFingerprintMemo === memo) this.authFingerprintMemo = undefined;
+      });
+    }
+    const key = codexDiscoveryOptionsCacheKey(codexOptions);
+    const cached = this.authFingerprintMemo.get(key);
+    if (cached !== undefined) return cached;
+    const fingerprint = readCodexPreparedAuthTrackingFingerprint(
+      prepareCodexAuthTracking(codexProcessEnvInputForOptions(codexOptions)),
+    );
+    this.authFingerprintMemo.set(key, fingerprint);
+    return fingerprint;
   }
 
   private isContextAuthCurrent(context: CodexSessionContext): boolean {

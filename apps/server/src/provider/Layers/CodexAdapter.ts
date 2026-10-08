@@ -26,7 +26,6 @@ import {
   type ProviderMcpServerActionResult,
   type ProviderRuntimeEvent,
   type ProviderInstanceId,
-  type ProviderSession,
   type ServerVoiceTranscriptionResult,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
@@ -2692,9 +2691,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             yield* nativeEventLogger.write(event, event.threadId);
           });
         const stampEventWithLiveSession = (event: ProviderEvent): ProviderEvent => {
-          const session = manager
-            .listSessions()
-            .find((entry: ProviderSession) => entry.threadId === event.threadId);
+          const session = manager.peekRoutableSession(event.threadId)?.session;
           return event.providerInstanceId === undefined && session?.providerInstanceId
             ? { ...event, providerInstanceId: session.providerInstanceId }
             : event;
@@ -2738,7 +2735,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             mapToRuntimeEvents(
               stampedEvent,
               stampedEvent.threadId,
-              manager.getSessionCodexOptions(stampedEvent.threadId),
+              manager.peekRoutableSession(stampedEvent.threadId)?.codexOptions,
             ),
           );
           const hasUnmappedEvent = mappedRuntimeEvents.some(

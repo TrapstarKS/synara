@@ -25,6 +25,63 @@ const DEFAULT_RETRY_MAX_DELAY_MS = 2_000;
 // the durable forensic record.
 const DEFAULT_DEGRADED_HEAL_AFTER_SUCCESSES = 100;
 
+const DELTA_COALESCE_MS_PER_THREAD = 10;
+const MAX_DELTA_COALESCE_WINDOW_FACTOR = 5;
+// Keeps a merged delta well under the per-event ingress budget.
+const MAX_COALESCED_DELTA_CHARS = 64 * 1024;
+
+type ContentDeltaEvent = Extract<ProviderRuntimeEvent, { readonly type: "content.delta" }>;
+
+function canAppendDelta(target: ContentDeltaEvent, next: ContentDeltaEvent): boolean {
+  return (
+    target.payload.delta.length + next.payload.delta.length <= MAX_COALESCED_DELTA_CHARS &&
+    target.provider === next.provider &&
+    target.providerInstanceId === next.providerInstanceId &&
+    target.lifecycleGeneration === next.lifecycleGeneration &&
+    target.turnId === next.turnId &&
+    target.itemId === next.itemId &&
+    target.payload.streamKind === next.payload.streamKind &&
+    target.payload.contentIndex === next.payload.contentIndex &&
+    target.payload.summaryIndex === next.payload.summaryIndex
+  );
+}
+
+/**
+ * Merges content deltas that are already queued together. Every delta costs a
+ * journal write, an ingestion pass, and an engine transaction, so many agents
+ * streaming at once saturated the event loop and timed out the WebSocket
+ * pings. A delta is folded only into the previous event of its own thread, so
+ * per-thread order is unchanged. Without a coalesce window, a consumer that
+ * keeps up sees batches of one and nothing is merged.
+ */
+export function coalesceQueuedContentDeltas(
+  events: ReadonlyArray<ProviderRuntimeEvent>,
+): Array<ProviderRuntimeEvent> {
+  const out: Array<ProviderRuntimeEvent> = [];
+  const lastIndexByThread = new Map<string, number>();
+  for (const event of events) {
+    const lastIndex = lastIndexByThread.get(event.threadId);
+    const last = lastIndex === undefined ? undefined : out[lastIndex];
+    if (
+      lastIndex !== undefined &&
+      last?.type === "content.delta" &&
+      event.type === "content.delta" &&
+      canAppendDelta(last, event)
+    ) {
+      // raw described only the first native chunk; drop it rather than mislabel the merged text.
+      const { raw: _raw, ...merged } = last;
+      out[lastIndex] = {
+        ...merged,
+        payload: { ...last.payload, delta: last.payload.delta + event.payload.delta },
+      };
+      continue;
+    }
+    lastIndexByThread.set(event.threadId, out.length);
+    out.push(event);
+  }
+  return out;
+}
+
 export interface ProviderRuntimeEventPumpOptions<R> {
   readonly provider: ProviderKind;
   readonly stream: Stream.Stream<ProviderRuntimeEvent>;
@@ -38,6 +95,12 @@ export interface ProviderRuntimeEventPumpOptions<R> {
   readonly retryBaseDelayMs?: number;
   readonly retryMaxDelayMs?: number;
   readonly degradedHealAfterSuccesses?: number;
+  /**
+   * After a batch that carried content deltas, wait at least this long (more
+   * when many threads stream at once) before taking the next one so deltas
+   * arriving meanwhile merge. 0 merges only what is already queued.
+   */
+  readonly deltaCoalesceWindowMs?: number;
 }
 
 export function makeProviderRuntimeEventPumpHealthRegistry(
@@ -275,7 +338,30 @@ export function runProviderRuntimeEventPump<R>(
       ),
     );
 
-  const runStreamOnce = () => Stream.runForEach(options.stream, processEventReliably);
+  const deltaCoalesceWindowMs = Math.max(0, options.deltaCoalesceWindowMs ?? 0);
+  const sleepForDeltaCoalescing = (events: ReadonlyArray<ProviderRuntimeEvent>) => {
+    if (deltaCoalesceWindowMs === 0) return Effect.void;
+    const streamingThreads = new Set<string>();
+    for (const event of events) {
+      if (event.type === "content.delta") streamingThreads.add(event.threadId);
+    }
+    if (streamingThreads.size === 0) return Effect.void;
+    // Downstream ingestion pays a few ms per merged delta, so the window grows
+    // with the number of streaming threads to keep that work bounded.
+    // ponytail: fixed per-thread budget; measure ingestion cost if it drifts.
+    return Effect.sleep(
+      Math.min(
+        deltaCoalesceWindowMs * MAX_DELTA_COALESCE_WINDOW_FACTOR,
+        Math.max(deltaCoalesceWindowMs, streamingThreads.size * DELTA_COALESCE_MS_PER_THREAD),
+      ),
+    );
+  };
+  const runStreamOnce = () =>
+    Stream.runForEachArray(options.stream, (events) =>
+      Effect.forEach(coalesceQueuedContentDeltas(events), processEventReliably, {
+        discard: true,
+      }).pipe(Effect.andThen(Effect.suspend(() => sleepForDeltaCoalescing(events)))),
+    );
 
   const supervise = (restartAttempt = 0): Effect.Effect<void, never, R> =>
     setHealth(restartAttempt === 0 ? "healthy" : "recovering", restartAttempt).pipe(

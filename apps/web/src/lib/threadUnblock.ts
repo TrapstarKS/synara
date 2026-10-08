@@ -50,6 +50,28 @@ export async function unblockThreadFromClient(
   api: ThreadUnblockApi,
   threadId: ThreadId,
 ): Promise<ThreadUnblockResult> {
+  try {
+    return await unblockThreadOnce(api, threadId);
+  } catch (error) {
+    // A transport reconnect gives no verdict. Every step is safe to repeat: the
+    // list is a read, and an already-applied abandon comes back as a conflict.
+    if (!isTransportReconnectInterruption(error)) throw error;
+    return unblockThreadOnce(api, threadId);
+  }
+}
+
+function isTransportReconnectInterruption(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { readonly code?: unknown }).code === "WS_REQUEST_RECONNECTED"
+  );
+}
+
+async function unblockThreadOnce(
+  api: ThreadUnblockApi,
+  threadId: ThreadId,
+): Promise<ThreadUnblockResult> {
   const blockers = await api.listProviderDeliveryBlockers({ threadId });
   if (blockers.length === 0) return { kind: "already-clear" };
 

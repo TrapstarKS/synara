@@ -138,6 +138,25 @@ describe("unblockThreadFromClient", () => {
     expect(result).toEqual({ kind: "unblocked", reconciledCount: 1 });
   });
 
+  it("retries once after a transport reconnect interrupts the flow", async () => {
+    const reconnect = Object.assign(new Error("interrupted by a transport reconnect"), {
+      code: "WS_REQUEST_RECONNECTED",
+    });
+    const listProviderDeliveryBlockers = vi
+      .fn()
+      .mockRejectedValueOnce(reconnect)
+      .mockResolvedValueOnce([blocker({ eventSequence: 1, state: "dead" })]);
+    const reconcileProviderDelivery = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      unblockThreadFromClient(
+        { listProviderDeliveryBlockers, reconcileProviderDelivery } as never,
+        threadId,
+      ),
+    ).resolves.toEqual({ kind: "unblocked", reconciledCount: 1 });
+    expect(listProviderDeliveryBlockers).toHaveBeenCalledTimes(2);
+  });
+
   it("propagates unexpected reconciliation failures", async () => {
     await expect(
       unblockThreadFromClient(

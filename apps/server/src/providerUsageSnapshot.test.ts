@@ -8,7 +8,11 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { readClaudeUsageSamples, readCodexSessionSummary } from "./providerUsageSnapshot";
+import {
+  loadLocalProviderUsageLines,
+  readClaudeUsageSamples,
+  readCodexSessionSummary,
+} from "./providerUsageSnapshot";
 
 const tempDirs: string[] = [];
 
@@ -189,5 +193,38 @@ describe("readClaudeUsageSamples", () => {
         model: "claude-opus-4-5",
       },
     ]);
+  });
+});
+
+describe("loadLocalProviderUsageLines", () => {
+  it("reuses Claude samples for transcripts whose size and mtime are unchanged", async () => {
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "");
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "synara-provider-usage-home-"));
+    tempDirs.push(homeDir);
+    const projectDir = path.join(homeDir, ".claude", "projects", "project");
+    await fs.mkdir(projectDir, { recursive: true });
+    const file = path.join(projectDir, "transcript.jsonl");
+    let nowMs = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    const timestamp = new Date(nowMs - 60_000).toISOString();
+    const load = () => {
+      // Step past the 30s snapshot cache so each call rescans the transcripts.
+      nowMs += 31_000;
+      return loadLocalProviderUsageLines({ provider: "claudeAgent", homeDir });
+    };
+
+    // A whole-second mtime survives utimes exactly, unlike the sub-ms one from the write.
+    const mtime = new Date(Math.floor(nowMs / 1000) * 1000);
+    await fs.writeFile(file, assistantLine({ timestamp, totalTokens: 41 }));
+    await fs.utimes(file, mtime, mtime);
+    const first = await load();
+
+    // Same size and mtime: the cached samples stand even though the bytes differ.
+    await fs.writeFile(file, assistantLine({ timestamp, totalTokens: 97 }));
+    await fs.utimes(file, mtime, mtime);
+    expect(await load()).toEqual(first);
+
+    await fs.appendFile(file, `\n${assistantLine({ timestamp, totalTokens: 5_000 })}`);
+    expect(await load()).not.toEqual(first);
   });
 });

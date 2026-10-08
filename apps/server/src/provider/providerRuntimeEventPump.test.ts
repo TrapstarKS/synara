@@ -1,8 +1,15 @@
 import { Cause, Deferred, Effect, Fiber, Option, Queue, Stream } from "effect";
 import { describe, expect, it } from "vitest";
-import { EventId, ThreadId, TurnId, type ProviderRuntimeEvent } from "@synara/contracts";
+import {
+  EventId,
+  RuntimeItemId,
+  ThreadId,
+  TurnId,
+  type ProviderRuntimeEvent,
+} from "@synara/contracts";
 
 import {
+  coalesceQueuedContentDeltas,
   makeProviderRuntimeEventPumpHealthRegistry,
   runProviderRuntimeEventPump,
 } from "./providerRuntimeEventPump.ts";
@@ -22,7 +29,104 @@ function completedEvent(eventId: string): ProviderRuntimeEvent {
   };
 }
 
+function deltaEvent(
+  eventId: string,
+  delta: string,
+  overrides: { threadId?: string; itemId?: string } = {},
+): ProviderRuntimeEvent {
+  return {
+    type: "content.delta",
+    eventId: EventId.makeUnsafe(eventId),
+    provider: "codex",
+    createdAt: "2026-07-23T20:00:00.000Z",
+    threadId: ThreadId.makeUnsafe(overrides.threadId ?? THREAD_ID),
+    turnId: TURN_ID,
+    itemId: RuntimeItemId.makeUnsafe(overrides.itemId ?? "item-1"),
+    raw: {
+      source: "codex.app-server.notification",
+      method: "item/agentMessage/delta",
+      payload: {},
+    },
+    payload: { streamKind: "assistant_text", delta },
+  };
+}
+
+describe("coalesceQueuedContentDeltas", () => {
+  it("merges queued deltas per thread without reordering any thread's events", () => {
+    const merged = coalesceQueuedContentDeltas([
+      deltaEvent("a1", "Hel"),
+      deltaEvent("b1", "x", { threadId: "thread-b" }),
+      deltaEvent("a2", "lo"),
+      deltaEvent("a3", "!", { itemId: "item-2" }),
+      deltaEvent("a4", "?", { itemId: "item-2" }),
+      completedEvent("a5"),
+      deltaEvent("a6", "late", { itemId: "item-2" }),
+      deltaEvent("b2", "y", { threadId: "thread-b" }),
+    ]);
+
+    expect(
+      merged.map((event) => [
+        event.eventId,
+        event.type === "content.delta" ? event.payload.delta : event.type,
+      ]),
+    ).toEqual([
+      ["a1", "Hello"],
+      ["b1", "xy"],
+      ["a3", "!?"],
+      ["a5", "turn.completed"],
+      ["a6", "late"],
+    ]);
+    expect(merged[0]?.raw).toBeUndefined();
+    expect(merged[4]?.raw).toBeDefined();
+  });
+});
+
 describe("providerRuntimeEventPump", () => {
+  it("bounds per-item processing under many concurrent delta streams", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const queue = yield* Queue.unbounded<ProviderRuntimeEvent>();
+          const threads = Array.from({ length: 15 }, (_, index) => `thread-load-${index}`);
+          const textByThread = new Map<string, string>();
+          let processed = 0;
+
+          yield* runProviderRuntimeEventPump({
+            provider: "codex",
+            stream: Stream.fromQueue(queue),
+            processEvent: (event) =>
+              Effect.sync(() => {
+                processed += 1;
+                if (event.type === "content.delta") {
+                  const previous = textByThread.get(event.threadId) ?? "";
+                  textByThread.set(event.threadId, previous + event.payload.delta);
+                }
+              }),
+            updateHealth: makeProviderRuntimeEventPumpHealthRegistry(["codex"]).update,
+            deltaCoalesceWindowMs: 50,
+          }).pipe(Effect.forkScoped);
+
+          // 15 threads x 40 deltas, one token per thread every 10 ms (~100 tokens/s each).
+          for (let tick = 0; tick < 40; tick += 1) {
+            for (const threadId of threads) {
+              yield* Queue.offer(
+                queue,
+                deltaEvent(`${threadId}-${tick}`, `${tick},`, { threadId }),
+              );
+            }
+            yield* Effect.sleep(10);
+          }
+          yield* Effect.sleep(400);
+
+          const expected = Array.from({ length: 40 }, (_, tick) => `${tick},`).join("");
+          for (const threadId of threads) expect(textByThread.get(threadId)).toBe(expected);
+          // 600 raw deltas over ~400 ms become roughly one event per thread per window.
+          expect(processed).toBeLessThan(200);
+        }),
+      ),
+    );
+  });
+
   it("retries the current event before consuming the next queue item", async () => {
     await Effect.runPromise(
       Effect.scoped(

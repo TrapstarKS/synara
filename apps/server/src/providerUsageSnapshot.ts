@@ -51,6 +51,14 @@ interface ClaudeUsageSample {
 }
 
 const usageSnapshotCache = new Map<string, CachedUsageSnapshot>();
+// Transcripts are append-only and mostly idle. Re-parsing all of them (often GBs)
+// every refresh kept the server busy while agents streamed, so unchanged files
+// reuse their samples.
+// ponytail: a growing transcript is still re-read whole; read from the old size if that shows up.
+const claudeUsageSamplesByFile = new Map<
+  string,
+  { size: number; mtimeMs: number; samples: ReadonlyArray<ClaudeUsageSample> }
+>();
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
@@ -536,7 +544,8 @@ export async function readClaudeUsageSamples(
   let skippingOversizedLine = false;
 
   const collectLine = (line: Buffer, index: number): void => {
-    if (line.length === 0) {
+    // Every sample needs a usage object; skip decoding the many lines without one.
+    if (!line.includes('"usage"')) {
       return;
     }
     const contents = line.toString("utf8");
@@ -622,6 +631,23 @@ export async function readClaudeUsageSamples(
   return samples;
 }
 
+async function readClaudeUsageSamplesCached(
+  path: string,
+): Promise<ReadonlyArray<ClaudeUsageSample>> {
+  const stats = await safeStat(path);
+  if (!stats) {
+    claudeUsageSamplesByFile.delete(path);
+    return [];
+  }
+  const cached = claudeUsageSamplesByFile.get(path);
+  if (cached && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
+    return cached.samples;
+  }
+  const samples = await readClaudeUsageSamples(path);
+  claudeUsageSamplesByFile.set(path, { size: stats.size, mtimeMs: stats.mtimeMs, samples });
+  return samples;
+}
+
 async function loadCodexUsageSnapshot(input: {
   homeDir: string;
   homePath?: string;
@@ -687,9 +713,13 @@ async function loadClaudeUsageSnapshot(input: { homeDir: string }): Promise<Usag
     await mapWithConcurrency(
       transcriptFiles,
       PROVIDER_USAGE_FILE_READ_CONCURRENCY,
-      readClaudeUsageSamples,
+      readClaudeUsageSamplesCached,
     )
   ).flat();
+  const listed = new Set(transcriptFiles);
+  for (const path of claudeUsageSamplesByFile.keys()) {
+    if (!listed.has(path)) claudeUsageSamplesByFile.delete(path);
+  }
 
   if (usageSamples.length === 0) {
     return null;

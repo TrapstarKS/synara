@@ -179,6 +179,15 @@ class FakeCodexManager extends CodexAppServerManager {
     return false;
   }
 
+  override peekRoutableSession(
+    threadId: ThreadId,
+  ): ReturnType<CodexAppServerManager["peekRoutableSession"]> {
+    const session = this.sessionSnapshots.find((entry) => entry.threadId === threadId);
+    return session
+      ? { session, codexOptions: this.codexOptionsByThreadId.get(threadId) }
+      : undefined;
+  }
+
   override async stopAll(): Promise<void> {
     this.stopAllImpl();
   }
@@ -1793,6 +1802,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         },
       ];
       const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      // Per-event auth revalidation over every session stalled the server with many agents.
+      const listSpy = vi.spyOn(lifecycleManager, "listSessions");
+      const optionsSpy = vi.spyOn(lifecycleManager, "getSessionCodexOptions");
 
       lifecycleManager.emit("event", {
         id: asEventId("evt-session-closed-work"),
@@ -1805,6 +1817,10 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       } satisfies ProviderEvent);
       const firstEvent = yield* Fiber.join(firstEventFiber);
       lifecycleManager.sessionSnapshots = [];
+      assert.equal(listSpy.mock.calls.length, 0);
+      assert.equal(optionsSpy.mock.calls.length, 0);
+      listSpy.mockRestore();
+      optionsSpy.mockRestore();
 
       assert.equal(firstEvent._tag, "Some");
       if (firstEvent._tag !== "Some") {
