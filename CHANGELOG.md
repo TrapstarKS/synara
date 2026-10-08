@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.10] — 2026-10-08
+
+**Large orchestrations (15+ Codex threads) stay responsive, and agent transcripts no longer fill the disk.**
+
+### Fixed
+
+- Thread title and activity lookups use new indexes, so large databases no longer block the server for seconds per read.
+- Provider event ingestion yields between batches, so a burst from many agents no longer starves user commands.
+- WebSocket streams recover from overflow per stream instead of forcing a global reconnect, and unchanged history is no longer re-read.
+- Checkpoints and provider startups are rate-limited (2 and 4 at a time) during orchestrations; cancelling a thread right after launch now stops it.
+- Archiving or deleting an orchestrator thread also archives or deletes the threads it created.
+
+### Storage
+
+- Old database backups are pruned (newest migration snapshot kept; manual backups capped at 2 / 30 days).
+- Codex rollouts and images of deleted threads are reclaimed after 7 days; unreferenced Synara-owned Codex rollouts after 30 days.
+- Event journal deltas are compacted, the database vacuums incrementally, and logs rotate at 10 MiB × 3.
+
 ## [1.0.9] — 2026-10-08
 
 **Orchestrators running 15+ Codex threads no longer freeze Synara or show "Could not unblock thread".**
