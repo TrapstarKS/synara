@@ -172,12 +172,12 @@ const insertHistoryEvent = (event: ProviderRuntimeEvent, accepted = true) =>
     if (accepted) yield* acknowledgeRuntimeHistory;
   });
 
-const insertActivity = (activityId: string, payload: string) =>
+const insertActivity = (activityId: string, payload: string, kind = "tool.completed") =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO projection_thread_activities (activity_id, thread_id, tone, kind, summary, payload_json, created_at)
-      VALUES (${activityId}, 'logical-parent', 'info', 'tool.completed', 'Native collaboration',
+      VALUES (${activityId}, 'logical-parent', 'info', ${kind}, 'Native collaboration',
         ${payload}, ${old.toISOString()})
     `;
   });
@@ -381,9 +381,13 @@ describe("orphaned Codex rollout retention", () => {
 
       await expect(
         f.run(
-          insertActivity("unreadable-native-tool", payload).pipe(
-            Effect.andThen(pruneOrphanedCodexRollouts(noSessions, now)),
-          ),
+          // Migration 133's JSON expression index rejects invalid tool.* payloads,
+          // so seed the invalid case on an unindexed kind the sweep also reads.
+          insertActivity(
+            "unreadable-native-tool",
+            payload,
+            kind === "invalid" ? "subagent.updated" : "tool.completed",
+          ).pipe(Effect.andThen(pruneOrphanedCodexRollouts(noSessions, now))),
         ),
       ).rejects.toThrow(/native collaboration reference/iu);
 
