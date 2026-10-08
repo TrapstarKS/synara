@@ -36,3 +36,20 @@ describe("collectSubagentDescendants", () => {
     expect(collectSubagentDescendants(threads, "root").map((entry) => entry.id)).toEqual(["child"]);
   });
 });
+
+describe("orchestrator children", () => {
+  it("treats synara_mcp threads as children of the orchestrator that created them", () => {
+    const threads = [
+      thread("orchestrator"),
+      { id: "worker", creationSource: "synara_mcp", sourceThreadId: "orchestrator" },
+      thread("worker-subagent", "worker"),
+      // A fork/handoff keeps its source link but is not owned by the source thread.
+      { id: "fork", creationSource: null, sourceThreadId: "orchestrator" },
+    ];
+
+    expect(collectSubagentDescendants(threads, "orchestrator").map((entry) => entry.id)).toEqual([
+      "worker",
+      "worker-subagent",
+    ]);
+  });
+});

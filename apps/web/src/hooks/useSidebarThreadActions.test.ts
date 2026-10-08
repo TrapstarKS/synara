@@ -320,14 +320,15 @@ beforeEach(() => {
   harness.handleNewChat.mockResolvedValue({ ok: true });
   harness.activeThreadDelete.mockImplementation(async (input: unknown) => {
     const action = input as {
-      prepareForDelete?: () => unknown;
+      prepareForDelete?: (thread: { id: ThreadId; projectId: ProjectId }) => unknown;
       onDeleted: (input: {
         thread: { id: ThreadId; projectId: ProjectId };
         prepared?: unknown;
       }) => void;
     };
-    const prepared = action.prepareForDelete?.();
-    action.onDeleted({ thread: { id: THREAD_ID, projectId: PROJECT_ID }, prepared });
+    const thread = { id: THREAD_ID, projectId: PROJECT_ID };
+    const prepared = action.prepareForDelete?.(thread);
+    action.onDeleted({ thread, prepared });
   });
   vi.stubGlobal("window", {
     setTimeout: (callback: () => void) => {

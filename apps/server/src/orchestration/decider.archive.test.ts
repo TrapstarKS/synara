@@ -22,6 +22,7 @@ const UNRELATED_THREAD_ID = ThreadId.makeUnsafe("thread-unrelated");
 function makeThread(input: {
   id: ThreadId;
   parentThreadId?: ThreadId;
+  sourceThreadId?: ThreadId;
   archivedAt?: string;
   deletedAt?: string;
   activeTurnId?: TurnId;
@@ -73,6 +74,9 @@ function makeThread(input: {
     ...(input.goal !== undefined ? { goal: input.goal } : {}),
     ...(input.goalPausedAt !== undefined ? { goalPausedAt: input.goalPausedAt } : {}),
     ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
+    ...(input.sourceThreadId !== undefined
+      ? { creationSource: "synara_mcp" as const, sourceThreadId: input.sourceThreadId }
+      : {}),
     ...(input.archivedAt !== undefined ? { archivedAt: input.archivedAt } : {}),
   };
 }
@@ -129,6 +133,27 @@ describe("decider thread archive cascade", () => {
       GRANDCHILD_THREAD_ID,
       PARENT_THREAD_ID,
     ]);
+  });
+
+  it("archives threads created by an orchestrator together with it", async () => {
+    const workerThreadId = ThreadId.makeUnsafe("agent-worker");
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.archive",
+          commandId: CommandId.makeUnsafe("cmd-archive-orchestrator"),
+          threadId: PARENT_THREAD_ID,
+        },
+        readModel: makeReadModel([
+          makeThread({ id: PARENT_THREAD_ID }),
+          makeThread({ id: workerThreadId, sourceThreadId: PARENT_THREAD_ID }),
+          makeThread({ id: CHILD_THREAD_ID, parentThreadId: workerThreadId }),
+          makeThread({ id: UNRELATED_THREAD_ID }),
+        ]),
+      }),
+    );
+
+    expect(eventThreadIds(result)).toEqual([workerThreadId, CHILD_THREAD_ID, PARENT_THREAD_ID]);
   });
 
   it("skips subagent threads that are already archived", async () => {

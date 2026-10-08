@@ -5,6 +5,7 @@
 
 import { type ProjectId, ThreadId } from "@synara/contracts";
 import { pluralize } from "@synara/shared/text";
+import { collectSubagentDescendants } from "@synara/shared/threadHierarchy";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -637,10 +638,12 @@ export function useSidebarThreadActions(input: {
         deletedThreadIds?: ReadonlySet<ThreadId>;
         reconcileDeletedThread?: boolean;
         worktreeCleanupMode?: "prompt" | "skip";
+        includeDescendants?: boolean;
       } = {},
     ): Promise<void> => {
       await deleteActiveThreadFromClient({
         threadId,
+        includeSubagentDescendants: opts.includeDescendants ?? false,
         ...(opts.deletedThreadIds !== undefined ? { deletedThreadIds: opts.deletedThreadIds } : {}),
         ...(opts.reconcileDeletedThread !== undefined
           ? { reconcileDeletedThread: opts.reconcileDeletedThread }
@@ -648,25 +651,26 @@ export function useSidebarThreadActions(input: {
         ...(opts.worktreeCleanupMode !== undefined
           ? { worktreeCleanupMode: opts.worktreeCleanupMode }
           : {}),
-        prepareForDelete: () => ({
-          shouldNavigateToFallback: routeThreadId === threadId,
+        // With descendants, these run once per deleted thread (children first).
+        prepareForDelete: (deleted) => ({
+          shouldNavigateToFallback: routeThreadId === deleted.id,
           fallbackThreadId: getFallbackThreadIdAfterDelete({
             threads: sidebarThreads,
-            deletedThreadId: threadId,
+            deletedThreadId: deleted.id,
             deletedThreadIds: opts.deletedThreadIds ?? new Set<ThreadId>(),
             sortOrder: appSettings.sidebarThreadSortOrder,
           }),
           deletedPaneInActiveSplit: activeSplitView
-            ? resolveSplitViewPaneIdForThread(activeSplitView, threadId)
+            ? resolveSplitViewPaneIdForThread(activeSplitView, deleted.id)
             : null,
         }),
         onDeleted: ({ thread, prepared }) => {
-          unpinThread(threadId);
-          clearComposerDraftForThread(threadId);
+          unpinThread(thread.id);
+          clearComposerDraftForThread(thread.id);
           clearProjectDraftThreadById(thread.projectId, thread.id);
-          clearTerminalState(threadId);
-          removeThreadFromSplitViews(threadId);
-          clearTemporaryThread(threadId);
+          clearTerminalState(thread.id);
+          removeThreadFromSplitViews(thread.id);
+          clearTemporaryThread(thread.id);
 
           if (routeSplitViewId && prepared?.deletedPaneInActiveSplit) {
             const nextActiveSplitView =
@@ -729,18 +733,21 @@ export function useSidebarThreadActions(input: {
       if (!thread) return;
       if (appSettings.confirmThreadDelete) {
         const api = readNativeApi();
+        const childCount = collectSubagentDescendants(sidebarThreads, threadId).length;
         const confirmationMessage = [
           `Delete thread "${thread.title}"?`,
-          "This permanently clears conversation history for this thread.",
+          childCount > 0
+            ? `This permanently clears conversation history for this thread and its ${childCount} child ${pluralize(childCount, "thread")}.`
+            : "This permanently clears conversation history for this thread.",
         ].join("\n");
         const confirmed = api
           ? await api.dialogs.confirm(confirmationMessage)
           : await showConfirmDialogFallback(confirmationMessage);
         if (!confirmed) return;
       }
-      await deleteThread(threadId);
+      await deleteThread(threadId, { includeDescendants: true });
     },
-    [deleteThread, appSettings.confirmThreadDelete, sidebarThreadSummaryById],
+    [deleteThread, appSettings.confirmThreadDelete, sidebarThreadSummaryById, sidebarThreads],
   );
 
   const releaseArchivedWorktree = useCallback(

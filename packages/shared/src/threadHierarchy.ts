@@ -1,16 +1,25 @@
 // FILE: threadHierarchy.ts
-// Purpose: Parent/child traversal over subagent thread linkage shared by server and web.
-// Exports: collectSubagentDescendants
+// Purpose: Parent/child traversal over subagent and orchestrator thread linkage shared by server and web.
+// Exports: collectSubagentDescendants, lifecycleParentThreadId
 
 interface HierarchyThread {
   readonly id: string;
   readonly parentThreadId?: string | null | undefined;
+  readonly creationSource?: string | null | undefined;
+  readonly sourceThreadId?: string | null | undefined;
 }
 
-// Collects every thread reachable from `rootThreadId` through `parentThreadId`
-// links, breadth-first, excluding the root itself. Subagent threads are only
-// reachable through their parent thread, so lifecycle changes on a parent
-// (archive, restore, delete) apply to this whole subtree. Visited tracking keeps
+// A subagent belongs to its parentThreadId; a thread created through the Synara
+// gateway (synara_create_threads) belongs to the orchestrator that created it.
+export function lifecycleParentThreadId(thread: HierarchyThread): string | null {
+  if (thread.parentThreadId) return thread.parentThreadId;
+  return thread.creationSource === "synara_mcp" ? (thread.sourceThreadId ?? null) : null;
+}
+
+// Collects every thread reachable from `rootThreadId` through lifecycle parent
+// links (subagent parents and orchestrators), breadth-first, excluding the root
+// itself. Children are only reachable through their parent thread, so lifecycle
+// changes on a parent (archive, restore, delete) apply to this whole subtree. Visited tracking keeps
 // corrupted self- or cyclic linkage from hanging the caller.
 export function collectSubagentDescendants<T extends HierarchyThread>(
   threads: readonly T[],
@@ -18,7 +27,7 @@ export function collectSubagentDescendants<T extends HierarchyThread>(
 ): T[] {
   const childrenByParentId = new Map<string, T[]>();
   for (const thread of threads) {
-    const parentThreadId = thread.parentThreadId ?? null;
+    const parentThreadId = lifecycleParentThreadId(thread);
     if (parentThreadId === null) {
       continue;
     }
