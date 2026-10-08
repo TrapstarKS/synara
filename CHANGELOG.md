@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.9] — 2026-10-08
+
+**Orchestrators running 15+ Codex threads no longer freeze Synara or show "Could not unblock thread".**
+
+### Fixed
+
+- Streaming text from many agents is batched per message before it is saved, so the server keeps up with 15–30 streaming threads instead of falling minutes behind and dropping the connection.
+- Codex event handling no longer re-reads account files for every streamed token.
+- "Unblock thread" retries automatically when a reconnect interrupts it.
+
 ## [1.0.8] — 2026-10-07
 
 **Synara no longer freezes for minutes on large databases or while many agents run.**
