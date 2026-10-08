@@ -15,7 +15,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { randomUUID } from "node:crypto";
 
 import { ServerConfig } from "./config";
-import { pruneDeletedCodexArtifacts } from "./codexArtifactRetention";
+import { pruneDeletedCodexArtifacts, pruneOrphanedCodexRollouts } from "./codexArtifactRetention";
 import { GitCore } from "./git/Services/GitCore";
 import { pruneProjectedArchivedManagedWorktrees } from "./managedWorktrees";
 import type { OrchestrationEngineShape } from "./orchestration/Services/OrchestrationEngine";
@@ -25,6 +25,7 @@ import {
   type AutomationRepositoryShape,
 } from "./persistence/Services/AutomationRepository";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents";
+import { ProviderService } from "./provider/Services/ProviderService";
 
 // Stable prefix for retention commands. Older versions used it for reversible
 // soft-deletes; current versions archive threads so users can restore them.
@@ -314,6 +315,7 @@ export const startThreadRetentionJob = Effect.fn("startThreadRetentionJob")(func
   const config = yield* ServerConfig;
   const git = yield* GitCore;
   const sql = yield* SqlClient.SqlClient;
+  const provider = yield* ProviderService;
   const pruneArchivedManagedWorktrees = pruneProjectedArchivedManagedWorktrees({
     homeDir: config.homeDir,
     worktreesDir: config.worktreesDir,
@@ -328,6 +330,16 @@ export const startThreadRetentionJob = Effect.fn("startThreadRetentionJob")(func
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.catch((error) =>
           Effect.logWarning("deleted Codex artifact retention failed", { error }),
+        ),
+      ),
+    ),
+    Effect.andThen(
+      pruneOrphanedCodexRollouts(provider.listSessions).pipe(
+        Effect.provideService(ServerConfig, config),
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.asVoid,
+        Effect.catch((error) =>
+          Effect.logWarning("Codex orphan rollout retention deferred", { error }),
         ),
       ),
     ),
