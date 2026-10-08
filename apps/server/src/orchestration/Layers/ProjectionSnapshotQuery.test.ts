@@ -1243,6 +1243,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           ('finished-end', 'thread-oversized-turn', 'old-turn', 'info', 'task.completed', 'Done',
             '{"taskId":"finished"}', 1, '2026-02-23T00:00:00.000Z')
       `;
+      const retainedToolOutput = "x".repeat(64 * 1024);
+      yield* sql`UPDATE projection_thread_activities
+        SET payload_json = json_set(payload_json, '$.data.output', ${retainedToolOutput})
+        WHERE activity_id = 'old-tool'`;
       const taskDetail = yield* snapshotQuery.getThreadDetailById(
         asThreadId("thread-oversized-turn"),
       );
@@ -1256,6 +1260,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           rows.slice(0, 3).map((row) => row.id),
           ["old-tool", "active-start", "latest-background-patch"],
         );
+        const retainedTool = rows.find((row) => row.id === "old-tool")?.payload as {
+          readonly data: { readonly output: string };
+        };
+        assert.strictEqual(retainedTool.data.output, retainedToolOutput);
         assert.isFalse(rows.some((row) => row.id === "finished-start"));
       }
       // Paused tasks remain resumable, so their latest status must survive

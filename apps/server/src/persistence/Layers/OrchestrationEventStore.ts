@@ -412,6 +412,24 @@ export const buildReadEventRowsFromSequenceQuery = (
   `;
 };
 
+// Pin the sparse index: without statistics SQLite prefers the broad stream index.
+export const buildThreadTitleHighWaterSequenceQuery = (
+  sql: SqlClient.SqlClient,
+  threadId: string,
+) => sql`
+        SELECT COALESCE(MAX(sequence), 0) AS "highWaterSequence"
+        FROM orchestration_events INDEXED BY idx_orch_events_thread_title_sequence
+        WHERE aggregate_kind = 'thread'
+          AND stream_id = ${threadId}
+          AND (
+            event_type IN ('thread.created', 'thread.archived', 'thread.deleted')
+            OR (
+              event_type = 'thread.meta-updated'
+              AND json_type(payload_json, '$.title') = 'text'
+            )
+          )
+      `;
+
 const makeEventStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const maybeServerSettings = yield* Effect.serviceOption(ServerSettingsService);
@@ -546,20 +564,7 @@ const makeEventStore = Effect.gen(function* () {
   const readThreadTitleHighWaterSequenceRow = SqlSchema.findOne({
     Request: ThreadHighWaterRequestSchema,
     Result: HighWaterSequenceRowSchema,
-    execute: ({ threadId }) =>
-      sql`
-        SELECT COALESCE(MAX(sequence), 0) AS "highWaterSequence"
-        FROM orchestration_events
-        WHERE aggregate_kind = 'thread'
-          AND stream_id = ${threadId}
-          AND (
-            event_type IN ('thread.created', 'thread.archived', 'thread.deleted')
-            OR (
-              event_type = 'thread.meta-updated'
-              AND json_type(payload_json, '$.title') = 'text'
-            )
-          )
-      `,
+    execute: ({ threadId }) => buildThreadTitleHighWaterSequenceQuery(sql, threadId),
   });
 
   const readThreadEventRows = SqlSchema.findAll({

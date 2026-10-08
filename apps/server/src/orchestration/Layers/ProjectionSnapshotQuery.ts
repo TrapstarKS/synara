@@ -1290,30 +1290,56 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   });
 
   // Keep bounded lifecycle evidence for unfinished tasks even when their turn has
-  // aged out of the activity tail. Both snapshot paths use the same ranked CTE.
+  // aged out of the activity tail. Extracted fields stay in the covering index,
+  // so task lookups do not materialize historical tool-output bodies.
+  const taskActivityRows = (threadId?: string) => sql`
+    ranked AS MATERIALIZED (
+      SELECT activity.thread_id, activity.activity_id, activity.kind, activity_ranks.activity_rank,
+        json_extract(activity.payload_json, '$.taskId') AS task_id,
+        json_extract(activity.payload_json, '$.toolUseId') AS tool_use_id,
+        json_extract(activity.payload_json, '$.status') AS status,
+        json_type(activity.payload_json, '$.status') AS status_type,
+        json_type(activity.payload_json, '$.isBackgrounded') AS backgrounded_type,
+        COALESCE(json_extract(activity.payload_json, '$.data.toolCallId'),
+          json_extract(activity.payload_json, '$.data.toolUseId')) AS tool_id
+      FROM ${
+        threadId === undefined
+          ? sql`activity_ranks CROSS JOIN projection_thread_activities AS activity
+            INDEXED BY idx_projection_activities_task_evidence USING (thread_id, activity_id)`
+          : sql`projection_thread_activities AS activity INDEXED BY idx_projection_activities_task_evidence
+            JOIN activity_ranks USING (thread_id, activity_id)`
+      }
+      WHERE activity.kind IN (
+        'task.started', 'task.updated', 'task.completed', 'provider.session.boundary',
+        'tool.started', 'tool.updated', 'tool.completed'
+      )
+      ${threadId === undefined ? sql`` : sql`AND activity.thread_id = ${threadId}`}
+    )
+  `;
+
   const activeTaskActivityCtes = sql`
     task_terminals AS (
-      SELECT thread_id, json_extract(payload_json, '$.taskId') AS task_id,
+      SELECT thread_id, task_id,
         MIN(activity_rank) AS terminal_rank
       FROM ranked
       WHERE kind = 'task.completed'
-        OR (kind = 'task.updated' AND json_extract(payload_json, '$.status')
+        OR (kind = 'task.updated' AND status
           IN ('completed', 'failed', 'killed', 'stopped'))
-      GROUP BY thread_id, json_extract(payload_json, '$.taskId')
+      GROUP BY thread_id, task_id
     ),
     session_boundaries AS (
       SELECT thread_id, MIN(activity_rank) AS boundary_rank
       FROM ranked WHERE kind = 'provider.session.boundary'
       GROUP BY thread_id
     ),
-    active_task_starts AS (
+    active_task_starts AS MATERIALIZED (
       SELECT started.* FROM ranked AS started
       LEFT JOIN task_terminals AS terminal
         ON terminal.thread_id = started.thread_id
-        AND terminal.task_id = json_extract(started.payload_json, '$.taskId')
+        AND terminal.task_id = started.task_id
       LEFT JOIN session_boundaries AS boundary ON boundary.thread_id = started.thread_id
       WHERE started.kind = 'task.started'
-        AND json_extract(started.payload_json, '$.taskId') IS NOT NULL
+        AND started.task_id IS NOT NULL
         AND (terminal.terminal_rank IS NULL OR started.activity_rank < terminal.terminal_rank)
         AND (boundary.boundary_rank IS NULL OR started.activity_rank < boundary.boundary_rank)
     ),
@@ -1323,8 +1349,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       SELECT (
         SELECT activity_id FROM ranked AS patch
         WHERE patch.thread_id = started.thread_id AND patch.kind = 'task.updated'
-          AND json_extract(patch.payload_json, '$.taskId') = json_extract(started.payload_json, '$.taskId')
-          AND json_type(patch.payload_json, '$.status') = 'text'
+          AND patch.task_id = started.task_id
+          AND patch.status_type = 'text'
           AND patch.activity_rank < started.activity_rank
         ORDER BY patch.activity_rank LIMIT 1
       ) FROM active_task_starts AS started
@@ -1332,8 +1358,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       SELECT (
         SELECT activity_id FROM ranked AS patch
         WHERE patch.thread_id = started.thread_id AND patch.kind = 'task.updated'
-          AND json_extract(patch.payload_json, '$.taskId') = json_extract(started.payload_json, '$.taskId')
-          AND json_type(patch.payload_json, '$.isBackgrounded') IN ('true', 'false')
+          AND patch.task_id = started.task_id
+          AND patch.backgrounded_type IN ('true', 'false')
           AND patch.activity_rank < started.activity_rank
         ORDER BY patch.activity_rank LIMIT 1
       ) FROM active_task_starts AS started
@@ -1342,69 +1368,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT activity_id FROM ranked AS tool
         WHERE tool.thread_id = started.thread_id
           AND tool.kind IN ('tool.started', 'tool.updated', 'tool.completed')
-          AND COALESCE(json_extract(tool.payload_json, '$.data.toolCallId'),
-            json_extract(tool.payload_json, '$.data.toolUseId')) =
-              json_extract(started.payload_json, '$.toolUseId')
+          AND tool.tool_id =
+              started.tool_use_id
         ORDER BY tool.activity_rank LIMIT 1
       ) FROM active_task_starts AS started
     )
   `;
 
+  // Filter retained IDs before joining bodies; both readers rank narrow metadata
+  // once and read JSON only for pending requests and displayed activities.
   const listThreadActivityRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionThreadActivityDbRowSchema,
     execute: () =>
       sql`
-        WITH ranked AS (
-          SELECT
-            *,
-            ROW_NUMBER() OVER (
-              PARTITION BY thread_id
-              ORDER BY
-                CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
-                sequence DESC,
-                created_at DESC,
-                activity_id DESC
-            ) AS activity_rank
-          FROM projection_thread_activities
-          WHERE ${liveThreadScope}
-        ), ${activeTaskActivityCtes}
-        SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          COALESCE((
-            SELECT CASE WHEN json_type(totals, '$.inputTokens') = 'integer'
-              AND json_type(totals, '$.outputTokens') = 'integer'
-              THEN json_patch(ranked.payload_json, json_object(
-                'cumulativeUsage', json_object(
-                  'inputTokens', json_extract(totals, '$.inputTokens'),
-                  'outputTokens', json_extract(totals, '$.outputTokens'),
-                  'cachedInputTokens', json_extract(totals, '$.cachedInputTokens'),
-                  'cacheCreationInputTokens', json_extract(totals, '$.cacheWriteInputTokens')
-                ),
-                'usageSessionId', session_id
-              )) END
-            FROM (
-              SELECT json_extract(event_json, '$.raw.payload.tokenUsage.total') AS totals,
-                json_extract(event_json, '$.providerRefs.providerThreadId') ||
-                CASE WHEN json_type(event_json, '$.lifecycleGeneration') = 'text'
-                  THEN ':' || json_extract(event_json, '$.lifecycleGeneration') ELSE '' END AS session_id
-              FROM provider_runtime_events
-              WHERE event_id = ranked.activity_id AND thread_id = ranked.thread_id
-                AND ranked.kind = 'context-window.updated'
-                AND json_extract(event_json, '$.provider') = 'codex'
-            )
-          ), ranked.payload_json) AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM (
+        WITH activity_ranks AS (
           SELECT
             thread_id,
             activity_id,
+            turn_id,
+            kind,
+            sequence,
+            created_at,
+            CASE WHEN kind IN ('approval.requested', 'user-input.requested')
+              THEN payload_json END AS payload_json,
             ROW_NUMBER() OVER (
               PARTITION BY thread_id
               ORDER BY
@@ -1413,10 +1400,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 created_at DESC,
                 activity_id DESC
             ) AS activity_rank
-          FROM projection_thread_activities
+          FROM projection_thread_activities INDEXED BY idx_projection_activities_detail_rank_covering
           WHERE ${liveThreadScope}
-        ) AS ranks
-        JOIN projection_thread_activities AS ranked USING (thread_id, activity_id)
+        ), ${taskActivityRows()}, ${activeTaskActivityCtes},
+        retained_activities AS MATERIALIZED (
+          SELECT thread_id, activity_id
+          FROM activity_ranks AS ranked
         WHERE activity_rank <= ${MAX_SNAPSHOT_THREAD_ACTIVITIES}
           OR activity_id IN (SELECT activity_id FROM retained_task_activity_ids)
           OR kind IN ('provider.handoff.requested', 'provider.handoff.completed', 'provider.handoff.failed')
@@ -1426,7 +1415,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             AND NOT EXISTS (
               SELECT 1
               FROM projection_thread_activities AS later
+                INDEXED BY idx_projection_activities_interaction_resolution
               WHERE later.thread_id = ranked.thread_id
+                AND later.kind IN (
+                  'approval.resolved', 'provider.approval.respond.failed',
+                  'user-input.resolved', 'provider.user-input.respond.failed'
+                )
                 AND json_extract(later.payload_json, '$.requestId') =
                   json_extract(ranked.payload_json, '$.requestId')
                 AND (
@@ -1479,6 +1473,41 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 )
             )
           )
+        )
+        SELECT
+          activity_id AS "activityId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          tone,
+          kind,
+          summary,
+          COALESCE((
+            SELECT CASE WHEN json_type(totals, '$.inputTokens') = 'integer'
+              AND json_type(totals, '$.outputTokens') = 'integer'
+              THEN json_patch(ranked.payload_json, json_object(
+                'cumulativeUsage', json_object(
+                  'inputTokens', json_extract(totals, '$.inputTokens'),
+                  'outputTokens', json_extract(totals, '$.outputTokens'),
+                  'cachedInputTokens', json_extract(totals, '$.cachedInputTokens'),
+                  'cacheCreationInputTokens', json_extract(totals, '$.cacheWriteInputTokens')
+                ),
+                'usageSessionId', session_id
+              )) END
+            FROM (
+              SELECT json_extract(event_json, '$.raw.payload.tokenUsage.total') AS totals,
+                json_extract(event_json, '$.providerRefs.providerThreadId') ||
+                CASE WHEN json_type(event_json, '$.lifecycleGeneration') = 'text'
+                  THEN ':' || json_extract(event_json, '$.lifecycleGeneration') ELSE '' END AS session_id
+              FROM provider_runtime_events
+              WHERE event_id = ranked.activity_id AND thread_id = ranked.thread_id
+                AND ranked.kind = 'context-window.updated'
+                AND json_extract(event_json, '$.provider') = 'codex'
+            )
+          ), ranked.payload_json) AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM retained_activities AS ranks
+        JOIN projection_thread_activities AS ranked USING (thread_id, activity_id)
         ORDER BY
           thread_id ASC,
           CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
@@ -2039,13 +2068,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: ({ threadId }) =>
       sql`
-        WITH ranked AS (
+        WITH activity_ranks AS (
           SELECT
             thread_id,
             activity_id,
             turn_id,
             kind,
-            payload_json,
+            sequence,
+            created_at,
+            CASE WHEN kind IN ('approval.requested', 'user-input.requested')
+              THEN payload_json END AS payload_json,
             ROW_NUMBER() OVER (
               PARTITION BY thread_id
               ORDER BY
@@ -2054,7 +2086,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 created_at DESC,
                 activity_id DESC
             ) AS activity_rank
-          FROM projection_thread_activities
+          FROM projection_thread_activities INDEXED BY idx_projection_activities_detail_rank_covering
           WHERE thread_id = ${threadId}
         ),
         active_turn AS (
@@ -2063,10 +2095,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           WHERE thread_id = ${threadId} AND state = 'running' AND turn_id IS NOT NULL
           LIMIT 1
         ),
+        ${taskActivityRows(threadId)},
         ${activeTaskActivityCtes},
         cutoff_turn AS (
           SELECT turn_id AS cutoff_turn_id
-          FROM ranked
+          FROM activity_ranks
           WHERE activity_rank = ${MAX_THREAD_DETAIL_ACTIVITIES}
         ),
         cutoff_turn_state AS (
@@ -2074,17 +2107,111 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             cutoff_turn_id,
             EXISTS (
               SELECT 1
-              FROM ranked
+              FROM activity_ranks
               WHERE activity_rank > ${MAX_THREAD_DETAIL_ACTIVITIES}
                 AND turn_id = cutoff_turn_id
             ) AS is_split,
             EXISTS (
               SELECT 1
-              FROM ranked
+              FROM activity_ranks
               WHERE activity_rank < ${MAX_THREAD_DETAIL_ACTIVITIES}
                 AND turn_id IS NOT cutoff_turn_id
             ) AS has_newer_turn
           FROM cutoff_turn
+        ),
+        retained_activities AS MATERIALIZED (
+          SELECT thread_id, activity_id, turn_id
+          FROM activity_ranks AS ranked
+        WHERE ranked.thread_id = ${threadId}
+          AND (
+            ranked.activity_id IN (SELECT activity_id FROM retained_task_activity_ids)
+            OR (
+              activity_rank <= ${MAX_THREAD_DETAIL_ACTIVITIES}
+              -- Drop a split oldest turn instead of extending the query beyond
+              -- its cap. If one turn fills the entire window, retain the raw
+              -- capped tail so an oversized turn does not hide all activity.
+              AND NOT (
+                EXISTS (SELECT 1 FROM cutoff_turn_state)
+                AND (SELECT cutoff_turn_id FROM cutoff_turn_state) IS NOT NULL
+                AND ranked.turn_id IS NOT NULL
+                AND ranked.turn_id = (SELECT cutoff_turn_id FROM cutoff_turn_state)
+                AND (SELECT is_split FROM cutoff_turn_state)
+                AND (SELECT has_newer_turn FROM cutoff_turn_state)
+              )
+            )
+            -- A long-running turn can emit more than the normal detail
+            -- window. Keep that active turn whole so commands do not vanish
+            -- while the assistant text continues streaming.
+            OR (
+              (SELECT active_turn_id FROM active_turn) IS NOT NULL
+              AND ranked.turn_id = (SELECT active_turn_id FROM active_turn)
+            )
+            OR ranked.kind IN ('provider.handoff.requested', 'provider.handoff.completed', 'provider.handoff.failed')
+            OR (
+              ranked.kind IN ('approval.requested', 'user-input.requested')
+              AND json_extract(ranked.payload_json, '$.requestId') IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM projection_thread_activities AS later
+                INDEXED BY idx_projection_activities_interaction_resolution
+                WHERE later.thread_id = ranked.thread_id
+                AND later.kind IN (
+                  'approval.resolved', 'provider.approval.respond.failed',
+                  'user-input.resolved', 'provider.user-input.respond.failed'
+                )
+                  AND json_extract(later.payload_json, '$.requestId') =
+                    json_extract(ranked.payload_json, '$.requestId')
+                  AND (
+                    (ranked.kind = 'approval.requested' AND later.kind = 'approval.resolved')
+                    OR (
+                      ranked.kind = 'approval.requested'
+                      AND later.kind = 'provider.approval.respond.failed'
+                      AND (
+                        lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
+                          '%stale pending approval request%'
+                        OR lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
+                          '%unknown pending approval request%'
+                        OR lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
+                          '%unknown pending permission request%'
+                      )
+                    )
+                    OR (ranked.kind = 'user-input.requested' AND later.kind = 'user-input.resolved')
+                    OR (
+                      ranked.kind = 'user-input.requested'
+                      AND later.kind = 'provider.user-input.respond.failed'
+                      AND (
+                        lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
+                          '%stale pending user-input request%'
+                        OR lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
+                          '%unknown pending user-input request%'
+                      )
+                    )
+                  )
+                  AND (
+                    CASE WHEN later.sequence IS NULL THEN 0 ELSE 1 END >
+                      CASE WHEN ranked.sequence IS NULL THEN 0 ELSE 1 END
+                    OR (
+                      CASE WHEN later.sequence IS NULL THEN 0 ELSE 1 END =
+                        CASE WHEN ranked.sequence IS NULL THEN 0 ELSE 1 END
+                      AND COALESCE(later.sequence, -1) > COALESCE(ranked.sequence, -1)
+                    )
+                    OR (
+                      CASE WHEN later.sequence IS NULL THEN 0 ELSE 1 END =
+                        CASE WHEN ranked.sequence IS NULL THEN 0 ELSE 1 END
+                      AND COALESCE(later.sequence, -1) = COALESCE(ranked.sequence, -1)
+                      AND later.created_at > ranked.created_at
+                    )
+                    OR (
+                      CASE WHEN later.sequence IS NULL THEN 0 ELSE 1 END =
+                        CASE WHEN ranked.sequence IS NULL THEN 0 ELSE 1 END
+                      AND COALESCE(later.sequence, -1) = COALESCE(ranked.sequence, -1)
+                      AND later.created_at = ranked.created_at
+                      AND later.activity_id > ranked.activity_id
+                    )
+                  )
+              )
+            )
+          )
         )
         SELECT
           ranked.activity_id AS "activityId",
@@ -2118,93 +2245,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ), activity.payload_json) AS "payload",
           activity.sequence,
           activity.created_at AS "createdAt"
-        FROM ranked
+        FROM retained_activities AS ranked
         JOIN projection_thread_activities AS activity USING (thread_id, activity_id)
-        WHERE ranked.thread_id = ${threadId}
-          AND (
-            ranked.activity_id IN (SELECT activity_id FROM retained_task_activity_ids)
-            OR (
-              activity_rank <= ${MAX_THREAD_DETAIL_ACTIVITIES}
-              -- Drop a split oldest turn instead of extending the query beyond
-              -- its cap. If one turn fills the entire window, retain the raw
-              -- capped tail so an oversized turn does not hide all activity.
-              AND NOT (
-                EXISTS (SELECT 1 FROM cutoff_turn_state)
-                AND (SELECT cutoff_turn_id FROM cutoff_turn_state) IS NOT NULL
-                AND ranked.turn_id IS NOT NULL
-                AND ranked.turn_id = (SELECT cutoff_turn_id FROM cutoff_turn_state)
-                AND (SELECT is_split FROM cutoff_turn_state)
-                AND (SELECT has_newer_turn FROM cutoff_turn_state)
-              )
-            )
-            -- A long-running turn can emit more than the normal detail
-            -- window. Keep that active turn whole so commands do not vanish
-            -- while the assistant text continues streaming.
-            OR (
-              (SELECT active_turn_id FROM active_turn) IS NOT NULL
-              AND ranked.turn_id = (SELECT active_turn_id FROM active_turn)
-            )
-            OR activity.kind IN ('provider.handoff.requested', 'provider.handoff.completed', 'provider.handoff.failed')
-            OR (
-              activity.kind IN ('approval.requested', 'user-input.requested')
-              AND json_extract(activity.payload_json, '$.requestId') IS NOT NULL
-              AND NOT EXISTS (
-                SELECT 1
-                FROM projection_thread_activities AS later
-                WHERE later.thread_id = ranked.thread_id
-                  AND json_extract(later.payload_json, '$.requestId') =
-                    json_extract(activity.payload_json, '$.requestId')
-                  AND (
-                    (activity.kind = 'approval.requested' AND later.kind = 'approval.resolved')
-                    OR (
-                      activity.kind = 'approval.requested'
-                      AND later.kind = 'provider.approval.respond.failed'
-                      AND (
-                        lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
-                          '%stale pending approval request%'
-                        OR lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
-                          '%unknown pending approval request%'
-                        OR lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
-                          '%unknown pending permission request%'
-                      )
-                    )
-                    OR (activity.kind = 'user-input.requested' AND later.kind = 'user-input.resolved')
-                    OR (
-                      activity.kind = 'user-input.requested'
-                      AND later.kind = 'provider.user-input.respond.failed'
-                      AND (
-                        lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
-                          '%stale pending user-input request%'
-                        OR lower(COALESCE(json_extract(later.payload_json, '$.detail'), '')) LIKE
-                          '%unknown pending user-input request%'
-                      )
-                    )
-                  )
-                  AND (
-                    CASE WHEN later.sequence IS NULL THEN 0 ELSE 1 END >
-                      CASE WHEN activity.sequence IS NULL THEN 0 ELSE 1 END
-                    OR (
-                      CASE WHEN later.sequence IS NULL THEN 0 ELSE 1 END =
-                        CASE WHEN activity.sequence IS NULL THEN 0 ELSE 1 END
-                      AND COALESCE(later.sequence, -1) > COALESCE(activity.sequence, -1)
-                    )
-                    OR (
-                      CASE WHEN later.sequence IS NULL THEN 0 ELSE 1 END =
-                        CASE WHEN activity.sequence IS NULL THEN 0 ELSE 1 END
-                      AND COALESCE(later.sequence, -1) = COALESCE(activity.sequence, -1)
-                      AND later.created_at > activity.created_at
-                    )
-                    OR (
-                      CASE WHEN later.sequence IS NULL THEN 0 ELSE 1 END =
-                        CASE WHEN activity.sequence IS NULL THEN 0 ELSE 1 END
-                      AND COALESCE(later.sequence, -1) = COALESCE(activity.sequence, -1)
-                      AND later.created_at = activity.created_at
-                      AND later.activity_id > ranked.activity_id
-                    )
-                  )
-              )
-            )
-          )
         ORDER BY
           CASE WHEN activity.sequence IS NULL THEN 0 ELSE 1 END ASC,
           activity.sequence ASC,
