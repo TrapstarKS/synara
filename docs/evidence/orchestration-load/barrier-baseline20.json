@@ -1,0 +1,150 @@
+{
+  "fixture": "fake Codex app-server; real Synara server, SQLite and WebSocket",
+  "runtime": {
+    "bun": "1.4.2",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "shutdown": {
+    "escalated": false,
+    "signalErrors": [],
+    "capturedBeforeRootExit": true
+  },
+  "source": {
+    "baseline": true,
+    "baselineRef": "e31ce661d",
+    "baselineFiles": [
+      "apps/server/src/agentGateway/awaitThreads.ts",
+      "apps/server/src/agentGateway/stdioProxyScript.ts",
+      "apps/server/src/checkpointing/Layers/CheckpointStore.ts",
+      "apps/server/src/codexAppServerManager.ts",
+      "apps/server/src/provider/Layers/CodexAdapter.ts",
+      "apps/server/src/terminal/Layers/Manager.ts"
+    ],
+    "revision": "e31ce661d7d4d3d287db5a5302de7743e8b264b1"
+  },
+  "options": {
+    "threads": 20,
+    "rate": 100,
+    "seconds": 10,
+    "ticks": 1000
+  },
+  "completedThreads": 20,
+  "incompleteThreads": [],
+  "changedFiles": 20,
+  "rawProviderDeltas": {
+    "assistant": 20000,
+    "commandOutput": 5000,
+    "fileChangeOutput": 20
+  },
+  "wallMs": 32401.356249999997,
+  "startupMs": 4398.470916999999,
+  "fakeProviders": {
+    "peakStreamingThreads": 20,
+    "rssBytes": {
+      "count": 20,
+      "p50": 44613632,
+      "p95": 49168384,
+      "p99": 49168384,
+      "max": 49168384
+    },
+    "emissionMs": {
+      "count": 20,
+      "p50": 11276,
+      "p95": 11332,
+      "p99": 11332,
+      "max": 11332
+    }
+  },
+  "server": {
+    "sampleCount": 2398,
+    "lagMs": {
+      "p50": 1.176833000001352,
+      "p95": 11.643874999999753,
+      "p99": 29.4045419999984,
+      "max": 867.0724579999987
+    },
+    "rssBytes": {
+      "initial": 366772224,
+      "peak": 680394752,
+      "final": 669810688
+    },
+    "phaseLagMs": {
+      "startup": {
+        "count": 283,
+        "p50": 2.1572499999983847,
+        "p95": 23.079208999999537,
+        "p99": 45.45441700000083,
+        "max": 54.93829199999891
+      },
+      "streaming": {
+        "count": 2115,
+        "p50": 1.0864160000055563,
+        "p95": 10.124166999998124,
+        "p99": 23.462040999998862,
+        "max": 867.0724579999987
+      }
+    }
+  },
+  "wsLatencyMs": {
+    "loadThread": {
+      "count": 275,
+      "p50": 9.269082999999227,
+      "p95": 34.2867499999993,
+      "p99": 112.0966669999998,
+      "max": 802.3949579999971
+    },
+    "sendMessageReceipt": {
+      "count": 20,
+      "p50": 362.6012090000004,
+      "p95": 527.0508339999997,
+      "p99": 527.0508339999997,
+      "max": 527.0508339999997
+    },
+    "firstAssistantText": {
+      "count": 20,
+      "p50": 4980.282417,
+      "p95": 5108.609792000001,
+      "p99": 5108.609792000001,
+      "max": 5108.609792000001
+    },
+    "completion": {
+      "count": 20,
+      "p50": 31037.727667,
+      "p95": 31797.376791999995,
+      "p99": 31797.376791999995,
+      "max": 31797.376791999995
+    }
+  },
+  "transport": {
+    "connections": 3,
+    "receivedBytes": 56990922,
+    "receivedFrames": 6928,
+    "streamFrames": [
+      316, 315, 315, 311, 313, 318, 312, 314, 193, 317, 317, 315, 314, 311, 315, 317, 313, 314, 311,
+      313, 317
+    ]
+  },
+  "storageBytes": {
+    "initial": {
+      "db": 1273856,
+      "wal": 2125952
+    },
+    "peak": {
+      "db": 30957568,
+      "wal": 5809232
+    },
+    "final": {
+      "db": 30957568,
+      "wal": 5809232
+    },
+    "rows": {
+      "orchestration": {
+        "count": 6333
+      },
+      "providerRuntime": {
+        "count": 513
+      }
+    }
+  }
+}
