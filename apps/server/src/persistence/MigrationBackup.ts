@@ -44,10 +44,12 @@ import {
  * Keep only the newest finished pre-migration SQLite backup (issue #618).
  *
  * Each snapshot is a full copy of the database, so five of them cost 11 GB on a
- * 3 GB database. Only the snapshot of the latest migration can be restored by
- * the recovery flow; older ones predate migrations that already succeeded.
+ * 3 GB database. The latest completed migration's snapshot stays pinned until
+ * its replacement succeeds, including while a later migration is pending.
  */
 export const MIGRATION_BACKUP_RETENTION = 1;
+export const MANUAL_BACKUP_RETENTION = 2;
+export const MANUAL_BACKUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 export const FAILED_MIGRATION_BUNDLE_RETENTION = 3;
 
 const STALE_RECOVERY_ARTIFACT_AGE_MS = 24 * 60 * 60 * 1_000;
@@ -505,7 +507,16 @@ function artifactTimestampMs(name: string): number | null {
     const millisecond = match[7] === undefined ? 0 : Number(match[7]);
     if (month < 1 || month > 12 || day < 1 || day > 31) continue;
     if (hour > 23 || minute > 59 || second > 59) continue;
-    parsed = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
+    const timestampMs = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
+    const date = new Date(timestampMs);
+    if (
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    ) {
+      continue;
+    }
+    parsed = timestampMs;
   }
   return parsed;
 }
@@ -524,8 +535,13 @@ type MigrationArtifactFamily = {
   readonly prefix: string;
   /** Suffix every member carries, when the family has one. */
   readonly suffix?: string;
+  readonly timestampMs?: (name: string) => number | null;
   /** How many of the newest members survive. */
   readonly retention: number;
+  readonly protectedNames?: ReadonlySet<string>;
+  readonly maxAgeMs?: number;
+  /** The newest recovery point survives even when every member has expired. */
+  readonly minimumRetention?: number;
   /** Members own their SQLite `-wal`/`-shm` sidecars and are reclaimed together. */
   readonly bundled?: boolean;
   /** Repair 0600/regular-file expectations while walking the family. */
@@ -564,7 +580,7 @@ async function pruneMigrationArtifactFamily(family: MigrationArtifactFamily): Pr
             );
             return null;
           }
-          const timestampMs = artifactTimestampMs(name);
+          const timestampMs = (family.timestampMs ?? artifactTimestampMs)(name);
           if (timestampMs === null) return null;
           if (
             family.ensurePrivate &&
@@ -585,9 +601,15 @@ async function pruneMigrationArtifactFamily(family: MigrationArtifactFamily): Pr
     ranked.sort(
       (left, right) => right.timestampMs - left.timestampMs || right.name.localeCompare(left.name),
     );
+    const cutoff = family.maxAgeMs === undefined ? null : Date.now() - family.maxAgeMs;
     await Promise.all(
       ranked
-        .slice(Math.max(0, family.retention))
+        .filter(
+          ({ name, timestampMs }, index) =>
+            !family.protectedNames?.has(name) &&
+            (index >= Math.max(0, family.retention) ||
+              (cutoff !== null && index >= (family.minimumRetention ?? 0) && timestampMs < cutoff)),
+        )
         .flatMap(({ name }) =>
           family.bundled
             ? ["", ...BUNDLE_SIDECAR_SUFFIXES].map((sidecar) => unlink(`${name}${sidecar}`))
@@ -598,13 +620,97 @@ async function pruneMigrationArtifactFamily(family: MigrationArtifactFamily): Pr
 }
 
 /** Restorable snapshots this codebase writes before it migrates a database. */
-const preMigrationBackupFamily = (dbPath: string, retention: number): MigrationArtifactFamily => ({
-  directory: migrationBackupDirectory(dbPath),
-  prefix: `${path.basename(dbPath)}.pre-migration-`,
-  suffix: ".sqlite",
-  retention,
-  ensurePrivate: true,
-});
+const preMigrationBackupFamily = (
+  dbPath: string,
+  retention: number,
+  protectedNames: ReadonlySet<string>,
+): MigrationArtifactFamily => {
+  const namePattern = generatedBackupNamePattern(dbPath);
+  return {
+    directory: migrationBackupDirectory(dbPath),
+    prefix: `${path.basename(dbPath)}.pre-migration-`,
+    suffix: ".sqlite",
+    timestampMs: (name) => artifactTimestampMs(namePattern.exec(name)?.[1] ?? ""),
+    retention,
+    protectedNames,
+    ensurePrivate: true,
+  };
+};
+
+function manualBackupTimestampMs(dbPath: string, name: string): number | null {
+  const cleanupMatch = /^manual-pre-cleanup-(\d{8})\.sqlite$/u.exec(name);
+  if (cleanupMatch) return artifactTimestampMs(`${cleanupMatch[1]}T000000000Z`);
+
+  const escapedBasename = path.basename(dbPath).replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const manualPattern = new RegExp(
+    `^${escapedBasename}\\.manual-backup-(\\d{8}T\\d{4}(?:\\d{2}(?:\\d{3})?)?Z?)(?:-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})?\\.sqlite$`,
+    "iu",
+  );
+  return artifactTimestampMs(manualPattern.exec(name)?.[1] ?? "");
+}
+
+export interface DatabaseBackupRetentionOptions {
+  readonly migrationRetention?: number;
+  readonly manualRetention?: number;
+  readonly manualMaxAgeMs?: number;
+}
+
+async function pruneDatabaseBackupFiles(
+  dbPath: string,
+  options: DatabaseBackupRetentionOptions = {},
+  protectedBackupPath?: string,
+): Promise<void> {
+  const migrationRetention = options.migrationRetention ?? MIGRATION_BACKUP_RETENTION;
+  const manualRetention = options.manualRetention ?? MANUAL_BACKUP_RETENTION;
+  const manualMaxAgeMs = options.manualMaxAgeMs ?? MANUAL_BACKUP_MAX_AGE_MS;
+  if (
+    !Number.isInteger(migrationRetention) ||
+    migrationRetention < 1 ||
+    !Number.isInteger(manualRetention) ||
+    manualRetention < 1 ||
+    !Number.isFinite(manualMaxAgeMs) ||
+    manualMaxAgeMs < 0
+  ) {
+    throw new Error("Invalid database backup retention policy.");
+  }
+
+  // An unreadable recovery record could name any snapshot. Validate both
+  // records before deleting anything, and pin their exact recovery points.
+  let marker: MigrationRecoveryMarker | null;
+  let provenance: MigrationRecoveryMarker | null;
+  try {
+    marker = await readMigrationRecoveryMarker(dbPath);
+    provenance = await readCompletedMigrationProvenance(dbPath);
+  } catch {
+    return;
+  }
+  const protectedNames = new Set(
+    [marker, provenance].flatMap((record) =>
+      record === null ? [] : [path.basename(record.backupPath)],
+    ),
+  );
+  if (protectedBackupPath) protectedNames.add(path.basename(protectedBackupPath));
+  await Promise.all([
+    pruneMigrationArtifactFamily(
+      preMigrationBackupFamily(dbPath, migrationRetention, protectedNames),
+    ),
+    pruneMigrationArtifactFamily({
+      directory: migrationBackupDirectory(dbPath),
+      prefix: "",
+      suffix: ".sqlite",
+      timestampMs: (name) => manualBackupTimestampMs(dbPath, name),
+      retention: manualRetention,
+      maxAgeMs: manualMaxAgeMs,
+      minimumRetention: 1,
+    }),
+  ]);
+}
+
+/** The caller holds the database lifecycle lock, including during daily maintenance. */
+export const pruneDatabaseBackups = (
+  dbPath: string,
+  options: DatabaseBackupRetentionOptions = {},
+) => attemptPromise(() => pruneDatabaseBackupFiles(dbPath, options));
 
 /**
  * Full-size snapshots an older release wrote beside real backups before it
@@ -669,7 +775,11 @@ const pruneUnreferencedMigrationArtifacts = (dbPath: string): Promise<void> =>
  * evict another's, and a single prefix match is what left the `failed-migration`
  * and `pre-tracker-repair` families unreclaimable for their entire existence.
  */
-export const pruneMigrationBackups = (dbPath: string, retention = MIGRATION_BACKUP_RETENTION) =>
+export const pruneMigrationBackups = (
+  dbPath: string,
+  retention = MIGRATION_BACKUP_RETENTION,
+  protectedBackupPath?: string,
+) =>
   attemptPromise(async () => {
     // Orphaned partials are unreferenced by construction: the only writer holds
     // the database lifecycle lock, and a partial that outlived its writer can
@@ -680,7 +790,7 @@ export const pruneMigrationBackups = (dbPath: string, retention = MIGRATION_BACK
       isMigrationBackupPartial(path.basename(dbPath)),
     );
     await Promise.all([
-      pruneMigrationArtifactFamily(preMigrationBackupFamily(dbPath, retention)),
+      pruneDatabaseBackupFiles(dbPath, { migrationRetention: retention }, protectedBackupPath),
       pruneUnreferencedMigrationArtifacts(dbPath),
     ]);
   });
@@ -719,7 +829,7 @@ export const createMigrationBackup = (dbPath: string, plan: MigrationBackupPlan)
       // database that no cleanup path could reclaim.
       Effect.tapError(() => attemptPromise(() => fs.unlink(temporaryPath)).pipe(Effect.ignore)),
     );
-    yield* pruneMigrationBackups(dbPath);
+    yield* pruneMigrationBackups(dbPath, MIGRATION_BACKUP_RETENTION, backupPath);
     return { ...plan, backupPath, createdAt } satisfies MigrationBackupResult;
   });
 
@@ -821,6 +931,7 @@ export const runWithPreMigrationBackup = <A, E, R>(
     if (recoveryPayload) {
       yield* writeCompletedMigrationProvenance(dbPath, recoveryPayload);
       yield* removeRecoveryMarker(dbPath);
+      yield* pruneDatabaseBackups(dbPath).pipe(Effect.ignore);
     }
     return result;
   });
@@ -1043,7 +1154,7 @@ export type MigrationRecoveryMarker = {
 function generatedBackupNamePattern(dbPath: string): RegExp {
   const escapedBasename = path.basename(dbPath).replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   return new RegExp(
-    `^${escapedBasename}\\.pre-migration-[A-Za-z0-9_-]+-to-v\\d+-\\d{8}T\\d{9}Z-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.sqlite$`,
+    `^${escapedBasename}\\.pre-migration-[A-Za-z0-9_-]+-to-v\\d+-(\\d{8}T\\d{9}Z)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.sqlite$`,
     "iu",
   );
 }
@@ -1191,13 +1302,13 @@ export async function inspectCompletedMigrationBackupForSchemaTooNew(
  * wedged install keeps every partial its restart loop produced — the failure
  * mode that filled hundreds of gigabytes in minutes.
  *
- * Four things are swept: snapshot partials, marker partials, provenance
- * partials, and artifact families that no recovery path can restore from.
+ * Snapshot and state-file partials plus recognized backup families are swept.
  * Removing partials unconditionally is safe only
  * because every caller holds the database lifecycle lock, which makes this
  * process their sole owner; the retained families are bounded rather than
- * emptied. It never removes a finished `pre-migration` backup, never a live
- * marker, never the database or its WAL/SHM.
+ * emptied. Finished and recognized manual backups are pruned only after the
+ * recovery records validate, with their exact snapshots pinned. It never
+ * removes a live marker, the database, or its WAL/SHM.
  */
 export const reclaimOrphanedMigrationArtifacts = (dbPath: string) =>
   attemptPromise(async () => {
@@ -1218,6 +1329,7 @@ export const reclaimOrphanedMigrationArtifacts = (dbPath: string) =>
       ),
       pruneUnreferencedMigrationArtifacts(dbPath),
     ]);
+    await pruneDatabaseBackupFiles(dbPath);
   }).pipe(Effect.ignore);
 
 /** Read-only startup guard. It never restores, renames, or removes recovery files. */
@@ -1305,6 +1417,7 @@ export const resumeMarkedMigration = <A, E, R>(
     const result = yield* migration;
     yield* writeCompletedMigrationProvenance(dbPath, resumedPayload);
     yield* removeRecoveryMarker(dbPath);
+    yield* pruneDatabaseBackups(dbPath).pipe(Effect.ignore);
     yield* Effect.logInfo("Interrupted database migration completed on resume", {
       databasePath: dbPath,
     });

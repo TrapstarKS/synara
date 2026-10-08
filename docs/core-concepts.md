@@ -237,6 +237,9 @@ branch, its empty managed folder, and recovery
 snapshots cached for that path. Automatic retention keeps the 15 most recently archived worktrees
 and snapshots older ones before removing them; those snapshots expire after 30 days.
 
+See [disk retention](disk-retention.md) for database backup, Codex rollout/image, journal, and log
+retention policies, including which resume and recovery data is preserved.
+
 ![Delete worktree on archive setting](assets/worktree-cleanup/1-setting-delete-worktree-on-archive.png)
 
 ## Providers, models, and sessions
