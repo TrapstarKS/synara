@@ -2,8 +2,13 @@ import { ThreadId, type OrchestrationEvent } from "@synara/contracts";
 import { makeDrainableWorker, startDrainableWorkerProducers } from "@synara/shared/DrainableWorker";
 import { terminalScopeIdsForThread } from "@synara/shared/terminalThreads";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../../config";
+import {
+  confirmDeletedCodexRuntimeStopped,
+  rememberDeletedCodexArtifacts,
+} from "../../codexArtifactRetention";
 import { DeviceService } from "../../device/Services/DeviceService";
 import { GitCore } from "../../git/Services/GitCore";
 import { pruneProjectedArchivedManagedWorktrees } from "../../managedWorktrees";
@@ -111,6 +116,7 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const serverConfig = yield* ServerConfig;
   const git = yield* GitCore;
+  const sql = yield* SqlClient.SqlClient;
 
   const pruneManagedWorktreesAfterLifecycle = (context: {
     readonly eventType: ThreadDeletedEvent["type"];
@@ -226,8 +232,17 @@ const make = Effect.gen(function* () {
   const cleanupThreadBeforePurge = Effect.fn(function* (
     threadId: ThreadDeletedEvent["payload"]["threadId"],
   ) {
+    const hadCodexBinding = yield* rememberDeletedCodexArtifacts(threadId).pipe(
+      Effect.provideService(ServerConfig, serverConfig),
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
     const providerCleanupSucceeded = yield* stopProviderSession(threadId);
     const terminalCleanupSucceeded = yield* closeThreadTerminals(threadId, true);
+    if (hadCodexBinding && providerCleanupSucceeded && terminalCleanupSucceeded) {
+      yield* confirmDeletedCodexRuntimeStopped(threadId).pipe(
+        Effect.provideService(ServerConfig, serverConfig),
+      );
+    }
     return providerCleanupSucceeded && terminalCleanupSucceeded;
   });
 

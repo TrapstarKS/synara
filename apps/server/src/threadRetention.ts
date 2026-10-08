@@ -11,9 +11,11 @@ import {
 } from "@synara/contracts";
 import { automationContinuationThreadId } from "@synara/shared/automationMode";
 import { Effect } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { randomUUID } from "node:crypto";
 
 import { ServerConfig } from "./config";
+import { pruneDeletedCodexArtifacts } from "./codexArtifactRetention";
 import { GitCore } from "./git/Services/GitCore";
 import { pruneProjectedArchivedManagedWorktrees } from "./managedWorktrees";
 import type { OrchestrationEngineShape } from "./orchestration/Services/OrchestrationEngine";
@@ -311,12 +313,25 @@ export const startThreadRetentionJob = Effect.fn("startThreadRetentionJob")(func
   const automationRepository = yield* AutomationRepository;
   const config = yield* ServerConfig;
   const git = yield* GitCore;
+  const sql = yield* SqlClient.SqlClient;
   const pruneArchivedManagedWorktrees = pruneProjectedArchivedManagedWorktrees({
     homeDir: config.homeDir,
     worktreesDir: config.worktreesDir,
     snapshotQuery: projectionSnapshotQuery,
     git,
-  }).pipe(Effect.asVoid);
+  }).pipe(
+    Effect.asVoid,
+    Effect.catch((error) => Effect.logWarning("managed worktree retention failed", { error })),
+    Effect.andThen(
+      pruneDeletedCodexArtifacts().pipe(
+        Effect.provideService(ServerConfig, config),
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catch((error) =>
+          Effect.logWarning("deleted Codex artifact retention failed", { error }),
+        ),
+      ),
+    ),
+  );
   // Give startup/projection bootstrap a short settling window, then run one
   // archive pass promptly so desktop installs do not need to stay open for 24 hours.
   yield* Effect.gen(function* () {

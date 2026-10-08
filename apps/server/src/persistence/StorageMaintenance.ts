@@ -6,6 +6,8 @@ import * as fs from "node:fs/promises";
 import { Duration, Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { pruneDatabaseBackups } from "./MigrationBackup";
+
 /** Receipts and finished-message stream deltas older than this are reclaimed. */
 export const STORAGE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
@@ -19,6 +21,7 @@ const MAINTENANCE_BATCH_ROWS = 500;
 const MAINTENANCE_BATCH_PAUSE = Duration.millis(5);
 /** Pages released per incremental_vacuum step (8 MB at the default page size). */
 const VACUUM_BATCH_PAGES = 2_048;
+const VACUUM_STATEMENTS_PER_BATCH = 64;
 
 /**
  * Deletes history that nothing can read back any more:
@@ -106,6 +109,7 @@ export const pruneStorageHistory = (now: Date, options: { readonly batchRows?: n
             AND json_extract(payload_json, '$.streaming') = 0
             AND length(json_extract(payload_json, '$.text')) > 0
             AND json_extract(payload_json, '$.messageId') IS NOT NULL
+            AND sequence <= ${appliedThrough}
           ON CONFLICT (stream_id, message_id) DO UPDATE
           SET final_sequence = MAX(final_sequence, excluded.final_sequence)
         `;
@@ -150,9 +154,21 @@ export const reclaimFreePages = (dbPath: string, options: { readonly allowFullVa
     const sql = yield* SqlClient.SqlClient;
     if (yield* usesIncrementalVacuum) {
       const free = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
-      const steps = Math.ceil((free[0]?.freelist_count ?? 0) / VACUUM_BATCH_PAGES);
-      for (let step = 0; step < steps; step += 1) {
-        yield* sql.unsafe(`PRAGMA incremental_vacuum(${VACUUM_BATCH_PAGES})`);
+      let remaining = free[0]?.freelist_count ?? 0;
+      while (remaining > 0) {
+        let released = 0;
+        for (let statement = 0; statement < VACUUM_STATEMENTS_PER_BATCH; statement += 1) {
+          yield* sql.unsafe(`PRAGMA incremental_vacuum(${VACUUM_BATCH_PAGES})`);
+          const after = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
+          const next = after[0]?.freelist_count ?? remaining;
+          // Some drivers step this no-column PRAGMA only once, freeing one
+          // page rather than N. Measure progress; a fixed step count left most
+          // free pages allocated. No progress means retry on the next sweep.
+          if (next >= remaining) return;
+          released += remaining - next;
+          remaining = next;
+          if (remaining === 0 || released >= VACUUM_BATCH_PAGES) break;
+        }
         yield* Effect.sleep(MAINTENANCE_BATCH_PAUSE);
       }
     } else if (options.allowFullVacuum) {
@@ -181,7 +197,9 @@ export const runStorageMaintenance = (
   dbPath: string,
   options: { readonly allowFullVacuum: boolean },
 ) =>
-  pruneStorageHistory(new Date()).pipe(
+  pruneDatabaseBackups(dbPath).pipe(
+    Effect.catch((error) => Effect.logWarning("database backup retention failed", { error })),
+    Effect.andThen(pruneStorageHistory(new Date())),
     Effect.andThen(reclaimFreePages(dbPath, options)),
     Effect.catchCause((cause) => Effect.logWarning("sqlite storage maintenance failed", { cause })),
   );

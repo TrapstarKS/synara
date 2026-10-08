@@ -691,10 +691,60 @@ describe("managed worktree snapshot expiry", () => {
     ).resolves.toEqual([]);
   });
 
+  it("expires only this channel's snapshots and preserves unknown staging ownership", async () => {
+    const root = await makeTemporaryRoot();
+    const worktreesDir = path.join(root, ".synara", "worktrees");
+    const betaWorktreesDir = path.join(root, ".synara-beta", "worktrees");
+    const snapshotsDir = path.join(root, "worktree-snapshots");
+    await fs.mkdir(worktreesDir, { recursive: true });
+    await fs.mkdir(betaWorktreesDir, { recursive: true });
+    const createdAt = new Date(NOW - MANAGED_WORKTREE_SNAPSHOT_RETENTION_MS - 1_000).toISOString();
+    const own = await writeSnapshot(snapshotsDir, "stable-aaaaaaaaaaaa", {
+      sourceWorktree: path.join(worktreesDir, "removed"),
+      createdAt,
+    });
+    const beta = await writeSnapshot(snapshotsDir, "beta-bbbbbbbbbbbb", {
+      sourceWorktree: path.join(betaWorktreesDir, "removed"),
+      createdAt,
+    });
+    const unknown = await writeSnapshot(snapshotsDir, "unknown-cccccccccccc.tmp-Ab12Cd", null);
+    await fs.utimes(unknown, new Date(createdAt), new Date(createdAt));
+    const alias = path.join(worktreesDir, "foreign-alias");
+    await fs.symlink(betaWorktreesDir, alias, "dir");
+    const escaped = await writeSnapshot(snapshotsDir, "alias-dddddddddddd", {
+      sourceWorktree: alias,
+      createdAt,
+    });
+    const removed = await Effect.runPromise(
+      pruneExpiredManagedWorktreeSnapshots({ snapshotsDir, worktreesDir, now: NOW }),
+    );
+    expect(removed).toEqual([own]);
+    expect(await pathExists(beta)).toBe(true);
+    expect(await pathExists(unknown)).toBe(true);
+    expect(await pathExists(escaped)).toBe(true);
+  });
+
+  it("does not follow a linked recovery snapshot root", async () => {
+    const root = await makeTemporaryRoot();
+    const external = path.join(root, "external-snapshots");
+    const expired = await writeSnapshot(external, "old-aaaaaaaaaaaa", {
+      createdAt: new Date(NOW - MANAGED_WORKTREE_SNAPSHOT_RETENTION_MS - 1_000).toISOString(),
+    });
+    const linked = path.join(root, "linked-snapshots");
+    await fs.symlink(external, linked, "dir");
+    expect(
+      await Effect.runPromise(
+        pruneExpiredManagedWorktreeSnapshots({ snapshotsDir: linked, now: NOW }),
+      ),
+    ).toEqual([]);
+    expect(await pathExists(expired)).toBe(true);
+  });
+
   it("expires old snapshots during a retention pass with no removal candidates", async () => {
     const { root } = await makeManagedRoot(0);
     const snapshotsDir = path.join(root, "snapshots");
     const expired = await writeSnapshot(snapshotsDir, "thread-old-aaaaaaaaaaaa", {
+      sourceWorktree: path.join(root, "removed-worktree"),
       createdAt: new Date(
         Date.now() - MANAGED_WORKTREE_SNAPSHOT_RETENTION_MS - 60_000,
       ).toISOString(),

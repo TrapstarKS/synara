@@ -4,7 +4,11 @@ import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "./Layers/Sqlite.ts";
-import { pruneStorageHistory, STORAGE_RETENTION_MS } from "./StorageMaintenance.ts";
+import {
+  pruneStorageHistory,
+  reclaimFreePages,
+  STORAGE_RETENTION_MS,
+} from "./StorageMaintenance.ts";
 
 const layer = it.layer(SqlitePersistenceMemory);
 
@@ -112,6 +116,67 @@ layer("pruneStorageHistory", (it) => {
         SELECT COUNT(*) AS count FROM orchestration_events
       `;
       assert.strictEqual(rows[0]?.count, 2);
+    }),
+  );
+
+  it.effect(
+    "keeps applied deltas until every consumer has applied their replacement final event",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM orchestration_events`;
+        yield* sql`DELETE FROM projection_state`;
+        yield* sql`DELETE FROM orchestration_consumer_state`;
+        for (const [index, streaming] of [true, false].entries()) {
+          yield* sql`
+          INSERT INTO orchestration_events (event_id, aggregate_kind, stream_id, stream_version,
+            event_type, occurred_at, actor_kind, payload_json, metadata_json)
+          VALUES (${`final-fence-${index}`}, 'thread', 't', ${index + 1}, 'thread.message-sent', ${old},
+            'provider', ${JSON.stringify({ messageId: "m", role: "assistant", text: "hello", streaming })}, '{}')
+        `;
+        }
+        const range = yield* sql<{ readonly first: number; readonly last: number }>`
+        SELECT MIN(sequence) AS first, MAX(sequence) AS last FROM orchestration_events
+      `;
+        yield* sql`
+        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        VALUES ('ahead', ${range[0]!.last}, ${recent})
+      `;
+        yield* sql`
+        INSERT INTO orchestration_consumer_state (consumer_name, last_acked_sequence, created_at, updated_at)
+        VALUES ('behind-final', ${range[0]!.first}, ${recent}, ${recent})
+      `;
+        yield* TestClock.withLive(pruneStorageHistory(now, { batchRows: 1 }));
+        const kept = yield* sql<{
+          readonly count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_events`;
+        assert.strictEqual(kept[0]?.count, 2);
+        yield* sql`UPDATE orchestration_consumer_state SET last_acked_sequence = ${range[0]!.last}`;
+        yield* TestClock.withLive(pruneStorageHistory(now, { batchRows: 1 }));
+        const compacted = yield* sql<{
+          readonly count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_events`;
+        assert.strictEqual(compacted[0]?.count, 1);
+      }),
+  );
+
+  it.effect("incremental vacuum returns freed pages in bounded steps", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`PRAGMA auto_vacuum = INCREMENTAL`;
+      yield* sql`VACUUM`;
+      yield* sql`CREATE TABLE retention_vacuum_test (payload BLOB)`;
+      yield* sql`
+        WITH RECURSIVE series(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM series WHERE n < 64)
+        INSERT INTO retention_vacuum_test SELECT randomblob(32768) FROM series
+      `;
+      yield* sql`DELETE FROM retention_vacuum_test`;
+      const before = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
+      assert.isAbove(before[0]!.freelist_count, 0);
+      yield* TestClock.withLive(reclaimFreePages(":memory:", { allowFullVacuum: false }));
+      const after = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
+      assert.strictEqual(after[0]?.freelist_count, 0);
+      yield* sql`DROP TABLE retention_vacuum_test`;
     }),
   );
 });

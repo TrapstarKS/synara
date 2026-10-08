@@ -445,7 +445,10 @@ export function pruneArchivedManagedWorktrees(input: {
     }
     // The age sweep runs on every pass (startup, retention, listing) even when
     // nothing was removed now, so snapshots from earlier passes still expire.
-    yield* pruneExpiredManagedWorktreeSnapshots({ snapshotsDir: input.snapshotsDir });
+    yield* pruneExpiredManagedWorktreeSnapshots({
+      snapshotsDir: input.snapshotsDir,
+      worktreesDir: input.worktreesDir,
+    });
     return inventory.filter((entry) => !removedPaths.has(entry.path));
   });
 }
@@ -476,6 +479,8 @@ const isMissingPathError = (cause: unknown) =>
 
 async function listSnapshotDirectories(snapshotsDir: string): Promise<string[]> {
   try {
+    const root = await fs.lstat(snapshotsDir);
+    if (!root.isDirectory() || root.isSymbolicLink()) return [];
     const entries = await fs.readdir(snapshotsDir, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
@@ -622,6 +627,7 @@ export function discardManagedWorktreeResidue(input: {
  */
 export function pruneExpiredManagedWorktreeSnapshots(input: {
   readonly snapshotsDir: string;
+  readonly worktreesDir?: string;
   readonly now?: number;
 }): Effect.Effect<ReadonlyArray<string>, never> {
   return Effect.tryPromise({
@@ -635,11 +641,33 @@ export function pruneExpiredManagedWorktreeSnapshots(input: {
         (snapshotPath) =>
           Effect.tryPromise({
             try: async () => {
+              const manifest = await readSnapshotManifest(snapshotPath);
+              if (input.worktreesDir) {
+                const source = manifest?.sourceWorktree;
+                if (typeof source !== "string" || !path.isAbsolute(source)) return null;
+                const ownedRoot = await canonicalizeRemovedPath(input.worktreesDir);
+                // Do not resolve a known foreign channel's source directory.
+                if (
+                  !isManagedWorktreePath({
+                    worktreesDir: input.worktreesDir,
+                    worktreePath: source,
+                  }) &&
+                  !isManagedWorktreePath({ worktreesDir: ownedRoot, worktreePath: source })
+                )
+                  return null;
+                if (
+                  !isManagedWorktreePath({
+                    worktreesDir: ownedRoot,
+                    worktreePath: await canonicalizeRemovedPath(source),
+                  })
+                )
+                  return null;
+              }
               let createdAtMs: number;
               if (SNAPSHOT_STAGING_DIR_PATTERN.test(path.basename(snapshotPath))) {
                 createdAtMs = (await fs.stat(snapshotPath)).mtimeMs;
               } else {
-                const createdAt = (await readSnapshotManifest(snapshotPath))?.createdAt;
+                const createdAt = manifest?.createdAt;
                 if (typeof createdAt !== "string") return null;
                 createdAtMs = Date.parse(createdAt);
               }

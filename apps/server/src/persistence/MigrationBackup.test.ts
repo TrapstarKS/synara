@@ -1004,6 +1004,78 @@ describe("migration backups", () => {
     expect(await backupPaths(dbPath)).toEqual([]);
   });
 
+  it("keeps a newly created backup when the clock is behind an existing snapshot", async () => {
+    const dbPath = await makeDbPath();
+    const directory = migrationBackupDirectory(dbPath);
+    await fs.mkdir(directory);
+    const futureBackup = path.join(
+      directory,
+      `${path.basename(dbPath)}.pre-migration-v0-to-v1-20990101T120000000Z-${randomUUID()}.sqlite`,
+    );
+    await fs.writeFile(futureBackup, "future-dated snapshot");
+
+    const createdBackup = await runWithDatabase(
+      dbPath,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TABLE clock_probe(value TEXT NOT NULL)`;
+        return yield* createMigrationBackup(dbPath, { sourceVersion: "v1", targetVersion: 2 });
+      }),
+    );
+
+    await expect(fs.lstat(createdBackup.backupPath)).resolves.toMatchObject({
+      size: expect.any(Number),
+    });
+    expect((await backupPaths(dbPath)).toSorted()).toEqual(
+      [futureBackup, createdBackup.backupPath].toSorted(),
+    );
+  });
+
+  it("pins completed provenance until the next migration succeeds", async () => {
+    const dbPath = await makeDbPath();
+    const previousBackup = await runWithDatabase(
+      dbPath,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TABLE provenance_probe(value TEXT NOT NULL)`;
+        const previous = yield* createMigrationBackup(dbPath, {
+          sourceVersion: "v0",
+          targetVersion: 1,
+        });
+        yield* Effect.promise(() =>
+          fs.writeFile(
+            migrationBackupProvenancePath(dbPath),
+            JSON.stringify({
+              ...previous,
+              databasePath: dbPath,
+              phase: "migration-completed",
+            }),
+          ),
+        );
+        yield* Effect.exit(
+          runWithPreMigrationBackup(dbPath, Effect.fail(new Error("migration interrupted"))),
+        );
+        return previous.backupPath;
+      }),
+    );
+
+    const pending = await Effect.runPromise(inspectPendingMigrationRecovery(dbPath));
+    expect(pending).not.toBeNull();
+    expect((await backupPaths(dbPath)).toSorted()).toEqual(
+      [previousBackup, pending!.backupPath].toSorted(),
+    );
+    await runWithDatabase(dbPath, resumeMarkedMigration(dbPath, pending!, Effect.void));
+
+    expect(await backupPaths(dbPath)).toEqual([pending!.backupPath]);
+    await expect(fs.lstat(previousBackup)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      JSON.parse(await fs.readFile(migrationBackupProvenancePath(dbPath), "utf8")),
+    ).toMatchObject({
+      backupPath: pending!.backupPath,
+      phase: "migration-completed",
+    });
+  });
+
   it("repairs SQLite files before the live connection executes any statement", async () => {
     const dbPath = await makeDbPath();
     const sqlitePaths = new Set([dbPath, `${dbPath}-wal`, `${dbPath}-shm`]);
