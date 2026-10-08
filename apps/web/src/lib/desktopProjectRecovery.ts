@@ -1,10 +1,23 @@
 // FILE: desktopProjectRecovery.ts
 // Purpose: Detects desktop startup snapshots that can hide projects while thread rows still exist.
-// Exports: snapshot shape guard used by the desktop bootstrap repair path.
+// Exports: project membership selector and snapshot guard used by the desktop bootstrap repair path.
 
 import type { OrchestrationReadModel, OrchestrationShellSnapshot } from "@synara/contracts";
+import type { AppState } from "../storeState";
 
 type ProjectRecoverySnapshot = OrchestrationReadModel | OrchestrationShellSnapshot;
+
+export function selectNeedsDesktopProjectRecovery(state: AppState): boolean {
+  if (state.projects.length === 0) return true;
+
+  const projectIds = new Set(state.projects.map((project) => project.id));
+  return (
+    state.threadIds?.some((threadId) => {
+      const shell = state.threadShellById?.[threadId];
+      return shell !== undefined && !projectIds.has(shell.projectId);
+    }) ?? false
+  );
+}
 
 export function hasLiveThreadsWithMissingProjects(snapshot: ProjectRecoverySnapshot): boolean {
   const liveProjectIds = new Set(

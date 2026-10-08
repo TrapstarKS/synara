@@ -80,7 +80,7 @@ import {
 } from "../composerDraftStore";
 import { useStore } from "../store";
 import { EMPTY_THREAD_IDS } from "../storeState";
-import { createAllThreadsSelector, createThreadSelector } from "../storeSelectors";
+import { createThreadSelector } from "../storeSelectors";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { terminalActivityFromEvent } from "../terminalActivity";
 import {
@@ -140,7 +140,10 @@ import { useSyncDesktopTopBarTrafficLightGutterZoom } from "../hooks/useDesktopT
 import { useTheme } from "../hooks/useTheme";
 import { useNativeFontSmoothing } from "../hooks/useNativeFontSmoothing";
 import { invalidateGitQueries, invalidateGitQueriesForCwds } from "../lib/gitReactQuery";
-import { shouldRepairDesktopProjectSnapshot } from "../lib/desktopProjectRecovery";
+import {
+  selectNeedsDesktopProjectRecovery,
+  shouldRepairDesktopProjectSnapshot,
+} from "../lib/desktopProjectRecovery";
 import {
   registerEmptyRouteRestoreRefresh,
   runEmptyRouteRestoreRefresh,
@@ -189,7 +192,10 @@ import {
   shouldInvalidateGitQueriesForEvent,
   shouldInvalidateProviderQueriesForEvent,
 } from "./-rootEventInvalidation";
-import { createDesktopProjectRecoveryAttemptGate } from "./-desktopProjectRecoveryAttempt";
+import {
+  createDesktopProjectRecoveryAttemptGate,
+  type DesktopProjectRecoveryAttempt,
+} from "./-desktopProjectRecoveryAttempt";
 import { isSidechatThread } from "@synara/shared/sidechatThread";
 
 const SHELL_SNAPSHOT_BOOTSTRAP_FALLBACK_DELAY_MS = 1_500;
@@ -2690,8 +2696,7 @@ function EventRouter() {
 
 function DesktopProjectBootstrap() {
   const syncServerReadModel = useStore((store) => store.syncServerReadModel);
-  const projects = useStore((store) => store.projects);
-  const threads = useStore(selectAllThreads);
+  const needsProjectRecovery = useStore(selectNeedsDesktopProjectRecovery);
   const threadsHydrated = useStore((store) => store.threadsHydrated);
   const recoveryAttemptGateRef = useRef<ReturnType<
     typeof createDesktopProjectRecoveryAttemptGate
@@ -2704,48 +2709,53 @@ function DesktopProjectBootstrap() {
   useEffect(() => {
     let disposed = false;
     const api = readNativeApi();
-    if (!api || !threadsHydrated) {
+    if (!api || !threadsHydrated || !needsProjectRecovery) {
       return;
     }
 
-    const projectIds = new Set(projects.map((project) => project.id));
-    const hasThreadWithoutProject = threads.some((thread) => !projectIds.has(thread.projectId));
-    if (projects.length > 0 && !hasThreadWithoutProject) {
-      return;
-    }
+    let activeAttempt: DesktopProjectRecoveryAttempt | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryDelayMs = 1_000;
+    const recover = () => {
+      if (disposed) return;
+      const attempt = recoveryAttemptGate.begin();
+      if (!attempt) return;
+      activeAttempt = attempt;
+      const ownsAttempt = () => !disposed && attempt.isCurrent();
 
-    const attempt = recoveryAttemptGate.begin();
-    if (!attempt) return;
-    const ownsAttempt = () => !disposed && attempt.isCurrent();
-
-    // Shell subscriptions should normally hydrate the sidebar. If project rows
-    // are missing while live threads exist, repair before accepting the snapshot.
-    void api.orchestration
-      .getShellSnapshot()
-      .then((snapshot) => {
-        if (!ownsAttempt()) return;
-        const needsRepair = shouldRepairDesktopProjectSnapshot(snapshot);
-        if (!needsRepair) {
-          if (!ownsAttempt() || !attempt.complete()) return;
-          useStore.getState().syncServerShellSnapshot(snapshot);
-          return;
-        }
-        return api.orchestration.repairState().then((repairedSnapshot) => {
-          if (!ownsAttempt() || !attempt.complete()) return;
-          syncServerReadModel(repairedSnapshot);
+      // Shell subscriptions should normally hydrate the sidebar. If project rows
+      // are missing while live threads exist, repair before accepting the snapshot.
+      void api.orchestration
+        .getShellSnapshot()
+        .then((snapshot) => {
+          if (!ownsAttempt()) return;
+          const needsRepair = shouldRepairDesktopProjectSnapshot(snapshot);
+          if (!needsRepair) {
+            if (!ownsAttempt() || !attempt.complete()) return;
+            useStore.getState().syncServerShellSnapshot(snapshot);
+            return;
+          }
+          return api.orchestration.repairState().then((repairedSnapshot) => {
+            if (!ownsAttempt() || !attempt.complete()) return;
+            syncServerReadModel(repairedSnapshot);
+          });
+        })
+        .catch(() => {
+          if (!ownsAttempt()) return;
+          attempt.release();
+          retryTimer = setTimeout(recover, retryDelayMs);
+          retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
         });
-      })
-      .catch(() => {
-        attempt.release();
-      });
+    };
+    recover();
 
     return () => {
       disposed = true;
-      attempt.release();
+      clearTimeout(retryTimer);
+      activeAttempt?.release();
     };
-  }, [projects, recoveryAttemptGate, syncServerReadModel, threads, threadsHydrated]);
+  }, [needsProjectRecovery, recoveryAttemptGate, syncServerReadModel, threadsHydrated]);
 
   // Desktop hydration normally runs through EventRouter project + orchestration sync.
   return null;
 }
-const selectAllThreads = createAllThreadsSelector();

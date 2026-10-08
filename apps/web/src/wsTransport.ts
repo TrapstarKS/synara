@@ -412,6 +412,7 @@ const STREAM_ADMISSION_ERROR_CODES = new Set([
   // snapshot request; STALLED / STATE_INCOMPLETE surface as stream failures
   // and recover via the slow snapshot-fault retry (see startStream).
   "ORCHESTRATION_RESNAPSHOT_REQUIRED",
+  "ORCHESTRATION_STREAM_OVERFLOW",
   "ORCHESTRATION_SNAPSHOT_STALLED",
   "ORCHESTRATION_PROJECTION_STATE_INCOMPLETE",
   // A server that does not offer Tasks (Stable) refuses its stream for good;
@@ -500,6 +501,14 @@ export function shouldReconnectAfterStreamFailure(cause: Cause.Cause<unknown>): 
     const code = "code" in error ? error.code : undefined;
     return typeof code === "string" && STREAM_ADMISSION_ERROR_CODES.has(code);
   });
+}
+
+export function getStreamOverflowRetryDelayMs(
+  cause: Cause.Cause<unknown>,
+  previousAttempts: number,
+): number | null {
+  if (getStreamFailureCode(cause) !== "ORCHESTRATION_STREAM_OVERFLOW") return null;
+  return Math.min(250 * 2 ** Math.min(previousAttempts, 6), 10_000);
 }
 
 const RETRYABLE_STREAM_CAPACITY_ERROR_CODES = new Set([
@@ -815,6 +824,7 @@ export class WsTransport {
   private readonly streamDuplicateRetries = new Map<string, number>();
   private readonly streamThreadBootstrapRetries = new Map<string, number>();
   private readonly streamResnapshotRetries = new Map<string, number>();
+  private readonly streamOverflowRetries = new Map<string, number>();
   private readonly projectFileWatchRetries = new Map<string, number>();
   private readonly streamCapacityRetryTimers = new Map<string, number>();
   private readonly streamCompletionRetries = new Map<string, number>();
@@ -1477,6 +1487,7 @@ export class WsTransport {
     this.streamDuplicateRetries.delete(key);
     this.streamThreadBootstrapRetries.delete(key);
     this.streamResnapshotRetries.delete(key);
+    this.streamOverflowRetries.delete(key);
     this.projectFileWatchRetries.delete(key);
   }
 
@@ -1489,6 +1500,7 @@ export class WsTransport {
     this.streamDuplicateRetries.clear();
     this.streamThreadBootstrapRetries.clear();
     this.streamResnapshotRetries.clear();
+    this.streamOverflowRetries.clear();
     this.projectFileWatchRetries.clear();
   }
 
@@ -1993,6 +2005,9 @@ export class WsTransport {
           if (this.streamResnapshotRetries.has(key)) {
             this.streamResnapshotRetries.delete(key);
           }
+          if (performance.now() - streamStartedAt >= STABLE_STREAM_LIFETIME_MS) {
+            this.streamOverflowRetries.delete(key);
+          }
           listener(event);
         }),
       ),
@@ -2023,6 +2038,27 @@ export class WsTransport {
             this.streamCompletionRetries.delete(key);
           }
           if (restart && Exit.isFailure(exit)) {
+            const previousOverflowAttempts =
+              performance.now() - streamStartedAt >= STABLE_STREAM_LIFETIME_MS
+                ? 0
+                : (this.streamOverflowRetries.get(key) ?? 0);
+            const overflowRetryDelayMs = getStreamOverflowRetryDelayMs(
+              exit.cause,
+              previousOverflowAttempts,
+            );
+            if (overflowRetryDelayMs !== null) {
+              // Keep the applied cursor: durable replay repairs dropped live events.
+              // One slow stream must not tear down every stream and pending RPC.
+              this.streamOverflowRetries.set(key, previousOverflowAttempts + 1);
+              this.clearStreamCapacityRetryTimer(key);
+              const timeoutId = window.setTimeout(() => {
+                if (this.streamCapacityRetryTimers.get(key) !== timeoutId) return;
+                this.streamCapacityRetryTimers.delete(key);
+                if (!this.disposed && !this.streamCleanups.has(key)) restart();
+              }, overflowRetryDelayMs);
+              this.streamCapacityRetryTimers.set(key, timeoutId);
+              return;
+            }
             const admissionRetry = resolveStreamAdmissionRetry(
               exit.cause,
               this.streamCapacityRetries.get(key) ?? 0,
@@ -2201,6 +2237,7 @@ export class WsTransport {
       this.streamDuplicateRetries.delete(key);
       this.streamThreadBootstrapRetries.delete(key);
       this.streamResnapshotRetries.delete(key);
+      this.streamOverflowRetries.delete(key);
       this.projectFileWatchRetries.delete(key);
     }
     this.streamCompletionRetries.delete(key);

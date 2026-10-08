@@ -52,6 +52,7 @@ import {
   MAX_THREAD_SNAPSHOT_BOOTSTRAP_RETRY_ATTEMPTS,
   resolveStreamAdmissionRetry,
   shouldReconnectAfterStreamFailure,
+  getStreamOverflowRetryDelayMs,
   threadStreamInputsEqual,
   projectFileChangeStreamKey,
   WsTransport,
@@ -168,6 +169,7 @@ interface WsTransportInternals {
   readonly streamDuplicateRetries: Map<string, number>;
   readonly streamThreadBootstrapRetries: Map<string, number>;
   readonly streamResnapshotRetries: Map<string, number>;
+  readonly streamOverflowRetries: Map<string, number>;
   readonly projectFileWatchRetries: Map<string, number>;
   readonly streamCapacityRetryTimers: Map<string, number>;
   readonly streamCompletionRetries: Map<string, number>;
@@ -218,6 +220,7 @@ function makeBareTransport(): {
     streamDuplicateRetries: new Map(),
     streamThreadBootstrapRetries: new Map(),
     streamResnapshotRetries: new Map(),
+    streamOverflowRetries: new Map(),
     projectFileWatchRetries: new Map(),
     streamCapacityRetryTimers: new Map(),
     streamCompletionRetries: new Map(),
@@ -991,6 +994,104 @@ describe("WsTransport", () => {
       expect(reconnect).not.toHaveBeenCalled();
       expect(internals.projectFileWatchRetries.get(key)).toBe(1);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers one overflowing stream without interrupting 19 other streams or requests", async () => {
+    vi.useFakeTimers();
+    bindWindowTimersToCurrentGlobals();
+    resetThreadDetailResumeCursorsForTests();
+    const { transport, internals } = makeBareTransport();
+    try {
+      const client = {
+        [ORCHESTRATION_WS_METHODS.getShellSnapshot]: () =>
+          Effect.sleep(750).pipe(Effect.as({ snapshotSequence: 100 })),
+      };
+      Object.assign(internals, {
+        getClient: async () => client,
+        getClientRuntime: () => ({
+          runCallback: Effect.runCallback,
+          runPromise: Effect.runPromise,
+        }),
+      });
+      const healthyCleanup = vi.fn();
+      for (let index = 0; index < 19; index += 1) {
+        internals.startStream(
+          client,
+          `orchestration.thread:healthy-${index}`,
+          Stream.never.pipe(Stream.ensuring(Effect.sync(healthyCleanup))),
+          () => undefined,
+        );
+      }
+      const threadId = ThreadId.makeUnsafe("overflowing");
+      const key = `orchestration.thread:${threadId}`;
+      advanceThreadDetailResumeCursor(threadId, 100);
+      internals.threadSubscriptions.set(threadId, { threadId, afterSequence: 100 });
+      const restart = vi.fn();
+      const request = transport.request(ORCHESTRATION_WS_METHODS.getShellSnapshot, undefined, {
+        timeoutMs: 1000,
+      });
+      internals.startStream(
+        client,
+        key,
+        Stream.fail({ code: "ORCHESTRATION_STREAM_OVERFLOW", retryable: true }),
+        () => undefined,
+        restart,
+      );
+
+      await vi.advanceTimersByTimeAsync(750);
+      await expect(request).resolves.toEqual({ snapshotSequence: 100 });
+      expect(restart).toHaveBeenCalledOnce();
+      expect(internals.reconnect).not.toHaveBeenCalled();
+      expect(healthyCleanup).not.toHaveBeenCalled();
+      expect(internals.streamCleanups.size).toBe(19);
+      expect(hasThreadDetailResumeCursor(threadId)).toBe(true);
+    } finally {
+      await Promise.all(
+        [...internals.streamCleanups.keys()].map((key) => internals.stopStream(key)),
+      );
+      resetThreadDetailResumeCursorsForTests();
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off repeated overflow even when the restarted stream delivers a partial batch", async () => {
+    vi.useFakeTimers();
+    bindWindowTimersToCurrentGlobals();
+    const { internals } = makeBareTransport();
+    const key = "orchestration.shell";
+    const failure = { code: "ORCHESTRATION_STREAM_OVERFLOW", retryable: true };
+    const delivered = vi.fn();
+    const restart = vi.fn(() => {
+      internals.startStream(
+        {},
+        key,
+        Stream.concat(Stream.succeed(1), Stream.fail(failure)),
+        delivered,
+        restart,
+      );
+    });
+    try {
+      restart();
+      await vi.advanceTimersByTimeAsync(249);
+      expect(restart).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(restart).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(restart).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(restart).toHaveBeenCalledTimes(3);
+      expect(delivered).toHaveBeenCalledTimes(3);
+      expect(internals.reconnect).not.toHaveBeenCalled();
+      expect(getStreamOverflowRetryDelayMs(Cause.fail(failure), 100)).toBe(10_000);
+      expect(getStreamOverflowRetryDelayMs(Cause.fail(new Error("socket failed")), 0)).toBeNull();
+      await internals.stopStream(key);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(restart).toHaveBeenCalledTimes(3);
+      expect(internals.streamOverflowRetries.size).toBe(0);
+    } finally {
+      await internals.stopStream(key);
       vi.useRealTimers();
     }
   });
