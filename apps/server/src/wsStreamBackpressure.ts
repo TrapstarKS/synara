@@ -1,3 +1,4 @@
+import { WsRpcError } from "@synara/contracts";
 import { Effect, Stream } from "effect";
 
 // FILE: wsStreamBackpressure.ts
@@ -21,6 +22,15 @@ export interface LiveUiStreamDropReport {
   readonly label: string;
   readonly message: string;
 }
+
+export const failLiveUiStreamForSnapshotResync = (report: LiveUiStreamDropReport) =>
+  Effect.fail(
+    new WsRpcError({
+      message: `${report.message}; restarting stream to recover dropped events.`,
+      code: "ORCHESTRATION_STREAM_OVERFLOW",
+      retryable: true,
+    }),
+  );
 
 export function makeLiveUiStreamLagState(): LiveUiStreamLagState {
   return { ingressCount: 0, egressCount: 0, reportedDroppedAtLeast: 0 };

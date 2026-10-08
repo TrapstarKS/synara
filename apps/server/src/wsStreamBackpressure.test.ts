@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { Effect, Stream } from "effect";
+import { Cause, Effect, Exit, Stream } from "effect";
 
 import {
   bufferLiveUiStream,
+  failLiveUiStreamForSnapshotResync,
   makeLiveUiStreamLagState,
   normalizeLiveUiStreamBufferCapacity,
   recordLiveUiStreamIngress,
@@ -47,6 +48,25 @@ describe("wsStreamBackpressure", () => {
     state.egressCount += 1;
     expect(recordLiveUiStreamIngress(state, 2)).toBeNull();
     expect(recordLiveUiStreamIngress(state, 2)).toBeNull();
+  });
+
+  it("identifies dropped snapshot-backed events as a retryable stream overflow", async () => {
+    const exit = await Effect.runPromiseExit(
+      Stream.fromIterable([1, 2, 3]).pipe(
+        (stream) =>
+          bufferLiveUiStream(stream, {
+            capacity: 1,
+            onDroppedEvents: failLiveUiStreamForSnapshotResync,
+          }),
+        Stream.runDrain,
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (!Exit.isFailure(exit)) return;
+    expect(Cause.squash(exit.cause)).toMatchObject({
+      code: "ORCHESTRATION_STREAM_OVERFLOW",
+      retryable: true,
+    });
   });
 
   it("reports the first overflow and then only growth past the step", () => {

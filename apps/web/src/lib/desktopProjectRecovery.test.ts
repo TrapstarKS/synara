@@ -2,15 +2,25 @@
 // Purpose: Verifies desktop startup detects snapshots where threads outlive visible project rows.
 
 import {
+  EventId,
+  MessageId,
   ProjectId,
   ThreadId,
+  TurnId,
   type OrchestrationReadModel,
   type OrchestrationShellSnapshot,
 } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
+import { createStore } from "zustand/vanilla";
 
+import { applyOrchestrationEventsHotPath } from "../storeEventReducer";
+import { syncServerReadModel } from "../storeProjection";
+import { createAllThreadsSelector } from "../storeSelectors";
+import { initialState, type AppState } from "../storeState";
+import { makeDomainEvent, makeState, makeThread as makeClientThread } from "../storeTestFixtures";
 import {
   hasLiveThreadsWithMissingProjects,
+  selectNeedsDesktopProjectRecovery,
   shouldRepairDesktopProjectSnapshot,
 } from "./desktopProjectRecovery";
 
@@ -154,6 +164,127 @@ function makeShellSnapshot(
 }
 
 describe("desktopProjectRecovery", () => {
+  it("selects only whether project membership requires a bootstrap check", () => {
+    const state = makeState(makeClientThread());
+    expect(selectNeedsDesktopProjectRecovery(state)).toBe(false);
+    expect(selectNeedsDesktopProjectRecovery({ ...state, projects: [] })).toBe(true);
+
+    const { threadIds, threadShellById, ...stateWithoutThreadSlices } = state;
+    const threadId = threadIds![0]!;
+    const movedShell = {
+      ...threadShellById![threadId]!,
+      projectId: ProjectId.makeUnsafe("missing-project"),
+    };
+    expect(
+      selectNeedsDesktopProjectRecovery({
+        ...state,
+        threadShellById: { [threadId]: movedShell },
+      }),
+    ).toBe(true);
+    expect(
+      selectNeedsDesktopProjectRecovery({
+        ...state,
+        threadIds: [],
+        threadShellById: { [threadId]: movedShell },
+      }),
+    ).toBe(false);
+    expect(selectNeedsDesktopProjectRecovery(stateWithoutThreadSlices)).toBe(false);
+    expect(selectNeedsDesktopProjectRecovery({ ...state, threadShellById: {} })).toBe(false);
+  });
+
+  it.each([false, true])(
+    "avoids recovery subscription invalidations across 200 streaming flushes with 20 threads (missing projects: %s)",
+    (missingProjects) => {
+      const threads = Array.from({ length: 20 }, (_, index) =>
+        makeThread({ id: ThreadId.makeUnsafe(`thread-${index}`) }),
+      );
+      const state = syncServerReadModel(
+        initialState,
+        makeSnapshot({ threads, ...(missingProjects ? { projects: [] } : {}) }),
+      );
+      const store = createStore<AppState>(() => state);
+      const selectAllThreads = createAllThreadsSelector();
+      let previousThreads = selectAllThreads(state);
+      let previousRecovery = selectNeedsDesktopProjectRecovery(state);
+      let allThreadInvalidations = 0;
+      let recoveryInvalidations = 0;
+      const unsubscribe = store.subscribe((nextState) => {
+        const nextThreads = selectAllThreads(nextState);
+        const nextRecovery = selectNeedsDesktopProjectRecovery(nextState);
+        if (!Object.is(previousThreads, nextThreads)) allThreadInvalidations += 1;
+        if (!Object.is(previousRecovery, nextRecovery)) recoveryInvalidations += 1;
+        previousThreads = nextThreads;
+        previousRecovery = nextRecovery;
+      });
+
+      try {
+        expect(state.threadIds).toHaveLength(20);
+        expect(previousRecovery).toBe(missingProjects);
+        let sequence = 1;
+        for (let round = 0; round < 10; round += 1) {
+          for (const thread of threads) {
+            sequence += 1;
+            const updatedAt = new Date(Date.UTC(2026, 3, 20, 8, 1, sequence)).toISOString();
+            store.setState(
+              applyOrchestrationEventsHotPath(store.getState(), [
+                makeDomainEvent(
+                  "thread.message-sent",
+                  {
+                    threadId: thread.id,
+                    messageId: MessageId.makeUnsafe(`assistant-${thread.id}`),
+                    role: "assistant",
+                    text: `delta-${round}`,
+                    turnId: TurnId.makeUnsafe(`turn-${thread.id}`),
+                    streaming: true,
+                    createdAt: "2026-04-20T08:01:00.000Z",
+                    updatedAt,
+                    attachments: [],
+                    source: "native",
+                  },
+                  { sequence, eventId: EventId.makeUnsafe(`event-${sequence}`) },
+                ),
+              ]),
+            );
+          }
+        }
+        expect(allThreadInvalidations).toBe(200);
+        expect(recoveryInvalidations).toBe(0);
+
+        for (const thread of threads) {
+          sequence += 1;
+          store.setState(
+            applyOrchestrationEventsHotPath(store.getState(), [
+              makeDomainEvent(
+                "thread.session-set",
+                {
+                  threadId: thread.id,
+                  session: {
+                    threadId: thread.id,
+                    providerName: "codex",
+                    status: "running",
+                    runtimeMode: "approval-required",
+                    activeTurnId: TurnId.makeUnsafe(`turn-${thread.id}`),
+                    lastError: null,
+                    updatedAt: "2026-04-20T08:10:00.000Z",
+                  },
+                },
+                { sequence, eventId: EventId.makeUnsafe(`event-${sequence}`) },
+              ),
+            ]),
+          );
+        }
+        expect(allThreadInvalidations).toBe(220);
+        expect(recoveryInvalidations).toBe(0);
+
+        store.setState({ projects: missingProjects ? makeState(makeClientThread()).projects : [] });
+        expect(recoveryInvalidations).toBe(1);
+        expect(previousRecovery).toBe(!missingProjects);
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
+
   it("does not repair a valid empty first-run snapshot", () => {
     expect(
       shouldRepairDesktopProjectSnapshot(

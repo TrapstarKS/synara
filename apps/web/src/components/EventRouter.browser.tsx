@@ -52,6 +52,7 @@ vi.mock("../wsNativeApi", async (importOriginal) => {
 
 import { useComposerDraftStore } from "../composerDraftStore";
 import { getRouter } from "../router";
+import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
 import {
   createShellSnapshotFromReadModel,
@@ -763,6 +764,63 @@ describe("EventRouter scoped orchestration sync", () => {
       await mounted.cleanup();
     }
   });
+
+  it("retries desktop project recovery after a failed snapshot without stream changes", async () => {
+    const mounted = await mountApp();
+    const api = readNativeApi()!;
+    const snapshot = createShellSnapshotFromReadModel(fixture.snapshot);
+    const readSnapshot = vi
+      .spyOn(api.orchestration, "getShellSnapshot")
+      .mockRejectedValueOnce(new Error("Temporary snapshot failure"))
+      .mockResolvedValueOnce(snapshot);
+    try {
+      useStore.setState({ projects: [] });
+      await vi.waitFor(() => expect(readSnapshot).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(readSnapshot).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+      await vi.waitFor(() => expect(useStore.getState().projects).toHaveLength(1));
+      await new Promise((resolve) => window.setTimeout(resolve, 1_200));
+      expect(readSnapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      await mounted.cleanup();
+      readSnapshot.mockRestore();
+    }
+  });
+
+  it.each([
+    ["membership healing", false],
+    ["unmount", false],
+    ["membership healing", true],
+    ["unmount", true],
+  ])(
+    "cancels desktop project recovery retries after %s (pending snapshot rejection: %s)",
+    async (operation, pendingRejection) => {
+      const mounted = await mountApp();
+      const projects = useStore.getState().projects;
+      let rejectSnapshot: ((error: Error) => void) | undefined;
+      const readSnapshot = vi
+        .spyOn(readNativeApi()!.orchestration, "getShellSnapshot")
+        .mockRejectedValue(new Error("Temporary snapshot failure"));
+      if (pendingRejection) {
+        readSnapshot.mockReturnValueOnce(
+          new Promise<ReturnType<typeof createShellSnapshotFromReadModel>>((_, reject) => {
+            rejectSnapshot = reject;
+          }),
+        );
+      }
+      try {
+        useStore.setState({ projects: [] });
+        await vi.waitFor(() => expect(readSnapshot).toHaveBeenCalledTimes(1));
+        if (operation === "membership healing") useStore.setState({ projects });
+        else await mounted.cleanup();
+        rejectSnapshot?.(new Error("Late snapshot failure"));
+        await new Promise((resolve) => window.setTimeout(resolve, 1_200));
+        expect(readSnapshot).toHaveBeenCalledTimes(1);
+      } finally {
+        await mounted.cleanup();
+        readSnapshot.mockRestore();
+      }
+    },
+  );
 
   it("applies the shell fallback when a reconnect snapshot does not arrive", async () => {
     const mounted = await mountApp();

@@ -580,7 +580,7 @@ export function collectCompletedThreadCandidates(
       continue;
     }
     const previousThread = previousById.get(thread.id);
-    if (!previousThread) {
+    if (!previousThread || previousThread === thread) {
       continue;
     }
 

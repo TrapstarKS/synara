@@ -228,7 +228,11 @@ import {
   requiresWebSocketAuthentication,
   shouldRejectUntrustedRequestOrigin,
 } from "./trustedOrigins";
-import { bufferLiveUiStream, type LiveUiStreamDropReport } from "./wsStreamBackpressure";
+import {
+  bufferLiveUiStream,
+  failLiveUiStreamForSnapshotResync,
+  type LiveUiStreamDropReport,
+} from "./wsStreamBackpressure";
 import {
   makeCursorSafeSnapshotLiveStream,
   makeResnapshotEscalationTracker,
@@ -447,13 +451,6 @@ function resolveTextGenerationRouting(
     ),
   };
 }
-
-const failLiveUiStreamForSnapshotResync = (report: LiveUiStreamDropReport) =>
-  Effect.fail(
-    new WsRpcError({
-      message: `${report.message}; restarting stream to refresh snapshot.`,
-    }),
-  );
 
 // Must mirror the cases of toShellStreamEvent: events rejected here are dropped
 // before the live-UI buffer so the sliding window only holds events that can
