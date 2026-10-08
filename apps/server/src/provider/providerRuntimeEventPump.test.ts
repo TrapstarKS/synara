@@ -16,6 +16,7 @@ import {
 
 const THREAD_ID = ThreadId.makeUnsafe("thread-runtime-pump");
 const TURN_ID = TurnId.makeUnsafe("turn-runtime-pump");
+type ContentDeltaEvent = Extract<ProviderRuntimeEvent, { readonly type: "content.delta" }>;
 
 function completedEvent(eventId: string): ProviderRuntimeEvent {
   return {
@@ -33,7 +34,7 @@ function deltaEvent(
   eventId: string,
   delta: string,
   overrides: { threadId?: string; itemId?: string } = {},
-): ProviderRuntimeEvent {
+): ContentDeltaEvent {
   return {
     type: "content.delta",
     eventId: EventId.makeUnsafe(eventId),
@@ -51,7 +52,121 @@ function deltaEvent(
   };
 }
 
+function childDeltaEvent(eventId: string, delta: string, childId: string): ContentDeltaEvent {
+  return {
+    ...deltaEvent(eventId, delta),
+    turnId: TurnId.makeUnsafe(`turn-${childId}`),
+    parentTurnId: TURN_ID,
+    providerRefs: { providerThreadId: childId, providerParentThreadId: "native-parent" },
+  };
+}
+
 describe("coalesceQueuedContentDeltas", () => {
+  it("coalesces interleaved native children routed through the same parent", () => {
+    const events = Array.from({ length: 40 }, (_, tick) =>
+      Array.from({ length: 20 }, (_, index) =>
+        childDeltaEvent(`child-${index}-${tick}`, `${tick},`, `child-${index}`),
+      ),
+    ).flat();
+    const merged = coalesceQueuedContentDeltas(events);
+
+    expect(merged).toHaveLength(20);
+    const expected = Array.from({ length: 40 }, (_, tick) => `${tick},`).join("");
+    for (const event of merged) {
+      expect(event.type === "content.delta" && event.payload.delta).toBe(expected);
+    }
+  });
+
+  it("keeps child identities distinct even when turn and item ids overlap", () => {
+    const first = childDeltaEvent("child-a-1", "a", "child-a");
+    const second = { ...childDeltaEvent("child-b-1", "b", "child-b"), turnId: first.turnId };
+    const merged = coalesceQueuedContentDeltas([first, second]);
+
+    expect(merged).toEqual([first, second]);
+  });
+
+  it("keeps child lifecycle boundaries and parent session fences", () => {
+    const childA = childDeltaEvent("child-a-1", "a", "child-a");
+    const childB = childDeltaEvent("child-b-1", "b", "child-b");
+    const childCompleted = {
+      ...completedEvent("child-a-completed"),
+      turnId: childA.turnId,
+      providerRefs: childA.providerRefs,
+    };
+    const parentExited: ProviderRuntimeEvent = {
+      ...completedEvent("parent-exited"),
+      type: "session.exited",
+      payload: {},
+    };
+    const events = [
+      childA,
+      childB,
+      childCompleted,
+      childDeltaEvent("child-a-2", "after-completion", "child-a"),
+      parentExited,
+      childDeltaEvent("child-b-2", "after-exit", "child-b"),
+    ];
+
+    expect(coalesceQueuedContentDeltas(events)).toEqual(events);
+  });
+
+  it("fences only the child whose lifecycle changed", () => {
+    const childA = childDeltaEvent("child-a-1", "a", "child-a");
+    const childB = childDeltaEvent("child-b-1", "b", "child-b");
+    const merged = coalesceQueuedContentDeltas([
+      childA,
+      childB,
+      { ...completedEvent("child-a-completed"), providerRefs: childA.providerRefs },
+      childDeltaEvent("child-a-2", "c", "child-a"),
+      childDeltaEvent("child-b-2", "d", "child-b"),
+    ]);
+
+    expect(merged.map((event) => event.eventId)).toEqual([
+      "child-a-1",
+      "child-b-1",
+      "child-a-completed",
+      "child-a-2",
+    ]);
+    expect(merged[1]?.type === "content.delta" && merged[1].payload.delta).toBe("bd");
+  });
+
+  it.each(["command-output", "nested-collaboration"])("keeps the %s family fence", (kind) => {
+    const first = childDeltaEvent("child-a-1", "a", "child-a");
+    const fence: ProviderRuntimeEvent =
+      kind === "command-output"
+        ? {
+            ...deltaEvent("parent-output", "output"),
+            payload: { streamKind: "command_output", delta: "output" },
+          }
+        : {
+            ...childDeltaEvent("nested-collaboration", "", "child-b"),
+            type: "item.started",
+            payload: { itemType: "collab_agent_tool_call", status: "inProgress" },
+          };
+    const events = [first, fence, childDeltaEvent("child-a-2", "b", "child-a")];
+
+    expect(coalesceQueuedContentDeltas(events)).toEqual(events);
+  });
+
+  it("keeps parent turn and provider parent changes separate", () => {
+    const first = childDeltaEvent("child-a-1", "a", "child-a");
+    const nextTurn = {
+      ...childDeltaEvent("child-a-2", "b", "child-a"),
+      parentTurnId: TurnId.makeUnsafe("new-parent-turn"),
+    };
+    const nextParent = {
+      ...childDeltaEvent("child-a-3", "c", "child-a"),
+      parentTurnId: nextTurn.parentTurnId,
+      providerRefs: { providerThreadId: "child-a", providerParentThreadId: "new-native-parent" },
+    };
+
+    expect(coalesceQueuedContentDeltas([first, nextTurn, nextParent])).toEqual([
+      first,
+      nextTurn,
+      nextParent,
+    ]);
+  });
+
   it("merges queued deltas per thread without reordering any thread's events", () => {
     const merged = coalesceQueuedContentDeltas([
       deltaEvent("a1", "Hel"),
@@ -82,6 +197,101 @@ describe("coalesceQueuedContentDeltas", () => {
 });
 
 describe("providerRuntimeEventPump", () => {
+  it.each([false, true])(
+    "admits request timers between busy events (single-event chunks=%s)",
+    async (singleEventChunks) => {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const queue = yield* Queue.unbounded<ProviderRuntimeEvent>();
+            const completed = yield* Deferred.make<void>();
+            let processed = 0;
+            let processedAtRequestArrival: number | undefined;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            yield* Effect.addFinalizer(() => Effect.sync(() => clearTimeout(timer)));
+            yield* Queue.offerAll(
+              queue,
+              Array.from({ length: 100 }, (_, index) =>
+                deltaEvent(`busy-${index}`, "x", { itemId: `item-${index}` }),
+              ),
+            );
+            yield* runProviderRuntimeEventPump({
+              provider: "codex",
+              stream: singleEventChunks
+                ? Stream.fromQueue(queue).pipe(Stream.rechunk(1))
+                : Stream.fromQueue(queue),
+              processEvent: () =>
+                Effect.sync(() => {
+                  processed += 1;
+                  if (processed === 1) {
+                    timer = setTimeout(() => {
+                      processedAtRequestArrival = processed;
+                    }, 0);
+                  }
+                  // Small synchronous event work must not accumulate into one long batch stall.
+                  const end = performance.now() + 1;
+                  while (performance.now() < end) {}
+                }).pipe(
+                  Effect.andThen(
+                    Effect.suspend(() =>
+                      processed === 100 ? Deferred.succeed(completed, undefined) : Effect.void,
+                    ),
+                  ),
+                ),
+              updateHealth: makeProviderRuntimeEventPumpHealthRegistry(["codex"]).update,
+            }).pipe(Effect.forkScoped);
+            yield* Deferred.await(completed);
+            yield* Effect.sleep(10);
+
+            expect(processed).toBe(100);
+            expect(processedAtRequestArrival).toBeDefined();
+            expect(processedAtRequestArrival).toBeLessThanOrEqual(20);
+          }),
+        ),
+      );
+    },
+  );
+
+  it("paces native child streams independently of their shared parent", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const queue = yield* Queue.unbounded<ProviderRuntimeEvent>();
+          const children = Array.from({ length: 20 }, (_, index) => `child-load-${index}`);
+          const textByChild = new Map<string, string>();
+          let processed = 0;
+
+          yield* runProviderRuntimeEventPump({
+            provider: "codex",
+            stream: Stream.fromQueue(queue),
+            processEvent: (event) =>
+              Effect.sync(() => {
+                processed += 1;
+                if (event.type === "content.delta") {
+                  const childId = event.providerRefs?.providerThreadId ?? "";
+                  textByChild.set(childId, (textByChild.get(childId) ?? "") + event.payload.delta);
+                }
+              }),
+            updateHealth: makeProviderRuntimeEventPumpHealthRegistry(["codex"]).update,
+            deltaCoalesceWindowMs: 50,
+          }).pipe(Effect.forkScoped);
+
+          for (let tick = 0; tick < 40; tick += 1) {
+            for (const childId of children) {
+              yield* Queue.offer(queue, childDeltaEvent(`${childId}-${tick}`, `${tick},`, childId));
+            }
+            yield* Effect.sleep(10);
+          }
+          yield* Effect.sleep(400);
+
+          const expected = Array.from({ length: 40 }, (_, tick) => `${tick},`).join("");
+          for (const childId of children) expect(textByChild.get(childId)).toBe(expected);
+          expect(processed).toBeLessThan(200);
+        }),
+      ),
+    );
+  });
+
   it("bounds per-item processing under many concurrent delta streams", async () => {
     await Effect.runPromise(
       Effect.scoped(

@@ -506,6 +506,11 @@ replayed deltas while preserving whitespace. Legacy completions without item IDs
 retain their existing fallback behavior. Text accompanying a question remains
 visible alongside its question form.
 
+The server batches queued text separately for each conversation, including native
+child conversations, and yields between busy events to let incoming requests run.
+See [provider ingestion load tests](provider-ingestion-load.md) for the measured
+limits and the isolated reproduction command.
+
 The presentation animation buffers at most 320 received characters. Large arrivals
 skip to that live tail instead of replaying many seconds of simulated typing.
 Completion, reduced motion, and returning after a paused animation show the received
