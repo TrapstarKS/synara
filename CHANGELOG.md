@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.11] — 2026-10-08
+
+**Busy orchestrations write far less to the database while tools run.**
+
+### Changed
+
+- Repeated progress snapshots from a running tool are collapsed to the newest one before they are saved, and progress wakes the server at most every 50 ms. Text, approvals, task phases and turn endings are still processed immediately and losslessly.
+
 ## [1.0.10] — 2026-10-08
 
 **Large orchestrations (15+ Codex threads) stay responsive, and agent transcripts no longer fill the disk.**
