@@ -44,6 +44,59 @@ async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
 }
 
 describe("agent gateway stdio proxy", () => {
+  it("flushes a large response to a slow reader before exiting on stdin EOF", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "synara-stdio-drain-"));
+    const payload = { jsonrpc: "2.0", id: "large", result: { text: "x".repeat(1024 * 1024) } };
+    let server: Server | undefined;
+    let child: ChildProcessWithoutNullStreams | undefined;
+
+    try {
+      server = createServer((request, response) => {
+        request.resume();
+        response.setHeader("Content-Type", "application/json");
+        response.end(JSON.stringify(payload));
+      });
+      await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing test server address");
+      const scriptPath = await Effect.runPromise(
+        ensureAgentGatewayStdioProxyScript(stateDir).pipe(Effect.provide(NodeServices.layer)),
+      );
+      child = spawn(process.execPath, [scriptPath], {
+        env: {
+          PATH: process.env.PATH,
+          SYNARA_AGENT_GATEWAY_URL: `http://127.0.0.1:${address.port}/mcp`,
+          SYNARA_AGENT_GATEWAY_TOKEN: "test-token",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      const exited = new Promise<void>((resolve) => child!.once("exit", () => resolve()));
+      const closed = new Promise<void>((resolve) => child!.once("close", () => resolve()));
+      const readable = new Promise<void>((resolve) => child!.stdout.once("readable", resolve));
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: "large", method: "ping" })}\n`);
+      await withTimeout(readable);
+      child.stdin.end();
+      // EOF must not discard the bytes held behind the reader's backpressure.
+      expect(
+        await Promise.race([
+          exited.then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 200)),
+        ]),
+      ).toBe(false);
+      let output = "";
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => (output += chunk));
+      child.stdout.resume();
+      await withTimeout(closed);
+      expect(child.exitCode).toBe(0);
+      expect(output).toBe(`${JSON.stringify(payload)}\n`);
+    } finally {
+      if (child) await stopChild(child);
+      if (server) await closeServer(server);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("forwards cancellation immediately and lets a later ping bypass a hung request", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "synara-stdio-proxy-"));
     const slowStarted = deferred<void>();

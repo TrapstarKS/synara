@@ -220,6 +220,77 @@ const harness = (prefix: string, childCount = 1) =>
   });
 
 layer("await and continue", (it) => {
+  it.effect(
+    "polls twenty running pinned targets with one batch and no shell or transcript reads",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* harness("running-batch", 20);
+        yield* h.register();
+        const reads = { shells: 0, details: 0, turns: 0, batches: 0 };
+        const service = yield* makeAwaitThreads({
+          ...h.dependencies,
+          snapshotQuery: {
+            ...h.dependencies.snapshotQuery,
+            getThreadShellById: (threadId) => {
+              reads.shells += 1;
+              return h.dependencies.snapshotQuery.getThreadShellById(threadId);
+            },
+            getThreadDetailById: (threadId) => {
+              reads.details += 1;
+              return h.dependencies.snapshotQuery.getThreadDetailById(threadId);
+            },
+          },
+          projectionTurns: {
+            ...h.dependencies.projectionTurns,
+            getByTurnId: (input) => {
+              reads.turns += 1;
+              return h.dependencies.projectionTurns.getByTurnId(input);
+            },
+            getManyWaitSnapshot: (input) => {
+              reads.batches += 1;
+              return h.dependencies.projectionTurns.getManyWaitSnapshot(input);
+            },
+          },
+        });
+        yield* service.deliverPending();
+        expect(reads).toEqual({ shells: 0, details: 0, turns: 0, batches: 1 });
+        expect(h.starts()).toHaveLength(0);
+        yield* h.finish(h.caller, "waiting");
+        for (const child of h.children) yield* h.finish(child, "done");
+        yield* service.deliverPending();
+        expect(h.starts()).toHaveLength(1);
+        expect(h.starts()[0]!.message.text).toContain("done");
+        expect(reads.details).toBe(20);
+        yield* service.deliverPending();
+        expect(h.starts()).toHaveLength(1);
+      }),
+  );
+
+  it.effect("keeps deleted, missing-run, and message-only targets on the full result path", () =>
+    Effect.gen(function* () {
+      const h = yield* harness("batch-fallbacks", 3);
+      yield* h.register();
+      const row = (yield* h.repository.getByScope(h.caller, h.context.callerTurnId!))!;
+      const targets = JSON.parse(row.targetsJson) as Array<{ pin: { runId: string | null } }>;
+      targets[2]!.pin.runId = null;
+      yield* h.repository.saveTargets(row.waitId, row.targetsJson, JSON.stringify(targets));
+      h.threads.delete(h.children[0]!);
+      yield* h.sql`UPDATE projection_threads SET deleted_at = ${now} WHERE thread_id = ${h.children[0]!}`;
+      yield* h.sql`DELETE FROM projection_turns WHERE thread_id = ${h.children[1]!}`;
+      yield* h.service.deliverPending();
+      const saved = JSON.parse((yield* h.repository.getById(row.waitId))!.targetsJson);
+      expect(saved[0].result.error).toContain("deleted");
+      expect(saved[1].result.error).toContain("no longer available");
+      expect(saved[2].result).toBeNull();
+      expect(h.starts()).toHaveLength(0);
+      yield* h.finish(h.caller, "waiting");
+      yield* h.finish(h.children[2]!, "message-pinned result");
+      yield* h.service.deliverPending();
+      expect(h.starts()).toHaveLength(1);
+      expect(h.starts()[0]!.message.text).toContain("message-pinned result");
+    }),
+  );
+
   it.effect("auto-notifies an orchestrator once per finished batch and joins explicit waits", () =>
     Effect.gen(function* () {
       const h = yield* harness("orchestrator", 2);

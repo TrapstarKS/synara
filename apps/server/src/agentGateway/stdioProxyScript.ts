@@ -32,9 +32,12 @@ const inFlight = new Set();
 let outputQueue = Promise.resolve();
 
 function writeMessage(message) {
-  outputQueue = outputQueue.then(() => {
-    process.stdout.write(JSON.stringify(message) + "\\n");
-  });
+  outputQueue = outputQueue.then(() => new Promise((resolve, reject) => {
+    process.stdout.write(JSON.stringify(message) + "\\n", (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  }));
   return outputQueue;
 }
 

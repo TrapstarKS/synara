@@ -42,6 +42,8 @@ const makeCheckpointStore = Effect.gen(function* () {
   const git = yield* GitCore;
   const pathPolicies = makeCheckpointPathPolicyResolver(git);
   const captureLock = yield* Semaphore.make(1);
+  // Separate refs have private indexes, but still compete for the same disk and CPU.
+  const captureSlots = yield* Semaphore.make(2);
   const inFlightCaptures = new Map<string, Deferred.Deferred<void, CheckpointStoreError>>();
 
   // Normalize the cwd so captures for the same repo reached via differently
@@ -355,19 +357,21 @@ const makeCheckpointStore = Effect.gen(function* () {
         Effect.gen(function* () {
           const exit = yield* Effect.exit(
             restore(
-              captureCheckpointOnce(input).pipe(
-                Effect.timeoutOption(timeoutMs),
-                Effect.flatMap((completed) =>
-                  Option.isSome(completed)
-                    ? Effect.void
-                    : Effect.fail(
-                        new CheckpointInvariantError({
-                          operation: "CheckpointStore.captureCheckpoint",
-                          detail: `Checkpoint capture timed out after ${timeoutMs}ms.`,
-                        }),
-                      ),
+              captureSlots
+                .withPermits(1)(captureCheckpointOnce(input))
+                .pipe(
+                  Effect.timeoutOption(timeoutMs),
+                  Effect.flatMap((completed) =>
+                    Option.isSome(completed)
+                      ? Effect.void
+                      : Effect.fail(
+                          new CheckpointInvariantError({
+                            operation: "CheckpointStore.captureCheckpoint",
+                            detail: `Checkpoint capture timed out after ${timeoutMs}ms.`,
+                          }),
+                        ),
+                  ),
                 ),
-              ),
             ),
           );
           // Waiters joined an in-flight capture they do not control; replaying the

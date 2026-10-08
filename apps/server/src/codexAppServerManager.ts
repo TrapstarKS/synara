@@ -52,7 +52,8 @@ import {
 } from "@synara/shared/jsonrpc-stdio";
 import { decodeSubagentReceiverThreadIds } from "@synara/shared/subagents";
 import { spawnProcess } from "@synara/shared/processRuntime";
-import { Effect, ServiceMap } from "effect";
+import { Effect, Semaphore, ServiceMap } from "effect";
+import { makeKeyedLock } from "./provider/keyedLock.ts";
 
 import {
   CODEX_CLI_UNPARSEABLE_VERSION_MESSAGE,
@@ -1267,7 +1268,49 @@ function codexAuthFingerprintForOptions(options: CodexDiscoveryOptions | undefin
   );
 }
 
+const codexStartupSlots = Semaphore.makeUnsafe(4);
+
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
+  private readonly startupLocks = makeKeyedLock<ThreadId>();
+  private readonly startups = new Map<
+    AbortController,
+    { readonly threadId: ThreadId | undefined; readonly promise: Promise<unknown> }
+  >();
+  private stoppingAll = false;
+  private startupEpoch = 0;
+  private stopAllPromise: Promise<void> | undefined;
+
+  private runStartup<A>(
+    threadId: ThreadId | undefined,
+    operation: (signal: AbortSignal) => Promise<A>,
+    signal?: AbortSignal,
+  ): Promise<A> {
+    if (this.stoppingAll) return Promise.reject(new Error("Codex manager is stopping."));
+    const controller = new AbortController();
+    const startupSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    const admitted = codexStartupSlots.withPermits(1)(
+      Effect.promise(async () => {
+        try {
+          startupSignal.throwIfAborted();
+          return { ok: true as const, value: await operation(startupSignal) };
+        } catch (error) {
+          return { ok: false as const, error };
+        }
+      }),
+    );
+    // Keep the slot until the underlying promise and its cleanup settle, even on abort.
+    const promise = Effect.runPromise(
+      threadId === undefined ? admitted : this.startupLocks.withLock(threadId, admitted),
+    )
+      .then((result) => {
+        if (!result.ok) throw result.error;
+        return result.value;
+      })
+      .finally(() => this.startups.delete(controller));
+    this.startups.set(controller, { threadId, promise });
+    return promise;
+  }
+
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
   private readonly pendingTurnResponses = new WeakMap<
     CodexSessionContext,
@@ -1395,7 +1438,21 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
   }
 
-  async startSession(input: CodexAppServerStartSessionInput): Promise<ProviderSession> {
+  startSession(
+    input: CodexAppServerStartSessionInput,
+    signal?: AbortSignal,
+  ): Promise<ProviderSession> {
+    return this.runStartup(
+      input.threadId,
+      (startupSignal) => this.startSessionOnce(input, startupSignal),
+      signal,
+    );
+  }
+
+  private async startSessionOnce(
+    input: CodexAppServerStartSessionInput,
+    signal: AbortSignal,
+  ): Promise<ProviderSession> {
     if (input.agentGatewayCapabilityInput === undefined) {
       throw new Error(
         "Codex session start requires an explicit agentGatewayCapabilityInput. Pass AGENT_GATEWAY_NO_CAPABILITIES when the session leases no gateway capabilities.",
@@ -1406,11 +1463,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     let context: CodexSessionContext | undefined;
     let gatewaySessionLease: AgentGatewaySessionLease | undefined;
     let previousSessionStopped = false;
+    const onAbort = () => {
+      if (context)
+        void this.stopSessionContext(context).catch((error) =>
+          log.warn("failed to stop cancelled Codex startup", { error }),
+        );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
 
     try {
+      signal.throwIfAborted();
       const existing = this.sessions.get(threadId);
       if (existing) {
-        await this.stopSession(threadId);
+        await this.stopSessionContext(existing);
       }
       previousSessionStopped = true;
 
@@ -1472,6 +1537,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           ? { expectedSharedContinuationGeneration: input.expectedCodexContinuationGeneration }
           : {}),
       });
+      signal.throwIfAborted();
       gatewaySessionLease = this.agentGatewayMcp?.acquireSessionLease(
         threadId,
         input.agentGatewayCapabilityInput,
@@ -1481,6 +1547,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         gatewaySessionLease?.connection.bearerToken,
       );
       const launchAuthFingerprint = processLaunch.authFingerprint;
+      signal.throwIfAborted();
       const child = this.spawnAppServer({
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
@@ -1693,6 +1760,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         resolvedThreadId: providerThreadId,
         requestedRuntimeMode: input.runtimeMode,
       }).pipe(this.runPromise);
+      signal.throwIfAborted();
       return { ...context.session };
     } catch (error) {
       const failureError =
@@ -1747,6 +1815,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       throw previousSessionStopped && (!context || context.teardownCapturedBeforeExit === true)
         ? new CodexSessionStartError(message, { cause })
         : new Error(message, { cause });
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
   }
 
@@ -2459,20 +2529,38 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     throw new Error("Codex conversation exceeds the supported import page limit.");
   }
 
-  async forkThread(
+  forkThread(
     input: ProviderAdapterForkThreadInput,
     signal?: AbortSignal,
+  ): Promise<ProviderForkThreadResult> {
+    return this.runStartup(
+      input.threadId,
+      (startupSignal) => this.forkThreadOnce(input, startupSignal),
+      signal,
+    );
+  }
+
+  private async forkThreadOnce(
+    input: ProviderAdapterForkThreadInput,
+    signal: AbortSignal,
   ): Promise<ProviderForkThreadResult> {
     const threadId = input.threadId;
     const now = new Date().toISOString();
     let context: CodexSessionContext | undefined;
     let gatewaySessionLease: AgentGatewaySessionLease | undefined;
 
+    const onAbort = () => {
+      if (context)
+        void this.stopSessionContext(context).catch((error) =>
+          log.warn("failed to stop cancelled Codex fork", { error }),
+        );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     try {
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       const existing = this.sessions.get(threadId);
       if (existing) {
-        await this.stopSession(threadId);
+        await this.stopSessionContext(existing);
       }
 
       const sourceProviderThreadId = readResumeCursorThreadId(input.sourceResumeCursor);
@@ -2536,7 +2624,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           ? { expectedSharedContinuationGeneration: input.expectedCodexContinuationGeneration }
           : {}),
       });
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       // A fork carries the same computer-control fact a start does, so the
       // forked runtime leases like-for-like capabilities instead of dropping
       // `computer:control` at the fork boundary.
@@ -2547,7 +2635,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         normalizedCodexOptions,
         gatewaySessionLease?.connection.bearerToken,
       );
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       const launchAuthFingerprint = processLaunch.authFingerprint;
       const child = this.spawnAppServer({
         binaryPath: codexBinaryPath,
@@ -2615,7 +2703,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             )
           : undefined;
       const serviceTier = resolveCodexServiceTier(input.modelSelection);
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       let lastTurnId: TurnId | undefined;
       if (input.requireCompletedSource) {
         const source = await this.readImportTurnsPage(
@@ -2659,7 +2747,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         "session/threadOpenRequested",
         `Forking Codex thread ${sourceProviderThreadId}.`,
       );
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       const response = await this.sendThreadOpenRequest(context, "thread/fork", forkParams).catch(
         (error: unknown) => {
           if (error instanceof Error && /identifies an in-progress turn/i.test(error.message)) {
@@ -2678,6 +2766,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         providerThreadId: forkedProviderThreadId,
       });
 
+      signal.throwIfAborted();
       return {
         threadId,
         resumeCursor: {
@@ -2717,6 +2806,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         gatewaySessionLease?.release();
       }
       throw new Error(message, { cause });
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
   }
 
@@ -3126,6 +3217,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   }
 
   async stopSession(threadId: ThreadId): Promise<void> {
+    for (const [controller, startup] of this.startups) {
+      if (startup.threadId === threadId)
+        controller.abort(new Error("Codex session startup was stopped."));
+    }
     const context = this.sessions.get(threadId);
     if (!context) {
       return;
@@ -3286,27 +3381,47 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return { session: context.session, codexOptions: context.codexOptions };
   }
 
-  async stopAll(): Promise<void> {
-    const discoveryKeys = new Set([
-      ...this.discoverySessions.keys(),
-      ...this.discoverySessionStartups.keys(),
-    ]);
-    const results = await Promise.allSettled([
-      ...Array.from(this.sessions.keys(), (threadId) => this.stopSession(threadId)),
-      ...Array.from(discoveryKeys, async (key) => {
-        const startup = this.discoverySessionStartups.get(key);
-        await startup?.catch(() => undefined);
-        await this.stopDiscoverySession(key);
-      }),
-    ]);
-    const failures = results.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : [],
-    );
-    if (failures.length > 0) {
-      throw new AggregateError(
-        failures,
-        "One or more Codex app-server process trees did not exit.",
+  stopAll(): Promise<void> {
+    if (this.stopAllPromise) return this.stopAllPromise;
+    const promise = this.stopAllOnce().finally(() => {
+      if (this.stopAllPromise === promise) this.stopAllPromise = undefined;
+    });
+    this.stopAllPromise = promise;
+    return promise;
+  }
+
+  private async stopAllOnce(): Promise<void> {
+    this.stoppingAll = true;
+    this.startupEpoch += 1;
+    const startups = Array.from(this.startups, ([controller, startup]) => {
+      controller.abort(new Error("Codex manager stopped during startup."));
+      return startup.promise.catch(() => undefined);
+    });
+    try {
+      const discoveryKeys = new Set([
+        ...this.discoverySessions.keys(),
+        ...this.discoverySessionStartups.keys(),
+      ]);
+      const results = await Promise.allSettled([
+        ...startups,
+        ...Array.from(this.sessions.keys(), (threadId) => this.stopSession(threadId)),
+        ...Array.from(discoveryKeys, async (key) => {
+          const startup = this.discoverySessionStartups.get(key);
+          await startup?.catch(() => undefined);
+          await this.stopDiscoverySession(key);
+        }),
+      ]);
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
       );
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          "One or more Codex app-server process trees did not exit.",
+        );
+      }
+    } finally {
+      this.stoppingAll = false;
     }
   }
 
@@ -3926,6 +4041,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     codexOptions?: CodexDiscoveryOptions,
     expectedAuthFingerprint?: string,
   ): Promise<CodexSessionContext> {
+    const startupEpoch = this.startupEpoch;
     const normalizedCwd = cwd.trim() || process.cwd();
     const normalizedCodexOptions = normalizeCodexDiscoveryOptions(codexOptions);
     const authFingerprint =
@@ -3956,6 +4072,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return existing;
     }
 
+    if (this.stoppingAll || startupEpoch !== this.startupEpoch) {
+      throw new Error("Codex manager stopped during discovery startup.");
+    }
     const nextStartup = this.createDiscoverySession(
       discoveryKey,
       normalizedCwd,
@@ -3978,6 +4097,24 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     normalizedCodexOptions: CodexDiscoveryOptions | undefined,
     expectedAuthFingerprint: string,
   ): Promise<CodexSessionContext> {
+    return this.runStartup(undefined, (signal) =>
+      this.createDiscoverySessionOnce(
+        discoveryKey,
+        normalizedCwd,
+        normalizedCodexOptions,
+        expectedAuthFingerprint,
+        signal,
+      ),
+    );
+  }
+
+  private async createDiscoverySessionOnce(
+    discoveryKey: string,
+    normalizedCwd: string,
+    normalizedCodexOptions: CodexDiscoveryOptions | undefined,
+    expectedAuthFingerprint: string,
+    signal: AbortSignal,
+  ): Promise<CodexSessionContext> {
     const existing = this.discoverySessions.get(discoveryKey);
     if (existing) {
       await this.stopDiscoverySession(discoveryKey);
@@ -3997,11 +4134,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ? { environment: normalizedCodexOptions.environment }
         : {}),
     });
+    signal.throwIfAborted();
     const processLaunch = await this.buildSessionProcess(normalizedCodexOptions, undefined);
     const launchAuthFingerprint = processLaunch.authFingerprint;
     if (launchAuthFingerprint !== expectedAuthFingerprint) {
       throw new Error("Codex authentication changed before discovery launch; retry the request.");
     }
+    signal.throwIfAborted();
     const child = this.spawnAppServer({
       binaryPath: codexBinaryPath,
       cwd: normalizedCwd,
@@ -4048,6 +4187,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     this.discoverySessions.set(discoveryKey, context);
     this.attachProcessListeners(context);
+    const onAbort = () => {
+      void this.stopDiscoverySession(discoveryKey).catch((error) =>
+        log.warn("failed to stop cancelled Codex discovery", { error }),
+      );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     try {
       await this.sendRequest(context, "initialize", buildCodexInitializeParams());
       this.assertContextAuthCurrent(context);
@@ -4062,10 +4207,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.assertContextAuthCurrent(context);
       this.updateSession(context, { status: "ready" });
       this.scheduleDiscoverySessionIdleStop(discoveryKey);
+      signal.throwIfAborted();
       return context;
     } catch (error) {
       await this.stopDiscoverySession(discoveryKey);
       throw error;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
   }
 

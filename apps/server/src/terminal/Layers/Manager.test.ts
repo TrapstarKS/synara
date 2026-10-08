@@ -25,6 +25,7 @@ import {
 } from "./Manager";
 import type { ManagedTerminalProfile } from "../managedTerminalWrappers";
 import type { ProcessTreeKiller } from "../processTreeKiller";
+import * as subprocessActivity from "../subprocessActivity";
 import {
   createWindowsProcessSnapshotObserver,
   type ProcessChildrenSnapshotObserver,
@@ -871,6 +872,35 @@ describe("TerminalManager", () => {
     expect(activityEvents[0]).toMatchObject({ hasRunningSubprocess: true });
     manager.dispose();
   });
+
+  it.skipIf(process.platform === "win32")(
+    "does not retry a failed POSIX snapshot for each of 20 terminals",
+    async () => {
+      const capture = vi
+        .spyOn(subprocessActivity, "captureProcessChildrenMap")
+        .mockResolvedValue(null);
+      const { manager } = makeManager(5, { subprocessPollIntervalMs: 60_000 });
+      const fallback = vi.fn(async () => false);
+      const internals = manager as unknown as {
+        subprocessChecker: typeof fallback;
+        pollSubprocessActivity: () => Promise<void>;
+      };
+      internals.subprocessChecker = fallback;
+      try {
+        for (let index = 0; index < 20; index += 1) {
+          await manager.open(openInput({ threadId: `poll-load-${index}` }));
+        }
+        capture.mockClear();
+        fallback.mockClear();
+        await internals.pollSubprocessActivity();
+        expect(capture).toHaveBeenCalledTimes(1);
+        expect(fallback).not.toHaveBeenCalled();
+      } finally {
+        manager.dispose();
+        capture.mockRestore();
+      }
+    },
+  );
 
   it("does not brand generic terminals from provider descendants", async () => {
     const { manager } = makeManager(5, {

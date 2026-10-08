@@ -154,6 +154,110 @@ describe("CheckpointStoreLive", () => {
     );
   });
 
+  it("bounds expensive captures across distinct threads and repositories", async () => {
+    let active = 0;
+    let peak = 0;
+    let completed = 0;
+    const execute = mockGit((input) => {
+      if (input.args[0] === "add") {
+        return Effect.acquireUseRelease(
+          Effect.sync(() => {
+            active += 1;
+            peak = Math.max(peak, active);
+          }),
+          () => Effect.sleep("10 millis").pipe(Effect.as({ code: 0, stdout: "", stderr: "" })),
+          () =>
+            Effect.sync(() => {
+              active -= 1;
+              completed += 1;
+            }),
+        );
+      }
+      return Effect.succeed({ code: 0, stdout: "oid\n", stderr: "" });
+    });
+    runtime = ManagedRuntime.make(
+      CheckpointStoreLive.pipe(
+        Layer.provide(Layer.succeed(GitCore, { execute } as unknown as GitCoreShape)),
+        Layer.provide(NodeServices.layer),
+      ),
+    );
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CheckpointStore;
+        yield* Effect.forEach(
+          Array.from({ length: 20 }, (_, index) => index),
+          (index) =>
+            store.captureCheckpoint({
+              cwd: `/repo-${index % 3}`,
+              checkpointRef: CheckpointRef.makeUnsafe(
+                `refs/synara-checkpoints/thread-${index}/turn`,
+              ),
+            }),
+          { concurrency: "unbounded" },
+        );
+      }),
+    );
+    expect(completed).toBe(20);
+    expect(active).toBe(0);
+    expect(peak).toBeLessThanOrEqual(2);
+  });
+
+  it("expires queued captures and permits a retry after the holders finish", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let active = 0;
+    let adds = 0;
+    const execute = mockGit((input) => {
+      if (input.args[0] === "add") {
+        return Effect.acquireUseRelease(
+          Effect.sync(() => {
+            active += 1;
+            adds += 1;
+          }),
+          () => Effect.promise(() => gate).pipe(Effect.as({ code: 0, stdout: "", stderr: "" })),
+          () =>
+            Effect.sync(() => {
+              active -= 1;
+            }),
+        );
+      }
+      return Effect.succeed({ code: 0, stdout: "oid\n", stderr: "" });
+    });
+    runtime = ManagedRuntime.make(
+      CheckpointStoreLive.pipe(
+        Layer.provide(Layer.succeed(GitCore, { execute } as unknown as GitCoreShape)),
+        Layer.provide(NodeServices.layer),
+      ),
+    );
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CheckpointStore;
+        const input = (index: number) => ({
+          cwd: "/repo",
+          checkpointRef: CheckpointRef.makeUnsafe(`refs/synara-checkpoints/thread-${index}/turn`),
+        });
+        const holders = yield* Effect.forEach(
+          [0, 1],
+          (index) => store.captureCheckpoint(input(index)),
+          { concurrency: "unbounded" },
+        ).pipe(Effect.forkChild);
+        yield* Effect.promise(() => waitFor(() => active === 2));
+        const queued = yield* store
+          .captureCheckpoint({ ...input(2), timeoutMs: 10 })
+          .pipe(Effect.flip);
+        expect(queued.detail).toContain("timed out");
+        expect(adds).toBe(2);
+        release();
+        yield* Fiber.join(holders);
+        yield* store.captureCheckpoint({ ...input(2), timeoutMs: 1_000 });
+        expect(adds).toBe(3);
+        expect(active).toBe(0);
+      }),
+    );
+  });
+
   it("seeds a capture from the working index so Git can reuse its stat cache", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "synara-checkpoint-index-test-"));
     const workingIndexPath = join(tempDir, "index");
