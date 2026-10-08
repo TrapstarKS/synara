@@ -452,8 +452,33 @@ export const makeAwaitThreads = (input: {
         }
         if (row.state === "waiting") {
           const targets = yield* decodeTargets(row.targetsJson);
+          // Pending exact runs share one state read; terminal results keep every settlement check.
+          const unresolvedRuns = targets.flatMap((target) =>
+            target.result === null && target.pin.runId !== null
+              ? [
+                  {
+                    threadId: ThreadId.makeUnsafe(target.pin.threadId),
+                    turnId: TurnId.makeUnsafe(target.pin.runId),
+                  },
+                ]
+              : [],
+          );
+          const snapshot = yield* input.projectionTurns.getManyWaitSnapshot({
+            threadIds: unresolvedRuns.map((run) => run.threadId),
+            turns: unresolvedRuns,
+          });
+          const existingThreads = new Set<string>(snapshot.existingThreadIds);
+          const runningRuns = new Set(
+            snapshot.turns
+              .filter(
+                (turn) =>
+                  existingThreads.has(turn.threadId) &&
+                  (turn.state === "pending" || turn.state === "running"),
+              )
+              .map((turn) => canonicalJson([turn.threadId, turn.turnId])),
+          );
           const results = yield* Effect.forEach(targets, (target) =>
-            target.result
+            target.result || runningRuns.has(canonicalJson([target.pin.threadId, target.pin.runId]))
               ? Effect.succeed(target)
               : readResult(target.pin).pipe(Effect.map((result) => ({ pin: target.pin, result }))),
           );
@@ -574,7 +599,7 @@ export const makeAwaitThreads = (input: {
       Effect.gen(function* () {
         const { threads } = yield* input.orchestrationEngine.getReadModel();
         const byId = new Map(threads.map((thread) => [thread.id as string, thread] as const));
-        const childrenByOrchestrator = new Map<string, typeof threads>();
+        const childrenByOrchestrator = new Map<string, Array<(typeof threads)[number]>>();
         for (const thread of threads) {
           if (
             thread.creationSource !== "synara_mcp" ||
@@ -585,7 +610,8 @@ export const makeAwaitThreads = (input: {
           )
             continue;
           const list = childrenByOrchestrator.get(thread.sourceThreadId) ?? [];
-          childrenByOrchestrator.set(thread.sourceThreadId, [...list, thread]);
+          list.push(thread);
+          childrenByOrchestrator.set(thread.sourceThreadId, list);
         }
         for (const [orchestratorId, children] of childrenByOrchestrator) {
           const orchestrator = byId.get(orchestratorId);

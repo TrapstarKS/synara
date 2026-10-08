@@ -1,0 +1,123 @@
+{
+  "fixture": "fake Codex app-server; real Synara server, SQLite and WebSocket",
+  "source": {
+    "baseline": true,
+    "baselineRef": "e31ce661d",
+    "baselineFiles": [
+      "apps/server/src/agentGateway/awaitThreads.ts",
+      "apps/server/src/agentGateway/stdioProxyScript.ts",
+      "apps/server/src/checkpointing/Layers/CheckpointStore.ts",
+      "apps/server/src/codexAppServerManager.ts",
+      "apps/server/src/provider/Layers/CodexAdapter.ts",
+      "apps/server/src/terminal/Layers/Manager.ts"
+    ],
+    "revision": "e31ce661d7d4d3d287db5a5302de7743e8b264b1"
+  },
+  "options": {
+    "threads": 20,
+    "rate": 100,
+    "seconds": 10,
+    "ticks": 1000
+  },
+  "completedThreads": 5,
+  "incompleteThreads": [
+    "load-thread-0",
+    "load-thread-1",
+    "load-thread-4",
+    "load-thread-5",
+    "load-thread-6",
+    "load-thread-7",
+    "load-thread-8",
+    "load-thread-9",
+    "load-thread-10",
+    "load-thread-11",
+    "load-thread-12",
+    "load-thread-13",
+    "load-thread-14",
+    "load-thread-15",
+    "load-thread-18"
+  ],
+  "changedFiles": 20,
+  "rawProviderDeltas": {
+    "assistant": 20000,
+    "commandOutput": 5000,
+    "fileChangeOutput": 20
+  },
+  "wallMs": 102766.190292,
+  "server": {
+    "sampleCount": 3818,
+    "lagMs": {
+      "p50": 3.0817499999975553,
+      "p95": 47.99854200000118,
+      "p99": 214.57520900000236,
+      "max": 2801.1019579999993
+    },
+    "rssBytes": {
+      "initial": 280018944,
+      "peak": 542916608,
+      "final": 264060928
+    }
+  },
+  "wsLatencyMs": {
+    "loadThread": {
+      "count": 510,
+      "p50": 18.25087500000518,
+      "p95": 333.7050420000014,
+      "p99": 1560.5750419999968,
+      "max": 4731.502999999997
+    },
+    "sendMessageReceipt": {
+      "count": 20,
+      "p50": 463.0533749999995,
+      "p95": 572.385542,
+      "p99": 572.385542,
+      "max": 572.385542
+    },
+    "firstAssistantText": {
+      "count": 20,
+      "p50": 20829.016042,
+      "p95": 30471.027333,
+      "p99": 30471.027333,
+      "max": 30471.027333
+    },
+    "completion": {
+      "count": 5,
+      "p50": 45436.194667,
+      "p95": 53128.241333000005,
+      "p99": 53128.241333000005,
+      "max": 53128.241333000005
+    }
+  },
+  "transport": {
+    "connections": 3,
+    "receivedBytes": 98792863,
+    "receivedFrames": 5555,
+    "streamFrames": [
+      277, 276, 273, 271, 220, 221, 213, 216, 172, 214, 212, 209, 212, 158, 156, 157, 144, 276, 278,
+      273, 278
+    ]
+  },
+  "storageBytes": {
+    "initial": {
+      "db": 1273856,
+      "wal": 2125952
+    },
+    "peak": {
+      "db": 25075712,
+      "wal": 5697992
+    },
+    "final": {
+      "db": 25075712,
+      "wal": 5697992
+    },
+    "rows": {
+      "orchestration": {
+        "count": 4559
+      },
+      "providerRuntime": {
+        "count": 5759
+      }
+    }
+  },
+  "comparisonCaveat": "Earlier fake fixture used a 100ms startup delay and did not measure overlap. Failure did not reproduce with the final fixture; exclude from before/after performance comparison."
+}

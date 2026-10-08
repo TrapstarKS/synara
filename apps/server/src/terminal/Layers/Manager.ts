@@ -2280,13 +2280,14 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         ? await captureProcessChildrenMap()
         : null;
     const sharedSnapshotUnavailable =
-      this.processSnapshotObserver !== null && sharedChildrenMap === null;
+      (this.processSnapshotObserver !== null ||
+        (this.useDefaultSubprocessChecker && process.platform !== "win32")) &&
+      sharedChildrenMap === null;
     try {
       await Promise.all(
         runningSessions.map(async (session) => {
-          // A failed Windows snapshot proves nothing. Preserve the last known
-          // activity state while the observer backs off instead of reporting a
-          // false idle transition or falling back to per-terminal processes.
+          // A failed shared snapshot proves nothing. Preserve activity instead
+          // of multiplying a failed/truncated system scan by every terminal.
           if (sharedSnapshotUnavailable) return;
           const terminalPid = session.pid;
           let hasRunningSubprocess = false;

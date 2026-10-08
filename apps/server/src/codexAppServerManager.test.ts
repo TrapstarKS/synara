@@ -311,6 +311,155 @@ function createSyntheticCodexManager(fake: ReturnType<typeof createSyntheticCode
   return { manager, teardownProcessTree };
 }
 
+describe("Codex startup admission", () => {
+  const startInput = (index: number) => ({
+    threadId: asThreadId(`startup-load-${index}`),
+    provider: "codex" as const,
+    runtimeMode: "full-access" as const,
+    cwd: process.cwd(),
+    agentGatewayCapabilityInput: AGENT_GATEWAY_NO_CAPABILITIES,
+  });
+
+  it("limits a 20-thread startup burst across manager instances", async () => {
+    const fake = createSyntheticCodexAppServer();
+    const managers = [createSyntheticCodexManager(fake), createSyntheticCodexManager(fake)];
+    let active = 0;
+    let peak = 0;
+    for (const { manager } of managers) {
+      const build = manager as unknown as {
+        buildSessionProcess: () => Promise<{ env: NodeJS.ProcessEnv; configOverrides: string[] }>;
+      };
+      vi.spyOn(build, "buildSessionProcess").mockImplementation(async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return { env: {}, configOverrides: [] };
+      });
+    }
+    try {
+      await Promise.all(
+        Array.from({ length: 20 }, (_, index) =>
+          managers[index % 2]!.manager.startSession(startInput(index)),
+        ),
+      );
+      expect(peak).toBeLessThanOrEqual(4);
+      expect(fake.children).toHaveLength(20);
+    } finally {
+      await Promise.all(managers.map(({ manager }) => manager.stopAll()));
+    }
+  });
+
+  it("serializes replacement starts for the same thread without losing a process", async () => {
+    const fake = createSyntheticCodexAppServer();
+    const { manager, teardownProcessTree } = createSyntheticCodexManager(fake);
+    try {
+      await Promise.all([manager.startSession(startInput(1)), manager.startSession(startInput(1))]);
+      expect(fake.children).toHaveLength(2);
+      expect(teardownProcessTree).toHaveBeenCalledTimes(1);
+      expect(manager.listSessions()).toHaveLength(1);
+    } finally {
+      await manager.stopAll();
+    }
+    expect(teardownProcessTree).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["stopAll", "stopSession", "abort"] as const)(
+    "prevents late spawn after %s during pre-spawn preparation",
+    async (stop) => {
+      const fake = createSyntheticCodexAppServer();
+      const { manager } = createSyntheticCodexManager(fake);
+      let release!: () => void;
+      const preparation = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const build = manager as unknown as {
+        buildSessionProcess: () => Promise<{ env: NodeJS.ProcessEnv; configOverrides: string[] }>;
+      };
+      const buildSpy = vi.spyOn(build, "buildSessionProcess").mockImplementation(async () => {
+        await preparation;
+        return { env: {}, configOverrides: [] };
+      });
+      const controller = new AbortController();
+      const started = manager.startSession(startInput(1), controller.signal);
+      const rejected = expect(started).rejects.toThrow();
+      await vi.waitFor(() => expect(buildSpy).toHaveBeenCalled());
+      const stopped =
+        stop === "stopAll"
+          ? manager.stopAll()
+          : stop === "stopSession"
+            ? manager.stopSession(startInput(1).threadId)
+            : Promise.resolve(controller.abort(new Error("cancelled")));
+      release();
+      await Promise.all([rejected, stopped]);
+      expect(fake.children).toHaveLength(0);
+      expect(manager.listSessions()).toHaveLength(0);
+      await manager.stopAll();
+    },
+  );
+
+  it("cancels a queued startup without spawning and reuses its capacity", async () => {
+    const fake = createSyntheticCodexAppServer();
+    const { manager } = createSyntheticCodexManager(fake);
+    let release!: () => void;
+    const preparation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const build = manager as unknown as {
+      buildSessionProcess: () => Promise<{ env: NodeJS.ProcessEnv; configOverrides: string[] }>;
+    };
+    const buildSpy = vi.spyOn(build, "buildSessionProcess").mockImplementation(async () => {
+      await preparation;
+      return { env: {}, configOverrides: [] };
+    });
+    const running = Array.from({ length: 4 }, (_, index) =>
+      manager.startSession(startInput(index)),
+    );
+    await vi.waitFor(() => expect(buildSpy).toHaveBeenCalledTimes(4));
+    const queued = manager.startSession(startInput(4));
+    const rejected = expect(queued).rejects.toThrow("stopped");
+    await manager.stopSession(startInput(4).threadId);
+    release();
+    try {
+      await Promise.all([...running, rejected]);
+      expect(fake.children).toHaveLength(4);
+      await manager.startSession(startInput(4));
+      expect(fake.children).toHaveLength(5);
+    } finally {
+      await manager.stopAll();
+    }
+  });
+
+  it("fences discovery calls waiting for stale-session cleanup during stopAll", async () => {
+    const fake = createSyntheticCodexAppServer();
+    const { manager } = createSyntheticCodexManager(fake);
+    const internals = manager as unknown as {
+      discoverySessions: Map<string, unknown>;
+      isContextAuthCurrent: () => boolean;
+      stopDiscoverySession: (key: string) => Promise<void>;
+      getOrCreateDiscoverySession: (cwd: string) => Promise<unknown>;
+    };
+    internals.discoverySessions.set("stale", {});
+    vi.spyOn(internals, "isContextAuthCurrent").mockReturnValue(false);
+    let release!: () => void;
+    const cleanup = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stop = vi.spyOn(internals, "stopDiscoverySession").mockImplementation(async (key) => {
+      await cleanup;
+      internals.discoverySessions.delete(key);
+    });
+    const discovery = internals.getOrCreateDiscoverySession(process.cwd());
+    const rejected = expect(discovery).rejects.toThrow("stopped during discovery");
+    await vi.waitFor(() => expect(stop).toHaveBeenCalled());
+    const stopped = manager.stopAll();
+    expect(manager.stopAll()).toBe(stopped);
+    release();
+    await Promise.all([rejected, stopped]);
+    expect(fake.children).toHaveLength(0);
+  });
+});
+
 const fullAccessTurnOverrides = {
   approvalPolicy: "never",
   approvalsReviewer: "user",
