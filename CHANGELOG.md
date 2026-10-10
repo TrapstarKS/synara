@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.12] — 2026-10-10
+
+**Long-running Goals recover missed OpenCode completions and receive autonomy instructions on every turn.**
+
+### Fixed
+
+- OpenCode keeps recovering tool snapshots until the owning turn actually ends, so a missing tool-completion event cannot leave a Goal active without progressing. Recovery responses from an interrupted or replaced turn cannot affect its successor.
+- Deferred Goal continuations use the live provider state instead of waiting on an outdated running session projection. Pending approvals, user input, delegated work, and explicit stops retain their existing controls.
+
+### Changed
+
+- Goal instructions now apply to initial messages, steering, and automatic continuations across providers. Agents are directed to resolve routine choices from available evidence, continue independent work, and ask only for information or authorization that genuinely blocks the objective.
+- Every Goal turn receives the completion and blocker rules: verify the full objective before marking it achieved, and preserve the existing seven rejected blocked-turn requests before pausing on the eighth.
+
 ## [1.0.11] — 2026-10-08
 
 **Busy orchestrations write far less to the database while tools run.**
