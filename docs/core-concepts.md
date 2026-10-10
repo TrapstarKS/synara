@@ -133,6 +133,12 @@ blocked-turn stop requests, pauses on the eighth, and resets the streak after a 
 does not report the blocker. Once a thread owns an active goal, another agent cannot edit, complete,
 block, interrupt, or indirectly archive that goal on its behalf.
 
+Every active goal turn carries the same autonomy and completion instructions, including the first
+turn and later user guidance. The agent resolves routine and reversible choices from available
+evidence, states material assumptions, and continues through verification. Questions are reserved
+for indispensable information, consequential user decisions, or missing authorization; independent
+authorized work should finish before waiting. Goals do not add permissions or auto-answer approvals.
+
 Use a [thread fork](https://www.trysynara.com/docs/workflows/forks) when a new task should inherit
 the conversation or split from one exact turn. Use a
 [handoff](https://www.trysynara.com/docs/workflows/handoffs) when another provider should continue

@@ -8728,6 +8728,65 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
+  it("retries a goal continuation when the runtime settles before its running projection", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const turnId = asTurnId("turn-before-delayed-goal-projection");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-goal-before-delayed-projection"),
+        threadId,
+        goal: "Keep progressing after the provider finishes",
+        goalStartBehavior: "defer",
+      }),
+    );
+    harness.setRuntimeSessionTurnState({ threadId, status: "running", activeTurnId: turnId });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-goal-running-projection"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    const goalStartedAt = (await readHarnessThread(harness))!.goalStartedAt!;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.goal.continue",
+        commandId: CommandId.makeUnsafe("cmd-goal-waits-for-runtime"),
+        threadId,
+        goalStartedAt,
+        trigger: "startup-recovery",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+
+    // The adapter has settled, but its session projection is still running.
+    // A deferred continuation must consult the live owner like its first attempt.
+    harness.setRuntimeSessionTurnState({ threadId, status: "ready" });
+    expect((await readHarnessThread(harness))?.session?.status).toBe("running");
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0].input).toContain(
+      "Continue working toward the active thread goal",
+    );
+    expect((await readHarnessThread(harness))?.goalPausedAt).toBeNull();
+  });
+
   it("retries a goal continuation after a pending interaction clears", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

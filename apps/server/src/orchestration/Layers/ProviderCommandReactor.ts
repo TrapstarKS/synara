@@ -5630,14 +5630,15 @@ const make = Effect.gen(function* () {
       (yield* threadAwaitGuard.hasPending(threadId)) ||
       pendingInteractionCounts.pendingApprovalCount > 0 ||
       pendingInteractionCounts.pendingUserInputCount > 0 ||
-      thread.session?.status === "starting" ||
-      thread.session?.status === "running" ||
       (yield* hasLiveProviderTurn(threadId))
     ) {
       yield* scheduleBlockedGoalContinuationRetry(threadId);
       return;
     }
 
+    // Session projections can still say running after the provider has settled.
+    // Match the initial attempt's live check; delivery rechecks under the session
+    // lease, so a stale projection cannot strand an otherwise ready goal.
     yield* drainQueuedTurnsForSession(threadId);
     if (yield* hasPendingQueuedTurnForSession(threadId)) {
       yield* scheduleBlockedGoalContinuationRetry(threadId);

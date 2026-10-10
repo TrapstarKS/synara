@@ -38,6 +38,12 @@ The same actions are available from the composer:
 
 After a clean turn completes, Synara can start another turn to continue an eligible active goal. The continuation uses the same provider-independent orchestration path rather than provider-specific hidden prompts.
 
+If OpenCode misses a tool-completion event, Synara keeps checking the provider's saved result until that turn settles. A delayed session-status update does not prevent an otherwise ready goal from continuing.
+
+Every goal turn, including the first turn and later user guidance, tells the agent to make routine and reversible decisions from the available evidence, state material assumptions, and continue working. It should choose the next useful step itself, use parallel work when useful, and carry the full objective through verification without optional questions or offers to continue.
+
+The agent should ask only for indispensable information or a consequential user decision it cannot discover or safely infer, or for required authorization. It should finish independent authorized work before waiting. Goals do not add permissions, answer user questions automatically, or bypass approval controls.
+
 Automatic continuation yields to higher-priority work and gates. It does not start while the task has queued user work, a pending approval or question, an incompatible Plan-mode decision, or another active turn. Explicit stops, provider failures, timeouts, and unrelated interruptions pause continuation instead of immediately resurrecting the task.
 
 When a provider cannot accept guidance during a live turn, Synara may interrupt that turn so the newer user instruction can run next. That replacement does not pause the goal or start a competing automatic continuation from the old turn. The promoted user turn keeps ownership of the same objective and decides whether it should continue, complete, or block.

@@ -58,15 +58,47 @@ describe("provider thread goal prompt", () => {
     expect(activeThreadGoal({ goalPausedAt: null })).toBeUndefined();
   });
 
-  it("builds an internal continuation that keeps working until the goal is settled", () => {
-    const input = buildGoalContinuationInput();
+  it.each([
+    ["initial", "Start the implementation"],
+    ["follow-up", "Include the regression fix"],
+    ["continuation", buildGoalContinuationInput()],
+  ])("keeps autonomy and settlement rules in the %s goal turn", (_kind, text) => {
+    const input = withProviderGoalPrompt({ text, goal: "Finish the complete feature" });
 
-    expect(input).toContain("Continue working toward the active thread goal");
-    expect(input).toContain("synara_set_thread_goal");
-    expect(input).toContain("achieved: true");
-    expect(input).toContain("blocked: true");
+    expect(input).toContain("Resolve routine and reversible implementation choices yourself");
+    expect(input).toContain("briefly state material assumptions, and continue");
+    expect(input).toContain("Do not ask optional clarification questions");
+    expect(input).toContain("ask whether to continue");
+    expect(input).toContain("Use parallel work when useful and permitted");
+    expect(input).toContain("finish authorized work that does not depend on the answer");
+    expect(input).toContain("indispensable fact or consequential user decision");
+    expect(input).toContain("required authorization is missing");
+    expect(input).toContain("never invent user answers, auto-approve permission requests");
+    expect(input).toContain("bypass access controls, or override explicit user stops");
+    expect(input).toContain("verify every requirement against authoritative evidence");
+    expect(input).toContain("achieved: true before ending the turn");
+    expect(input).toContain("blocked: true once in that goal turn");
     expect(input).toContain(`first ${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT - 1}`);
     expect(input).toContain(`${THREAD_GOAL_BLOCK_ATTEMPT_LIMIT}th consecutive blocked goal turn`);
     expect(input).toContain("resets the streak");
+    expect(input).toContain("retry budget never authorizes crossing a permission boundary");
+    expect(input.match(/achieved: true/g)).toHaveLength(1);
+    expect(input.endsWith(text)).toBe(true);
+  });
+
+  it("does not duplicate the goal policy when provider input is recomposed", () => {
+    const goal = "Finish the whole objective";
+    const input = withProviderGoalPrompt({ text: buildGoalContinuationInput(), goal });
+
+    expect(withProviderGoalPrompt({ text: input, goal })).toBe(input);
+  });
+
+  it("builds a continuation that resumes from evidence without requesting new instructions", () => {
+    const input = buildGoalContinuationInput();
+
+    expect(input).toContain("Continue working toward the active thread goal");
+    expect(input).toContain("Review the previous turn and current state");
+    expect(input).toContain("next useful authorized action");
+    expect(input).toContain("a turn boundary is not a reason to ask for new instructions");
   });
 });

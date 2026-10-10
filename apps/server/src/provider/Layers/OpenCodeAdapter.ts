@@ -27,7 +27,19 @@ import {
   TurnId,
   type UserInputQuestion,
 } from "@synara/contracts";
-import { Cause, Deferred, Effect, Exit, Layer, Option, Queue, Ref, Scope, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Queue,
+  Ref,
+  Scope,
+  Stream,
+} from "effect";
 import type {
   AssistantMessage,
   OpencodeClient,
@@ -3952,6 +3964,9 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         turnId: TurnId,
       ) {
         for (const snapshot of snapshots) {
+          if (context.activeTurnId !== turnId) {
+            return;
+          }
           const messageKey = openCodeSnapshotKey(snapshot.info);
           if (context.messageSnapshotKeyById.get(snapshot.info.id) !== messageKey) {
             yield* handleSubscribedEvent(context, {
@@ -3964,6 +3979,9 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
           }
 
           for (const part of snapshot.parts) {
+            if (context.activeTurnId !== turnId) {
+              return;
+            }
             const partKey = openCodeSnapshotKey(part);
             if (context.partSnapshotKeyById.get(part.id) === partKey) {
               continue;
@@ -3976,10 +3994,6 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               },
             } as OpenCodeSubscribedEvent);
           }
-        }
-
-        if (context.activeTurnId !== turnId) {
-          return;
         }
       });
 
@@ -4000,16 +4014,19 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         yield* Effect.gen(function* () {
           let idlePollsWithFinalMessage = 0;
           let interactionReconciliationPolls = 0;
-          let noActivityStartedAt = Date.now();
+          let noActivityStartedAt = yield* Clock.currentTimeMillis;
           let observedProviderActivitySerial = context.activeTurnProviderActivitySerial;
 
           while (!(yield* Ref.get(context.stopped)) && context.activeTurnId === turnId) {
             yield* Effect.sleep(snapshotWatchdogPollMs);
+            if ((yield* Ref.get(context.stopped)) || context.activeTurnId !== turnId) {
+              return;
+            }
 
             const currentProviderActivitySerial = context.activeTurnProviderActivitySerial;
             if (currentProviderActivitySerial !== observedProviderActivitySerial) {
               observedProviderActivitySerial = currentProviderActivitySerial;
-              noActivityStartedAt = Date.now();
+              noActivityStartedAt = yield* Clock.currentTimeMillis;
             }
 
             const statusExit = yield* Effect.exit(
@@ -4020,21 +4037,14 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                 OPENCODE_CONTROL_REQUEST_TIMEOUT_MS,
               ),
             );
+            if (context.activeTurnId !== turnId) {
+              return;
+            }
             const statusKnown = Exit.isSuccess(statusExit);
             const status = statusKnown
               ? statusExit.value.data?.[context.openCodeSessionId]
               : undefined;
             const sessionBusy = status?.type === "busy" || status?.type === "retry";
-
-            // OpenCode can remain quiet on SSE while a model is still reasoning.
-            // A busy/retrying session is authoritative provider activity, so do not
-            // abort it just because no stream event arrived during the watchdog window.
-            if (sessionBusy) {
-              noActivityStartedAt = Date.now();
-            } else if (Date.now() - noActivityStartedAt >= turnNoActivityTimeoutMs) {
-              yield* failOpenCodeTurnForNoActivity(context, turnId);
-              return;
-            }
 
             interactionReconciliationPolls += 1;
             if (interactionReconciliationPolls >= 4) {
@@ -4045,12 +4055,12 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               yield* reconcilePendingOpenCodeInteractions(context);
             }
 
-            if (!canRecoverCompletion) {
-              continue;
+            if (context.activeTurnId !== turnId) {
+              return;
             }
-
             let hasFinalAssistantMessage = false;
-            if (statusKnown && !sessionBusy) {
+            let hasRunningToolSnapshot = false;
+            if (canRecoverCompletion && statusKnown && !sessionBusy) {
               const snapshotsExit = yield* Effect.exit(loadCurrentMessageSnapshots(context));
               if (Exit.isSuccess(snapshotsExit)) {
                 yield* replayOpenCodeMessageSnapshots(context, snapshotsExit.value, turnId);
@@ -4059,10 +4069,41 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                     !baselineMessageIds.has(snapshot.info.id) &&
                     isFinalAssistantMessageSnapshot(snapshot),
                 );
+                hasRunningToolSnapshot = snapshotsExit.value.some(
+                  (snapshot) =>
+                    !baselineMessageIds.has(snapshot.info.id) &&
+                    snapshot.info.role === "assistant" &&
+                    snapshot.parts.some(
+                      (part) =>
+                        part.type === "tool" &&
+                        (part.state.status === "pending" || part.state.status === "running"),
+                    ),
+                );
               }
             }
 
-            if (!statusKnown || sessionBusy) {
+            if (context.activeTurnId !== turnId) {
+              return;
+            }
+            // Parent idle does not mean a tool has stopped. Require a fresh
+            // current-turn snapshot to keep waiting; stale local tool ids must
+            // not suppress failure when the provider stops confirming work.
+            // Reconciliation may also have delivered fresh SSE-equivalent activity.
+            const reconciledActivitySerial = context.activeTurnProviderActivitySerial;
+            const observedAt = yield* Clock.currentTimeMillis;
+            if (
+              sessionBusy ||
+              hasRunningToolSnapshot ||
+              reconciledActivitySerial !== observedProviderActivitySerial
+            ) {
+              noActivityStartedAt = observedAt;
+              observedProviderActivitySerial = reconciledActivitySerial;
+            } else if (observedAt - noActivityStartedAt >= turnNoActivityTimeoutMs) {
+              yield* failOpenCodeTurnForNoActivity(context, turnId);
+              return;
+            }
+
+            if (!canRecoverCompletion || !statusKnown || sessionBusy) {
               idlePollsWithFinalMessage = 0;
               continue;
             }
@@ -4083,7 +4124,10 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                 },
               },
             } as OpenCodeSubscribedEvent);
-            return;
+            // Idle can only schedule deferred completion while a tool or final
+            // text part is still settling. Keep polling until this exact turn
+            // actually ends: its remaining SSE events may also be lost, and a
+            // later snapshot is then the only way to release that completion.
           }
         }).pipe(
           Effect.catchCause((cause) =>

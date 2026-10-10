@@ -2516,6 +2516,10 @@ describe("AgentGateway", () => {
       );
       assert.include(setThreadGoal?.description ?? "", "Do NOT infer or invent goals");
       assert.include(setThreadGoal?.description ?? "", "Clearing requires the same explicit");
+      assert.include(setThreadGoal?.description ?? "", "resolve routine and reversible choices");
+      assert.include(setThreadGoal?.description ?? "", "continue without optional questions");
+      assert.include(setThreadGoal?.description ?? "", "finish independent authorized work");
+      assert.include(setThreadGoal?.description ?? "", "never grant additional permissions");
       assert.deepEqual(
         (setThreadGoal?.inputSchema.properties?.goal as { type?: string[] } | undefined)?.type,
         ["string", "null"],

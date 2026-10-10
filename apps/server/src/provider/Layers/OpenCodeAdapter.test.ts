@@ -1,4 +1,4 @@
-import { ApprovalRequestId, ThreadId, TurnId } from "@synara/contracts";
+import { ApprovalRequestId, type ProviderRuntimeEvent, ThreadId, TurnId } from "@synara/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
   Agent,
@@ -6244,6 +6244,284 @@ describe("OpenCodeAdapter runtime lifecycle", () => {
       "turn.completed",
     ]);
   });
+
+  it.each(["completed", "missing", "unavailable", "status-unavailable"] as const)(
+    "handles %s snapshots after an idle turn waits for a long tool",
+    async (snapshotOutcome) => {
+      const eventQueue = createSubscribedEventQueue();
+      let promptSubmitted = false;
+      let snapshotState: "running" | typeof snapshotOutcome = "running";
+      let messageFetchCount = 0;
+      const runtime = createMockOpenCodeRuntime({
+        events: eventQueue.stream,
+        promptAsync: async () => {
+          promptSubmitted = true;
+          return { data: null };
+        },
+        status: async () => {
+          if (snapshotState === "status-unavailable") {
+            throw new Error("status unavailable");
+          }
+          return { data: { "opencode-session-1": { type: "idle" } } };
+        },
+        messages: async () => {
+          messageFetchCount += 1;
+          if (snapshotState === "unavailable") {
+            throw new Error("snapshots unavailable");
+          }
+          return {
+            data:
+              promptSubmitted && snapshotState !== "missing"
+                ? [
+                    {
+                      info: { id: "msg-tool", role: "assistant", finish: "tool-calls" },
+                      parts: [
+                        {
+                          id: "part-tool",
+                          sessionID: "opencode-session-1",
+                          messageID: "msg-tool",
+                          type: "tool",
+                          tool: "bash",
+                          callID: "tool-call-1",
+                          state:
+                            snapshotState === "completed"
+                              ? {
+                                  status: "completed",
+                                  title: "Verify changes",
+                                  input: { command: "bun run test" },
+                                  output: "All checks passed.",
+                                  metadata: {},
+                                  time: { start: 1, end: 2 },
+                                }
+                              : {
+                                  status: "running",
+                                  title: "Verify changes",
+                                  input: { command: "bun run test" },
+                                  metadata: {},
+                                  time: { start: 1 },
+                                },
+                        },
+                      ],
+                    },
+                    {
+                      info: {
+                        id: "msg-final",
+                        role: "assistant",
+                        finish: "stop",
+                        time: { completed: 3 },
+                      },
+                      parts: [
+                        {
+                          id: "part-final",
+                          sessionID: "opencode-session-1",
+                          messageID: "msg-final",
+                          type: "text",
+                          text: "The changes are ready.",
+                          time: { start: 2, end: 3 },
+                        },
+                      ],
+                    },
+                  ]
+                : [],
+          };
+        },
+      });
+      const events: ProviderRuntimeEvent[] = [];
+      const threadId = asThreadId("thread-poll-delayed-tool-completion");
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const adapter = yield* OpenCodeAdapter;
+          yield* Stream.runForEach(adapter.streamEvents, (event) =>
+            Effect.sync(() => events.push(event)),
+          ).pipe(Effect.forkChild);
+          yield* adapter.startSession({
+            provider: "opencode",
+            threadId,
+            runtimeMode: "full-access",
+          });
+          const turn = yield* adapter.sendTurn({
+            threadId,
+            input: "Complete the goal and verify the changes.",
+            attachments: [],
+            modelSelection: { provider: "opencode", model: "openai/gpt-5.4" },
+          });
+
+          // The first idle snapshot still has an open tool. Its final response
+          // schedules deferred completion; the turn must keep its live Stop control.
+          // Keep it running beyond the default 60-second inactivity deadline.
+          yield* TestClock.adjust("65 seconds");
+          expect((yield* adapter.listSessions())[0]).toMatchObject({
+            status: "running",
+            activeTurnId: turn.turnId,
+          });
+          expect(events.filter((event) => event.type === "turn.completed")).toEqual([]);
+          const fetchesWhileToolRuns = messageFetchCount;
+
+          // No SSE event will arrive for this tool. A completed snapshot must
+          // release the turn; missing/unavailable evidence must still time out.
+          snapshotState = snapshotOutcome;
+          yield* TestClock.adjust(snapshotOutcome === "completed" ? "2 seconds" : "65 seconds");
+          if (snapshotOutcome === "completed") {
+            expect(messageFetchCount).toBeGreaterThan(fetchesWhileToolRuns);
+            expect((yield* adapter.listSessions())[0]).toMatchObject({ status: "ready" });
+            expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+              { turnId: turn.turnId, payload: { state: "completed" } },
+            ]);
+            expect(runtime.abortCalls).toEqual([]);
+          } else {
+            expect((yield* adapter.listSessions())[0]).toMatchObject({ status: "error" });
+            expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+              {
+                turnId: turn.turnId,
+                payload: {
+                  state: "failed",
+                  errorMessage: expect.stringContaining("stopped responding"),
+                },
+              },
+            ]);
+            expect(runtime.abortCalls).toEqual([{ sessionID: "opencode-session-1" }]);
+          }
+          expect(events.filter((event) => event.type === "content.delta")).toHaveLength(1);
+          expect(
+            events.filter(
+              (event) => event.type === "item.completed" && event.itemId === "tool-call-1",
+            ),
+          ).toHaveLength(snapshotOutcome === "completed" ? 1 : 0);
+          eventQueue.close();
+        }).pipe(
+          Effect.provide(
+            makeOpenCodeAdapterLive({
+              runtime: runtime.runtime,
+              prematureIdleCompletionGraceMs: 100,
+              snapshotWatchdogPollMs: 1_000,
+            }).pipe(
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-test-" }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ),
+          Effect.provide(TestClock.layer()),
+          Effect.scoped,
+        ),
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "ignores a late watchdog snapshot after Stop with a replacement turn=%s",
+    async (replaceTurn) => {
+      const eventQueue = createSubscribedEventQueue();
+      const snapshotRequested = Effect.runSync(Deferred.make<void>());
+      const snapshotResponse = Effect.runSync(
+        Deferred.make<{ data: Array<{ info: Record<string, unknown>; parts: Part[] }> }>(),
+      );
+      let promptCount = 0;
+      let snapshotStarted = false;
+      const runtime = createMockOpenCodeRuntime({
+        events: eventQueue.stream,
+        promptAsync: async () => {
+          promptCount += 1;
+          return { data: null };
+        },
+        status: async () => ({
+          data: { "opencode-session-1": { type: promptCount === 1 ? "idle" : "busy" } },
+        }),
+        messages: async () => {
+          if (promptCount === 1 && !snapshotStarted) {
+            snapshotStarted = true;
+            Effect.runSync(Deferred.succeed(snapshotRequested, undefined));
+            return await Effect.runPromise(Deferred.await(snapshotResponse));
+          }
+          return { data: [] };
+        },
+      });
+      const events: ProviderRuntimeEvent[] = [];
+      const threadId = asThreadId("thread-stopped-watchdog-snapshot");
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const adapter = yield* OpenCodeAdapter;
+          yield* Stream.runForEach(adapter.streamEvents, (event) =>
+            Effect.sync(() => events.push(event)),
+          ).pipe(Effect.forkChild);
+          yield* adapter.startSession({
+            provider: "opencode",
+            threadId,
+            runtimeMode: "full-access",
+          });
+          const firstTurn = yield* adapter.sendTurn({
+            threadId,
+            input: "Work on the original goal.",
+            attachments: [],
+            modelSelection: { provider: "opencode", model: "openai/gpt-5.4" },
+          });
+          yield* TestClock.adjust(10);
+          yield* Deferred.await(snapshotRequested);
+          yield* adapter.interruptTurn(threadId, firstTurn.turnId);
+          const nextTurn = replaceTurn
+            ? yield* adapter.sendTurn({
+                threadId,
+                input: "Start a different task.",
+                attachments: [],
+                modelSelection: { provider: "opencode", model: "openai/gpt-5.4" },
+              })
+            : undefined;
+
+          yield* Deferred.succeed(snapshotResponse, {
+            data: [
+              {
+                info: {
+                  id: "msg-stopped-final",
+                  role: "assistant",
+                  finish: "stop",
+                  time: { completed: 3 },
+                },
+                parts: [
+                  {
+                    id: "part-stopped-final",
+                    sessionID: "opencode-session-1",
+                    messageID: "msg-stopped-final",
+                    type: "text",
+                    text: "This belongs to the interrupted turn.",
+                    time: { start: 2, end: 3 },
+                  },
+                ],
+              },
+            ],
+          });
+          yield* TestClock.adjust(100);
+
+          const [session] = yield* adapter.listSessions();
+          expect(session?.status).toBe(replaceTurn ? "running" : "ready");
+          expect(session?.activeTurnId).toBe(nextTurn?.turnId);
+          expect(events.filter((event) => event.type === "turn.aborted")).toMatchObject([
+            { turnId: firstTurn.turnId, payload: { reason: "Interrupted by user." } },
+          ]);
+          expect(events.filter((event) => event.type === "turn.completed")).toEqual([]);
+          expect(events.filter((event) => event.type === "content.delta")).toEqual([]);
+          expect(runtime.abortCalls).toEqual([{ sessionID: "opencode-session-1" }]);
+          eventQueue.close();
+        }).pipe(
+          Effect.provide(
+            makeOpenCodeAdapterLive({
+              runtime: runtime.runtime,
+              prematureIdleCompletionGraceMs: 20,
+              snapshotWatchdogPollMs: 10,
+            }).pipe(
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), { prefix: "opencode-adapter-test-" }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ),
+          Effect.provide(TestClock.layer()),
+          Effect.scoped,
+        ),
+      );
+    },
+  );
 
   it("recovers final parts before settling an early idle", async () => {
     const eventQueue = createSubscribedEventQueue();
