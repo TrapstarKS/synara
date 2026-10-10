@@ -32,7 +32,7 @@ const api = vi.hoisted(() => ({
     onEvent: vi.fn(() => () => {}),
   },
 }));
-vi.mock("../nativeApi", () => ({ readNativeApi: () => api }));
+vi.mock("../nativeApi", () => ({ readNativeApi: () => api, ensureNativeApi: () => api }));
 
 afterEach(() => {
   terminalRuntimeRegistry.disposeOrphanedThreads(new Set());

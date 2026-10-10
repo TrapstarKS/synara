@@ -64,7 +64,7 @@ test("required check, independent static lane and full-history lineage stay inta
   assert.ok(workflow.includes("git tag --list 'v[0-9]*'"));
   assert.ok(!workflow.includes("continue-on-error"));
 });
-test("install scopes preserve serialized lifecycle scripts and the scripts workspace links", () => {
+test("install scopes preserve lifecycle limits and the scripts workspace links", () => {
   assert.ok(setup.includes("full) bun install --frozen-lockfile --concurrent-scripts=1"));
   assert.ok(
     setup.includes(
@@ -83,6 +83,54 @@ test("install scopes preserve serialized lifecycle scripts and the scripts works
   const turbo = JSON.parse(read("../../turbo.json"));
   assert.equal(turbo.tasks.test.cache, false);
   assert.equal(turbo.tasks.typecheck.cache, false);
+});
+test("shared TypeScript patches have one postinstall owner and propagate failures", () => {
+  const root = JSON.parse(read("../../package.json"));
+  const scripts = JSON.parse(read("../../scripts/package.json"));
+  assert.equal(scripts.scripts["patch:typescript"], "effect-language-service patch");
+  for (const path of [
+    "../../apps/web/package.json",
+    "../../apps/server/package.json",
+    "../../packages/contracts/package.json",
+    "../../packages/shared/package.json",
+    "../../scripts/package.json",
+  ]) {
+    const manifest = JSON.parse(read(path));
+    for (const lifecycle of ["preinstall", "install", "postinstall", "prepare"]) {
+      assert.doesNotMatch(
+        manifest.scripts?.[lifecycle] ?? "",
+        /effect-language-service|patch:typescript/,
+        `${path}: ${lifecycle} must not race the root patcher`,
+      );
+    }
+  }
+  for (const [legacyExit, nativeExit] of [
+    ["0", "0"],
+    ["1", "0"],
+    ["0", "2"],
+  ]) {
+    const result = spawnSync(
+      "bash",
+      [
+        "-e",
+        "-c",
+        `bun() { printf 'legacy:%s\\n' "$*"; return "$LEGACY_EXIT"; }
+effect-tsgo() { printf 'native:%s\\n' "$*"; return "$NATIVE_EXIT"; }
+${root.scripts.postinstall}`,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, LEGACY_EXIT: legacyExit, NATIVE_EXIT: nativeExit },
+      },
+    );
+    assert.equal(result.status, Number(legacyExit) || Number(nativeExit), result.stderr);
+    assert.deepEqual(result.stdout.trim().split("\n"), [
+      "legacy:run --cwd scripts patch:typescript",
+      ...(legacyExit === "0"
+        ? ["native:patch --typescript --typescript-package @typescript/native"]
+        : []),
+    ]);
+  }
 });
 test("Windows install uses the runner-volume cache without changing other platforms", () => {
   const install = setup.match(

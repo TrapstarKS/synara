@@ -1,11 +1,15 @@
 import { page } from "vitest/browser";
 import "../../index.css";
-import { expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 import { render } from "vitest-browser-react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { RightDock } from "./RightDock";
+import { RightDock, RIGHT_DOCK_WIDTH_STORAGE_KEY } from "./RightDock";
 import type { RightDockThreadState } from "../../rightDockStore.logic";
+
+// Dragging saves the width; keep that preference inside its test.
+beforeEach(() => localStorage.removeItem(RIGHT_DOCK_WIDTH_STORAGE_KEY));
+afterEach(() => localStorage.removeItem(RIGHT_DOCK_WIDTH_STORAGE_KEY));
 
 const dockTabs = () => [
   ...document.querySelectorAll<HTMLElement>('nav[aria-label="Open panels"] [data-surface-tab]'),

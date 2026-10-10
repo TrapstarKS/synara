@@ -30,8 +30,18 @@ it.each([false, true])(
   "renders a reopened tokenized CJK reply intact with asynchronous question = %s",
   async (withQuestion) => {
     const incoming = JSON.parse(JSON.stringify(message)) as ChatMessage;
-    if (withQuestion)
-      incoming.asyncUserInput = { questions: [{ title: "Which project should I use?" }] };
+    const messages: ChatMessage[] = [incoming];
+    if (withQuestion) {
+      // Question completions have their own item, separate from the streamed reply.
+      messages.push({
+        id: MessageId.makeUnsafe("assistant:question"),
+        role: "assistant",
+        text: "Which project should I use?",
+        createdAt: now,
+        streaming: false,
+        asyncUserInput: { questions: [{ title: "Which project should I use?" }] },
+      });
+    }
     const result = await render(
       <div style={{ height: 600 }}>
         <MessagesTimeline
@@ -39,7 +49,7 @@ it.each([false, true])(
           isWorking={false}
           activeTurnInProgress={false}
           activeTurnStartedAt={null}
-          timelineEntries={deriveTimelineEntries([incoming], [], [])}
+          timelineEntries={deriveTimelineEntries(messages, [], [])}
           turnDiffSummaryByAssistantMessageId={new Map()}
           nowIso={now}
           expandedWorkGroups={{}}

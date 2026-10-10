@@ -33,7 +33,7 @@ export function DesktopUpdateRailButton({
       disabled={disabled}
       className={cn(
         appRailButtonClassName(false),
-        "w-auto min-w-9 max-w-full",
+        "w-auto min-w-9 max-w-full max-md:w-auto",
         disabled && "cursor-not-allowed",
       )}
       onClick={onClick}

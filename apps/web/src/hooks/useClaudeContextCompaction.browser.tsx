@@ -213,7 +213,7 @@ describe("useClaudeContextCompaction", () => {
                   ? [
                       makeActivity({
                         kind: "task.started",
-                        payload: { taskId: "task-1", taskType: "background" },
+                        payload: { taskId: "task-1", taskType: "local_bash", isBackgrounded: true },
                       }),
                     ]
                   : [],

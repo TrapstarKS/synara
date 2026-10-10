@@ -6,6 +6,7 @@ import { page } from "vitest/browser";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
+import { VISIBLE_PROVIDER_DESCRIPTORS } from "../betaFeatures";
 import { ProvidersStep } from "../onboarding/steps/ProvidersStep";
 import { useProviderDetection } from "../onboarding/useProviderDetection";
 
@@ -34,6 +35,7 @@ const codexStatus: ServerProviderStatus = {
   authStatus: "authenticated",
   checkedAt: "2026-09-23T13:33:18.154Z",
 };
+const detectedSummary = `1 connected · 0 need sign-in · ${VISIBLE_PROVIDER_DESCRIPTORS.length - 1} not installed`;
 
 const clients: QueryClient[] = [];
 beforeEach(() => {
@@ -72,9 +74,7 @@ it("does not report agents as not installed while the first probe is running", a
   for (const resolve of pendingRefreshes) resolve({ providers: [codexStatus] });
 
   await expect.element(page.getByText("Connected", { exact: true })).toBeVisible();
-  await expect
-    .element(page.getByText("1 connected · 0 need sign-in · 9 not installed"))
-    .toBeVisible();
+  await expect.element(page.getByText(detectedSummary)).toBeVisible();
 });
 
 it("leaves missing agents unknown after a timeout and recovers on retry", async () => {
@@ -94,7 +94,5 @@ it("leaves missing agents unknown after a timeout and recovers on retry", async 
   mocks.refreshProviders.mockResolvedValue({ providers: [codexStatus] });
   await page.getByRole("button", { name: "Re-detect" }).click();
   await expect.element(page.getByText("Connected", { exact: true })).toBeVisible();
-  await expect
-    .element(page.getByText("1 connected · 0 need sign-in · 9 not installed"))
-    .toBeVisible();
+  await expect.element(page.getByText(detectedSummary)).toBeVisible();
 });

@@ -261,9 +261,14 @@ describe("TraitsPicker (Claude)", () => {
   });
 
   it.each(["claude-opus-4-6", "claude-opus-4-6[1m]"])(
-    "selects Auto and preserves explicit budgets for %s",
+    "defaults to 200k and preserves explicit budget choices for %s",
     async (model) => {
       await using _ = await mountClaudePicker({ model });
+      await page.getByRole("button").click();
+      await expect
+        .element(page.getByRole("menuitemradio", { name: "200k" }))
+        .toHaveAttribute("aria-checked", "true");
+      await page.getByRole("menuitemradio", { name: "Auto (Claude Code)" }).click();
       await page.getByRole("button").click();
       await expect
         .element(page.getByRole("menuitemradio", { name: "Auto (Claude Code)" }))

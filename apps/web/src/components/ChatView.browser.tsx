@@ -16,6 +16,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
   MessageId,
+  MODEL_OPTIONS_BY_PROVIDER,
   DEVICE_WS_METHODS,
   COMPUTER_WS_METHODS,
   ORCHESTRATION_WS_METHODS,
@@ -2493,6 +2494,7 @@ describe("ChatView transcript geometry (full app)", () => {
         "Review the deployment checklist",
       ];
       const now = new Date().toISOString();
+      // Keep Atlas working so its nickname row is visible; completed Nova stays hidden.
       const threads = titles.map((title, index) => ({
         ...base.threads[0]!,
         id: index === 0 ? THREAD_ID : ThreadId.makeUnsafe(`shortcut-layout-${index}`),
@@ -2501,15 +2503,17 @@ describe("ChatView transcript geometry (full app)", () => {
         updatedAt: now,
         latestTurn: {
           turnId: TurnId.makeUnsafe(`shortcut-layout-turn-${index}`),
-          state: "completed" as const,
+          state: index === 0 ? ("running" as const) : ("completed" as const),
           requestedAt: now,
           startedAt: now,
-          completedAt: now,
+          completedAt: index === 0 ? null : now,
           assistantMessageId: null,
         },
         session: {
           ...base.threads[0]!.session!,
           threadId: index === 0 ? THREAD_ID : ThreadId.makeUnsafe(`shortcut-layout-${index}`),
+          status: index === 0 ? ("running" as const) : ("ready" as const),
+          activeTurnId: index === 0 ? TurnId.makeUnsafe("shortcut-layout-turn-0") : null,
           updatedAt: now,
         },
         messages: index === 0 ? base.threads[0]!.messages : [],
@@ -7803,7 +7807,10 @@ describe("ChatView transcript geometry (full app)", () => {
         expect(
           useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
             .codex,
-        ).toMatchObject({ provider: "codex", model: "gpt-5.3-codex-spark" });
+        ).toMatchObject({
+          provider: "codex",
+          model: MODEL_OPTIONS_BY_PROVIDER.codex.at(-1)!.slug,
+        });
       });
     } finally {
       await mounted.cleanup();

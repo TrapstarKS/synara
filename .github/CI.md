@@ -74,6 +74,13 @@ smaller installs:
   exactly as before. macOS device jobs select `@synara/scripts`, retaining their
   existing `--ignore-scripts`, Xcode pairs, probe, simulator smoke and diagnostics.
 
+The root `postinstall` is the only owner of TypeScript patching. It invokes
+`scripts`' `patch:typescript` for the shared legacy compiler, then patches
+`@typescript/native` with `effect-tsgo`. Workspaces do not patch their shared
+compiler from individual `prepare` hooks: concurrent readers can otherwise load
+an empty module while another hook rewrites it. Full, static and runtime installs
+all include `@synara/scripts` and preserve both compiler patches.
+
 Filtered scopes never restore/save a full `node_modules` archive. Windows
 installs cold rather than extracting the pathological Bun package cache. Its
 install cache lives under `RUNNER_TEMP`, on the hosted checkout's drive, matching

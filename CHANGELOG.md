@@ -8,11 +8,14 @@
 
 - OpenCode keeps recovering tool snapshots until the owning turn actually ends, so a missing tool-completion event cannot leave a Goal active without progressing. Recovery responses from an interrupted or replaced turn cannot affect its successor.
 - Deferred Goal continuations use the live provider state instead of waiting on an outdated running session projection. Pending approvals, user input, delegated work, and explicit stops retain their existing controls.
+- Workspace installation patches the shared TypeScript compiler once, before the native compiler, preventing concurrent lifecycle hooks from loading a partially rewritten compiler.
+- The desktop update percentage stays inside its button on narrow windows when a larger UI font is selected.
 
 ### Changed
 
 - Goal instructions now apply to initial messages, steering, and automatic continuations across providers. Agents are directed to resolve routine choices from available evidence, continue independent work, and ask only for information or authorization that genuinely blocks the objective.
 - Every Goal turn receives the completion and blocker rules: verify the full objective before marking it achieved, and preserve the existing seven rejected blocked-turn requests before pausing on the eighth.
+- Fork maintenance workflows require manual dispatch. Upstream synchronization refuses workflow changes before pushing, and release publication retains all verification, test, native build, and Windows Defender gates.
 
 ## [1.0.11] — 2026-10-08
 
