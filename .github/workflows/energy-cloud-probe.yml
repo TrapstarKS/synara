@@ -1,13 +1,14 @@
 name: Energy Cloud A/B Probe
 
 on:
-  push:
-    branches:
-      - perf/energy-cloud-benchmark
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: energy-cloud-probe-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   probe:

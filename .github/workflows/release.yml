@@ -54,7 +54,7 @@ jobs:
         name: Resolve publication mode
         shell: bash
         env:
-          PUBLISH_RELEASE: ${{ github.event_name == 'push' || inputs.publish_release }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
         run: |
           echo "publish_release=$PUBLISH_RELEASE" >> "$GITHUB_OUTPUT"
           if [[ "$PUBLISH_RELEASE" == "true" ]]; then
@@ -66,7 +66,7 @@ jobs:
       - id: release_meta
         name: Resolve release policy
         env:
-          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: node scripts/resolve-release-update-policy.ts "$RELEASE_VERSION"
 
       - id: source_provenance
@@ -151,7 +151,7 @@ jobs:
         run: bun run brand:check
 
       - name: Verify release workflow
-        run: node --test .github/scripts/release-contracts.test.mjs
+        run: node --test .github/scripts/release-contracts.test.mjs .github/scripts/fork-workflows.test.mjs
 
       - name: Lint
         run: bun run lint
@@ -704,13 +704,13 @@ jobs:
 
       - name: Verify Windows installer with Microsoft Defender
         id: windows_defender
-        if: matrix.platform == 'win' && needs.preflight.outputs.package_artifacts == 'true'
+        if: matrix.platform == 'win'
         timeout-minutes: 10
         shell: pwsh
         run: ./scripts/verify-windows-defender.ps1 -AssetsDirectory release-publish -EvidenceDirectory "${{ runner.temp }}/windows-defender-evidence"
 
       - name: Preserve Windows Defender evidence
-        if: ${{ always() && matrix.platform == 'win' && needs.preflight.outputs.package_artifacts == 'true' && steps.windows_defender.outcome != 'skipped' }}
+        if: ${{ always() && matrix.platform == 'win' && steps.windows_defender.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: windows-defender-${{ matrix.arch }}

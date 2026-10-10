@@ -8,8 +8,6 @@ on:
       - "apps/desktop/src/cuaDriverHost*"
       - "packages/shared/src/cuaDriver*"
       - "packages/shared/src/cuaActionDiagnostics*"
-  push:
-    branches: ["codex/cua-verify-*"]
   workflow_dispatch:
 
 permissions:

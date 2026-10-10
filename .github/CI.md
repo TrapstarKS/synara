@@ -4,7 +4,40 @@ The required check remains **Format, Lint, Typecheck, Test, Browser Test, Build*
 It aggregates results only. Static checks start independently. Normal code
 changes run typechecking, five unit partitions, six stable browser partitions,
 desktop build, native Windows regression and migration lineage. Docs-only
-detection and nightly geometry ownership are unchanged.
+detection applies to PRs. A manual CI run always requests the full set of checks.
+
+## Actions policy for the personal fork
+
+`TrapstarKS/synara` uses `codex/mobile-remote` as its default branch. Its workflows
+run on explicit requests: all workflows support `workflow_dispatch`; CI, marketing,
+and the two native Cua checks also validate pull requests, retaining their existing
+path filters. Pushes, issue comments and schedules do not launch workflows.
+
+Browser geometry, Cua cache preparation, the Device Helper matrix, the Energy
+benchmark, labels and upstream synchronization are manual maintenance tasks.
+There is no nightly or hourly background work in this fork. The current release
+builder provisions Cua directly and does not consume the optional Cua cache
+workflow. Removing its schedule does not remove a release prerequisite.
+
+The upstream sync remains available manually, but refuses to push a merge that
+changes `.github/workflows`. Review and integrate those updates locally so new
+upstream schedules or events cannot be restored unnoticed. The fork workflow
+contract inspects every workflow, including newly added files, and rejects
+automatic triggers outside the four approved PR checks.
+
+If GitHub shows the inherited-workflows warning, push this policy to the default
+branch before clicking **I understand my workflows, go ahead and enable them** in
+the repository's Actions tab. That button enables all existing workflows in the
+fork. Run maintenance and release validation from updated refs: old branches and
+tags retain their own workflow definitions. The local `upstream` Git remote does
+not control GitHub Actions events. See the official [fork activation instructions](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/configure-code-scanning/configure-code-scanning)
+and [workflow selection by ref](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows).
+
+Release remains exclusively manual. Its source, tests, native builds and publication
+gates are required; follow the [release guide](../docs/release.md). Re-enabling Actions
+does not publish a release or start a build by itself under this policy.
+
+## Check coverage
 
 The Linux PTY dependency smoke runs once, on the first server shard; the Windows
 PTY smoke remains a separate native check. The desktop lifecycle smoke exercises
@@ -123,7 +156,7 @@ chromium only             0.75 /  0.55 /  0.65    0.65
 That removes **96.1%** of this preparation segment. The hosted Ubuntu image
 already contains the shared libraries needed by stable tests; `--with-deps` was
 re-running apt and installing rendering fonts on every shard. Stable CI now uses
-`playwright install chromium`. Nightly geometry retains `--with-deps` because
+`playwright install chromium`. Manual geometry checks retain `--with-deps` because
 fonts/layout are part of that quarantine's purpose. If a future runner image loses
 a required system dependency, the blocking browser lane fails rather than silently
 reducing coverage.
@@ -215,7 +248,8 @@ not added together into an overall percentage.
 
 ## Verification and rollback
 
-`node --test .github/scripts/ci-contracts.test.mjs` executes the actual aggregate
+`node --test .github/scripts/ci-contracts.test.mjs .github/scripts/fork-workflows.test.mjs`
+executes the actual aggregate
 shell for successful code/docs runs and rejects failures, cancellations, invalid
 change outputs and unexpected skips. It also guards install scopes, native Windows
 test inventory, three-way server/component distribution and browser preparation.
@@ -223,6 +257,11 @@ test inventory, three-way server/component distribution and browser preparation.
 complete file ownership, serial execution and geometry exclusion through the
 resolved Vitest configuration. Its expected membership is independent of that
 configuration, so accidentally relaxing the quarantine fails the test.
+
+The fork workflow contract parses all workflow files, rejects unintended automatic
+triggers, and exercises the actual upstream-sync shell to confirm that workflow
+changes or a failed comparison stop before push. CI and release verification both
+run this contract.
 
 After editing CI, run `bun run fmt:check`, `bun run lint`, `bun run typecheck`,
 `bun run test`, the CI contract tests and workflow syntax/expression validation.

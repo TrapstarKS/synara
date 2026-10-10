@@ -1,18 +1,17 @@
-# Nightly quarantine: pixel/font/layout comparisons tracked explicitly in
+# Optional quarantine: pixel/font/layout comparisons tracked explicitly in
 # apps/web/BROWSER_TEST_QUARANTINE.md while their Linux rendering is fixed.
 # Moved out of the blocking CI lane (CI speedup Phase 1a) so the PR gate stays
 # green and fast. Steps are UNCHANGED from the old CI quarantine step, still
 # continue-on-error here so flakes never page anyone.
-name: CI Nightly
+name: Browser Geometry Check
 
 on:
-  schedule:
-    # 02:00 UTC daily.
-    - cron: "0 2 * * *"
   workflow_dispatch:
 
-# Unlike CI (which spares main), nightly always cancels stale runs, including
-# scheduled main runs: only the newest quarantine signal matters.
+permissions:
+  contents: read
+
+# Only the newest explicitly requested quarantine signal matters.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

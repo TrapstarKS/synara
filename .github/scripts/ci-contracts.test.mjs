@@ -64,13 +64,18 @@ test("required check, independent static lane and full-history lineage stay inta
   assert.ok(workflow.includes("git tag --list 'v[0-9]*'"));
   assert.ok(!workflow.includes("continue-on-error"));
 });
-test("filtered scopes preserve lifecycle scripts and the scripts workspace links", () => {
+test("install scopes preserve serialized lifecycle scripts and the scripts workspace links", () => {
+  assert.ok(setup.includes("full) bun install --frozen-lockfile --concurrent-scripts=1"));
   assert.ok(
     setup.includes(
-      "static) bun install --frozen-lockfile --filter './' --filter '@synara/scripts'",
+      "static) bun install --frozen-lockfile --concurrent-scripts=1 --filter './' --filter '@synara/scripts'",
     ),
   );
-  assert.ok(setup.includes("runtime) bun install --frozen-lockfile --filter '!@synara/marketing'"));
+  assert.ok(
+    setup.includes(
+      "runtime) bun install --frozen-lockfile --concurrent-scripts=1 --filter '!@synara/marketing'",
+    ),
+  );
   assert.ok(!setup.includes("--ignore-scripts"));
   assert.ok(setup.includes("runner.os != 'Windows' && inputs.scope == 'full'"));
   assert.ok(setup.includes("steps.modules.outputs.cache-hit != 'true'"));
@@ -113,7 +118,7 @@ test("Windows install uses the runner-volume cache without changing other platfo
     assert.ok(result.stdout.includes(`cache=${expectedCache}\n`), platform);
     assert.ok(
       result.stdout.includes(
-        "arg=install\narg=--frozen-lockfile\narg=--filter\narg=!@synara/marketing\n",
+        "arg=install\narg=--frozen-lockfile\narg=--concurrent-scripts=1\narg=--filter\narg=!@synara/marketing\n",
       ),
       platform,
     );

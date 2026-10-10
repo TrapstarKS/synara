@@ -8,9 +8,9 @@ You can open an issue or PR, but please do so knowing that Synara is still early
 
 Large, unfocused, or direction-changing PRs may still be closed quickly.
 
-PRs are automatically labeled with a `vouch:*` trust status and a `size:*` diff size based on changed lines.
+In this personal fork, maintainers run **PR Vouch**, **PR Size**, and **Issue Labels** manually when label maintenance is needed. Trust (`vouch:*`) and diff-size (`size:*`) labels are not updated on every PR event or comment. See [CI policy](.github/CI.md) for fork automation and release requirements.
 
-If you are an external contributor, expect `vouch:unvouched` until we explicitly add you to [.github/VOUCHED.td](.github/VOUCHED.td).
+The trust list is maintained in [.github/VOUCHED.td](.github/VOUCHED.td).
 
 ## What We Are Most Likely To Accept
 

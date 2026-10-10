@@ -1,8 +1,6 @@
 name: Sync upstream into personal fork
 
 on:
-  schedule:
-    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,6 +17,7 @@ env:
 jobs:
   sync:
     name: Sync newest stable upstream release
+    if: github.repository == 'TrapstarKS/synara'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -63,5 +62,11 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          previous_sha="$(git rev-parse HEAD)"
           git merge --no-edit --no-ff "${{ steps.upstream.outputs.sha }}"
+          if ! git diff --quiet "$previous_sha" HEAD -- .github/workflows; then
+            echo "::error::Upstream synchronization changes .github/workflows. Review and integrate these workflow changes locally before syncing. No changes were pushed."
+            git diff --name-only "$previous_sha" HEAD -- .github/workflows
+            exit 1
+          fi
           git push origin "HEAD:${FORK_BRANCH}"

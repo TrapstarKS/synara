@@ -41,6 +41,21 @@ function step(source, name) {
   return end === -1 ? tail : tail.slice(0, end);
 }
 
+test("release starts only by manual dispatch and defaults to build-only", () => {
+  const triggers = workflow.match(/^on:\n([\s\S]*?)(?=^\S)/m)?.[1];
+  assert.ok(triggers, "The release workflow must declare its triggers");
+  assert.deepEqual(triggers.match(/^  \S.*$/gm), ["  workflow_dispatch:"]);
+  const publicationInput = triggers.match(/^      publish_release:\n((?:        .*\n)*)/m)?.[1];
+  assert.ok(publicationInput, "Publication must require an explicit input");
+  assert.match(publicationInput, /^        default: false$/m);
+  assert.match(publicationInput, /^        type: boolean$/m);
+  assert.match(
+    job("preflight"),
+    /^          PUBLISH_RELEASE: \$\{\{ inputs.publish_release \}\}$/m,
+  );
+  assert.match(job("preflight"), /^          RELEASE_VERSION: \$\{\{ inputs.version \}\}$/m);
+});
+
 test("GitHub and npm publication require every test partition and native build", () => {
   for (const name of ["release", "publish_cli"]) {
     assert.deepEqual(needs(name), ["build", "preflight", "test", "verify"]);
@@ -57,6 +72,10 @@ test("GitHub and npm publication require every test partition and native build",
   assert.match(
     job("test"),
     /run: bun run test \$\{\{ matrix.filters \}\} -- \$\{\{ matrix.test-args \}\}/,
+  );
+  assert.match(
+    step(job("verify"), "Verify release workflow"),
+    /run: node --test \.github\/scripts\/release-contracts\.test\.mjs \.github\/scripts\/fork-workflows\.test\.mjs/,
   );
 });
 
@@ -81,6 +100,27 @@ test("native release matrix contains only macOS ARM64 and Windows x64", () => {
   ]);
   assert.ok(!include.includes("macos-15-intel"));
   assert.ok(!include.includes("latest-mac-x64.yml"));
+});
+
+test("Windows installers must pass Defender before startup smoke and artifact upload", () => {
+  const build = job("build");
+  const scan = step(build, "Verify Windows installer with Microsoft Defender");
+  assert.equal(scan.match(/^        if: (.+)$/m)?.[1], "matrix.platform == 'win'");
+  assert.match(scan, /^        shell: pwsh$/m);
+  assert.match(
+    scan,
+    /^        run: \.\/scripts\/verify-windows-defender\.ps1 -AssetsDirectory release-publish /m,
+  );
+
+  const evidence = step(build, "Preserve Windows Defender evidence");
+  assert.equal(
+    evidence.match(/^        if: (.+)$/m)?.[1],
+    "${{ always() && matrix.platform == 'win' && steps.windows_defender.outcome != 'skipped' }}",
+  );
+  assert.match(evidence, /if-no-files-found: error/);
+  const scanOffset = build.indexOf("- name: Verify Windows installer with Microsoft Defender");
+  assert.ok(scanOffset < build.indexOf("- name: Smoke packaged desktop startup"));
+  assert.ok(scanOffset < build.indexOf("- name: Upload build artifacts"));
 });
 
 test("the actual Turbo test graph is covered by the release matrix", () => {

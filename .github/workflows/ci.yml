@@ -1,21 +1,19 @@
 # Independent feedback lanes; the quality job only aggregates results.
 # Install scope/cache decisions and measured tradeoffs: .github/CI.md.
-# Stable browser coverage blocks PRs; geometry quarantine stays nightly.
+# Stable browser coverage blocks PRs; geometry quarantine runs on demand.
 name: CI
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# Stale runs cancelled by a newer push show the gate red, not grey. Main never cancels.
+# Superseded checks for the same PR or manually selected ref need no more runners.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 # Single heap ceiling for every Node lane (typecheck OOM fix): set once here
 # instead of per job so a future bump cannot miss a lane.
@@ -30,7 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      code: ${{ steps.filter.outputs.code }}
+      code: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.code }}
     # dorny/paths-filter lists PR files via the API: it needs pull-requests
     # scope on top of the checkout's contents scope (repo default is tighter).
     permissions:
@@ -41,6 +39,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Filter docs-only changes
+        if: github.event_name == 'pull_request'
         id: filter
         uses: dorny/paths-filter@v3
         with:
@@ -81,7 +80,7 @@ jobs:
           scope: "static"
 
       - name: Verify CI contracts
-        run: node --test .github/scripts/ci-contracts.test.mjs
+        run: node --test .github/scripts/ci-contracts.test.mjs .github/scripts/fork-workflows.test.mjs
 
       - name: Verify Synara identity
         run: bun run brand:check
@@ -202,7 +201,7 @@ jobs:
 
       # GitHub's pinned Ubuntu image already provides the Chromium shared-library
       # dependencies used by this stable suite. Avoid a redundant apt/font pass on
-      # every shard; nightly geometry still uses --with-deps for rendering coverage.
+      # every shard; manual geometry still uses --with-deps for rendering coverage.
       - name: Install browser test runtime
         timeout-minutes: 15
         env:

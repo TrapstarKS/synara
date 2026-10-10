@@ -10,15 +10,19 @@
 name: Device Helper Matrix
 
 on:
-  schedule:
-    # Mondays 05:00 UTC, before the week starts.
-    - cron: "0 5 * * 1"
   workflow_dispatch:
     inputs:
       full_smoke:
         description: "Boot a simulator and run the full smoke, not just the probe"
         type: boolean
         default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: device-helper-matrix-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Inventory only: prints what each image actually ships so the pinned pairs in
@@ -158,7 +162,7 @@ jobs:
         if: >-
           steps.toolchain.outputs.present == 'true' &&
           steps.runtime.outputs.available == 'true' &&
-          (github.event_name == 'schedule' || inputs.full_smoke)
+          inputs.full_smoke
         timeout-minutes: 15
         env:
           DEVELOPER_DIR: ${{ steps.toolchain.outputs.developer_dir }}

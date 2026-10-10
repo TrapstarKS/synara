@@ -27,6 +27,24 @@ This document covers build-only native validation and publishing desktop release
   required. Build-only runs may produce unsigned artifacts when signing secrets
   are unavailable.
 
+## Re-enabling Actions on this fork
+
+The default branch of `TrapstarKS/synara` is `codex/mobile-remote`. Before accepting
+GitHub's fork activation notice, review the workflows and push the changes that
+remove unwanted automatic triggers to that default branch. A candidate branch
+alone does not change scheduled workflows, which run from the default branch.
+[GitHub's fork activation flow](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/configure-code-scanning/configure-code-scanning#configuring-default-setup-for-a-repository)
+is under **Actions**, using **I understand my workflows, go ahead and enable them**;
+it enables all existing workflows on the fork.
+
+Each run uses the workflow definition from its event's commit or ref; changes on
+the default branch do not rewrite definitions on old branches or tags. Include
+the reviewed workflow changes in the release candidate and new release tag, and
+validate those refs. See [workflow triggers](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows#workflow-triggers)
+and [scheduled events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+Release remains an explicit manual dispatch with every verification, test, and
+native build required before publication.
+
 ## Release latency
 
 The [v0.8.61 publication run](https://github.com/TrapstarKS/synara/actions/runs/35436163991)
@@ -217,6 +235,13 @@ Build-only mode uploads installers, updater metadata, provenance, and the server
 tarball as workflow artifacts. It does not create a tag, publish a GitHub Release
 or npm package, expose a public updater feed, or make a version-bump commit.
 
+Before validation, run `node scripts/update-release-package-versions.ts X.Y.Z`
+to set the candidate version in `apps/server/package.json`,
+`apps/desktop/package.json`, `apps/web/package.json`, and
+`packages/contracts/package.json`. Synchronize `bun.lock`, update `CHANGELOG.md`,
+and commit those changes with the candidate. Preflight requires all four package
+versions to match the requested version even in build-only mode.
+
 1. Push the release-candidate branch so GitHub Actions can check it out.
 2. Start the workflow in build-only mode:
    - `gh workflow run release.yml --ref BRANCH -f version=X.Y.Z -f publish_release=false`
@@ -377,9 +402,9 @@ in [interface updates](interface-updates.md). Rebuild all three outputs from the
 same source before packaging; do not replace manifests in an old build to make an
 update appear compatible with a running backend.
 
-1. Ensure `main` is green in CI.
-2. Run the build-only native CI validation for the release-candidate branch and version.
-3. Bump app version as needed.
+1. Ensure the repository's default branch (`codex/mobile-remote` for `TrapstarKS/synara`) is green in CI.
+2. Prepare and commit the four release package versions, `bun.lock`, and `CHANGELOG.md` as described in [build-only validation](#1-build-only-native-ci-validation).
+3. Run the build-only native CI validation for that release-candidate branch and version.
 4. Run `node scripts/resolve-release-update-policy.ts X.Y.Z` and confirm it reports the expected lane, `make_latest`, and `mirror_to_stable_channel` values before creating the tag.
 5. Create release tag: `vX.Y.Z`.
 6. Push the tag, then dispatch `release.yml` against it with `version=X.Y.Z` and `publish_release=true`.

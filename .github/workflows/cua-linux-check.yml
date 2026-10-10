@@ -10,8 +10,6 @@ on:
       - "apps/desktop/src/linuxCua*"
       - "apps/desktop/src/linuxEscapeKillSwitchMonitor*"
       - "packages/shared/src/cuaDriver*"
-  push:
-    branches: ["codex/cua-linux-verify-*"]
   workflow_dispatch:
 
 permissions:
