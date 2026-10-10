@@ -9,6 +9,7 @@
 - OpenCode keeps recovering tool snapshots until the owning turn actually ends, so a missing tool-completion event cannot leave a Goal active without progressing. Recovery responses from an interrupted or replaced turn cannot affect its successor.
 - Deferred Goal continuations use the live provider state instead of waiting on an outdated running session projection. Pending approvals, user input, delegated work, and explicit stops retain their existing controls.
 - Workspace installation patches the shared TypeScript compiler once, before the native compiler, preventing concurrent lifecycle hooks from loading a partially rewritten compiler.
+- Server builds validate and stamp their resolved output directory, including isolated builds that override the default path.
 - The desktop update percentage stays inside its button on narrow windows when a larger UI font is selected.
 
 ### Changed
