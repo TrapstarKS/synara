@@ -966,6 +966,7 @@ export const ThreadGoalContinuationTrigger = Schema.Literals([
   "interaction-mode-updated",
   "turn-completed",
   "startup-recovery",
+  "runtime-recovery",
 ]);
 export type ThreadGoalContinuationTrigger = typeof ThreadGoalContinuationTrigger.Type;
 /**

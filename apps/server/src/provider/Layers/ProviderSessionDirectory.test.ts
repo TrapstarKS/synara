@@ -140,6 +140,96 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       }
     }));
 
+  it("clears only the observed active turn and preserves all other runtime metadata", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const threadId = ThreadId.makeUnsafe("thread-clear-observed-turn");
+      const runtimePayload = {
+        activeTurnId: "turn-observed",
+        providerInstanceId: "opencode_work",
+        modelSelection: { provider: "opencode", model: "test-model" },
+        continuationIdentity: { sessionId: "native-session" },
+      };
+      yield* directory.upsert({
+        threadId,
+        provider: "opencode",
+        providerInstanceId: "opencode_work",
+        adapterKey: "opencode-native",
+        runtimeMode: "approval-required",
+        status: "running",
+        resumeCursor: { sessionId: "native-session", nested: { offset: 42 } },
+        runtimePayload,
+      });
+      const observed = Option.getOrThrow(yield* directory.getBinding(threadId));
+      const original = Option.getOrThrow(yield* runtimeRepository.getByThreadId({ threadId }));
+      assert.equal(observed.lifecycleGeneration, "legacy");
+      const input = {
+        threadId,
+        provider: observed.provider,
+        lifecycleGeneration: observed.lifecycleGeneration,
+        expectedTurnId: "turn-observed",
+      };
+
+      assert.isTrue(yield* directory.clearActiveTurn(input));
+      const cleared = Option.getOrThrow(yield* runtimeRepository.getByThreadId({ threadId }));
+      assert.deepEqual(cleared, {
+        ...original,
+        runtimePayload: { ...runtimePayload, activeTurnId: null },
+      });
+      assert.isFalse(yield* directory.clearActiveTurn(input));
+    }));
+
+  for (const changed of [
+    "turn",
+    "generation",
+    "provider",
+    "missing",
+    "unknown-generation",
+  ] as const) {
+    it(`preserves a binding when the expected turn owner changed: ${changed}`, () =>
+      Effect.gen(function* () {
+        const directory = yield* ProviderSessionDirectory;
+        const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+        const threadId = ThreadId.makeUnsafe(`thread-clear-changed-${changed}`);
+        yield* directory.upsert({
+          threadId,
+          provider: "opencode",
+          providerInstanceId: "opencode_work",
+          lifecycleGeneration: "observed-generation",
+          runtimePayload: { activeTurnId: "turn-observed", keep: "original" },
+        });
+        const observed = Option.getOrThrow(yield* directory.getBinding(threadId));
+
+        if (changed === "missing") {
+          yield* directory.remove(threadId);
+        } else if (changed !== "unknown-generation") {
+          yield* directory.upsert({
+            threadId,
+            provider: changed === "provider" ? "codex" : "opencode",
+            lifecycleGeneration:
+              changed === "generation" ? "replacement-generation" : "observed-generation",
+            resumeCursor: { sessionId: "current-session" },
+            runtimePayload: {
+              activeTurnId: changed === "turn" ? "turn-new" : "turn-observed",
+              keep: "current",
+            },
+          });
+        }
+        const current = yield* runtimeRepository.getByThreadId({ threadId });
+        const cleared = yield* directory.clearActiveTurn({
+          threadId,
+          provider: observed.provider,
+          lifecycleGeneration:
+            changed === "unknown-generation" ? undefined : observed.lifecycleGeneration,
+          expectedTurnId: "turn-observed",
+        });
+
+        assert.isFalse(cleared);
+        assert.deepEqual(yield* runtimeRepository.getByThreadId({ threadId }), current);
+      }));
+  }
+
   it("clears persisted launch options when a new authoritative payload omits them", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;

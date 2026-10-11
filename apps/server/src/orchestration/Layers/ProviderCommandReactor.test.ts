@@ -8728,6 +8728,259 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
+  async function seedRuntimeRecoveryGoal(harness: Awaited<ReturnType<typeof createHarness>>) {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const sourceTurnId = asTurnId("turn-runtime-recovery-source");
+    const now = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-runtime-recovery-goal"),
+        threadId,
+        goal: "Finish the full objective after runtime recovery",
+        goalStartBehavior: "defer",
+      }),
+    );
+    const setTurn = async (turnId: TurnId) => {
+      for (const status of ["running", "interrupted"] as const) {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.makeUnsafe(`cmd-runtime-recovery-${turnId}-${status}`),
+            threadId,
+            session: {
+              threadId,
+              status,
+              providerName: "codex",
+              providerInstanceId: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: status === "running" ? turnId : null,
+              lastError: null,
+              updatedAt: now,
+            },
+            createdAt: now,
+          }),
+        );
+      }
+    };
+    await setTurn(sourceTurnId);
+    harness.setRuntimeSessionTurnState({ threadId, status: "ready" });
+    const goalStartedAt = (await readHarnessThread(harness))!.goalStartedAt!;
+    const recover = () =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.goal.continue",
+          commandId: CommandId.makeUnsafe("cmd-runtime-recovery-continue"),
+          threadId,
+          goalStartedAt,
+          trigger: "runtime-recovery",
+          sourceTurnId,
+          createdAt: now,
+        }),
+      );
+    return { threadId, sourceTurnId, now, setTurn, recover };
+  }
+
+  it("continues a runtime recovery using the authoritative interrupted source turn", async () => {
+    const harness = await createHarness();
+    const { recover } = await seedRuntimeRecoveryGoal(harness);
+    await recover();
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0].input).toContain(
+      "Finish the full objective after runtime recovery",
+    );
+  });
+
+  it.each(["newer turn", "turn stop", "session stop", "goal pause"] as const)(
+    "discards a queued runtime recovery after a %s commits before execution",
+    async (change) => {
+      const harness = await createHarness();
+      const { threadId, sourceTurnId, now, setTurn, recover } =
+        await seedRuntimeRecoveryGoal(harness);
+      const leaseAcquired = Effect.runSync(Deferred.make<void>());
+      const releaseLease = Effect.runSync(Deferred.make<void>());
+      const leaseFiber = Effect.runFork(
+        harness.checkpointCoordinator.withThreadLease(
+          threadId,
+          Deferred.succeed(leaseAcquired, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseLease)),
+          ),
+        ),
+      );
+      await Effect.runPromise(Deferred.await(leaseAcquired));
+      try {
+        const response = await recover();
+        await waitFor(async () => {
+          const delivery = await Effect.runPromise(
+            harness.deliveryRepository.getDelivery({
+              consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+              eventSequence: response.sequence,
+            }),
+          );
+          return Option.getOrUndefined(delivery)?.state === "inflight";
+        });
+        if (change === "newer turn") {
+          await setTurn(asTurnId("turn-runtime-recovery-newer"));
+        } else if (change === "goal pause") {
+          await Effect.runPromise(
+            harness.engine.dispatch({
+              type: "thread.meta.update",
+              commandId: CommandId.makeUnsafe("cmd-runtime-recovery-pause"),
+              threadId,
+              goalPaused: true,
+            }),
+          );
+        } else {
+          await Effect.runPromise(
+            harness.engine.dispatch(
+              change === "session stop"
+                ? {
+                    type: "thread.session.stop",
+                    commandId: CommandId.makeUnsafe("cmd-runtime-recovery-session-stop"),
+                    threadId,
+                    createdAt: now,
+                  }
+                : {
+                    type: "thread.turn.interrupt",
+                    commandId: CommandId.makeUnsafe("cmd-runtime-recovery-turn-stop"),
+                    threadId,
+                    turnId: sourceTurnId,
+                    createdAt: now,
+                  },
+            ),
+          );
+        }
+        await Effect.runPromise(Deferred.succeed(releaseLease, undefined));
+        await harness.drain();
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+      } finally {
+        await Effect.runPromise(Deferred.succeed(releaseLease, undefined));
+        await Effect.runPromise(Effect.exit(Fiber.join(leaseFiber)));
+      }
+    },
+  );
+
+  it("preserves a goal resumed after session stop while runtime recovery is queued", async () => {
+    const harness = await createHarness();
+    const { threadId, now, recover } = await seedRuntimeRecoveryGoal(harness);
+    const leaseAcquired = Effect.runSync(Deferred.make<void>());
+    const releaseLease = Effect.runSync(Deferred.make<void>());
+    const leaseFiber = Effect.runFork(
+      harness.checkpointCoordinator.withThreadLease(
+        threadId,
+        Deferred.succeed(leaseAcquired, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseLease)),
+        ),
+      ),
+    );
+    await Effect.runPromise(Deferred.await(leaseAcquired));
+    try {
+      const response = await recover();
+      await waitFor(async () => {
+        const delivery = await Effect.runPromise(
+          harness.deliveryRepository.getDelivery({
+            consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+            eventSequence: response.sequence,
+          }),
+        );
+        return Option.getOrUndefined(delivery)?.state === "inflight";
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.makeUnsafe("cmd-runtime-recovery-stop-before-resume"),
+          threadId,
+          createdAt: now,
+        }),
+      );
+      const pausedAt = (await readHarnessThread(harness))!.goalPausedAt!;
+      await waitFor(() => Date.now() > Date.parse(pausedAt));
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-runtime-recovery-resume-after-stop"),
+          threadId,
+          goalPaused: false,
+        }),
+      );
+      const resumedAt = (await readHarnessThread(harness))!.goalStartedAt;
+      await Effect.runPromise(Deferred.succeed(releaseLease, undefined));
+      await harness.drain();
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      const resumedThread = await readHarnessThread(harness);
+      expect(resumedThread?.goalPausedAt).toBeNull();
+      expect(resumedThread?.goalStartedAt).toBe(resumedAt);
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseLease, undefined));
+      await Effect.runPromise(Effect.exit(Fiber.join(leaseFiber)));
+    }
+  });
+
+  it.each(["same source", "newer turn"] as const)(
+    "rechecks the source turn before retrying runtime recovery after approval clears (%s)",
+    async (ownership) => {
+      const harness = await createHarness();
+      const { threadId, now, setTurn, recover } = await seedRuntimeRecoveryGoal(harness);
+      const requestId = asApprovalRequestId("approval-runtime-recovery");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.makeUnsafe("cmd-runtime-recovery-approval"),
+          threadId,
+          activity: {
+            id: asEventId("evt-runtime-recovery-approval"),
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Command approval requested",
+            payload: { requestId, requestKind: "command" },
+            turnId: null,
+            createdAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await recover();
+      await harness.drain();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      if (ownership === "newer turn") {
+        await setTurn(asTurnId("turn-runtime-recovery-retry-newer"));
+      } else {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.makeUnsafe("cmd-runtime-recovery-approval-ready"),
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "codex",
+              providerInstanceId: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: now,
+            },
+            createdAt: now,
+          }),
+        );
+      }
+      await Effect.runPromise(
+        harness.pendingInteractionRepository.deleteByIdentity({
+          threadId,
+          interactionKind: "approval",
+          requestId,
+        }),
+      );
+      if (ownership === "same source") {
+        await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        await harness.drain();
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("retries a goal continuation when the runtime settles before its running projection", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

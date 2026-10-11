@@ -9,6 +9,7 @@ import {
   toPersistenceSqlOrDecodeError,
 } from "../Errors.ts";
 import {
+  ClearProviderSessionRuntimeActiveTurnInput,
   ProviderSessionRuntime,
   ProviderSessionRuntimeRepository,
   type ProviderSessionRuntimeRepositoryShape,
@@ -95,6 +96,21 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
       `,
   });
 
+  const clearRuntimeActiveTurn = SqlSchema.findOneOption({
+    Request: ClearProviderSessionRuntimeActiveTurnInput,
+    Result: GetRuntimeRequestSchema,
+    execute: ({ threadId, providerName, lifecycleGeneration, expectedTurnId }) =>
+      sql`
+        UPDATE provider_session_runtime
+        SET runtime_payload_json = json_set(runtime_payload_json, '$.activeTurnId', NULL)
+        WHERE thread_id = ${threadId}
+          AND provider_name = ${providerName}
+          AND lifecycle_generation = ${lifecycleGeneration}
+          AND json_extract(runtime_payload_json, '$.activeTurnId') = ${expectedTurnId}
+        RETURNING thread_id AS "threadId"
+      `,
+  });
+
   const listRuntimeRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProviderSessionRuntimeDbRowSchema,
@@ -159,6 +175,17 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
       ),
     );
 
+  const clearActiveTurn: ProviderSessionRuntimeRepositoryShape["clearActiveTurn"] = (input) =>
+    clearRuntimeActiveTurn(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProviderSessionRuntimeRepository.clearActiveTurn:query",
+          "ProviderSessionRuntimeRepository.clearActiveTurn:decodeRow",
+        ),
+      ),
+      Effect.map(Option.isSome),
+    );
+
   const list: ProviderSessionRuntimeRepositoryShape["list"] = () =>
     listRuntimeRows(undefined).pipe(
       Effect.mapError(
@@ -190,6 +217,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
 
   return {
     upsert,
+    clearActiveTurn,
     getByThreadId,
     list,
     deleteByThreadId,

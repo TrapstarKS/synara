@@ -22,12 +22,9 @@ import type { ProviderRuntimeBinding } from "./Services/ProviderSessionDirectory
 export const DEFAULT_RUNTIME_RECONCILIATION_STALE_AFTER_MS = 15_000;
 
 /**
- * Absolute upper bound on a single turn. Past this the turn is settled even
- * when the live runtime still claims to be running, because every other signal
- * this planner trusts (a settled session, a missing session, a failed binding)
- * can be absent when a provider wedges mid-turn. `thread.updatedAt` advances on
- * every appended message, so a legitimately long-running turn keeps resetting
- * this clock and is never affected.
+ * Recovery grace period for orphaned or incomplete lifecycles. A live runtime
+ * that still owns a turn is not abandoned merely because a tool has been quiet
+ * for this long. Runtime adapters own detecting and reporting actual failure.
  */
 export const RUNTIME_RECONCILIATION_MAX_TURN_AGE_MS = 45 * 60_000;
 
@@ -133,23 +130,20 @@ function projectedInFlightTurnId(thread: OrchestrationThreadShell): TurnId | nul
 }
 
 function projectedLifecycleAgeMs(thread: OrchestrationThreadShell, nowMs: number): number {
-  // The later of the session lifecycle timestamp and the thread timestamp:
-  // `thread.updatedAt` advances on every appended message, so a turn that is
-  // actively streaming output never counts as stale even though its session
-  // row only moves on lifecycle transitions.
-  const sessionObservedAt = Date.parse(thread.session?.updatedAt ?? thread.updatedAt);
-  const threadObservedAt = Date.parse(thread.updatedAt);
-  const observedAt = Number.isFinite(sessionObservedAt)
-    ? Number.isFinite(threadObservedAt)
-      ? Math.max(sessionObservedAt, threadObservedAt)
-      : sessionObservedAt
-    : threadObservedAt;
-  return Number.isFinite(observedAt) ? Math.max(0, nowMs - observedAt) : Number.POSITIVE_INFINITY;
-}
-
-/** Time since anything at all was projected onto the thread (messages included). */
-function threadActivityAgeMs(thread: OrchestrationThreadShell, nowMs: number): number {
-  const observedAt = Date.parse(thread.updatedAt);
+  // Tool lifecycle and buffered output advance the runtime activity fields
+  // without necessarily appending a visible message or moving lifecycle time.
+  // Their observed activity must receive the same ingestion grace period.
+  let observedAt = Number.NEGATIVE_INFINITY;
+  for (const value of [
+    thread.updatedAt,
+    thread.session?.updatedAt,
+    thread.session?.lastActivityAt,
+    thread.session?.lastProgressAt,
+  ]) {
+    if (value == null) continue;
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) observedAt = Math.max(observedAt, timestamp);
+  }
   return Number.isFinite(observedAt) ? Math.max(0, nowMs - observedAt) : Number.POSITIVE_INFINITY;
 }
 
@@ -187,11 +181,9 @@ export function planProviderRuntimeReconciliation(input: {
   readonly bindings: ReadonlyArray<ProviderRuntimeBinding>;
   readonly liveSessions: ReadonlyArray<ProviderSession>;
   readonly pumpHealth: ReadonlyArray<ProviderRuntimeEventPumpHealth>;
-  // True when the runtime journal still holds rows for these candidate threads
-  // that ingestion has not applied. A starved projection is indistinguishable
-  // from a stale one, so settle plans hold off until those rows catch up
-  // (abandoned turns excepted).
-  readonly runtimeJournalLagging?: boolean;
+  // Candidate threads whose runtime journal rows have not been ingested. Only
+  // their projections are blind; unrelated threads can still be reconciled.
+  readonly runtimeJournalLaggingThreadIds?: ReadonlyArray<ThreadId>;
   readonly nowMs: number;
   readonly staleAfterMs?: number;
   readonly maxTurnAgeMs?: number;
@@ -212,6 +204,7 @@ export function planProviderRuntimeReconciliation(input: {
     ProviderRuntimeBinding["provider"],
     ProviderRuntimeEventPumpHealth
   >(input.pumpHealth.map((health) => [health.provider, health]));
+  const runtimeJournalLaggingThreadIds = new Set(input.runtimeJournalLaggingThreadIds);
   const plans: ProviderRuntimeReconciliationPlan[] = [];
 
   for (const thread of input.threads) {
@@ -226,8 +219,7 @@ export function planProviderRuntimeReconciliation(input: {
     // provider instead of dropping the candidate.
     const provider = binding?.provider ?? thread.modelSelection.provider;
     const detail = pumpDetail(provider, healthByProvider);
-    const abandoned =
-      lifecycleAgeMs >= maxTurnAgeMs && threadActivityAgeMs(thread, input.nowMs) >= maxTurnAgeMs;
+    const abandoned = lifecycleAgeMs >= maxTurnAgeMs;
     const abandonedDetail = ` Nothing has progressed on this thread for over ${Math.round(maxTurnAgeMs / 60_000)} minutes.${detail}`;
 
     // Native child threads share a parent session and intentionally have no
@@ -238,7 +230,7 @@ export function planProviderRuntimeReconciliation(input: {
     const projectedTurnId = projectedInFlightTurnId(thread);
     const liveTurnId = turnIdOrNull(liveSession?.activeTurnId);
 
-    if (liveSession?.status === "running" && liveTurnId !== null && !abandoned) {
+    if (liveSession?.status === "running" && liveTurnId !== null) {
       if (liveTurnId === projectedTurnId) continue;
       plans.push({
         action: "align-running-turn",
@@ -257,15 +249,15 @@ export function planProviderRuntimeReconciliation(input: {
     // evidence. A pump that is not healthy means this planner is blind: a
     // quiet projection and a settled-looking live session are exactly what a
     // stalled event stream produces for a turn that is in fact progressing.
-    // Never settle on evidence the process admits it cannot observe; the
-    // abandoned clock remains the escape hatch for a pump that never recovers.
+    // Passage of time does not restore observation: never settle on evidence
+    // the process admits it cannot observe.
     const pumpHealth = healthByProvider.get(provider);
-    if (pumpHealth !== undefined && pumpHealth.status !== "healthy" && !abandoned) continue;
+    if (pumpHealth !== undefined && pumpHealth.status !== "healthy") continue;
     // The same blindness applies one stage later: rows persisted to the
     // runtime journal but not yet ingested mean the projection's staleness is
     // manufactured, not evidence. A completed turn whose terminal events are
     // still queued would otherwise be "recovered" as interrupted.
-    if (input.runtimeJournalLagging === true && !abandoned) continue;
+    if (runtimeJournalLaggingThreadIds.has(thread.id)) continue;
 
     // Settling a projection is normally only safe when it names a concrete
     // in-flight turn; ProviderCommandReactor owns failures before a start

@@ -110,6 +110,28 @@ function threadHasActiveGoal(thread: OrchestrationThread): boolean {
   return (thread.goal ?? "").trim().length > 0 && thread.goalPausedAt == null;
 }
 
+function goalPauseEventForStop(
+  thread: OrchestrationThread,
+  command: Extract<OrchestrationCommand, { type: "thread.turn.interrupt" | "thread.session.stop" }>,
+): Omit<OrchestrationEvent, "sequence"> | null {
+  if (!threadHasActiveGoal(thread)) return null;
+  const pausedAt = nowIso();
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: command.threadId,
+      occurredAt: pausedAt,
+      commandId: command.commandId,
+    }),
+    type: "thread.meta-updated",
+    payload: {
+      threadId: command.threadId,
+      goalPausedAt: pausedAt,
+      updatedAt: pausedAt,
+    },
+  };
+}
+
 /**
  * Agent tools read projections before dispatch, but that read cannot authorize a
  * later write by itself. Internal agent commands carry their exact caller turn so
@@ -2514,25 +2536,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      if ((thread.goal ?? "").trim().length === 0 || thread.goalPausedAt != null) {
+      const pauseEvent = goalPauseEventForStop(thread, command);
+      if (!pauseEvent) {
         return interruptEvent;
       }
-
-      const pausedAt = nowIso();
-      const pauseEvent: Omit<OrchestrationEvent, "sequence"> = {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: pausedAt,
-          commandId: command.commandId,
-        }),
-        type: "thread.meta-updated",
-        payload: {
-          threadId: command.threadId,
-          goalPausedAt: pausedAt,
-          updatedAt: pausedAt,
-        },
-      };
       return [
         pauseEvent,
         {
@@ -2866,22 +2873,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      const pauseEvent = goalPauseEventForStop(thread, command);
       const review = thread.claudeCacheReview;
-      return review
-        ? [
-            {
-              ...withEventBase({
-                aggregateKind: "thread",
-                aggregateId: command.threadId,
-                occurredAt: command.createdAt,
-                commandId: command.commandId,
-              }),
-              type: "thread.claude-cache-set" as const,
-              payload: { threadId: command.threadId, review: null, updatedAt: command.createdAt },
-            },
-            stopEvent,
-          ]
-        : stopEvent;
+      if (!pauseEvent && !review) return stopEvent;
+      return [
+        ...(pauseEvent ? [pauseEvent] : []),
+        ...(review
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt: command.createdAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.claude-cache-set" as const,
+                payload: { threadId: command.threadId, review: null, updatedAt: command.createdAt },
+              },
+            ]
+          : []),
+        {
+          ...stopEvent,
+          ...(pauseEvent ? { causationEventId: pauseEvent.eventId } : {}),
+        },
+      ];
     }
 
     case "thread.goal.continue": {
@@ -2891,6 +2906,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       yield* validateSidechatExecutionAvailable(command, thread);
+      // Runtime repair can race with Stop, a newer turn, or a new goal pursuit.
+      // Only the interrupted owner may enqueue this recovery; execution checks
+      // the same ownership again after any provider or approval wait.
+      if (
+        command.trigger === "runtime-recovery" &&
+        (!threadHasActiveGoal(thread) ||
+          thread.goalStartedAt == null ||
+          thread.goalStartedAt !== command.goalStartedAt ||
+          thread.parentThreadId != null ||
+          thread.archivedAt != null ||
+          thread.deletedAt != null ||
+          command.sourceTurnId === undefined ||
+          thread.latestTurn?.turnId !== command.sourceTurnId ||
+          thread.latestTurn.state !== "interrupted" ||
+          (thread.session?.status !== "interrupted" && thread.session?.status !== "ready") ||
+          thread.session.activeTurnId != null)
+      ) {
+        return [];
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",

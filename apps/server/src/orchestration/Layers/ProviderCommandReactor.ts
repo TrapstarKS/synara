@@ -5588,6 +5588,32 @@ const make = Effect.gen(function* () {
     yield* Queue.offer(goalContinuationRetryQueue, threadId);
   });
 
+  const ownsRuntimeGoalRecovery = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    continuation: BlockedGoalContinuation,
+  ) {
+    if (continuation.trigger !== "runtime-recovery") return true;
+    const current = (yield* orchestrationEngine.getReadModel()).threads.find(
+      (candidate) => candidate.id === threadId,
+    );
+    return (
+      current !== undefined &&
+      current.deletedAt == null &&
+      current.archivedAt == null &&
+      !isExpiredSidechat(current) &&
+      current.parentThreadId == null &&
+      current.interactionMode !== "plan" &&
+      Boolean(activeThreadGoal(current)?.trim()) &&
+      current.goalStartedAt != null &&
+      current.goalStartedAt === continuation.goalStartedAt &&
+      continuation.sourceTurnId !== undefined &&
+      current.latestTurn?.turnId === continuation.sourceTurnId &&
+      current.latestTurn.state === "interrupted" &&
+      current.session?.activeTurnId === null &&
+      (current.session.status === "interrupted" || current.session.status === "ready")
+    );
+  });
+
   const deferGoalContinuation = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.goal-continuation-requested" }>,
   ) {
@@ -5617,7 +5643,8 @@ const make = Effect.gen(function* () {
       thread.interactionMode === "plan" ||
       !activeThreadGoal(thread)?.trim() ||
       thread.goalPausedAt != null ||
-      (thread.goalStartedAt ?? null) !== pending.goalStartedAt
+      (thread.goalStartedAt ?? null) !== pending.goalStartedAt ||
+      !(yield* ownsRuntimeGoalRecovery(threadId, pending))
     ) {
       blockedGoalContinuations.delete(threadId);
       return;
@@ -5649,6 +5676,7 @@ const make = Effect.gen(function* () {
       return;
     }
     blockedGoalContinuations.delete(threadId);
+    if (!(yield* ownsRuntimeGoalRecovery(threadId, pending))) return;
     yield* orchestrationEngine
       .dispatch({
         type: "thread.goal.continue",
@@ -5745,7 +5773,8 @@ const make = Effect.gen(function* () {
           !activeThreadGoal(thread)?.trim() ||
           thread.goalPausedAt != null ||
           thread.claudeCacheReview != null ||
-          (thread.goalStartedAt ?? null) !== event.payload.goalStartedAt
+          (thread.goalStartedAt ?? null) !== event.payload.goalStartedAt ||
+          !(yield* ownsRuntimeGoalRecovery(thread.id, event.payload))
         ) {
           blockedGoalContinuations.delete(event.payload.threadId);
           return;
@@ -5773,6 +5802,7 @@ const make = Effect.gen(function* () {
         }
 
         blockedGoalContinuations.delete(thread.id);
+        if (!(yield* ownsRuntimeGoalRecovery(thread.id, event.payload))) return;
 
         const createdAt = event.payload.createdAt;
         const providerName = thread.session?.providerName ?? thread.modelSelection.provider;
@@ -7075,20 +7105,9 @@ const make = Effect.gen(function* () {
   const processSessionStopRequested = (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
   ) =>
-    Effect.gen(function* () {
-      // Explicit stop must pause even in a recovery gap with no live turn left
-      // to emit a cancellation. Internal session exits do not use this path.
-      const thread = yield* resolveThread(event.payload.threadId);
-      if (thread) {
-        yield* pauseActiveThreadGoal({
-          threadId: thread.id,
-          expectedGoalStartedAt: thread.goalStartedAt ?? null,
-        });
-      }
-      yield* processThreadSessionStop({
-        threadId: event.payload.threadId,
-        createdAt: event.payload.createdAt,
-      });
+    processThreadSessionStop({
+      threadId: event.payload.threadId,
+      createdAt: event.payload.createdAt,
     });
 
   const surfaceTimedOutTurnStart = Effect.fnUntraced(function* (

@@ -19,6 +19,7 @@ import { Cause, Duration, Effect, Layer, Schedule } from "effect";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationReactor } from "../../orchestration/Services/OrchestrationReactor.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { isExpiredSidechat } from "../../orchestration/sidechatLifecycle.ts";
 import {
   PROVIDER_RUNTIME_INGESTION_CONSUMER,
   ProviderRuntimeEventRepository,
@@ -29,6 +30,7 @@ import {
   planProviderRuntimeReconciliation,
   type ProviderRuntimeReconciliationPlan,
 } from "../providerRuntimeReconciliation.ts";
+import { activeThreadGoal } from "../goalMode.ts";
 import {
   ProviderRuntimeReconciler,
   type ProviderRuntimeReconcilerShape,
@@ -176,6 +178,12 @@ const make = (options?: ProviderRuntimeReconcilerLiveOptions) =>
         commandId: CommandId.makeUnsafe(`${attemptKey}:session`),
         threadId: plan.threadId,
         session,
+        ...(thread.session !== null
+          ? {
+              expectedSessionStatus: thread.session.status,
+              expectedSessionUpdatedAt: thread.session.updatedAt,
+            }
+          : {}),
         createdAt: now,
       });
       yield* orchestrationEngine.dispatch({
@@ -204,20 +212,83 @@ const make = (options?: ProviderRuntimeReconcilerLiveOptions) =>
       });
 
       // The durable binding still advertises the turn that was just settled,
-      // which keeps the thread a reconciliation candidate forever. Only merge
-      // into an existing row: an upsert would otherwise resurrect a binding for
-      // a thread that no longer has one.
-      if (
-        input.binding !== undefined &&
-        session.activeTurnId === null &&
-        bindingActiveTurnId(input.binding) !== null
-      ) {
-        yield* directory.upsert({
+      // which keeps the thread a reconciliation candidate forever. Clear only
+      // the observed owner so a replacement session or newer turn survives.
+      const bindingTurnId = bindingActiveTurnId(input.binding);
+      if (input.binding !== undefined && session.activeTurnId === null && bindingTurnId !== null) {
+        const cleared = yield* directory.clearActiveTurn({
           threadId: plan.threadId,
           provider: input.binding.provider,
-          runtimePayload: { activeTurnId: null },
+          lifecycleGeneration: input.binding.lifecycleGeneration,
+          expectedTurnId: bindingTurnId,
         });
+        if (!cleared) return;
       }
+
+      // Repairing a missing terminal event does not pass through runtime
+      // ingestion's normal goal loop. Only the same already-started goal turn
+      // may request recovery; failed providers and explicit terminal states keep
+      // their existing stop policy.
+      if (
+        plan.action !== "settle-interrupted" ||
+        plan.projectedTurnId === null ||
+        thread.session?.status !== "running" ||
+        thread.latestTurn?.turnId !== plan.projectedTurnId ||
+        thread.latestTurn.startedAt === null ||
+        thread.goalStartedAt == null ||
+        !activeThreadGoal(thread)?.trim() ||
+        input.binding?.status === "error"
+      ) {
+        return;
+      }
+
+      const liveSession = (yield* providerService.listSessions()).find(
+        (candidate) => candidate.threadId === plan.threadId,
+      );
+      if (
+        liveSession !== undefined &&
+        (liveSession.status !== "ready" || liveSession.activeTurnId !== undefined)
+      ) {
+        return;
+      }
+
+      // Binding cleanup and activity dispatch can race a user stop, a new goal,
+      // or a newer provider turn. The command model preserves the settled turn
+      // even while the SQL latest-turn pointer is catching up. A ready update
+      // may advance the session timestamp without replacing that settled turn.
+      const current = (yield* orchestrationEngine.getReadModel()).threads.find(
+        (candidate) => candidate.id === plan.threadId,
+      );
+      if (
+        !current ||
+        current.deletedAt != null ||
+        current.archivedAt != null ||
+        isExpiredSidechat(current) ||
+        current.parentThreadId != null ||
+        current.interactionMode === "plan" ||
+        !activeThreadGoal(current)?.trim() ||
+        current.goalStartedAt !== thread.goalStartedAt ||
+        (current.session?.status !== "interrupted" && current.session?.status !== "ready") ||
+        current.session.activeTurnId !== null ||
+        current.latestTurn?.turnId !== plan.projectedTurnId ||
+        current.latestTurn.state !== "interrupted" ||
+        current.latestTurn.completedAt === null
+      ) {
+        return;
+      }
+
+      // Both identity and payload stay stable if a lagging projection causes
+      // the same repair to be observed twice. Approval/input gates and queued
+      // user work are still owned by the ordinary goal continuation reactor.
+      yield* orchestrationEngine.dispatch({
+        type: "thread.goal.continue",
+        commandId: CommandId.makeUnsafe(`${key}:goal:${current.goalStartedAt}`),
+        threadId: plan.threadId,
+        goalStartedAt: current.goalStartedAt,
+        trigger: "runtime-recovery",
+        sourceTurnId: plan.projectedTurnId,
+        createdAt: current.latestTurn.completedAt,
+      });
     });
 
     const reconcileNow = Effect.gen(function* () {
@@ -227,18 +298,19 @@ const make = (options?: ProviderRuntimeReconcilerLiveOptions) =>
         limit: candidateLimit,
       });
       if (candidateThreadIds.length === 0) return;
-      const [bindings, liveSessions, pumpHealth, runtimeJournalLagging] = yield* Effect.all(
-        [
-          directory.listBindings(),
-          providerService.listSessions(),
-          providerService.getRuntimeEventPumpHealth?.() ?? Effect.succeed([]),
-          runtimeEvents.hasPendingEventsForThreads({
-            consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
-            threadIds: candidateThreadIds,
-          }),
-        ],
-        { concurrency: 4 },
-      );
+      const [bindings, liveSessions, pumpHealth, runtimeJournalLaggingThreadIds] =
+        yield* Effect.all(
+          [
+            directory.listBindings(),
+            providerService.listSessions(),
+            providerService.getRuntimeEventPumpHealth?.() ?? Effect.succeed([]),
+            runtimeEvents.listThreadIdsWithPendingEvents({
+              consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
+              threadIds: candidateThreadIds,
+            }),
+          ],
+          { concurrency: 4 },
+        );
       // One batched read instead of up to `candidateLimit` point reads
       // contending on the single SQLite handle every reconciliation tick.
       const threads = yield* projectionSnapshotQuery.getThreadShellsByIds(candidateThreadIds);
@@ -278,7 +350,7 @@ const make = (options?: ProviderRuntimeReconcilerLiveOptions) =>
         bindings,
         liveSessions,
         pumpHealth,
-        runtimeJournalLagging,
+        runtimeJournalLaggingThreadIds,
         nowMs,
         staleAfterMs,
       });

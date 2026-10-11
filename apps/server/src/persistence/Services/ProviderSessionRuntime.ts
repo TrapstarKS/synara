@@ -11,6 +11,7 @@ import {
   ProviderSessionRuntimeStatus,
   RuntimeMode,
   ThreadId,
+  TrimmedNonEmptyString,
 } from "@synara/contracts";
 import { Option, Schema, ServiceMap } from "effect";
 import type { Effect } from "effect";
@@ -37,6 +38,15 @@ export type GetProviderSessionRuntimeInput = typeof GetProviderSessionRuntimeInp
 export const DeleteProviderSessionRuntimeInput = Schema.Struct({ threadId: ThreadId });
 export type DeleteProviderSessionRuntimeInput = typeof DeleteProviderSessionRuntimeInput.Type;
 
+export const ClearProviderSessionRuntimeActiveTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  providerName: Schema.String,
+  lifecycleGeneration: Schema.String,
+  expectedTurnId: TrimmedNonEmptyString,
+});
+export type ClearProviderSessionRuntimeActiveTurnInput =
+  typeof ClearProviderSessionRuntimeActiveTurnInput.Type;
+
 /**
  * ProviderSessionRuntimeRepositoryShape - Service API for provider runtime records.
  */
@@ -49,6 +59,11 @@ export interface ProviderSessionRuntimeRepositoryShape {
   readonly upsert: (
     runtime: ProviderSessionRuntime,
   ) => Effect.Effect<void, ProviderSessionRuntimeRepositoryError>;
+
+  /** Atomically clears the matching turn without replacing any other runtime metadata. */
+  readonly clearActiveTurn: (
+    input: ClearProviderSessionRuntimeActiveTurnInput,
+  ) => Effect.Effect<boolean, ProviderSessionRuntimeRepositoryError>;
 
   /**
    * Read provider runtime state by canonical thread id.

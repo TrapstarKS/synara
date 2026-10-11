@@ -129,17 +129,19 @@ layer("ProviderRuntimeEventRepository", (it) => {
         oldestSequence: first.sequence,
         highWaterSequence: second.sequence,
       });
-      assert.isTrue(
-        yield* repository.hasPendingEventsForThreads({
+      assert.deepStrictEqual(
+        yield* repository.listThreadIdsWithPendingEvents({
           consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
           threadIds: ["thread-runtime-journal"],
         }),
+        [ThreadId.makeUnsafe("thread-runtime-journal")],
       );
-      assert.isFalse(
-        yield* repository.hasPendingEventsForThreads({
+      assert.deepStrictEqual(
+        yield* repository.listThreadIdsWithPendingEvents({
           consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
           threadIds: ["thread-with-no-pending-events"],
         }),
+        [],
       );
       assert.deepStrictEqual(
         (yield* repository.readThreadEvents({
@@ -169,11 +171,12 @@ layer("ProviderRuntimeEventRepository", (it) => {
         yield* repository.getConsumerCursor(PROVIDER_RUNTIME_INGESTION_CONSUMER),
         first.sequence,
       );
-      assert.isTrue(
-        yield* repository.hasPendingEventsForThreads({
+      assert.deepStrictEqual(
+        yield* repository.listThreadIdsWithPendingEvents({
           consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
           threadIds: ["thread-runtime-journal"],
         }),
+        [ThreadId.makeUnsafe("thread-runtime-journal")],
       );
       assert.deepStrictEqual(
         (yield* repository.readAcceptedOpenTurnEvents({
@@ -191,11 +194,12 @@ layer("ProviderRuntimeEventRepository", (it) => {
           updatedAt: "2026-07-14T00:00:02.000Z",
         }),
       );
-      assert.isFalse(
-        yield* repository.hasPendingEventsForThreads({
+      assert.deepStrictEqual(
+        yield* repository.listThreadIdsWithPendingEvents({
           consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
           threadIds: ["thread-runtime-journal"],
         }),
+        [],
       );
       const terminal = yield* repository.append({
         type: "turn.completed",
@@ -226,6 +230,80 @@ layer("ProviderRuntimeEventRepository", (it) => {
         repository.append(runtimeEvent("runtime-event-1", "different")),
       );
       assert.strictEqual(conflict._tag, "PersistenceDecodeError");
+    }),
+  );
+
+  it.effect("lists only distinct candidate threads with uningested events", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProviderRuntimeEventRepository;
+      const caughtUpThreadId = ThreadId.makeUnsafe("thread-runtime-caught-up");
+      const pendingThreadId = ThreadId.makeUnsafe("thread-runtime-pending");
+      const caughtUpEvent = yield* repository.append({
+        ...runtimeEvent("runtime-event-caught-up", "accepted"),
+        threadId: caughtUpThreadId,
+      });
+      yield* repository.append({
+        ...runtimeEvent("runtime-event-pending-1", "queued"),
+        threadId: pendingThreadId,
+      });
+      yield* repository.append({
+        ...runtimeEvent("runtime-event-pending-2", "also queued"),
+        threadId: pendingThreadId,
+      });
+      const outsideEvent = yield* repository.append({
+        ...runtimeEvent("runtime-event-outside-candidates", "queued elsewhere"),
+        threadId: ThreadId.makeUnsafe("thread-runtime-outside-candidates"),
+      });
+      assert.isTrue(
+        yield* repository.advanceConsumerCursorThrough({
+          consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
+          throughSequence: caughtUpEvent.sequence,
+          updatedAt: "2026-07-14T00:00:01.000Z",
+        }),
+      );
+
+      assert.deepStrictEqual(
+        yield* repository.listThreadIdsWithPendingEvents({
+          consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
+          threadIds: [caughtUpThreadId, pendingThreadId, pendingThreadId],
+        }),
+        [pendingThreadId],
+      );
+      assert.deepStrictEqual(
+        yield* repository.listThreadIdsWithPendingEvents({
+          consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
+          threadIds: [],
+        }),
+        [],
+      );
+
+      assert.isTrue(
+        yield* repository.advanceConsumerCursorThrough({
+          consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
+          throughSequence: outsideEvent.sequence,
+          updatedAt: "2026-07-14T00:00:02.000Z",
+        }),
+      );
+      assert.deepStrictEqual(
+        yield* repository.listThreadIdsWithPendingEvents({
+          consumerName: PROVIDER_RUNTIME_INGESTION_CONSUMER,
+          threadIds: [caughtUpThreadId, pendingThreadId],
+        }),
+        [],
+      );
+    }),
+  );
+
+  it.effect("rejects pending-event observation without a registered consumer", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProviderRuntimeEventRepository;
+      const error = yield* Effect.flip(
+        repository.listThreadIdsWithPendingEvents({
+          consumerName: "runtime-consumer-missing",
+          threadIds: ["thread-runtime-journal"],
+        }),
+      );
+      assert.strictEqual(error._tag, "PersistenceDecodeError");
     }),
   );
 

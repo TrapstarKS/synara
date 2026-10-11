@@ -133,6 +133,12 @@ blocked-turn stop requests, pauses on the eighth, and resets the streak after a 
 does not report the blocker. Once a thread owns an active goal, another agent cannot edit, complete,
 block, interrupt, or indirectly archive that goal on its behalf.
 
+Live provider ownership and recorded assistant/tool activity keep long turns active; the
+reconciler does not interrupt a live turn after 45 minutes. If it repairs an orphaned turn as
+interrupted, an eligible goal that already started can continue through the normal goal path.
+Recovery belongs to that exact turn and goal pursuit, so delayed repairs cannot restart a newer
+turn or a paused goal. Stopping a session pauses its goal before provider teardown begins.
+
 Every active goal turn carries the same autonomy and completion instructions, including the first
 turn and later user guidance. The agent resolves routine and reversible choices from available
 evidence, states material assumptions, and continues through verification. Questions are reserved

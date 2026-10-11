@@ -41,6 +41,14 @@ export interface ProviderSessionDirectoryShape {
     binding: ProviderRuntimeBindingUpsert,
   ) => Effect.Effect<void, ProviderSessionDirectoryWriteError>;
 
+  /** Clears only the turn still owned by the observed provider generation. */
+  readonly clearActiveTurn: (input: {
+    readonly threadId: ThreadId;
+    readonly provider: ProviderDriverKind;
+    readonly lifecycleGeneration: string | undefined;
+    readonly expectedTurnId: string;
+  }) => Effect.Effect<boolean, ProviderSessionDirectoryPersistenceError>;
+
   readonly getProvider: (
     threadId: ThreadId,
   ) => Effect.Effect<ProviderDriverKind, ProviderSessionDirectoryReadError>;

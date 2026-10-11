@@ -630,7 +630,7 @@ describe("planProviderRuntimeReconciliation", () => {
     // A quiet projection plus a missing/settled-looking live session is exactly
     // what a stalled event stream produces for a turn that is in fact
     // progressing. Settling on evidence the process cannot observe kills live
-    // turns; the abandoned clock is the only escape hatch.
+    // turns, regardless of how long observation has been unavailable.
     const plans = planProviderRuntimeReconciliation({
       threads: [threadShell()],
       bindings: [binding(null)],
@@ -659,7 +659,7 @@ describe("planProviderRuntimeReconciliation", () => {
       bindings: [binding(null)],
       liveSessions: [],
       pumpHealth: [],
-      runtimeJournalLagging: true,
+      runtimeJournalLaggingThreadIds: [THREAD_ID],
       nowMs: NOW,
       staleAfterMs: 10_000,
     });
@@ -667,7 +667,7 @@ describe("planProviderRuntimeReconciliation", () => {
     expect(plans).toEqual([]);
   });
 
-  it("still settles an abandoned thread despite a lagging runtime journal", () => {
+  it("does not settle an old thread while its runtime journal has uningested rows", () => {
     const abandonedAt = "2026-07-23T19:00:00.000Z";
     const plans = planProviderRuntimeReconciliation({
       threads: [
@@ -682,22 +682,50 @@ describe("planProviderRuntimeReconciliation", () => {
       bindings: [binding(null)],
       liveSessions: [],
       pumpHealth: [],
-      runtimeJournalLagging: true,
+      runtimeJournalLaggingThreadIds: [THREAD_ID],
       nowMs: NOW,
       staleAfterMs: 10_000,
       maxTurnAgeMs: 30 * 60_000,
     });
 
-    expect(plans).toEqual([
-      expect.objectContaining({
-        action: "settle-interrupted",
-        threadId: THREAD_ID,
-        projectedTurnId: OLD_TURN_ID,
-      }),
-    ]);
+    expect(plans).toEqual([]);
   });
 
-  it("still settles an abandoned thread despite an unhealthy pump, recording pump evidence", () => {
+  it.each([NOW, NOW + 24 * 60 * 60_000])(
+    "recovers an unrelated missing runtime while another thread has pending journal rows at %i",
+    (nowMs) => {
+      const orphanThreadId = ThreadId.makeUnsafe("thread-reconcile-orphan");
+      const orphanTurnId = TurnId.makeUnsafe("turn-orphan");
+      const orphanThread = threadShell({
+        id: orphanThreadId,
+        latestTurn: { ...threadShell().latestTurn!, turnId: orphanTurnId },
+        session: {
+          ...threadShell().session!,
+          threadId: orphanThreadId,
+          activeTurnId: orphanTurnId,
+        },
+      });
+      const plans = planProviderRuntimeReconciliation({
+        threads: [threadShell(), orphanThread],
+        bindings: [binding(null), { ...binding(null), threadId: orphanThreadId }],
+        liveSessions: [],
+        pumpHealth: [],
+        runtimeJournalLaggingThreadIds: [THREAD_ID],
+        nowMs,
+        staleAfterMs: 10_000,
+      });
+
+      expect(plans).toEqual([
+        expect.objectContaining({
+          action: "settle-interrupted",
+          threadId: orphanThreadId,
+          projectedTurnId: orphanTurnId,
+        }),
+      ]);
+    },
+  );
+
+  it("does not settle an old thread while its runtime-event pump is unhealthy", () => {
     const abandonedAt = "2026-07-23T19:00:00.000Z";
     const plans = planProviderRuntimeReconciliation({
       threads: [
@@ -724,14 +752,7 @@ describe("planProviderRuntimeReconciliation", () => {
       maxTurnAgeMs: 30 * 60_000,
     });
 
-    expect(plans).toEqual([
-      expect.objectContaining({
-        action: "settle-interrupted",
-        threadId: THREAD_ID,
-        projectedTurnId: OLD_TURN_ID,
-      }),
-    ]);
-    expect(plans[0]?.reason).toContain("runtime-event pump is recovering");
+    expect(plans).toEqual([]);
   });
 
   it("does not treat an actively streaming turn as stale when only the session row is quiet", () => {
@@ -748,5 +769,143 @@ describe("planProviderRuntimeReconciliation", () => {
     });
 
     expect(plans).toEqual([]);
+  });
+
+  it.each(["lastActivityAt", "lastProgressAt"] as const)(
+    "keeps recent tool activity from %s when transcript timestamps are over an hour old",
+    (activityField) => {
+      const quietTranscriptAt = "2026-07-23T19:00:00.000Z";
+      const plans = planProviderRuntimeReconciliation({
+        threads: [
+          threadShell({
+            updatedAt: quietTranscriptAt,
+            session: {
+              ...threadShell().session!,
+              updatedAt: quietTranscriptAt,
+              [activityField]: "2026-07-23T20:00:29.000Z",
+            },
+          }),
+        ],
+        bindings: [binding(null)],
+        liveSessions: [],
+        pumpHealth: [],
+        nowMs: NOW,
+        staleAfterMs: 10_000,
+      });
+
+      expect(plans).toEqual([]);
+    },
+  );
+
+  it("preserves an OpenCode turn owned by a live runtime through a silent tool longer than 45 minutes", () => {
+    const quietSince = "2026-07-23T18:00:00.000Z";
+    const plans = planProviderRuntimeReconciliation({
+      threads: [
+        threadShell({
+          modelSelection: { provider: "opencode", model: "test-model" },
+          updatedAt: quietSince,
+          session: {
+            ...threadShell().session!,
+            providerName: "opencode",
+            updatedAt: quietSince,
+            lastActivityAt: quietSince,
+            lastProgressAt: quietSince,
+          },
+        }),
+      ],
+      bindings: [binding(OLD_TURN_ID, "opencode")],
+      liveSessions: [
+        {
+          ...liveSession({ status: "running", activeTurnId: OLD_TURN_ID, provider: "opencode" }),
+          updatedAt: quietSince,
+        },
+      ],
+      pumpHealth: [],
+      nowMs: NOW,
+      staleAfterMs: 10_000,
+    });
+
+    expect(plans).toEqual([]);
+  });
+
+  it("realigns a live newer turn even when the old projection exceeds 45 minutes", () => {
+    const quietSince = "2026-07-23T19:00:00.000Z";
+    const plans = planProviderRuntimeReconciliation({
+      threads: [
+        threadShell({
+          updatedAt: quietSince,
+          session: { ...threadShell().session!, updatedAt: quietSince },
+        }),
+      ],
+      bindings: [binding(LIVE_TURN_ID)],
+      liveSessions: [liveSession({ status: "running", activeTurnId: LIVE_TURN_ID })],
+      pumpHealth: [],
+      nowMs: NOW,
+      staleAfterMs: 10_000,
+    });
+
+    expect(plans).toEqual([
+      expect.objectContaining({
+        action: "align-running-turn",
+        projectedTurnId: OLD_TURN_ID,
+        runtimeTurnId: LIVE_TURN_ID,
+      }),
+    ]);
+  });
+
+  it("still settles an old orphaned turn when the live runtime and binding are absent", () => {
+    const quietSince = "2026-07-23T19:00:00.000Z";
+    const plans = planProviderRuntimeReconciliation({
+      threads: [
+        threadShell({
+          updatedAt: quietSince,
+          session: { ...threadShell().session!, updatedAt: quietSince },
+        }),
+      ],
+      bindings: [],
+      liveSessions: [],
+      pumpHealth: [],
+      nowMs: NOW,
+      staleAfterMs: 10_000,
+    });
+
+    expect(plans).toEqual([
+      expect.objectContaining({
+        action: "settle-interrupted",
+        projectedTurnId: OLD_TURN_ID,
+        runtimeTurnId: null,
+      }),
+    ]);
+  });
+
+  it("still settles an old startup that never acquired a provider turn", () => {
+    const quietSince = "2026-07-23T19:00:00.000Z";
+    const plans = planProviderRuntimeReconciliation({
+      threads: [
+        threadShell({
+          updatedAt: quietSince,
+          latestTurn: null,
+          session: {
+            ...threadShell().session!,
+            status: "starting",
+            activeTurnId: null,
+            updatedAt: quietSince,
+          },
+        }),
+      ],
+      bindings: [binding(null)],
+      liveSessions: [],
+      pumpHealth: [],
+      nowMs: NOW,
+      staleAfterMs: 10_000,
+    });
+
+    expect(plans).toEqual([
+      expect.objectContaining({
+        action: "settle-interrupted",
+        projectedTurnId: null,
+        runtimeTurnId: null,
+      }),
+    ]);
   });
 });

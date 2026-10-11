@@ -1,4 +1,4 @@
-import { NonNegativeInt, ProviderRuntimeEvent } from "@synara/contracts";
+import { NonNegativeInt, ProviderRuntimeEvent, type ThreadId } from "@synara/contracts";
 import { Effect, Layer, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -410,21 +410,31 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const hasPendingEventsForThreads: ProviderRuntimeEventRepositoryShape["hasPendingEventsForThreads"] =
+  const listThreadIdsWithPendingEvents: ProviderRuntimeEventRepositoryShape["listThreadIdsWithPendingEvents"] =
     (input) => {
-      if (input.threadIds.length === 0) return Effect.succeed(false);
+      if (input.threadIds.length === 0) return Effect.succeed([]);
       return Effect.gen(function* () {
-        const cursor = yield* getConsumerCursor(input.consumerName);
-        const rows = yield* sql<{ readonly present: number }>`
-          SELECT 1 AS present
-          FROM provider_runtime_events
-          WHERE sequence > ${cursor}
-            AND thread_id IN ${sql.in(input.threadIds)}
-          LIMIT 1
+        const rows = yield* sql<{ readonly threadId: ThreadId | null }>`
+          SELECT DISTINCT events.thread_id AS "threadId"
+          FROM provider_runtime_event_consumers AS consumer
+          LEFT JOIN provider_runtime_events AS events
+            ON events.sequence > consumer.last_acked_sequence
+            AND events.thread_id IN ${sql.in(input.threadIds)}
+          WHERE consumer.consumer_name = ${input.consumerName}
         `.pipe(
-          Effect.mapError(toPersistenceSqlError("ProviderRuntimeEvent.hasPendingEventsForThreads")),
+          Effect.mapError(
+            toPersistenceSqlError("ProviderRuntimeEvent.listThreadIdsWithPendingEvents"),
+          ),
         );
-        return rows.length > 0;
+        // The outer join distinguishes a caught-up consumer from a missing one
+        // in the same query. Missing observation must not permit reconciliation.
+        if (rows.length === 0) {
+          return yield* new PersistenceDecodeError({
+            operation: "ProviderRuntimeEvent.listThreadIdsWithPendingEvents",
+            issue: `Consumer '${input.consumerName}' is not registered.`,
+          });
+        }
+        return rows.flatMap((row) => (row.threadId === null ? [] : [row.threadId]));
       });
     };
 
@@ -675,7 +685,7 @@ const make = Effect.gen(function* () {
     readAcceptedOpenTurnEvents,
     pruneSettledOpenTurns,
     getConsumerCursor,
-    hasPendingEventsForThreads,
+    listThreadIdsWithPendingEvents,
     advanceConsumerCursor,
     advanceConsumerCursorThrough,
   } satisfies ProviderRuntimeEventRepositoryShape;

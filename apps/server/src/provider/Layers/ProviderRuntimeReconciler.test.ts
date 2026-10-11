@@ -3,12 +3,15 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationCommand,
+  type OrchestrationReadModel,
   type OrchestrationShellSnapshot,
+  type OrchestrationThread,
   type ProviderSession,
 } from "@synara/contracts";
 import { Effect, Layer, Option } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
+import { createEmptyReadModel } from "../../orchestration/projector.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -82,7 +85,255 @@ function readyProviderSession(): ProviderSession {
   };
 }
 
+async function reconcileActiveGoal(input?: {
+  readonly beforeRepair?: (thread: OrchestrationThread) => OrchestrationThread;
+  readonly afterBindingCleanup?: (thread: OrchestrationThread) => OrchestrationThread;
+  readonly runtimeAfterCleanup?: ProviderSession["status"];
+  readonly bindingCleared?: boolean;
+  readonly observations?: number;
+}) {
+  const threadId = ThreadId.makeUnsafe("thread-runtime-goal-recovery");
+  const source = staleShellSnapshot().threads[0]!;
+  const initial: OrchestrationThread = {
+    ...source,
+    id: threadId,
+    title: "Runtime goal recovery",
+    modelSelection: { provider: "opencode", model: "test-model" },
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    parentThreadId: null,
+    createdAt: source.updatedAt,
+    archivedAt: null,
+    deletedAt: null,
+    handoff: null,
+    messages: [],
+    proposedPlans: [],
+    activities: [],
+    checkpoints: [],
+    goal: "Finish every requirement",
+    goalStartedAt: source.updatedAt,
+    goalPausedAt: null,
+    goalBlockCount: 7,
+    goalBlockLastTurnId: TURN_ID,
+    session: {
+      ...source.session!,
+      threadId,
+      providerName: "opencode",
+      providerInstanceId: "opencode",
+      status: "running",
+      activeTurnId: TURN_ID,
+    },
+  };
+  let current = input?.beforeRepair?.(initial) ?? initial;
+  const staleProjection = current;
+  let liveSession: ProviderSession = {
+    ...readyProviderSession(),
+    provider: "opencode",
+    threadId,
+  };
+  const commands: OrchestrationCommand[] = [];
+  const engine = {
+    getReadModel: () =>
+      Effect.succeed({
+        ...createEmptyReadModel(current.updatedAt),
+        threads: [current],
+      } satisfies OrchestrationReadModel),
+    dispatch: (command: OrchestrationCommand) =>
+      Effect.sync(() => {
+        commands.push(command);
+        if (command.type === "thread.session.set") {
+          current = {
+            ...current,
+            session: command.session,
+            latestTurn: current.latestTurn
+              ? {
+                  ...current.latestTurn,
+                  state: command.session.status === "error" ? "error" : "interrupted",
+                  completedAt: current.latestTurn.completedAt ?? command.session.updatedAt,
+                }
+              : null,
+          };
+        }
+        return { sequence: commands.length };
+      }),
+  } as unknown as OrchestrationEngineShape;
+  const layer = makeProviderRuntimeReconcilerLive({ staleAfterMs: 1 }).pipe(
+    Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
+    Layer.provide(
+      Layer.succeed(OrchestrationReactor, {
+        start: Effect.void,
+        reconcileSettledOpenTurns: Effect.void,
+      }),
+    ),
+    Layer.provide(
+      Layer.succeed(ProjectionSnapshotQuery, {
+        listStaleInFlightThreadIds: () => Effect.succeed([threadId]),
+        getThreadShellsByIds: () => Effect.succeed([staleProjection]),
+      } as unknown as ProjectionSnapshotQueryShape),
+    ),
+    Layer.provide(
+      Layer.succeed(ProviderSessionDirectory, {
+        listBindings: () =>
+          Effect.succeed([
+            {
+              threadId,
+              provider: "opencode",
+              providerInstanceId: "opencode",
+              status: "running",
+              lifecycleGeneration: "goal-recovery-generation",
+              runtimePayload: { activeTurnId: TURN_ID },
+            },
+          ]),
+        clearActiveTurn: () =>
+          Effect.sync(() => {
+            current = input?.afterBindingCleanup?.(current) ?? current;
+            if (input?.runtimeAfterCleanup) {
+              liveSession = {
+                ...liveSession,
+                status: input.runtimeAfterCleanup,
+                ...(input.runtimeAfterCleanup === "running" ? { activeTurnId: TURN_ID } : {}),
+              };
+            }
+            return input?.bindingCleared ?? true;
+          }),
+      } as unknown as ProviderSessionDirectoryShape),
+    ),
+    Layer.provide(
+      Layer.succeed(ProviderService, {
+        listSessions: () => Effect.succeed([liveSession]),
+        getRuntimeEventPumpHealth: () => Effect.succeed([]),
+      } as unknown as ProviderServiceShape),
+    ),
+    Layer.provide(
+      Layer.succeed(ProviderRuntimeEventRepository, {
+        listThreadIdsWithPendingEvents: () => Effect.succeed([]),
+      } as unknown as ProviderRuntimeEventRepositoryShape),
+    ),
+  );
+  await Effect.gen(function* () {
+    const reconciler = yield* ProviderRuntimeReconciler;
+    for (let index = 0; index < (input?.observations ?? 1); index += 1) {
+      yield* reconciler.reconcileNow;
+    }
+  }).pipe(Effect.provide(layer), Effect.runPromise);
+  return {
+    current,
+    continuations: commands.filter(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.goal.continue" }> =>
+        command.type === "thread.goal.continue",
+    ),
+  };
+}
+
 describe("ProviderRuntimeReconcilerLive", () => {
+  it("continues the active goal after its orphaned running turn is reconciled", async () => {
+    const result = await reconcileActiveGoal();
+    expect(result.continuations).toHaveLength(1);
+    expect(result.continuations[0]).toMatchObject({
+      threadId: "thread-runtime-goal-recovery",
+      trigger: "runtime-recovery",
+      sourceTurnId: TURN_ID,
+      goalStartedAt: "2026-07-23T19:00:00.000Z",
+      createdAt: result.current.latestTurn?.completedAt,
+    });
+    expect(result.current.goalPausedAt).toBeNull();
+    expect(result.current.goalBlockCount).toBe(7);
+    expect(result.current.goalBlockLastTurnId).toBe(TURN_ID);
+  });
+
+  it("uses the same recovery command and timestamp if projection lag repeats the repair", async () => {
+    const result = await reconcileActiveGoal({ observations: 2 });
+    expect(result.continuations).toHaveLength(2);
+    expect(result.continuations[1]).toEqual(result.continuations[0]);
+  });
+
+  it("continues runtime recovery when the settled session becomes ready before enqueue", async () => {
+    const result = await reconcileActiveGoal({
+      afterBindingCleanup: (thread) => ({
+        ...thread,
+        session: {
+          ...thread.session!,
+          status: "ready",
+          updatedAt: new Date(Date.parse(thread.session!.updatedAt) + 1).toISOString(),
+        },
+      }),
+    });
+    expect(result.current.session?.status).toBe("ready");
+    expect(result.continuations).toHaveLength(1);
+    expect(result.continuations[0]).toMatchObject({
+      sourceTurnId: TURN_ID,
+      goalStartedAt: result.current.goalStartedAt,
+    });
+  });
+
+  it.each([
+    ["pause", (thread) => ({ ...thread, goalPausedAt: "2026-07-23T20:00:00.000Z" })],
+    ["clear", (thread) => ({ ...thread, goal: undefined })],
+    ["new goal", (thread) => ({ ...thread, goalStartedAt: "2026-07-23T20:00:00.000Z" })],
+    ["archive", (thread) => ({ ...thread, archivedAt: "2026-07-23T20:00:00.000Z" })],
+    ["delete", (thread) => ({ ...thread, deletedAt: "2026-07-23T20:00:00.000Z" })],
+    ["Plan mode", (thread) => ({ ...thread, interactionMode: "plan" })],
+    ["child thread", (thread) => ({ ...thread, parentThreadId: ThreadId.makeUnsafe("parent") })],
+    [
+      "session stop",
+      (thread) => ({ ...thread, session: { ...thread.session!, status: "stopped" } }),
+    ],
+    [
+      "provider error",
+      (thread) => ({ ...thread, session: { ...thread.session!, status: "error" } }),
+    ],
+    [
+      "newer turn",
+      (thread) => ({
+        ...thread,
+        latestTurn: { ...thread.latestTurn!, turnId: TurnId.makeUnsafe("newer-turn") },
+      }),
+    ],
+  ] satisfies ReadonlyArray<
+    readonly [string, (thread: OrchestrationThread) => OrchestrationThread]
+  >)(
+    "does not recover after a racing %s during binding cleanup",
+    async (_, afterBindingCleanup) => {
+      const result = await reconcileActiveGoal({ afterBindingCleanup });
+      expect(result.continuations).toEqual([]);
+    },
+  );
+
+  it.each(["running", "connecting", "error"] as const)(
+    "does not recover when the runtime becomes %s before continuation",
+    async (runtimeAfterCleanup) => {
+      const result = await reconcileActiveGoal({ runtimeAfterCleanup });
+      expect(result.continuations).toEqual([]);
+    },
+  );
+
+  it("does not recover a goal without a concrete started source turn", async () => {
+    const result = await reconcileActiveGoal({
+      beforeRepair: (thread) => ({
+        ...thread,
+        latestTurn: null,
+        session: { ...thread.session!, activeTurnId: null },
+      }),
+    });
+    expect(result.continuations).toEqual([]);
+  });
+
+  it("does not recover after the binding ownership check rejects stale cleanup", async () => {
+    const result = await reconcileActiveGoal({ bindingCleared: false });
+    expect(result.continuations).toEqual([]);
+  });
+
+  it("does not recover a terminal projection left by an explicit stop", async () => {
+    const result = await reconcileActiveGoal({
+      beforeRepair: (thread) => ({
+        ...thread,
+        session: { ...thread.session!, status: "stopped", activeTurnId: null },
+      }),
+    });
+    expect(result.continuations).toEqual([]);
+  });
+
   it("keeps one activity identity while a stale-turn repair is retried and refined", async () => {
     const commands: OrchestrationCommand[] = [];
     const reconcileSettledOpenTurns = vi.fn();
@@ -128,18 +379,18 @@ describe("ProviderRuntimeReconcilerLive", () => {
         Effect.succeed([
           {
             provider: "codex" as const,
-            status: "recovering" as const,
-            consecutiveFailures: 1,
+            status: "healthy" as const,
+            consecutiveFailures: 0,
             updatedAt: "2026-07-23T20:00:00.000Z",
           },
         ]),
     } as unknown as ProviderServiceShape;
 
     const runtimeEvents = {
-      hasPendingEventsForThreads: (input: { readonly threadIds: ReadonlyArray<string> }) =>
+      listThreadIdsWithPendingEvents: (input: { readonly threadIds: ReadonlyArray<string> }) =>
         Effect.sync(() => {
           expect(input.threadIds).toEqual([THREAD_ID]);
-          return false;
+          return [];
         }),
     } as unknown as ProviderRuntimeEventRepositoryShape;
 

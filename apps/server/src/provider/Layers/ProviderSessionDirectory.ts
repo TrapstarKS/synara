@@ -202,6 +202,24 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       ),
     );
 
+  const clearActiveTurn: ProviderSessionDirectoryShape["clearActiveTurn"] = (input) => {
+    // Persisted rows always carry a generation, including migrated legacy rows.
+    // An unknown generation is not authority to clear whichever runtime now exists.
+    if (input.lifecycleGeneration === undefined) return Effect.succeed(false);
+    return repository
+      .clearActiveTurn({
+        threadId: input.threadId,
+        providerName: input.provider,
+        lifecycleGeneration: input.lifecycleGeneration,
+        expectedTurnId: input.expectedTurnId,
+      })
+      .pipe(
+        Effect.mapError(
+          toPersistenceError("ProviderSessionDirectory.clearActiveTurn:clearActiveTurn"),
+        ),
+      );
+  };
+
   const remove: ProviderSessionDirectoryShape["remove"] = (threadId) =>
     repository
       .deleteByThreadId({ threadId })
@@ -254,6 +272,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
 
   return {
     upsert,
+    clearActiveTurn,
     getProvider,
     getBinding,
     remove,

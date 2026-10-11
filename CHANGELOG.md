@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.13] — 2026-10-11
+
+**Long OpenCode turns stay active, and Goals recover interrupted runtime state without overriding Stop or Pause.**
+
+### Fixed
+
+- Runtime reconciliation preserves a provider that still owns its live turn, including tools running longer than 45 minutes. It now reads recorded assistant and tool activity instead of relying on lifecycle timestamps that remain unchanged during streaming.
+- Delayed or unhealthy event delivery no longer lets the 45-minute fallback declare an unobserved turn interrupted.
+- An eligible Goal resumes after reconciliation repairs an orphaned interrupted turn. Recovery checks the exact turn and goal pursuit again before dispatch and after waiting, so it cannot start work for a newer turn or a paused Goal.
+- Stopping a provider session pauses its Goal atomically, before asynchronous teardown, preventing a queued recovery from restarting the work. The existing seven rejected blocker stops and pause on the eighth remain unchanged.
+
 ## [1.0.12] — 2026-10-10
 
 **Long-running Goals recover missed OpenCode completions and receive autonomy instructions on every turn.**

@@ -1,4 +1,4 @@
-import type { ProviderRuntimeEvent } from "@synara/contracts";
+import type { ProviderRuntimeEvent, ThreadId } from "@synara/contracts";
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
 
@@ -59,10 +59,10 @@ export interface ProviderRuntimeEventRepositoryShape {
   readonly getConsumerCursor: (
     consumerName: string,
   ) => Effect.Effect<number, ProviderRuntimeEventRepositoryError>;
-  readonly hasPendingEventsForThreads: (input: {
+  readonly listThreadIdsWithPendingEvents: (input: {
     readonly consumerName: string;
     readonly threadIds: ReadonlyArray<string>;
-  }) => Effect.Effect<boolean, ProviderRuntimeEventRepositoryError>;
+  }) => Effect.Effect<ReadonlyArray<ThreadId>, ProviderRuntimeEventRepositoryError>;
   readonly advanceConsumerCursor: (input: {
     readonly consumerName: string;
     readonly eventSequence: number;

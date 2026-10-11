@@ -11,6 +11,7 @@ import {
   THREAD_GOAL_BLOCK_ATTEMPT_LIMIT,
   ThreadId,
   TurnId,
+  type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
 } from "@synara/contracts";
@@ -698,5 +699,130 @@ describe("decider thread goal timing", () => {
     if (event?.type === "thread.meta-updated") {
       expect(event.payload.goal).toBe("Fresh delegated objective");
     }
+  });
+});
+
+describe("decider goal runtime recovery", () => {
+  const startedAt = "2026-10-11T16:00:00.000Z";
+  const recoveredAt = "2026-10-11T17:00:00.000Z";
+  const sourceTurnId = TurnId.makeUnsafe("turn-runtime-recovery");
+
+  async function interruptedGoal() {
+    const running = withRunningTurn(
+      await createThreadReadModel(startedAt),
+      THREAD_ID,
+      sourceTurnId,
+    );
+    return {
+      ...running,
+      threads: running.threads.map((thread) => ({
+        ...thread,
+        goal: "Finish the implementation",
+        goalStartedAt: startedAt,
+        goalPausedAt: null,
+        goalBlockCount: 3,
+        latestTurn: {
+          ...thread.latestTurn!,
+          state: "interrupted" as const,
+          completedAt: recoveredAt,
+        },
+        session: {
+          ...thread.session!,
+          status: "interrupted" as const,
+          activeTurnId: null,
+          updatedAt: recoveredAt,
+        },
+      })),
+    } satisfies OrchestrationReadModel;
+  }
+
+  function recoveryCommand(): Extract<OrchestrationCommand, { type: "thread.goal.continue" }> {
+    return {
+      type: "thread.goal.continue",
+      commandId: CommandId.makeUnsafe("cmd-runtime-recovery"),
+      threadId: THREAD_ID,
+      goalStartedAt: startedAt,
+      trigger: "runtime-recovery",
+      sourceTurnId,
+      createdAt: recoveredAt,
+    };
+  }
+
+  it("queues recovery for the same interrupted goal turn without changing its blocker streak", async () => {
+    const readModel = await interruptedGoal();
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({ command: recoveryCommand(), readModel }),
+    );
+    expect(result).toMatchObject({
+      type: "thread.goal-continuation-requested",
+      payload: { trigger: "runtime-recovery", sourceTurnId, goalStartedAt: startedAt },
+    });
+    expect(readModel.threads[0]!.goalBlockCount).toBe(3);
+  });
+
+  it.each(["older turn", "older goal", "missing turn"])(
+    "drops recovery that refers to an %s",
+    async (kind) => {
+      const readModel = await interruptedGoal();
+      const { sourceTurnId: currentSourceTurnId, ...base } = recoveryCommand();
+      const command = {
+        ...base,
+        ...(kind === "missing turn"
+          ? {}
+          : {
+              sourceTurnId:
+                kind === "older turn" ? TurnId.makeUnsafe("previous-turn") : currentSourceTurnId!,
+            }),
+        ...(kind === "older goal" ? { goalStartedAt: "2026-10-10T16:00:00.000Z" } : {}),
+      };
+      const result = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
+      expect(result).toEqual([]);
+    },
+  );
+
+  it.each(["paused", "achieved", "staged"])("does not revive a %s goal", async (kind) => {
+    const original = await interruptedGoal();
+    const readModel: OrchestrationReadModel = {
+      ...original,
+      threads: original.threads.map((thread) => ({
+        ...thread,
+        ...(kind === "paused" ? { goalPausedAt: recoveredAt } : {}),
+        ...(kind === "achieved" ? { goal: "" } : {}),
+        ...(kind === "staged" ? { goalStartedAt: null } : {}),
+      })),
+    };
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({ command: recoveryCommand(), readModel }),
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("a session stop blocks recovery atomically before the provider reactor runs", async () => {
+    let readModel: OrchestrationReadModel = await interruptedGoal();
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.session.stop",
+          commandId: CommandId.makeUnsafe("cmd-stop-before-goal-recovery"),
+          threadId: THREAD_ID,
+          createdAt: recoveredAt,
+        },
+        readModel,
+      }),
+    );
+    const events = Array.isArray(result) ? result : [result];
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.meta-updated",
+      "thread.session-stop-requested",
+    ]);
+    for (const [index, event] of events.entries()) {
+      readModel = await applyEvent(readModel, event as OrchestrationEvent, 3 + index);
+    }
+    expect(readModel.threads[0]?.goalPausedAt).not.toBeNull();
+    expect(
+      await Effect.runPromise(
+        decideOrchestrationCommand({ command: recoveryCommand(), readModel }),
+      ),
+    ).toEqual([]);
   });
 });
